@@ -1,0 +1,18 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Global Reset & Base Styles */
+body {
+  @apply bg-sys-50 text-sys-800 antialiased;
+  font-feature-settings: "cv11", "ss01"; /* Tipografía más legible */
+}
+
+/* Scrollbars ocultos pero funcionales para estética touch */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
