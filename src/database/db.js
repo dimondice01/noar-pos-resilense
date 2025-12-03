@@ -1,11 +1,13 @@
 import { openDB } from 'idb';
 
 const DB_NAME = 'NoarPosDB';
-const DB_VERSION = 3; // ⚠️ SUBIMOS VERSIÓN A 3 (Para el Kardex)
+const DB_VERSION = 4; // ⚠️ SUBIMOS VERSIÓN A 4 (Cash Management)
 
 export const initDB = async () => {
   return openDB(DB_NAME, DB_VERSION, {
     upgrade(db, oldVersion, newVersion, transaction) {
+      console.log(`🔄 Migrando base de datos de v${oldVersion} a v${newVersion}...`);
+
       // v1: Productos, Ventas, Clientes
       if (oldVersion < 1) {
         if (!db.objectStoreNames.contains('products')) {
@@ -45,8 +47,32 @@ export const initDB = async () => {
           movementStore.createIndex('date', 'date', { unique: false });
         }
       }
+
+      // v4: GESTIÓN DE CAJA Y TURNOS (Cash Management)
+      if (oldVersion < 4) {
+        // 1. Tabla de Turnos (Cajas Abiertas/Cerradas)
+        if (!db.objectStoreNames.contains('shifts')) {
+          const shiftsStore = db.createObjectStore('shifts', { keyPath: 'id' });
+          shiftsStore.createIndex('status', 'status', { unique: false }); // 'OPEN', 'CLOSED'
+          shiftsStore.createIndex('userId', 'userId', { unique: false });
+          shiftsStore.createIndex('openedAt', 'openedAt', { unique: false });
+        }
+
+        // 2. Tabla de Movimientos de Caja (Retiros, Ingresos, Apertura)
+        if (!db.objectStoreNames.contains('cash_movements')) {
+          const cashStore = db.createObjectStore('cash_movements', { keyPath: 'id', autoIncrement: true });
+          cashStore.createIndex('shiftId', 'shiftId', { unique: false }); // Para filtrar por turno
+          cashStore.createIndex('type', 'type', { unique: false }); // 'WITHDRAWAL', 'DEPOSIT', 'OPENING'
+        }
+
+        // 3. Actualizamos Ventas para asociarlas a un Turno
+        const salesStore = transaction.objectStore('sales');
+        if (!salesStore.indexNames.contains('shiftId')) {
+          salesStore.createIndex('shiftId', 'shiftId', { unique: false });
+        }
+      }
       
-      console.log(`✅ Base de datos actualizada a v${newVersion}`);
+      console.log(`✅ Base de datos actualizada correctamente a v${newVersion}`);
     },
   });
 };

@@ -8,7 +8,13 @@ import { useDbSeeder } from './core/hooks/useDbSeeder';
 import { DashboardPage } from './modules/dashboard/pages/DashboardPage';
 import { PosPage } from './modules/pos/pages/PosPage';
 import { InventoryPage } from './modules/inventory/pages/InventoryPage';
-import { SalesPage } from './modules/sales/pages/SalesPage'; // ✅ Nueva importación
+import { SalesPage } from './modules/sales/pages/SalesPage';
+import { MovementsPage } from './modules/inventory/pages/MovementsPage';
+// 👇 Importamos la nueva página de Control de Caja (Auditoría)
+import { CashPage } from './modules/cash/pages/CashPage';
+
+// 👇 Importamos el Guardián de Caja
+import { CashGuard } from './modules/cash/components/CashGuard';
 
 function App() {
   // 🔥 Inicializamos la DB al arrancar
@@ -28,13 +34,24 @@ function App() {
   return (
     <BrowserRouter>
       <Routes>
-        <Route path="/" element={<MainLayout />}>
+        {/* Envolvemos la ruta principal con el CashGuard para bloquear si no hay caja abierta */}
+        <Route path="/" element={
+          <CashGuard>
+            <MainLayout />
+          </CashGuard>
+        }>
           <Route index element={<DashboardPage />} />
           <Route path="pos" element={<PosPage />} />
-          <Route path="inventory" element={<InventoryPage />} />
           
-          {/* 👇 Ruta Conectada: Ventas & Facturación AFIP */}
+          {/* Módulo de Inventario */}
+          <Route path="inventory" element={<InventoryPage />} />
+          <Route path="inventory/movements" element={<MovementsPage />} />
+          
+          {/* Módulo de Ventas & Facturación AFIP */}
           <Route path="sales" element={<SalesPage />} />
+          
+          {/* 👇 Módulo de Caja (Auditoría y Cierres) */}
+          <Route path="cash" element={<CashPage />} />
           
           <Route path="settings" element={<div className="p-10">Configuración (En construcción)</div>} />
         </Route>
