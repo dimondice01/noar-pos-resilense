@@ -12,6 +12,8 @@ import { SalesPage } from './modules/sales/pages/SalesPage';
 import { MovementsPage } from './modules/inventory/pages/MovementsPage';
 // 👇 Importamos la nueva página de Control de Caja (Auditoría)
 import { CashPage } from './modules/cash/pages/CashPage';
+// 👇 Importamos la página de Clientes (CRM)
+import { ClientsPage } from './modules/clients/pages/ClientsPage';
 
 // 👇 Importamos el Guardián de Caja
 import { CashGuard } from './modules/cash/components/CashGuard';
@@ -52,6 +54,9 @@ function App() {
           
           {/* 👇 Módulo de Caja (Auditoría y Cierres) */}
           <Route path="cash" element={<CashPage />} />
+
+          {/* 👇 Módulo de Clientes (Nuevo) */}
+          <Route path="clients" element={<ClientsPage />} />
           
           <Route path="settings" element={<div className="p-10">Configuración (En construcción)</div>} />
         </Route>

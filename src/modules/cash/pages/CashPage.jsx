@@ -1,210 +1,244 @@
 import React, { useEffect, useState } from 'react';
-import { 
-  TrendingUp, TrendingDown, DollarSign, Calendar, 
-  User, AlertCircle, CheckCircle2, ChevronRight, Eye 
-} from 'lucide-react';
-import { shiftRepository } from '../repositories/shiftRepository';
+import { useNavigate } from 'react-router-dom';
+import { Wallet, TrendingUp, TrendingDown, RefreshCcw, Lock, Unlock, FileText, ArrowDownLeft, ArrowUpRight, DollarSign, CreditCard } from 'lucide-react';
+import { cashRepository } from '../repositories/cashRepository';
+import { useAuthStore } from '../../auth/store/useAuthStore'; // ✅ Auth
 import { Card } from '../../../core/ui/Card';
+import { Button } from '../../../core/ui/Button';
 import { cn } from '../../../core/utils/cn';
+import { CashClosingModal } from '../components/CashClosingModal';
 
 export const CashPage = () => {
-  const [shifts, setShifts] = useState([]);
-  const [selectedShift, setSelectedShift] = useState(null); // Para ver detalle
-  const [movements, setMovements] = useState([]);
+  const navigate = useNavigate();
+  const { user } = useAuthStore();
+  
+  const [shift, setShift] = useState(null);
+  const [balance, setBalance] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [isClosingModalOpen, setIsClosingModalOpen] = useState(false);
 
-  // Carga Inicial
+  // 🛡️ SEGURIDAD: Solo ADMIN
   useEffect(() => {
-    loadShifts();
-  }, []);
+      if (user?.role !== 'ADMIN') {
+          navigate('/'); 
+      }
+  }, [user, navigate]);
 
-  // Carga Detalles al seleccionar
-  useEffect(() => {
-    if (selectedShift) {
-      shiftRepository.getShiftMovements(selectedShift.id).then(setMovements);
-    }
-  }, [selectedShift]);
-
-  const loadShifts = async () => {
+  const loadData = async () => {
+    setLoading(true);
     try {
-      const data = await shiftRepository.getAllShifts();
-      setShifts(data);
-    } catch (e) {
-      console.error(e);
+        const currentShift = await cashRepository.getCurrentShift();
+        setShift(currentShift);
+        
+        if (currentShift) {
+            const bal = await cashRepository.getShiftBalance(currentShift.id);
+            setBalance(bal);
+        } else {
+            setBalance(null);
+        }
+    } catch (error) {
+        console.error("Error cargando caja:", error);
     } finally {
-      setLoading(false);
+        setLoading(false);
     }
   };
 
-  // Helper de Formato
-  const money = (val) => val ? `$ ${val.toLocaleString('es-AR', {minimumFractionDigits: 2})}` : '-';
-  const time = (date) => new Date(date).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-  const date = (date) => new Date(date).toLocaleDateString();
+  useEffect(() => { loadData(); }, []);
+
+  const handleOpenShift = async () => {
+      const input = prompt("Monto inicial en caja (Fondo de Cambio):", "0");
+      if (input === null) return;
+      
+      const amount = parseFloat(input);
+      if (isNaN(amount) || amount < 0) return alert("Monto inválido");
+
+      try {
+          await cashRepository.openShift(amount, user?.name);
+          await loadData();
+      } catch (error) {
+          alert("Error al abrir caja: " + error.message);
+      }
+  };
+
+  const handleCloseConfirm = async (closingData) => {
+      try {
+          await cashRepository.closeShift(shift.id, {
+              ...closingData,
+              expectedCash: balance.totalCash,
+              expectedDigital: balance.totalDigital
+          });
+          
+          alert(`✅ CAJA CERRADA\n\nDiferencia: $${closingData.difference.toLocaleString()}\n(Visible solo para Admin)`);
+          setIsClosingModalOpen(false);
+          loadData(); 
+      } catch (error) {
+          alert("Error al cerrar: " + error.message);
+      }
+  };
+
+  // Evitar renderizado si no es admin
+  if (user?.role !== 'ADMIN') return null;
+
+  if (loading) return <div className="p-10 text-center text-sys-500">Cargando tesorería...</div>;
+
+  // MODO CAJA CERRADA
+  if (!shift) {
+      return (
+          <div className="h-[80vh] flex flex-col items-center justify-center text-center space-y-6 animate-in fade-in">
+              <div className="w-24 h-24 bg-sys-100 rounded-full flex items-center justify-center text-sys-400 shadow-inner">
+                  <Lock size={48} />
+              </div>
+              <div>
+                  <h2 className="text-2xl font-bold text-sys-900">Caja Cerrada</h2>
+                  <p className="text-sys-500">Inicie un turno para comenzar a operar.</p>
+              </div>
+              <Button onClick={handleOpenShift} className="px-8 py-3 text-lg shadow-xl shadow-brand/20">
+                  <Unlock size={20} className="mr-2"/> Abrir Caja
+              </Button>
+          </div>
+      );
+  }
+
+  // MODO CAJA ABIERTA (Con seguridad null-check)
+  if (!balance) return <div className="p-10 text-center">Calculando balance...</div>;
 
   return (
-    <div className="h-[calc(100vh-6rem)] flex gap-6">
+    <div className="space-y-6 pb-20 animate-in fade-in">
       
-      {/* COLUMNA IZQUIERDA: LISTADO HISTÓRICO */}
-      <div className="flex-1 flex flex-col min-w-0">
-        <header className="mb-6">
-          <h2 className="text-2xl font-bold text-sys-900">Cierres de Caja</h2>
-          <p className="text-sys-500 text-sm">Auditoría de turnos y flujo de efectivo</p>
-        </header>
-
-        {/* Tabla Visual */}
-        <div className="flex-1 overflow-y-auto pr-2 no-scrollbar space-y-3 pb-20">
-          {shifts.length === 0 && !loading && (
-             <div className="p-8 text-center text-sys-400 bg-white rounded-2xl border border-dashed border-sys-200">
-                No hay turnos registrados aún.
-             </div>
-          )}
-
-          {shifts.map((shift) => {
-            const isSelected = selectedShift?.id === shift.id;
-            const diff = shift.difference || 0;
-            const isPerfect = Math.abs(diff) < 10; // Tolerancia $10
-            const isOpen = shift.status === 'OPEN';
-
-            return (
-              <div 
-                key={shift.id}
-                onClick={() => setSelectedShift(shift)}
-                className={cn(
-                  "group relative overflow-hidden bg-white border rounded-xl p-4 transition-all cursor-pointer hover:shadow-md",
-                  isSelected ? "border-brand ring-1 ring-brand bg-brand-light/10" : "border-sys-200 hover:border-brand/50",
-                  isOpen ? "border-l-4 border-l-blue-500" : (isPerfect ? "border-l-4 border-l-green-500" : "border-l-4 border-l-red-500")
-                )}
-              >
-                <div className="flex justify-between items-start">
-                  
-                  {/* Info Principal */}
-                  <div className="flex gap-4 items-center">
-                    <div className={cn(
-                      "w-12 h-12 rounded-full flex items-center justify-center font-bold text-lg shadow-sm shrink-0",
-                      isOpen ? "bg-blue-100 text-blue-600" : "bg-sys-100 text-sys-600"
-                    )}>
-                      {isOpen ? 'AB' : 'Z'}
-                    </div>
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <h4 className="font-bold text-sys-900 text-lg">
-                          {isOpen ? 'Caja Abierta' : `Cierre #${shift.id.slice(-4)}`}
-                        </h4>
-                        {/* Badge de Estado */}
-                        {isOpen ? (
-                           <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-blue-100 text-blue-700 border border-blue-200 uppercase tracking-wide">Operando</span>
-                        ) : (
-                           <span className={cn("px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wide flex items-center gap-1", isPerfect ? "bg-green-100 text-green-700 border border-green-200" : "bg-red-100 text-red-700 border border-red-200")}>
-                              {isPerfect ? <CheckCircle2 size={10} /> : <AlertCircle size={10} />}
-                              {isPerfect ? 'Cuadrada' : 'Diferencia'}
-                           </span>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-3 text-xs text-sys-500 mt-1">
-                        <span className="flex items-center gap-1"><Calendar size={12}/> {date(shift.openedAt)}</span>
-                        <span className="flex items-center gap-1"><User size={12}/> {shift.userId === 'u_admin' ? 'Gerente' : 'Cajero'}</span>
-                        <span>{time(shift.openedAt)} - {shift.closedAt ? time(shift.closedAt) : '...'}</span>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Totales */}
-                  <div className="text-right">
-                    <p className="text-xs text-sys-500 uppercase font-bold tracking-wider">Recaudado</p>
-                    <p className="text-xl font-black text-sys-900">
-                      {isOpen ? 'En curso' : money(shift.finalAmount)}
-                    </p>
-                    {!isOpen && diff !== 0 && (
-                      <p className={cn("text-xs font-bold mt-1", diff > 0 ? "text-green-600" : "text-red-600")}>
-                        {diff > 0 ? '+' : ''}{money(diff)}
-                      </p>
-                    )}
-                  </div>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* COLUMNA DERECHA: DETALLE FORENSE (Sticky) */}
-      <div className="w-[400px] bg-white rounded-2xl shadow-soft border border-sys-200 flex flex-col overflow-hidden shrink-0">
-        {selectedShift ? (
-          <>
-            <div className="p-6 bg-sys-50 border-b border-sys-200">
-               <h3 className="font-bold text-lg text-sys-900 flex items-center gap-2">
-                 <Eye size={20} className="text-brand"/> Detalle del Turno
-               </h3>
-               <p className="text-xs text-sys-500 mt-1">ID: {selectedShift.id}</p>
-               
-               {/* Resumen Rápido */}
-               <div className="grid grid-cols-2 gap-3 mt-4">
-                  <div className="bg-white p-3 rounded-xl border border-sys-100 shadow-sm">
-                     <p className="text-[10px] text-sys-400 font-bold uppercase">Fondo Inicial</p>
-                     <p className="text-lg font-bold text-sys-900">{money(selectedShift.initialAmount)}</p>
-                  </div>
-                  <div className="bg-white p-3 rounded-xl border border-sys-100 shadow-sm">
-                     <p className="text-[10px] text-sys-400 font-bold uppercase">Ventas Sistema</p>
-                     <p className="text-lg font-bold text-sys-900">
-                        {/* Si tenemos stats, usamos eso, sino calculamos al vuelo o mostramos placeholder */}
-                        {money(selectedShift.stats?.expectedTotal || 0)}
-                     </p>
-                  </div>
-               </div>
-            </div>
-
-            <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-sys-50/30">
-               <h4 className="text-xs font-bold text-sys-400 uppercase tracking-widest ml-1">Línea de Tiempo</h4>
-               
-               <div className="relative pl-4 space-y-6">
-                  {/* Línea conectora */}
-                  <div className="absolute left-[19px] top-2 bottom-2 w-0.5 bg-sys-200"></div>
-
-                  {movements.map((mov) => {
-                    // Estilos según tipo
-                    let icon = DollarSign;
-                    let color = "text-sys-600 bg-white border-sys-300";
-                    
-                    if (mov.type === 'OPENING') { color = "text-blue-600 bg-blue-50 border-blue-200"; }
-                    if (mov.type === 'WITHDRAWAL') { icon = TrendingDown; color = "text-red-600 bg-red-50 border-red-200"; }
-                    if (mov.type === 'DEPOSIT') { icon = TrendingUp; color = "text-green-600 bg-green-50 border-green-200"; }
-                    if (mov.type === 'CLOSING') { color = "text-purple-600 bg-purple-50 border-purple-200"; }
-
-                    return (
-                      <div key={mov.id} className="relative flex gap-3">
-                         <div className={cn("relative z-10 w-10 h-10 rounded-full border-2 flex items-center justify-center shadow-sm shrink-0", color)}>
-                            {React.createElement(icon, {size: 16})}
-                         </div>
-                         <div className="flex-1 bg-white p-3 rounded-xl border border-sys-200 shadow-sm">
-                            <div className="flex justify-between items-start">
-                               <p className="text-xs font-bold text-sys-800">{mov.description || mov.type}</p>
-                               <span className="text-[10px] text-sys-400 font-mono">{time(mov.date)}</span>
-                            </div>
-                            <div className="mt-1 flex justify-between items-end">
-                               <p className="text-[10px] text-sys-500">Por: <span className="font-medium">{mov.userId === 'u_admin' ? 'Gerente' : 'Cajero'}</span></p>
-                               {mov.amount && (
-                                 <p className={cn("font-bold text-sm", mov.type === 'WITHDRAWAL' ? 'text-red-600' : 'text-green-600')}>
-                                    {mov.type === 'WITHDRAWAL' ? '-' : '+'}{money(Math.abs(mov.amount))}
-                                 </p>
-                               )}
-                            </div>
-                         </div>
-                      </div>
-                    );
-                  })}
-               </div>
-            </div>
-          </>
-        ) : (
-          <div className="h-full flex flex-col items-center justify-center text-sys-400 p-8 text-center">
-             <div className="w-20 h-20 bg-sys-50 rounded-full flex items-center justify-center mb-4">
-                <TrendingUp size={32} className="opacity-20" />
-             </div>
-             <p className="font-medium">Selecciona un turno</p>
-             <p className="text-sm opacity-60 mt-2">Verás el desglose completo de movimientos y auditoría.</p>
+      {/* Header */}
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-4">
+        <div>
+          <div className="flex items-center gap-2 mb-1">
+             <span className="bg-green-100 text-green-700 px-2 py-0.5 rounded text-[10px] font-bold uppercase border border-green-200 flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse"></span> Turno Activo
+             </span>
+             <span className="text-xs text-sys-400 font-mono">ID: {shift.id.slice(-6)}</span>
           </div>
-        )}
+          <h2 className="text-2xl font-bold text-sys-900">Control de Caja</h2>
+          <p className="text-sys-500 text-sm">Responsable: {shift.userId}</p>
+        </div>
+        <Button 
+            onClick={() => setIsClosingModalOpen(true)}
+            className="bg-sys-900 hover:bg-black text-white shadow-lg border border-sys-700"
+        >
+            <Lock size={18} className="mr-2" /> Realizar Cierre Z
+        </Button>
       </div>
+
+      {/* KPI Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          
+          <Card className="bg-gradient-to-br from-sys-800 to-sys-900 text-white border-none shadow-lg">
+              <div className="flex items-center gap-2 mb-1 opacity-80">
+                  <DollarSign size={14}/>
+                  <p className="text-xs uppercase font-bold">Efectivo Sistema</p>
+              </div>
+              <p className="text-3xl font-black tracking-tight">$ {balance.totalCash.toLocaleString()}</p>
+              <p className="text-[10px] opacity-60 mt-1">Debería haber en cajón</p>
+          </Card>
+          
+          <Card className="bg-white border border-sys-200">
+              <div className="flex items-center gap-2 mb-1 text-sys-500">
+                  <CreditCard size={14}/>
+                  <p className="text-xs uppercase font-bold">Total Digital</p>
+              </div>
+              <p className="text-3xl font-black text-sys-900 tracking-tight">$ {balance.totalDigital.toLocaleString()}</p>
+              <p className="text-[10px] text-sys-400 mt-1">MP + Tarjetas + Transf.</p>
+          </Card>
+
+          <Card className="bg-green-50 border-green-100">
+              <p className="text-xs text-green-700 uppercase font-bold mb-2 flex items-center gap-1"><ArrowDownLeft size={14}/> Ingresos (Efectivo)</p>
+              <div className="space-y-1">
+                  <div className="flex justify-between text-sm">
+                      <span className="text-green-800">Ventas</span>
+                      <span className="font-bold text-green-900">$ {balance.salesCash.toLocaleString()}</span>
+                  </div>
+                  <div className="flex justify-between text-sm border-t border-green-200 pt-1">
+                      <span className="text-green-800">Cobranzas</span>
+                      <span className="font-bold text-green-900">$ {balance.collections.toLocaleString()}</span>
+                  </div>
+              </div>
+          </Card>
+
+          <Card className="bg-red-50 border-red-100">
+              <p className="text-xs text-red-700 uppercase font-bold mb-2 flex items-center gap-1"><ArrowUpRight size={14}/> Egresos (Caja)</p>
+              <div className="flex justify-between items-end h-full pb-1">
+                  <span className="text-sm text-red-800">Gastos / Retiros</span>
+                  <span className="text-2xl font-bold text-red-900">$ {balance.withdrawals.toLocaleString()}</span>
+              </div>
+          </Card>
+      </div>
+
+      {/* Tabla de Movimientos */}
+      <Card className="p-0 overflow-hidden border border-sys-200 shadow-sm">
+          <div className="p-4 border-b border-sys-100 bg-sys-50 flex justify-between items-center">
+              <h3 className="font-bold text-sys-800 flex items-center gap-2">
+                  <FileText size={18} className="text-sys-400"/>
+                  Auditoría de Movimientos
+              </h3>
+              <span className="text-xs text-sys-500 bg-white px-2 py-1 rounded border font-mono">
+                  {balance.movements.length} regs
+              </span>
+          </div>
+          <div className="overflow-x-auto max-h-[400px]">
+              <table className="w-full text-left text-sm">
+                  <thead className="bg-white text-sys-500 text-xs uppercase font-semibold sticky top-0 z-10 shadow-sm">
+                      <tr>
+                          <th className="p-3 pl-4">Hora</th>
+                          <th className="p-3">Concepto</th>
+                          <th className="p-3">Método</th>
+                          <th className="p-3 text-right">Entrada</th>
+                          <th className="p-3 text-right pr-4">Salida</th>
+                      </tr>
+                  </thead>
+                  <tbody className="divide-y divide-sys-100">
+                      {/* Fondo Inicial */}
+                      <tr className="bg-sys-50/50">
+                          <td className="p-3 pl-4 font-mono text-sys-400">{new Date(shift.openedAt).toLocaleTimeString()}</td>
+                          <td className="p-3 font-bold text-sys-700">Fondo Inicial</td>
+                          <td className="p-3 text-xs uppercase text-sys-500">Inicio</td>
+                          <td className="p-3 text-right font-mono text-green-600 font-bold">$ {balance.initialAmount.toLocaleString()}</td>
+                          <td className="p-3 text-right font-mono text-sys-300 pr-4">-</td>
+                      </tr>
+
+                      {/* Movimientos */}
+                      {balance.movements.map(m => (
+                          <tr key={m.id || Math.random()} className="hover:bg-sys-50 transition-colors">
+                              <td className="p-3 pl-4 font-mono text-sys-600">{new Date(m.date).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</td>
+                              <td className="p-3">
+                                  <p className="font-medium text-sys-800">{m.description}</p>
+                                  {m.referenceId && <p className="text-[10px] text-sys-400 font-mono">Ref: {m.referenceId.slice(-6)}</p>}
+                              </td>
+                              <td className="p-3">
+                                  <span className={cn("px-2 py-0.5 rounded text-[10px] uppercase font-bold border", 
+                                      m.method === 'cash' ? "bg-green-50 text-green-700 border-green-100" : 
+                                      "bg-blue-50 text-blue-700 border-blue-100")}>
+                                      {m.method}
+                                  </span>
+                              </td>
+                              <td className="p-3 text-right font-mono font-medium text-green-600">
+                                  {m.type === 'DEPOSIT' ? `$ ${m.amount.toLocaleString()}` : '-'}
+                              </td>
+                              <td className="p-3 text-right font-mono font-medium text-red-600 pr-4">
+                                  {m.type === 'WITHDRAWAL' ? `$ ${m.amount.toLocaleString()}` : '-'}
+                              </td>
+                          </tr>
+                      ))}
+                  </tbody>
+              </table>
+          </div>
+      </Card>
+
+      <CashClosingModal 
+        isOpen={isClosingModalOpen}
+        onClose={() => setIsClosingModalOpen(false)}
+        systemTotals={{ 
+            totalCash: balance.totalCash, 
+            totalDigital: balance.totalDigital 
+        }} 
+        onConfirm={handleCloseConfirm}
+      />
+
     </div>
   );
 };

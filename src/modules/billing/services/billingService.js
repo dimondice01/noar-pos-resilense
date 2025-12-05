@@ -1,5 +1,5 @@
 // Apuntamos a la misma URL de tu backend (Ajusta si estás en producción o local)
-const API_URL = 'http://127.0.0.1:5001/noar-pos-prod/us-central1/api'; 
+const API_URL = 'https://us-central1-noar-pos-prod.cloudfunctions.net/api'; 
 // (Recuerda poner tu Project ID correcto en la URL de arriba ☝️)
 
 export const billingService = {

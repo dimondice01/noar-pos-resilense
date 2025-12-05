@@ -2,18 +2,21 @@ import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { 
   Search, Trash2, ShoppingCart, PackageOpen, 
   Keyboard, Barcode, User, Tag, PauseCircle, 
-  RotateCcw, DollarSign 
+  RotateCcw, DollarSign, ChevronRight 
 } from 'lucide-react';
 
 // Repositorios y Servicios
 import { productRepository } from '../../inventory/repositories/productRepository';
 import { salesRepository } from '../../sales/repositories/salesRepository';
 import { billingService } from '../../billing/services/billingService';
+import { cashRepository } from '../../cash/repositories/cashRepository';
+import { clientRepository } from '../../clients/repositories/clientRepository';
 
 // Componentes del POS
 import { ProductCard } from '../components/ProductCard';
 import { QuantityModal } from '../components/QuantityModal';
 import { PaymentModal } from '../components/PaymentModal';
+import { ClientSelectionModal } from '../components/ClientSelectionModal'; 
 
 // Componente del Ticket
 import { TicketModal } from '../../sales/components/TicketModal';
@@ -32,25 +35,20 @@ export const PosPage = () => {
   const [products, setProducts] = useState([]);
   const [searchTerm, setSearchTerm] = useState('');
   
-  // Datos de la Venta Actual
-  const [client, setClient] = useState({ name: 'Consumidor Final', doc: '0' });
-  const [discount, setDiscount] = useState(0); // Porcentaje
+  const [client, setClient] = useState(null); 
+  const [discount, setDiscount] = useState(0); 
 
-  // Refs para control de foco (Scanner "Greedy")
   const searchInputRef = useRef(null);
   
-  // Control de Modales
   const [selectedProduct, setSelectedProduct] = useState(null); 
-  const [isPaymentOpen, setIsPaymentOpen] = useState(false);    
+  const [isPaymentOpen, setIsPaymentOpen] = useState(false);
+  const [isClientSelectorOpen, setIsClientSelectorOpen] = useState(false);
   
-  // Control de Flujo
   const [isProcessingSale, setIsProcessingSale] = useState(false);
   const [lastSaleTicket, setLastSaleTicket] = useState(null);      
   
-  // Estado Global
   const { cart, addItem, removeItem, getTotal, clearCart } = useCartStore();
 
-  // Total Calculado (con descuento)
   const subtotal = getTotal();
   const totalFinal = subtotal * (1 - discount / 100);
 
@@ -69,10 +67,8 @@ export const PosPage = () => {
     loadProducts();
   }, []);
 
-  // Mantener foco en el escáner (Scanner Trap)
   const keepFocus = () => {
-    if (!isPaymentOpen && !selectedProduct && !lastSaleTicket) {
-      // Pequeño delay para permitir clicks voluntarios en otros lados si es necesario
+    if (!isPaymentOpen && !selectedProduct && !lastSaleTicket && !isClientSelectorOpen) {
       setTimeout(() => {
         if (document.activeElement?.tagName !== 'INPUT' && document.activeElement?.tagName !== 'BUTTON') {
            searchInputRef.current?.focus();
@@ -90,31 +86,24 @@ export const PosPage = () => {
     p.code.includes(searchTerm)
   );
 
-  // Acción: Seleccionar producto (Abre modal cantidad)
   const handleSelectProduct = useCallback((product) => {
     if (!product) return;
     setSelectedProduct(product);
-    setSearchTerm(''); // Limpiar para el siguiente escaneo
+    setSearchTerm(''); 
   }, []);
 
-  // Acción: Detectar "Enter" en el input (Simulación de Escáner)
   const handleKeyDownInput = (e) => {
     if (e.key === 'Enter') {
       e.preventDefault();
-      
-      // 1. Buscar coincidencia EXACTA (Código de barras)
       const exactMatch = products.find(p => p.code === searchTerm.trim());
-      
       if (exactMatch) {
         handleSelectProduct(exactMatch);
       } else if (filteredProducts.length === 1) {
-        // 2. Si solo hay un resultado en la búsqueda por nombre, seleccionarlo
         handleSelectProduct(filteredProducts[0]);
       }
     }
   };
 
-  // Confirmar cantidad y agregar al carrito
   const handleQuantityConfirm = (product, quantity, price) => {
     addItem(product, quantity, price);
     setSelectedProduct(null);
@@ -126,13 +115,8 @@ export const PosPage = () => {
     setTimeout(() => searchInputRef.current?.focus(), 100);
   };
 
-  // Acciones Adicionales (F-Keys)
-  const handleChangeClient = () => {
-    const doc = prompt("Ingrese CUIT/DNI del Cliente (0 para Consumidor Final):", client.doc);
-    if (doc !== null) {
-        // Aquí podrías buscar en tu base de clientes
-        setClient({ name: doc === '0' ? 'Consumidor Final' : `Cliente ${doc}`, doc });
-    }
+  const handleOpenClientSelector = () => {
+    setIsClientSelectorOpen(true);
   };
 
   const handleDiscount = () => {
@@ -145,35 +129,31 @@ export const PosPage = () => {
   const handleSuspend = () => {
       if (cart.length === 0) return;
       if (confirm("¿Suspender venta actual y limpiar carrito?")) {
-          // Aquí guardarías en una lista de "Suspendidas" en IDB
-          alert("Venta suspendida (Funcionalidad Mock)");
           clearCart();
-          setClient({ name: 'Consumidor Final', doc: '0' });
+          setClient(null);
           setDiscount(0);
       }
   };
 
-  // ==========================================
-  // ATAJOS DE TECLADO GLOBAL (F1 - F12)
-  // ==========================================
   useEffect(() => {
     const handleGlobalKeys = (e) => {
-      if (isProcessingSale) return;
+      if (isProcessingSale || isClientSelectorOpen) return;
 
       switch(e.key) {
         case 'F2': e.preventDefault(); searchInputRef.current?.focus(); break;
-        case 'F3': e.preventDefault(); handleChangeClient(); break;
-        case 'F4': // Limpiar
+        case 'F3': e.preventDefault(); handleOpenClientSelector(); break;
+        case 'F4': 
           e.preventDefault();
           if (cart.length > 0 && confirm('¿Vaciar carrito actual?')) {
             clearCart();
             setDiscount(0);
+            setClient(null);
             searchInputRef.current?.focus();
           }
           break;
         case 'F6': e.preventDefault(); handleDiscount(); break;
         case 'F8': e.preventDefault(); handleSuspend(); break;
-        case 'F12': // Cobrar
+        case 'F12': 
           e.preventDefault();
           if (cart.length > 0 && !selectedProduct && !isPaymentOpen) {
             setIsPaymentOpen(true);
@@ -187,23 +167,50 @@ export const PosPage = () => {
 
     window.addEventListener('keydown', handleGlobalKeys);
     return () => window.removeEventListener('keydown', handleGlobalKeys);
-  }, [cart, isProcessingSale, selectedProduct, isPaymentOpen, clearCart, client, discount]);
+  }, [cart, isProcessingSale, selectedProduct, isPaymentOpen, clearCart, client, discount, isClientSelectorOpen]);
 
   // ==========================================
-  // PROCESAMIENTO DE VENTA
+  // PROCESAMIENTO DE VENTA (CORE FINANCIERO)
   // ==========================================
   const handlePaymentConfirm = async (paymentData) => {
+    // paymentData: { method, totalSale, amountPaid, amountDebt, withAfip }
     setIsProcessingSale(true);
+    
     try {
-      let afipData = null;
+      // 1. VALIDACIÓN DE CAJA
+      if (paymentData.amountPaid > 0) {
+          const shift = await cashRepository.getCurrentShift();
+          if (!shift) {
+              alert("⛔ BLOQUEO DE SEGURIDAD:\nNo hay una caja abierta. Debe abrir turno para recibir dinero.");
+              setIsProcessingSale(false);
+              return;
+          }
+      }
 
+      // 2. PREPARAR DATOS DEL CLIENTE
+      const saleClient = client ? {
+          id: client.id,
+          name: client.name,
+          docType: client.docType,
+          docNumber: client.docNumber,
+          fiscalCondition: client.fiscalCondition,
+          address: client.address
+      } : {
+          name: "CONSUMIDOR FINAL",
+          docType: "99",
+          docNumber: "0",
+          fiscalCondition: "CONSUMIDOR_FINAL"
+      };
+
+      // 3. FACTURACIÓN AFIP
+      let afipData = null;
       if (paymentData.withAfip) {
         try {
-          const tempSaleForAfip = {
-            total: totalFinal,
-            client: { docNumber: client.doc } 
-          };
-          const factura = await billingService.emitirFactura(tempSaleForAfip);
+          const factura = await billingService.emitirFactura({
+            total: paymentData.totalSale,
+            client: saleClient
+          });
+          
           afipData = {
             status: 'APPROVED',
             cae: factura.cae,
@@ -214,45 +221,81 @@ export const PosPage = () => {
           };
         } catch (afipError) {
           console.error("Fallo AFIP:", afipError);
-          alert("⚠️ Alerta: AFIP no respondió. Se guardará como pendiente.");
+          alert("⚠️ Alerta AFIP: No respondió o rechazó.\nSe guardará la venta como PENDIENTE DE FACTURACIÓN.");
           afipData = { status: 'PENDING', error: afipError.message };
         }
       }
 
+      // 4. GUARDAR VENTA LOCALMENTE (🔥 CORREGIDO ESTRUCTURA PAYMENT)
       const saleData = {
         items: cart,
-        total: totalFinal,
+        total: paymentData.totalSale,
         subtotal: subtotal,
         discount: discount,
-        client: client,
-        payment: paymentData,
+        
+        // ⚠️ CORRECCIÓN: Estructuramos el pago como objeto para que TicketModal lo lea bien
+        payment: {
+            method: paymentData.method,
+            amountPaid: paymentData.amountPaid, // Lo que pagó
+            amountDebt: paymentData.amountDebt, // Lo que debe
+            total: paymentData.totalSale        // Total operación
+        },
+
+        client: saleClient,
         itemCount: cart.length,
         date: new Date(),
         afip: afipData || { status: 'SKIPPED' } 
       };
 
       const savedSale = await salesRepository.createSale(saleData);
-      console.log("✅ Venta Finalizada:", savedSale);
 
-      // Reset
+      // 5. MOVIMIENTOS FINANCIEROS
+      const promises = [];
+
+      // A) Ingreso de Caja
+      if (paymentData.amountPaid > 0) {
+          promises.push(
+              cashRepository.registerIncome({
+                  amount: paymentData.amountPaid,
+                  description: `Venta #${savedSale.localId.slice(-6)}`,
+                  referenceId: savedSale.localId,
+                  method: paymentData.method
+              })
+          );
+      }
+
+      // B) Registro de Deuda
+      if (paymentData.amountDebt > 0 && client?.id) {
+          promises.push(
+              clientRepository.registerMovement(
+                  client.id,
+                  'SALE_DEBT',
+                  paymentData.amountDebt,
+                  `Saldo Venta #${savedSale.localId.slice(-6)}`,
+                  savedSale.localId
+              )
+          );
+      }
+
+      await Promise.all(promises);
+
+      // 6. FINALIZACIÓN
+      console.log("✅ Venta y Movimientos registrados con éxito");
+      
       clearCart();
       setDiscount(0);
-      setClient({ name: 'Consumidor Final', doc: '0' });
+      setClient(null);
       setIsPaymentOpen(false);
       setLastSaleTicket(savedSale);
 
     } catch (error) {
       console.error("❌ Error Crítico:", error);
-      alert("Error crítico al guardar la venta.");
+      alert(`Error crítico al procesar la venta: ${error.message}`);
     } finally {
       setIsProcessingSale(false);
-      setTimeout(() => searchInputRef.current?.focus(), 500);
     }
   };
 
-  // ==========================================
-  // RENDERIZADO
-  // ==========================================
   return (
     <div className="h-[calc(100vh-4rem)] flex gap-6 relative flex-col pb-12" onClick={keepFocus}>
       
@@ -262,7 +305,6 @@ export const PosPage = () => {
         {/* === IZQUIERDA: CATÁLOGO === */}
         <div className="flex-1 flex flex-col min-w-0">
           
-          {/* Barra de Búsqueda / Escáner */}
           <div className="mb-4 relative group shrink-0">
             <div className="absolute left-4 top-1/2 -translate-y-1/2 text-sys-400 group-focus-within:text-brand transition-colors">
               <Barcode className="w-6 h-6" />
@@ -275,7 +317,6 @@ export const PosPage = () => {
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               onKeyDown={handleKeyDownInput}
-              onBlur={keepFocus} // Auto-focus trap
               autoFocus
               autoComplete="off"
             />
@@ -286,7 +327,6 @@ export const PosPage = () => {
             </div>
           </div>
 
-          {/* Grilla de Productos */}
           <div className="flex-1 overflow-y-auto pr-2 no-scrollbar pb-4">
             {filteredProducts.length > 0 ? (
               <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
@@ -311,38 +351,51 @@ export const PosPage = () => {
         {/* === DERECHA: TICKET === */}
         <div className="w-[420px] bg-white rounded-2xl shadow-soft border border-sys-200 flex flex-col overflow-hidden shrink-0 h-full relative z-10">
           
-          {/* Header Ticket: Cliente y Datos */}
-          <div className="bg-sys-50 border-b border-sys-100 p-4 shrink-0">
-             <div className="flex justify-between items-center mb-2">
-                <h2 className="font-bold text-sys-800 flex items-center gap-2">
-                  <ShoppingCart size={20} className="text-brand" /> Ticket Actual
-                </h2>
-                <span className="text-[10px] font-mono text-sys-400 bg-white px-1.5 py-0.5 rounded border">
-                   {cart.length} ITEMS
-                </span>
-             </div>
-             
-             {/* Cliente Selector */}
+          <div className="bg-sys-50/50 border-b border-sys-100 p-3 shrink-0">
              <button 
-                onClick={handleChangeClient}
-                className="w-full flex items-center justify-between bg-white border border-sys-200 rounded-lg p-2 text-xs hover:border-brand hover:text-brand transition-colors group"
-             >
-                <div className="flex items-center gap-2 text-sys-600 group-hover:text-brand">
-                   <User size={14} />
-                   <span className="font-medium truncate max-w-[200px]">{client.name}</span>
+                onClick={handleOpenClientSelector}
+                className={cn(
+                    "w-full flex items-center justify-between p-3 rounded-xl transition-all border group",
+                    client 
+                        ? "bg-brand-light/20 border-brand/20 text-brand-hover" 
+                        : "bg-white border-sys-200 text-sys-500 hover:border-sys-300"
+                )}
+            >
+                <div className="flex items-center gap-3 overflow-hidden">
+                    <div className={cn(
+                        "w-9 h-9 rounded-full flex items-center justify-center shrink-0 transition-colors",
+                        client ? "bg-brand text-white" : "bg-sys-100 text-sys-400 group-hover:bg-sys-200"
+                    )}>
+                        <User size={18} />
+                    </div>
+                    <div className="flex flex-col items-start min-w-0">
+                        <span className="text-[10px] font-bold uppercase tracking-wider opacity-70">
+                            {client ? (client.docType === '80' ? 'Empresa / Resp. Insc.' : 'Cliente Final') : 'Cliente'}
+                        </span>
+                        <span className="text-sm font-bold truncate w-full text-left">
+                            {client ? client.name : "Consumidor Final"}
+                        </span>
+                    </div>
                 </div>
-                <span className="text-[10px] text-sys-400 bg-sys-50 px-1.5 rounded">F3</span>
-             </button>
+                <div className="flex items-center gap-2">
+                    <span className="text-[9px] font-mono bg-white/50 border px-1.5 rounded opacity-60">F3</span>
+                    <ChevronRight size={16} className="opacity-50" />
+                </div>
+            </button>
           </div>
 
-          {/* Lista Items */}
+          <div className="px-4 py-2 border-b border-sys-100 flex justify-between items-center bg-white text-xs text-sys-500">
+             <span className="font-medium flex gap-1"><ShoppingCart size={14}/> Carrito</span>
+             <span className="bg-sys-100 px-2 py-0.5 rounded-full font-mono">{cart.length} items</span>
+          </div>
+
           <div className="flex-1 overflow-y-auto p-2 space-y-1 bg-white">
             {cart.length === 0 ? (
               <div className="h-full flex flex-col items-center justify-center text-sys-300 gap-2">
                  <div className="w-20 h-20 bg-sys-50 rounded-full flex items-center justify-center">
                    <ShoppingCart size={32} className="opacity-50" />
                  </div>
-                 <p className="font-medium text-sm">Esperando productos...</p>
+                 <p className="font-medium text-sm">Carrito vacío</p>
               </div>
             ) : (
               cart.map((item) => (
@@ -369,9 +422,7 @@ export const PosPage = () => {
             )}
           </div>
 
-          {/* Totales y Acciones Rápidas */}
           <div className="bg-sys-50 border-t border-sys-200 shrink-0 z-10">
-            {/* Acciones Rápidas */}
             <div className="flex border-b border-sys-200 divide-x divide-sys-200">
                 <button onClick={handleDiscount} className="flex-1 py-2 text-[10px] font-bold text-sys-600 hover:bg-sys-100 flex flex-col items-center gap-1 transition-colors">
                     <Tag size={14} className="text-blue-500" /> {discount > 0 ? `${discount}% OFF` : 'Descuento (F6)'}
@@ -379,7 +430,7 @@ export const PosPage = () => {
                 <button onClick={handleSuspend} className="flex-1 py-2 text-[10px] font-bold text-sys-600 hover:bg-sys-100 flex flex-col items-center gap-1 transition-colors">
                     <PauseCircle size={14} className="text-orange-500" /> Suspender (F8)
                 </button>
-                <button onClick={() => { if(confirm('¿Borrar todo?')) { clearCart(); setDiscount(0); } }} className="flex-1 py-2 text-[10px] font-bold text-sys-600 hover:bg-red-50 hover:text-red-600 flex flex-col items-center gap-1 transition-colors">
+                <button onClick={() => { if(confirm('¿Borrar todo?')) { clearCart(); setDiscount(0); setClient(null); } }} className="flex-1 py-2 text-[10px] font-bold text-sys-600 hover:bg-red-50 hover:text-red-600 flex flex-col items-center gap-1 transition-colors">
                     <Trash2 size={14} /> Limpiar (F4)
                 </button>
             </div>
@@ -405,19 +456,19 @@ export const PosPage = () => {
                 </div>
                 
                 <Button 
-                className="w-full py-4 text-xl shadow-xl shadow-brand/20 active:scale-[0.99] transition-transform h-16 flex items-center justify-center gap-3"
-                disabled={cart.length === 0}
-                onClick={() => setIsPaymentOpen(true)}
+                  className="w-full py-4 text-xl shadow-xl shadow-brand/20 active:scale-[0.99] transition-transform h-16 flex items-center justify-center gap-3"
+                  disabled={cart.length === 0}
+                  onClick={() => setIsPaymentOpen(true)}
                 >
-                <span className="flex items-center gap-2"><DollarSign size={24} strokeWidth={2.5}/> COBRAR</span>
-                <span className="bg-white/20 px-2 py-0.5 rounded text-sm font-mono opacity-80 font-bold">F12</span>
+                  <span className="flex items-center gap-2"><DollarSign size={24} strokeWidth={2.5}/> COBRAR</span>
+                  <span className="bg-white/20 px-2 py-0.5 rounded text-sm font-mono opacity-80 font-bold">F12</span>
                 </Button>
             </div>
           </div>
         </div>
       </div>
 
-      {/* 2. BARRA DE COMANDOS (Docked Footer) */}
+      {/* 2. BARRA DE COMANDOS */}
       <div className="fixed bottom-0 left-0 right-0 md:left-64 h-10 bg-sys-900 flex items-center px-4 gap-6 text-[11px] font-medium text-sys-300 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.1)] z-50 overflow-x-auto no-scrollbar border-t border-sys-700">
          <div className="flex items-center gap-1.5 shrink-0"><Keyboard size={14} className="text-brand" /><span className="text-white font-bold tracking-wide">COMANDOS:</span></div>
          <div className="h-4 w-[1px] bg-sys-700 shrink-0"></div>
@@ -427,7 +478,6 @@ export const PosPage = () => {
          <div className="flex items-center gap-1 shrink-0"><span className="bg-sys-800 text-white px-1.5 rounded border border-sys-600 font-mono">F6</span> <span>Descuento</span></div>
          <div className="flex items-center gap-1 shrink-0"><span className="bg-sys-800 text-white px-1.5 rounded border border-sys-600 font-mono">F8</span> <span>Suspender</span></div>
          <div className="flex items-center gap-1 shrink-0"><span className="bg-brand text-white px-1.5 rounded border border-brand-hover font-mono font-bold">F12</span> <span className="text-white font-bold">COBRAR</span></div>
-         
          <div className="flex-1"></div>
          <div className="flex items-center gap-2 text-sys-500 shrink-0">
             <span className="w-2 h-2 rounded-full bg-green-500"></span>
@@ -435,7 +485,7 @@ export const PosPage = () => {
          </div>
       </div>
 
-      {/* MODALES Y OVERLAYS */}
+      {/* MODALES */}
       {isProcessingSale && (
         <div className="absolute inset-0 z-[80] bg-white/80 backdrop-blur-sm flex items-center justify-center rounded-2xl animate-in fade-in">
            <div className="flex flex-col items-center p-8">
@@ -456,7 +506,14 @@ export const PosPage = () => {
         isOpen={isPaymentOpen}
         onClose={() => setIsPaymentOpen(false)}
         total={totalFinal}
+        client={client} 
         onConfirm={handlePaymentConfirm}
+      />
+
+      <ClientSelectionModal 
+        isOpen={isClientSelectorOpen}
+        onClose={() => { setIsClientSelectorOpen(false); setTimeout(() => searchInputRef.current?.focus(), 100); }}
+        onSelect={(c) => setClient(c)}
       />
 
       <TicketModal 

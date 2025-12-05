@@ -1,12 +1,11 @@
-import React, { useEffect, useState } from 'react';
-import { Plus, Search, Edit2, Trash2, Package, Scale, AlertTriangle, ArrowUpRight, Filter, CheckSquare, Square, X, History, Trash } from 'lucide-react';
+import React, { useEffect, useState, useRef } from 'react';
+import { Plus, Search, Edit2, Trash2, Package, Scale, AlertTriangle, ArrowUpRight, Filter, CheckSquare, Square, X, History } from 'lucide-react';
 import { productRepository } from '../repositories/productRepository';
 import { masterRepository } from '../repositories/masterRepository';
 import { Card } from '../../../core/ui/Card';
 import { Button } from '../../../core/ui/Button';
 import { ProductModal } from '../components/ProductModal';
 import { MastersModal } from '../components/MastersModal';
-// 👇 IMPORTANTE: Importamos el Modal de Historial
 import { ProductHistoryModal } from '../components/ProductHistoryModal'; 
 import { cn } from '../../../core/utils/cn';
 
@@ -18,10 +17,13 @@ export const InventoryPage = () => {
   // Maestros
   const [masters, setMasters] = useState({ categories: [], brands: [], suppliers: [] });
   
-  // Filtros
+  // Filtros y Búsqueda
   const [searchTerm, setSearchTerm] = useState('');
   const [filters, setFilters] = useState({ category: '', brand: '', supplier: '' });
   
+  // Ref para el input de búsqueda (Scanner Focus)
+  const searchInputRef = useRef(null);
+
   // Selección
   const [selectedIds, setSelectedIds] = useState(new Set());
   
@@ -31,11 +33,15 @@ export const InventoryPage = () => {
   const [isBulkUpdateOpen, setIsBulkUpdateOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState(null);
   
-  // 🔥 ESTADO PARA EL HISTORIAL
+  // Estado para Historial
   const [historyProduct, setHistoryProduct] = useState(null); 
 
-  // Stats
-  const totalStockValuado = products.reduce((acc, p) => acc + (p.cost * p.stock), 0);
+  // ✅ CORRECCIÓN VALUACIÓN (Evita NaN)
+  const totalStockValuado = products.reduce((acc, p) => {
+      const costo = parseFloat(p.cost) || 0;
+      const stock = parseFloat(p.stock) || 0;
+      return acc + (costo * stock);
+  }, 0);
   
   // ===================== CARGA =====================
   const loadData = async () => {
@@ -61,10 +67,43 @@ export const InventoryPage = () => {
 
   useEffect(() => { loadData(); }, []);
 
+  // Recuperar foco al cerrar modales
+  useEffect(() => {
+      if (!isProductModalOpen && !isMastersModalOpen && !isBulkUpdateOpen && !historyProduct) {
+          setTimeout(() => searchInputRef.current?.focus(), 100);
+      }
+  }, [isProductModalOpen, isMastersModalOpen, isBulkUpdateOpen, historyProduct]);
+
+  // ===================== LÓGICA SCANNER (ENTER) =====================
+  const handleSearchKeyDown = (e) => {
+    if (e.key === 'Enter') {
+        const term = searchTerm.trim();
+        if (!term) return;
+
+        // 1. Buscar coincidencia EXACTA por código
+        const exactMatch = products.find(p => p.code === term);
+        
+        if (exactMatch) {
+            // ¡Producto encontrado! -> Abrir Edición
+            setEditingProduct(exactMatch);
+            setIsProductModalOpen(true);
+            setSearchTerm(''); 
+        } else {
+            // Alta Directa (Scanner Mode)
+            setEditingProduct({ 
+                code: term, 
+                name: '', cost: 0, price: 0, stock: 0 
+            });
+            setIsProductModalOpen(true);
+            setSearchTerm('');
+        }
+    }
+  };
+
   // ===================== FILTROS =====================
   const filteredProducts = products.filter(p => {
-    const matchesSearch = p.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
-                          p.code.includes(searchTerm);
+    const term = searchTerm.toLowerCase();
+    const matchesSearch = p.name.toLowerCase().includes(term) || p.code.includes(term);
     const matchesCat = filters.category ? p.category === filters.category : true;
     const matchesBrand = filters.brand ? p.brand === filters.brand : true;
     const matchesSupp = filters.supplier ? p.supplier === filters.supplier : true;
@@ -89,7 +128,7 @@ export const InventoryPage = () => {
 
   // ===================== ACCIONES =====================
   const handleSaveProduct = async (productData) => {
-    await productRepository.save(productData); // Esto genera historial
+    await productRepository.save(productData);
     loadData();
   };
 
@@ -100,7 +139,7 @@ export const InventoryPage = () => {
     }
   };
 
-  // ===================== AUMENTO MASIVO =====================
+  // ===================== AUMENTO MASIVO (Con Redondeo a $50) =====================
   const executeBulkUpdate = async (targetProducts, costPct, pricePct) => {
     if (targetProducts.length === 0) return alert("No hay productos seleccionados.");
     
@@ -110,13 +149,21 @@ export const InventoryPage = () => {
     try {
       const updates = targetProducts.map(p => {
           const newCost = p.cost * (1 + costPct / 100);
-          const newPrice = p.price * (1 + pricePct / 100);
+          
+          // Cálculo del precio teórico
+          let calculatedPrice = p.price * (1 + pricePct / 100);
+          
+          // 🔥 REDONDEO A 50 (Hacia arriba)
+          const newPrice = Math.ceil(calculatedPrice / 50) * 50;
+
+          // Recalcular markup para mantener coherencia
           const newMarkup = newCost > 0 ? ((newPrice - newCost) / newCost * 100).toFixed(2) : p.markup;
+          
           return { ...p, cost: newCost, price: newPrice, markup: newMarkup };
       });
 
       for (const p of updates) {
-        await productRepository.save(p); // Genera historial masivo
+        await productRepository.save(p);
       }
       
       alert(`✅ Éxito: ${updates.length} productos actualizados.`);
@@ -124,6 +171,7 @@ export const InventoryPage = () => {
       setIsBulkUpdateOpen(false);
       loadData();
     } catch (error) {
+      console.error(error);
       alert("Error al actualizar.");
     } finally {
       setLoading(false);
@@ -139,7 +187,7 @@ export const InventoryPage = () => {
         <div>
           <h2 className="text-2xl font-bold text-sys-900">Inventario</h2>
           <div className="flex gap-4 mt-2 text-xs text-sys-500">
-             <p>Valuación: <span className="font-bold text-sys-800">$ {totalStockValuado.toLocaleString('es-AR', {minimumFractionDigits: 0})}</span></p>
+             <p>Valuación Total (Costo): <span className="font-bold text-sys-800">$ {totalStockValuado.toLocaleString('es-AR', {minimumFractionDigits: 0})}</span></p>
              <p>Items: <span className="font-bold text-sys-800">{products.length}</span></p>
           </div>
         </div>
@@ -158,13 +206,19 @@ export const InventoryPage = () => {
 
       {/* Filtros */}
       <Card className="p-4 flex flex-col md:flex-row gap-4 items-center bg-white shadow-sm border border-sys-100">
-        <div className="relative w-full md:w-1/3">
-            <Search className="absolute left-3 top-2.5 text-sys-400" size={18} />
+        <div className="relative w-full md:w-1/3 group">
+            <Search className="absolute left-3 top-2.5 text-sys-400 group-focus-within:text-brand transition-colors" size={18} />
             <input 
-                type="text" placeholder="Buscar..." 
-                className="w-full pl-10 pr-4 py-2 rounded-lg border border-sys-200 bg-sys-50 focus:bg-white focus:border-brand outline-none transition-all text-sm"
-                value={searchTerm} onChange={e => setSearchTerm(e.target.value)}
+                ref={searchInputRef}
+                type="text" 
+                placeholder="Escanear código o buscar nombre..." 
+                className="w-full pl-10 pr-4 py-2 rounded-lg border border-sys-200 bg-sys-50 focus:bg-white focus:border-brand outline-none transition-all text-sm font-medium shadow-sm focus:shadow-md"
+                value={searchTerm} 
+                onChange={e => setSearchTerm(e.target.value)}
+                onKeyDown={handleSearchKeyDown} // Trigger Scanner
+                autoFocus
             />
+            <div className="absolute right-3 top-2.5 text-[10px] text-sys-400 font-mono hidden md:block">ENTER para Acción</div>
         </div>
         <div className="flex gap-2 w-full md:w-2/3 overflow-x-auto no-scrollbar">
             <select className="filter-select" value={filters.category} onChange={e => setFilters({...filters, category: e.target.value})}>
@@ -185,7 +239,7 @@ export const InventoryPage = () => {
         </div>
       </Card>
 
-      {/* Aviso Selección Manual */}
+      {/* Aviso Selección */}
       {selectedIds.size > 0 && (
         <div className="bg-brand-light/30 border border-brand/20 p-3 rounded-xl flex justify-between items-center text-sm text-brand-hover">
             <span>Has seleccionado <b>{selectedIds.size} productos</b> manualmente.</span>
@@ -246,16 +300,9 @@ export const InventoryPage = () => {
                     </td>
                     <td className="p-4 text-right">
                       <div className="flex justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                        
-                        {/* 🔥 EL OJO QUE TODO LO VE (Botón Historial) 🔥 */}
-                        <button 
-                            onClick={() => setHistoryProduct(p)} 
-                            className="action-btn text-blue-600 bg-blue-50/50 hover:bg-blue-100 border border-blue-200"
-                            title="Ver Historial de Movimientos"
-                        >
+                        <button onClick={() => setHistoryProduct(p)} className="action-btn text-blue-600 bg-blue-50/50 hover:bg-blue-100 border border-blue-200" title="Ver Historial">
                             <History size={16} />
                         </button>
-
                         <button onClick={() => { setEditingProduct(p); setIsProductModalOpen(true); }} className="action-btn text-brand bg-white border border-sys-200"><Edit2 size={16} /></button>
                         <button onClick={() => handleDelete(p.id)} className="action-btn text-red-500 bg-white border border-sys-200"><Trash2 size={16} /></button>
                       </div>
@@ -272,21 +319,19 @@ export const InventoryPage = () => {
       <ProductModal isOpen={isProductModalOpen} onClose={() => setIsProductModalOpen(false)} productToEdit={editingProduct} onSave={handleSaveProduct} />
       <MastersModal isOpen={isMastersModalOpen} onClose={() => setIsMastersModalOpen(false)} />
       
-      {/* 🔥 MODAL DE HISTORIAL */}
       <ProductHistoryModal 
-         isOpen={!!historyProduct} 
-         onClose={() => setHistoryProduct(null)} 
-         product={historyProduct} 
+          isOpen={!!historyProduct} 
+          onClose={() => setHistoryProduct(null)} 
+          product={historyProduct} 
       />
       
-      {/* Modal Masivo */}
       <BulkUpdateModal 
-         isOpen={isBulkUpdateOpen} 
-         onClose={() => setIsBulkUpdateOpen(false)} 
-         onConfirm={executeBulkUpdate}
-         allProducts={products}
-         masters={masters}
-         manualSelectionIds={selectedIds}
+          isOpen={isBulkUpdateOpen} 
+          onClose={() => setIsBulkUpdateOpen(false)} 
+          onConfirm={executeBulkUpdate}
+          allProducts={products}
+          masters={masters}
+          manualSelectionIds={selectedIds}
       />
 
       <style>{`
@@ -352,7 +397,7 @@ const BulkUpdateModal = ({ isOpen, onClose, onConfirm, allProducts, masters, man
                 )}
              </div>
 
-             {/* LISTA DE AFECTADOS MEJORADA */}
+             {/* LISTA DE AFECTADOS */}
              <div className="flex-1 overflow-y-auto custom-scrollbar border border-sys-200 rounded-xl bg-sys-50 mb-4 relative">
                 {targetList.length === 0 ? (
                     <div className="h-full flex flex-col items-center justify-center text-sys-400 p-4 text-center"><Package size={32} className="mb-2 opacity-50"/><p className="text-xs">Sin productos afectados.</p></div>
@@ -364,13 +409,7 @@ const BulkUpdateModal = ({ isOpen, onClose, onConfirm, allProducts, masters, man
                         {targetList.map(p => (
                             <div key={p.id} className="p-3 flex justify-between items-center group hover:bg-white transition-colors bg-sys-50/50">
                                 <div className="flex items-center gap-3 overflow-hidden">
-                                    <button 
-                                        onClick={() => removeProduct(p.id)}
-                                        className="p-1.5 bg-white border border-sys-200 rounded-md text-sys-400 hover:text-red-500 hover:border-red-200 transition-colors shadow-sm"
-                                        title="Excluir este producto"
-                                    >
-                                        <X size={14} />
-                                    </button>
+                                    <button onClick={() => removeProduct(p.id)} className="p-1.5 bg-white border border-sys-200 rounded-md text-sys-400 hover:text-red-500 transition-colors shadow-sm"><X size={14} /></button>
                                     <div className="truncate">
                                         <p className="text-sm font-medium text-sys-800 truncate">{p.name}</p>
                                         <p className="text-[10px] text-sys-400">{p.code}</p>

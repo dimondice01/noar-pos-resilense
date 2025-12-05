@@ -87,7 +87,7 @@ app.post("/create-order", async (req, res) => {
 // ==================================================================
 app.post("/create-clover-order", async (req, res) => {
   try {
-    const { total, terminalId } = req.body;
+    const { total } = req.body;
     const amount = Number(Number(total).toFixed(2)); // Redondeo aquí también por seguridad
     
     logger.info(`☘️ (Clover) Iniciando cobro por $${amount}...`);
@@ -114,20 +114,24 @@ app.post("/create-clover-order", async (req, res) => {
 const afip = require("./afip");
 
 // ==================================================================
-// 🚀 ENDPOINT 3: FACTURACIÓN AFIP
+// 🚀 ENDPOINT 3: FACTURACIÓN AFIP (Actualizado para Clientes)
 // ==================================================================
 app.post("/create-invoice", async (req, res) => {
   try {
-    const { total, docNro } = req.body;
-    const amount = Number(Number(total).toFixed(2)); // Redondeo aquí también
+    // 🔥 Ahora extraemos 'client' del body (enviado desde PosPage.jsx)
+    const { total, client } = req.body; 
+    
+    const amount = Number(Number(total).toFixed(2));
 
-    logger.info(`📠 Iniciando Facturación AFIP por $${amount}...`);
+    // Si por alguna razón no llega cliente, fallback a Consumidor Final
+    const datosCliente = client || { docNumber: "0", fiscalCondition: "CONSUMIDOR_FINAL" };
 
-    // Llamada al Módulo AFIP
-    const factura = await afip.emitirFactura(amount, docNro || "0");
+    logger.info(`📠 AFIP: Solicitud Factura por $${amount} para ${datosCliente.docNumber}`);
+
+    // Pasamos el objeto cliente completo al módulo AFIP
+    const factura = await afip.emitirFactura(amount, datosCliente);
 
     logger.info(`✅ Factura Autorizada: CAE ${factura.cae}`);
-
     res.status(200).json(factura);
 
   } catch (error) {

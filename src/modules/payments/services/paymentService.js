@@ -1,7 +1,7 @@
 import { salesRepository } from '../../sales/repositories/salesRepository';
 
 // URL de tu Backend (Nube o Local)
-const API_URL = 'http://127.0.0.1:5001/noar-pos-prod/us-central1/api'; // ⚠️ Ajusta tu ID
+const API_URL = 'https://us-central1-noar-pos-prod.cloudfunctions.net/api'; // ⚠️ Ajusta tu ID
 
 export const paymentService = {
   

@@ -1,6 +1,6 @@
 /**
  * MÓDULO AFIP - NOAR POS
- * Adaptado de tu versión Golden Master
+ * Corrección: Mapeo dinámico de Condición Fiscal del Cliente
  */
 const admin = require("firebase-admin");
 const soap = require("soap");
@@ -9,42 +9,39 @@ const forge = require("node-forge");
 const fs = require("fs");
 const path = require("path");
 
-// Inicializar Firebase Admin si no existe (Singleton)
 if (!admin.apps.length) {
   admin.initializeApp();
 }
 const db = admin.firestore();
 
-// ==============================================================================
-// ⚙️ CONFIGURACIÓN (Ajusta tus datos aquí)
-// ==============================================================================
+// ⚙️ CONFIGURACIÓN
 const CONFIG = {
-  CUIT: "27278612932", // Tu CUIT
-  PTO_VTA: 5,          // Tu Punto de Venta
-  CONDICION: "MONOTRIBUTO", // 'MONOTRIBUTO' o 'RESPONSABLE_INSCRIPTO'
-  
-  // Rutas de Archivos
+  CUIT: "27278612932", 
+  PTO_VTA: 5,
+  CONDICION: "MONOTRIBUTO",
   CERT: path.join(__dirname, "keys", "certificado.crt"),
   KEY: path.join(__dirname, "keys", "clave.key"),
-  
-  // AFIP URLs (Homologación = Testing / Producción = Real)
-  // CAMBIAR A PRODUCCIÓN CUANDO ESTÉS LISTO
   WSDL: "https://wswhomo.afip.gov.ar/wsfev1/service.asmx?WSDL", 
   WSAA: "https://wsaahomo.afip.gov.ar/ws/services/LoginCms?WSDL"
 };
 
 const TA_REF = db.doc("config/afip_token");
 
-// ==============================================================================
-// 🔐 LÓGICA DE AUTENTICACIÓN (WSAA)
-// ==============================================================================
+// --- UTILS: MAPEO DE CONDICIONES FISCALES ---
+const CONDICION_IVA = {
+  'RESPONSABLE_INSCRIPTO': 1,
+  'MONOTRIBUTO': 6,
+  'CONSUMIDOR_FINAL': 5,
+  'EXENTO': 4,
+  'NO_RESPONSABLE': 3,
+};
 
+// ... [Lógica de getValidToken y generateNewToken SE MANTIENE IGUAL] ...
 async function getValidToken() {
   const doc = await TA_REF.get();
   if (doc.exists) {
     const data = doc.data();
     const expires = new Date(data.expirationTime);
-    // Si faltan más de 10 min para vencer, sirve
     if (expires > new Date(Date.now() + 10 * 60000)) {
       return data;
     }
@@ -54,17 +51,14 @@ async function getValidToken() {
 
 async function generateNewToken() {
   console.log("🔐 AFIP: Generando nuevo Ticket de Acceso...");
-  
   if (!fs.existsSync(CONFIG.CERT) || !fs.existsSync(CONFIG.KEY)) {
-    throw new Error("Faltan archivos .crt o .key en la carpeta functions/keys/");
+    throw new Error("Faltan archivos .crt o .key");
   }
-
   const certPem = fs.readFileSync(CONFIG.CERT, "utf8");
   const keyPem = fs.readFileSync(CONFIG.KEY, "utf8");
   const cert = forge.pki.certificateFromPem(certPem);
   const key = forge.pki.privateKeyFromPem(keyPem);
 
-  // XML de Solicitud (TRA)
   const now = new Date();
   const uniqueId = Math.floor(now.getTime() / 1000);
   const genTime = new Date(now.getTime() - 600000).toISOString();
@@ -80,7 +74,6 @@ async function generateNewToken() {
     .ele("service", "wsfe")
     .end();
 
-  // Firma CMS (PKCS#7)
   const p7 = forge.pkcs7.createSignedData();
   p7.content = forge.util.createBuffer(TRA, "utf8");
   p7.addCertificate(cert);
@@ -88,12 +81,9 @@ async function generateNewToken() {
   p7.sign();
   const cms = forge.util.encode64(forge.asn1.toDer(p7.toAsn1()).getBytes());
 
-  // Llamada a WSAA
   const client = await soap.createClientAsync(CONFIG.WSAA);
   const [result] = await client.loginCmsAsync({ in0: cms });
   const xml = result.loginCmsReturn;
-
-  // Extracción
   const token = xml.match(/<token>(.*?)<\/token>/)[1];
   const sign = xml.match(/<sign>(.*?)<\/sign>/)[1];
 
@@ -102,10 +92,7 @@ async function generateNewToken() {
   return authData;
 }
 
-// ==============================================================================
-// 📠 LÓGICA DE FACTURACIÓN (WSFEv1)
-// ==============================================================================
-
+// ... [Lógica de getUltimoComprobante SE MANTIENE IGUAL] ...
 async function getUltimoComprobante(client, auth, tipoCbte) {
   const [res] = await client.FECompUltimoAutorizadoAsync({
     Auth: { Token: auth.token, Sign: auth.sign, Cuit: CONFIG.CUIT },
@@ -117,27 +104,38 @@ async function getUltimoComprobante(client, auth, tipoCbte) {
 
 /**
  * Función Principal: Emitir Factura
- * @param {number} total - Monto total de la venta
- * @param {string} docNro - DNI o CUIT del cliente (0 para consumidor final)
+ * @param {number} total - Monto total
+ * @param {object} cliente - Objeto con { docNumber, docType, fiscalCondition }
  */
-async function emitirFactura(total, docNro = "0") {
+async function emitirFactura(total, cliente = {}) {
   const auth = await getValidToken();
-  const client = await soap.createClientAsync(CONFIG.WSDL);
+  const clientSoap = await soap.createClientAsync(CONFIG.WSDL);
 
-  // 1. Configuración de Comprobante (Monotributo = Tipo 11 - Factura C)
-  // Si necesitas Factura A/B, cambia lógica aquí según tu código original
+  // 1. Procesar Datos del Cliente
+  const docNro = cliente.docNumber || "0";
+  // Si no viene condición, asumimos Consumidor Final
+  const condFiscalStr = cliente.fiscalCondition || 'CONSUMIDOR_FINAL';
+  const condicionIvaId = CONDICION_IVA[condFiscalStr] || 5;
+
+  // Determinar Tipo Documento AFIP
+  // 99: Final, 80: CUIT, 96: DNI
+  let docTipo = 99; 
+  if (docNro !== "0") {
+     docTipo = docNro.length === 11 ? 80 : 96;
+  }
+
+  // 2. Configurar Tipo de Comprobante
+  // Al ser Monotributista, SIEMPRE emites Factura C (11), sin importar el receptor.
+  // Si fueras Resp. Inscripto, aquí iría lógica para elegir A (1) o B (6).
   const CBTE_TIPO = 11; 
-  const DOC_TIPO = docNro === "0" ? 99 : (docNro.length === 11 ? 80 : 96); // 99=Final, 80=CUIT, 96=DNI
 
-  // 2. Obtener último número
-  const ultimo = await getUltimoComprobante(client, auth, CBTE_TIPO);
+  const ultimo = await getUltimoComprobante(clientSoap, auth, CBTE_TIPO);
   const proximo = ultimo + 1;
 
-  console.log(`📠 AFIP: Emitiendo Factura C #${proximo} por $${total}`);
+  console.log(`📠 AFIP: Factura C #${proximo} a Doc: ${docNro} (${condFiscalStr})`);
 
-  // 3. Preparar Payload
-  const fecha = new Date().toISOString().substring(0, 10).replace(/-/g, ""); // AAAAMMDD
-  
+  const fecha = new Date().toISOString().substring(0, 10).replace(/-/g, "");
+
   const payload = {
     Auth: { Token: auth.token, Sign: auth.sign, Cuit: CONFIG.CUIT },
     FeCAEReq: {
@@ -148,31 +146,29 @@ async function emitirFactura(total, docNro = "0") {
       },
       FeDetReq: {
         FECAEDetRequest: {
-          Concepto: 1, // Productos
-          DocTipo: DOC_TIPO,
+          Concepto: 1, 
+          DocTipo: docTipo,
           DocNro: docNro,
           CbteDesde: proximo,
           CbteHasta: proximo,
           CbteFch: fecha,
           ImpTotal: total.toFixed(2),
           ImpTotConc: 0,
-          ImpNeto: total.toFixed(2), // En Factura C, Neto = Total
+          ImpNeto: total.toFixed(2),
           ImpOpEx: 0,
           ImpTrib: 0,
           ImpIVA: 0,
           MonId: "PES",
           MonCotiz: 1,
-          CondicionIVAReceptorId: 5 // 5 = Consumidor Final (Default Monotributo)
+          CondicionIVAReceptorId: condicionIvaId // 🔥 AQUÍ ESTABA EL CAMBIO CLAVE
         }
       }
     }
   };
 
-  // 4. Solicitar CAE
-  const [res] = await client.FECAESolicitarAsync(payload);
+  const [res] = await clientSoap.FECAESolicitarAsync(payload);
   const resultado = res.FECAESolicitarResult;
 
-  // Manejo de Errores AFIP
   if (resultado.FeCabResp.Resultado === "R") {
     const err = resultado.FeDetResp.FECAEDetResponse[0].Observaciones.Obs[0];
     throw new Error(`Rechazo AFIP (${err.Code}): ${err.Msg}`);
@@ -187,8 +183,8 @@ async function emitirFactura(total, docNro = "0") {
     numero: proximo,
     tipo: "C",
     qr_data: `https://www.afip.gob.ar/fe/qr/?p=${btoa(JSON.stringify({
-       ver: 1, fecha: fecha, cuit: CONFIG.CUIT, ptoVta: CONFIG.PTO_VTA, tipoCmp: CBTE_TIPO, nroCmp: proximo, importe: total, moneda: "PES", ctz: 1, tipoDocRec: DOC_TIPO, nroDocRec: parseInt(docNro), tipoCodAut: "E", codAut: detalle.CAE
-    }))}` // Generamos la URL del QR para imprimir
+       ver: 1, fecha: fecha, cuit: CONFIG.CUIT, ptoVta: CONFIG.PTO_VTA, tipoCmp: CBTE_TIPO, nroCmp: proximo, importe: total, moneda: "PES", ctz: 1, tipoDocRec: docTipo, nroDocRec: parseInt(docNro), tipoCodAut: "E", codAut: detalle.CAE
+    }))}`
   };
 }
 
