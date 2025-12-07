@@ -1,13 +1,15 @@
+// src/modules/inventory/components/ProductModal.jsx
+
 import React, { useState, useEffect, useRef } from 'react';
 import { X, Save, ScanLine, Scale, Package, DollarSign, Tag, Truck, AlertTriangle, Award, ChevronDown, Check } from 'lucide-react';
 import { Button } from '../../../core/ui/Button';
 import { Switch } from '../../../core/ui/Switch';
 import { cn } from '../../../core/utils/cn';
 import { masterRepository } from '../repositories/masterRepository';
+import { productRepository } from '../repositories/productRepository';
 
-// ============================================================================
-// COMPONENTE UI: SELECTOR PREMIUM (Custom Dropdown)
-// ============================================================================
+// ... (Los componentes PremiumSelect y PremiumInput se mantienen IGUAL, no cambian) ...
+
 const PremiumSelect = ({ label, icon: Icon, value, onChange, options, placeholder = "Seleccionar..." }) => {
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef(null);
@@ -81,10 +83,6 @@ const PremiumSelect = ({ label, icon: Icon, value, onChange, options, placeholde
   );
 };
 
-// ============================================================================
-// COMPONENTE UI: INPUT PREMIUM (CORREGIDO)
-// Forzamos pl-11 (padding-left) cuando hay icono para que no se pisen.
-// ============================================================================
 const PremiumInput = ({ label, icon: Icon, rightIcon, className, ...props }) => (
     <div className="group">
       <label className="block text-[11px] font-bold text-sys-500 uppercase tracking-wider mb-1.5 ml-1 transition-colors group-focus-within:text-brand">
@@ -100,9 +98,9 @@ const PremiumInput = ({ label, icon: Icon, rightIcon, className, ...props }) => 
           className={cn(
             "w-full bg-sys-50 border border-sys-200 text-sys-900 rounded-xl py-3 text-sm font-medium outline-none transition-all duration-200 placeholder:text-sys-400",
             "focus:bg-white focus:border-brand focus:ring-4 focus:ring-brand/10 focus:shadow-sm",
-            Icon ? "pl-11" : "pl-4", // 🔥 Padding izquierdo suficiente para el icono
+            Icon ? "pl-11" : "pl-4", 
             rightIcon ? "pr-10" : "pr-4",
-            className // Clases extra del usuario
+            className 
           )}
           {...props}
         />
@@ -115,12 +113,10 @@ const PremiumInput = ({ label, icon: Icon, rightIcon, className, ...props }) => 
     </div>
   );
 
-// ============================================================================
-// COMPONENTE PRINCIPAL
-// ============================================================================
 export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
   const [activeTab, setActiveTab] = useState('general'); 
   const [lists, setLists] = useState({ categories: [], brands: [], suppliers: [] });
+  const [isSaving, setIsSaving] = useState(false);
 
   const [formData, setFormData] = useState({
     name: '',
@@ -179,6 +175,7 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
         });
       }
       setActiveTab('general');
+      setIsSaving(false);
     }
   }, [isOpen, productToEdit]);
 
@@ -203,18 +200,50 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
     setFormData(newData);
   };
 
-  const handleSubmit = (e) => {
+  // 🔥 VALIDACIÓN Y LIMPIEZA DE DATOS (FIX PARA ERROR DE CONSTRAINT)
+  const handleSubmit = async (e) => { 
     e.preventDefault();
+    
     if (!formData.name || !formData.price) return alert("Nombre y Precio son obligatorios");
-    onSave({
-      ...formData,
-      price: parseFloat(formData.price),
-      cost: parseFloat(formData.cost || 0),
-      markup: parseFloat(formData.markup || 0),
-      stock: parseFloat(formData.stock || 0),
-      minStock: parseFloat(formData.minStock || 0)
-    });
-    onClose();
+    
+    setIsSaving(true); 
+
+    try {
+        // 1. Limpieza de datos (SANITIZACIÓN)
+        // Si el código está vacío, LO BORRAMOS del objeto para que la DB no lo indexe como duplicado
+        const dataToSave = { ...formData };
+        if (!dataToSave.code || dataToSave.code.trim() === '') {
+            delete dataToSave.code; // 🔥 ESTA LÍNEA ES LA CLAVE DE TU ARREGLO
+        }
+
+        // 2. Validación de duplicados (Solo si hay código real)
+        if (dataToSave.code) {
+            const existing = await productRepository.findByCode(dataToSave.code);
+            // Si existe otro producto con ese código
+            if (existing && (!productToEdit || existing.id !== productToEdit.id)) {
+                setIsSaving(false);
+                return alert(`⛔ EL CÓDIGO YA EXISTE\n\nEl código "${dataToSave.code}" ya pertenece a: "${existing.name}".`);
+            }
+        }
+
+        // 3. Guardar
+        await onSave({
+          ...dataToSave,
+          price: parseFloat(dataToSave.price),
+          cost: parseFloat(dataToSave.cost || 0),
+          markup: parseFloat(dataToSave.markup || 0),
+          stock: parseFloat(dataToSave.stock || 0),
+          minStock: parseFloat(dataToSave.minStock || 0)
+        });
+        
+        onClose();
+
+    } catch (error) {
+        console.error(error);
+        alert("Error técnico al guardar: " + error.message);
+    } finally {
+        setIsSaving(false);
+    }
   };
 
   if (!isOpen) return null;
@@ -275,7 +304,6 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
                     </div>
                     
                     <div>
-                        {/* 🔥 CORREGIDO: Input de código limpio */}
                         <PremiumInput 
                             label="Código de Barras"
                             icon={ScanLine}
@@ -406,9 +434,9 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
 
         {/* Footer */}
         <div className="p-5 border-t border-sys-100 bg-sys-50/50 flex justify-end gap-3 backdrop-blur-sm">
-            <Button variant="ghost" onClick={onClose} className="hover:bg-sys-200/50 text-sys-600">Cancelar</Button>
-            <Button onClick={handleSubmit} className="px-8 shadow-xl shadow-brand/20 active:scale-95 transition-all">
-                <Save size={18} className="mr-2" /> Guardar Producto
+            <Button variant="ghost" onClick={onClose} className="hover:bg-sys-200/50 text-sys-600" disabled={isSaving}>Cancelar</Button>
+            <Button onClick={handleSubmit} className="px-8 shadow-xl shadow-brand/20 active:scale-95 transition-all" disabled={isSaving}>
+                {isSaving ? <span className="animate-pulse">Guardando...</span> : <><Save size={18} className="mr-2" /> Guardar Producto</>}
             </Button>
         </div>
 

@@ -1,9 +1,16 @@
 import { initializeApp } from 'firebase/app';
-import { getFirestore, connectFirestoreEmulator } from 'firebase/firestore';
+// 👇 Importamos las funciones de persistencia
+import { 
+  getFirestore, 
+  connectFirestoreEmulator, 
+  initializeFirestore, 
+  persistentLocalCache, 
+  persistentMultipleTabManager 
+} from 'firebase/firestore';
 import { getFunctions, connectFunctionsEmulator } from 'firebase/functions';
+import { getAuth, connectAuthEmulator } from 'firebase/auth';
 
 const firebaseConfig = {
-  // ... (Tus credenciales siguen igual)
   apiKey: "AIzaSyA1FuE-HmJnMmA844qTtmp-KcX_5YJL4Ng",
   authDomain: "noar-pos-prod.firebaseapp.com",
   projectId: "noar-pos-prod",
@@ -13,8 +20,16 @@ const firebaseConfig = {
 };
 
 const app = initializeApp(firebaseConfig);
-export const db = getFirestore(app);
+
+// 👇 CAMBIO CRÍTICO: Inicializamos Firestore con Caché Persistente
+export const db = initializeFirestore(app, {
+  localCache: persistentLocalCache({
+    tabManager: persistentMultipleTabManager()
+  })
+});
+
 export const functions = getFunctions(app);
+export const auth = getAuth(app);
 
 // 🔴 COMENTA ESTE BLOQUE TEMPORALMENTE PARA PROBAR LA NUBE REAL
 /*

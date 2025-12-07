@@ -1,73 +1,102 @@
-import { salesRepository } from '../../sales/repositories/salesRepository';
-
-// URL de tu Backend (Nube o Local)
-const API_URL = 'https://us-central1-noar-pos-prod.cloudfunctions.net/api'; // ⚠️ Ajusta tu ID
+// URL de tu Backend (Nube de Producción)
+const API_URL = 'https://us-central1-noar-pos-prod.cloudfunctions.net/api';
 
 export const paymentService = {
   
   /**
-   * Método Universal de Cobro
-   * @param {string} provider - 'mercadopago' | 'clover' | 'cash'
-   * @param {number} amount - Monto total
-   * @param {string} [terminalId] - ID opcional de la terminal (para Clover)
+   * 1. INICIAR TRANSACCIÓN (Handshake)
+   * Envía la orden al proveedor y obtiene una REFERENCIA única para rastreo.
+   * Soporta: MercadoPago QR, MP Point (Físico) y Clover.
    */
-  async processPayment(provider, amount, terminalId = null) {
-    console.log(`💳 Iniciando cobro con ${provider.toUpperCase()} por $${amount}`);
+  async initTransaction(provider, amount, deviceId = null) {
+    console.log(`💳 Iniciando orden ${provider} por $${amount}`);
 
     try {
-      let result;
+      let endpoint = '';
+      let bodyData = { total: amount };
 
-      switch (provider) {
-        case 'mercadopago':
-          result = await this._payWithMercadoPago(amount);
-          break;
-        
-        case 'clover':
-          result = await this._payWithClover(amount, terminalId);
-          break;
-          
-        case 'cash':
-          // El efectivo es inmediato, no requiere API
-          result = { status: 'approved', method: 'cash' };
-          break;
-
-        default:
-          throw new Error('Proveedor de pagos no soportado');
+      // Configurar según proveedor
+      if (provider === 'mercadopago') {
+        // Opción 1: QR en Pantalla
+        endpoint = '/create-order';
+        bodyData.title = "Consumo Noar POS";
+      } 
+      else if (provider === 'point') {
+        // Opción 2: Terminal Física (Point Smart)
+        endpoint = '/create-point-order';
+        bodyData.deviceId = deviceId; // ID del aparato (ej: PAX_...)
+      }
+      else if (provider === 'clover') {
+        // Opción 3: Clover (Simulado o Real)
+        endpoint = '/create-clover-order';
+        bodyData.reference = `CLV-${Date.now()}`;
+      } 
+      else {
+        throw new Error(`Proveedor ${provider} no soporta inicio asíncrono.`);
       }
 
-      return result;
+      // Llamada al Backend
+      const response = await fetch(`${API_URL}${endpoint}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(bodyData),
+      });
+
+      if (!response.ok) {
+        const err = await response.json();
+        // Propagamos el mensaje de error del backend (ej: "Dispositivo no encontrado")
+        throw new Error(err.details || err.error || `Falló inicio de ${provider}`);
+      }
+      
+      const data = await response.json();
+      
+      // Retornamos la REFERENCIA CLAVE para el polling
+      // MP QR/Point devuelve: data.reference
+      // Clover devuelve: data.reference (o paymentId)
+      const trackingRef = data.reference || data.paymentId;
+      
+      if (!trackingRef) throw new Error("El proveedor no devolvió referencia de rastreo");
+
+      return {
+        success: true,
+        reference: trackingRef
+      };
 
     } catch (error) {
-      console.error(`❌ Error en pago ${provider}:`, error);
+      console.error(`❌ Error iniciando pago ${provider}:`, error);
       throw error;
     }
   },
 
-  // --- ADAPTADORES PRIVADOS ---
+  /**
+   * 2. VERIFICAR ESTADO (Polling)
+   * Pregunta al Backend si la referencia ya está pagada.
+   * Se llama repetidamente desde el UI (PaymentModal).
+   */
+  async checkStatus(reference, provider) {
+    try {
+      const response = await fetch(`${API_URL}/check-payment-status`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reference, provider }),
+      });
 
-  async _payWithMercadoPago(amount) {
-    const response = await fetch(`${API_URL}/create-order`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ total: amount, title: "Venta Noar POS" }),
-    });
+      if (!response.ok) return { status: 'error' };
+      
+      // Respuesta esperada: { status: 'approved' | 'pending' | 'rejected', ... }
+      return await response.json(); 
 
-    if (!response.ok) throw new Error('Falló MP');
-    return await response.json();
+    } catch (error) {
+      // Si falla la red, retornamos error para que el UI decida si reintentar
+      return { status: 'error' };
+    }
   },
 
-  async _payWithClover(amount, terminalId) {
-    // Aquí conectaremos el endpoint de Clover que haremos pronto
-    const response = await fetch(`${API_URL}/create-clover-order`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ 
-        total: amount, 
-        terminalId: terminalId || "DEFAULT_CLOVER_ID" 
-      }),
-    });
-
-    if (!response.ok) throw new Error('Falló Clover');
-    return await response.json();
+  /**
+   * MÉTODO LEGACY (Compatibilidad)
+   * Solo para Efectivo, ya que es inmediato.
+   */
+  async processCashPayment(amount) {
+     return { status: 'approved', method: 'cash', amount };
   }
 };

@@ -169,7 +169,7 @@ export const PosPage = () => {
     return () => window.removeEventListener('keydown', handleGlobalKeys);
   }, [cart, isProcessingSale, selectedProduct, isPaymentOpen, clearCart, client, discount, isClientSelectorOpen]);
 
-  // ==========================================
+ // ==========================================
   // PROCESAMIENTO DE VENTA (CORE FINANCIERO)
   // ==========================================
   const handlePaymentConfirm = async (paymentData) => {
@@ -186,31 +186,30 @@ export const PosPage = () => {
               return;
           }
       }
-
-      // 2. PREPARAR DATOS DEL CLIENTE
-      const saleClient = client ? {
-          id: client.id,
-          name: client.name,
-          docType: client.docType,
-          docNumber: client.docNumber,
-          fiscalCondition: client.fiscalCondition,
-          address: client.address
-      } : {
-          name: "CONSUMIDOR FINAL",
-          docType: "99",
-          docNumber: "0",
-          fiscalCondition: "CONSUMIDOR_FINAL"
+      
+      // 2. PREPARAR DATOS DEL CLIENTE (Lógica inyectada)
+      const docNroForAfip = client?.docNumber || "0";
+      const saleClient = { 
+          id: client?.id || null, 
+          name: client?.name || 'CONSUMIDOR FINAL',
+          docNumber: docNroForAfip,
+          docType: client?.docType || '99'
       };
 
-      // 3. FACTURACIÓN AFIP
+      // 3. FACTURACIÓN AFIP (Lógica inyectada)
       let afipData = null;
+
       if (paymentData.withAfip) {
         try {
-          const factura = await billingService.emitirFactura({
-            total: paymentData.totalSale,
-            client: saleClient
-          });
+          const tempSaleForAfip = {
+            total: paymentData.totalSale, // Usamos el total final con descuento
+            client: { docNumber: docNroForAfip } 
+          };
           
+          // Llamada a la Cloud Function para solicitar CAE
+          const factura = await billingService.emitirFactura(tempSaleForAfip);
+          
+          // Éxito: AFIP Aprobado
           afipData = {
             status: 'APPROVED',
             cae: factura.cae,
@@ -219,28 +218,29 @@ export const PosPage = () => {
             qr: factura.qr_data,
             vtoCAE: factura.vto
           };
+          
         } catch (afipError) {
+          // 🔥 Bloque de Resiliencia: Captura y Reporte Explícito del Error
           console.error("Fallo AFIP:", afipError);
-          alert("⚠️ Alerta AFIP: No respondió o rechazó.\nSe guardará la venta como PENDIENTE DE FACTURACIÓN.");
+          alert(`⚠️ Alerta: AFIP no respondió o rechazó.\nEl error fue: ${afipError.message || 'Error de red o conexión con la Cloud Function.'}\nLa venta se guardará pero quedará Pendiente de Facturación (Comprobante X generado).`);
+          
+          // Marca la venta como pendiente para reintentar desde SalesPage.
           afipData = { status: 'PENDING', error: afipError.message };
         }
       }
 
-      // 4. GUARDAR VENTA LOCALMENTE (🔥 CORREGIDO ESTRUCTURA PAYMENT)
+      // 4. GUARDAR VENTA LOCALMENTE 
       const saleData = {
         items: cart,
         total: paymentData.totalSale,
         subtotal: subtotal,
         discount: discount,
-        
-        // ⚠️ CORRECCIÓN: Estructuramos el pago como objeto para que TicketModal lo lea bien
         payment: {
             method: paymentData.method,
-            amountPaid: paymentData.amountPaid, // Lo que pagó
-            amountDebt: paymentData.amountDebt, // Lo que debe
-            total: paymentData.totalSale        // Total operación
+            amountPaid: paymentData.amountPaid, 
+            amountDebt: paymentData.amountDebt, 
+            total: paymentData.totalSale        
         },
-
         client: saleClient,
         itemCount: cart.length,
         date: new Date(),
@@ -250,17 +250,16 @@ export const PosPage = () => {
       const savedSale = await salesRepository.createSale(saleData);
 
       // 5. MOVIMIENTOS FINANCIEROS
-      const promises = [];
+      const promises = []; 
 
       // A) Ingreso de Caja
       if (paymentData.amountPaid > 0) {
           promises.push(
-              cashRepository.registerIncome({
-                  amount: paymentData.amountPaid,
-                  description: `Venta #${savedSale.localId.slice(-6)}`,
-                  referenceId: savedSale.localId,
-                  method: paymentData.method
-              })
+              cashRepository.registerIncome(
+                  paymentData.amountPaid,                                  
+                  paymentData.method,                                      
+                  `Venta #${savedSale.localId.slice(-6)}`                 
+              )
           );
       }
 
