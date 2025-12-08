@@ -69,7 +69,7 @@ const AdminCashAuditPanel = ({ allShifts, loadIntelligence, navigate }) => {
                 deviation: shift.difference, 
                 closeTime: shift.closedAt 
             });
-            setAuditTarget(shift); // Guardamos el objetivo
+            setAuditTarget(shift); // Guardamos el objetivo para confirmar luego
             setIsReportModalOpen(true);
         } catch (error) { 
             alert(`❌ Error al cargar datos: ${error.message}`); 
@@ -443,7 +443,7 @@ const AdminDashboardView = ({ metrics, money, navigate, loadIntelligence, handle
 );
 
 // =================================================================
-// 6. CONTROLADOR PRINCIPAL (ROBUSTECIDO)
+// 6. CONTROLADOR PRINCIPAL
 // =================================================================
 export const DashboardPage = () => {
     const navigate = useNavigate();
@@ -466,7 +466,7 @@ export const DashboardPage = () => {
 
     useEffect(() => { if (user) loadIntelligence(); }, [user.name, user.role]);
 
-    // 🔥 LOGICA "A PRUEBA DE BALAS"
+    // 🔥 LOGICA "A PRUEBA DE BALAS" REVISADA
     const loadIntelligence = async () => {
         setLoading(true);
         let products = [], allShifts = [], allSales = [];
@@ -474,7 +474,15 @@ export const DashboardPage = () => {
         // 1. CARGA INDEPENDIENTE (Para que no colapse si falla uno)
         try { products = await productRepository.getAll(); } catch(e) { console.error("Err Prod:", e); }
         try { allShifts = await cashRepository.getAllShifts(); } catch(e) { console.error("Err Shifts:", e); }
-        try { allSales = await salesRepository.getAll(); } catch(e) { console.error("Err Sales:", e); }
+        
+        // 🔥 FIX DE VENTAS: Intenta obtener todo, sino usa getTodaySales
+        try { 
+            if (typeof salesRepository.getAll === 'function') {
+                allSales = await salesRepository.getAll();
+            } else if (typeof salesRepository.getTodaySales === 'function') {
+                allSales = await salesRepository.getTodaySales();
+            }
+        } catch(e) { console.error("Err Sales:", e); }
 
         // Inicializamos valores en 0
         let todaySales = 0, salesCash = 0, salesDigital = 0, fiscalCount = 0;
@@ -490,7 +498,14 @@ export const DashboardPage = () => {
             // --- A) VENTAS DE HOY (Desde las 00:00) ---
             const today = new Date();
             const startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
-            const salesToday = allSales.filter(s => new Date(s.date).getTime() >= startOfToday);
+            
+            // Filtro robusto: soporta 'date' (legacy) y 'createdAt' (nuevo)
+            const salesToday = allSales.filter(s => {
+                const dateStr = s.date || s.createdAt;
+                if (!dateStr) return false;
+                const d = new Date(dateStr);
+                return !isNaN(d.getTime()) && d.getTime() >= startOfToday;
+            });
             
             const mSales = salesToday.reduce((acc, s) => {
                 const total = parseFloat(s.total) || 0;
@@ -507,7 +522,6 @@ export const DashboardPage = () => {
             fiscalCount = mSales.fiscalCount;
 
             // --- B) CAJA: GASTOS Y EFECTIVO ---
-            // Revisamos cajas ABIERTAS o CERRADAS HOY
             const shiftsForExpenses = allShifts.filter(s => 
                 s.status === 'OPEN' || 
                 (s.closedAt && new Date(s.closedAt).getTime() >= startOfToday)
@@ -518,12 +532,10 @@ export const DashboardPage = () => {
                 try {
                     const balance = await cashRepository.getShiftBalance(shift.id);
                     
-                    // Sumar gastos (global o propios)
                     if (isAdmin || shift.id === myActiveShift?.id) {
                         totalExpensesToday += (balance.expenses || 0);
                     }
 
-                    // Sumar efectivo (Solo de cajas ABIERTAS ahora)
                     if (shift.status === 'OPEN') {
                         if (isAdmin || shift.id === myActiveShift?.id) {
                             totalCashInHand += (balance.totalCash || 0);
@@ -547,7 +559,7 @@ export const DashboardPage = () => {
             cashInHand: totalCashInHand,
             activeShift: myActiveShift,
             activeShiftsCount: globalActiveShifts.length,
-            allShifts: allShifts, // 🔥 Esto asegura que la lista de auditoría aparezca
+            allShifts: allShifts, 
             lowStockCount,
             totalDebt: 0
         });
@@ -555,7 +567,6 @@ export const DashboardPage = () => {
         setLoading(false);
     };
 
-    // ... (Handlers se mantienen igual)
     const handleOpenShift = async () => {
         const input = prompt("Monto inicial en caja (Fondo de Cambio):", "1000");
         if (input === null) return;
@@ -570,12 +581,41 @@ export const DashboardPage = () => {
         if (declaredCashStr === null || declaredCashStr.trim() === "") return;
         const declaredCash = parseFloat(declaredCashStr);
         if (isNaN(declaredCash) || declaredCash < 0) return alert("Monto inválido.");
-        try { setLoading(true); const balance = await cashRepository.getShiftBalance(metrics.activeShift.id); await cashRepository.closeShift(metrics.activeShift.id, { expectedCash: balance.totalCash, declaredCash }); alert("✅ Cierre registrado. Notifique al Administrador."); await loadIntelligence(); } catch (error) { alert(`❌ Error: ${error.message}`); } finally { setLoading(false); }
+
+        try {
+            setLoading(true);
+            const balance = await cashRepository.getShiftBalance(metrics.activeShift.id);
+            await cashRepository.closeShift(metrics.activeShift.id, { expectedCash: balance.totalCash, declaredCash });
+            alert("✅ Cierre registrado. Notifique al Administrador.");
+            await loadIntelligence();
+        } catch (error) { alert(`❌ Error: ${error.message}`); } finally { setLoading(false); }
     };
 
-    const handleRegisterExpense = async ({ amount, description }) => { try { await cashRepository.registerExpense(amount, description, '', user?.name); await loadIntelligence(); alert(`✅ Gasto de $${amount} registrado.`); } catch (error) { alert(error.message); } };
-    const handleRegisterWithdrawal = async ({ amount, description, adminPin }) => { try { const storedPin = await cashRepository.getAdminCashPin(); const validPin = storedPin || "1234"; if (adminPin !== validPin) return alert("⛔ PIN DE ADMINISTRADOR INCORRECTO."); await cashRepository.registerWithdrawal(amount, description, 'Autorizado por PIN', user?.name); await loadIntelligence(); alert(`✅ Retiro de $${amount} autorizado.`); } catch (error) { alert(error.message); } };
-    const handleUpdatePin = async (newPin) => { if (!newPin || newPin.length < 4) return alert("El PIN debe tener al menos 4 dígitos."); await cashRepository.setAdminCashPin(newPin); alert("✅ PIN maestro actualizado."); };
+    const handleRegisterExpense = async ({ amount, description }) => {
+        try {
+            await cashRepository.registerExpense(amount, description, '', user?.name);
+            await loadIntelligence();
+            alert(`✅ Gasto de $${amount} registrado.`);
+        } catch (error) { alert(error.message); }
+    };
+
+    const handleRegisterWithdrawal = async ({ amount, description, adminPin }) => {
+        try {
+            const storedPin = await cashRepository.getAdminCashPin();
+            const validPin = storedPin || "1234"; 
+            if (adminPin !== validPin) return alert("⛔ PIN DE ADMINISTRADOR INCORRECTO.");
+
+            await cashRepository.registerWithdrawal(amount, description, 'Autorizado por PIN', user?.name);
+            await loadIntelligence();
+            alert(`✅ Retiro de $${amount} autorizado.`);
+        } catch (error) { alert(error.message); }
+    };
+
+    const handleUpdatePin = async (newPin) => {
+        if (!newPin || newPin.length < 4) return alert("El PIN debe tener al menos 4 dígitos.");
+        await cashRepository.setAdminCashPin(newPin);
+        alert("✅ PIN maestro actualizado.");
+    };
     
     if (loading) return <div className="p-10 text-center animate-pulse">Cargando sistema...</div>;
 
