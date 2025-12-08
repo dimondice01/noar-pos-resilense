@@ -59,7 +59,7 @@ export const PosPage = () => {
     const loadProducts = async () => {
       try {
         const all = await productRepository.getAll();
-        setProducts(all);
+        setProducts(all || []); // Aseguramos que sea un array
       } catch (error) {
         console.error("Error cargando catálogo:", error);
       }
@@ -70,6 +70,7 @@ export const PosPage = () => {
   const keepFocus = () => {
     if (!isPaymentOpen && !selectedProduct && !lastSaleTicket && !isClientSelectorOpen) {
       setTimeout(() => {
+        // Evitamos robar el foco si el usuario está interactuando con otro input o botón
         if (document.activeElement?.tagName !== 'INPUT' && document.activeElement?.tagName !== 'BUTTON') {
            searchInputRef.current?.focus();
         }
@@ -78,13 +79,18 @@ export const PosPage = () => {
   };
 
   // ==========================================
-  // LÓGICA DE ESCÁNER Y BÚSQUEDA
+  // LÓGICA DE ESCÁNER Y BÚSQUEDA (CORREGIDA)
   // ==========================================
   
-  const filteredProducts = products.filter(p => 
-    p.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
-    p.code.includes(searchTerm)
-  );
+  const filteredProducts = products.filter(p => {
+    // 🛡️ SOLUCIÓN DEL ERROR: Validación defensiva
+    // Si p.name o p.code son null/undefined, usamos una cadena vacía '' para evitar el crash.
+    const term = searchTerm.toLowerCase();
+    const name = (p.name || '').toLowerCase();
+    const code = (p.code || '').toString().toLowerCase(); // toString por si el código es numérico puro
+
+    return name.includes(term) || code.includes(term);
+  });
 
   const handleSelectProduct = useCallback((product) => {
     if (!product) return;
@@ -95,7 +101,12 @@ export const PosPage = () => {
   const handleKeyDownInput = (e) => {
     if (e.key === 'Enter') {
       e.preventDefault();
-      const exactMatch = products.find(p => p.code === searchTerm.trim());
+      const term = searchTerm.trim();
+      if (!term) return;
+
+      // Búsqueda exacta defensiva
+      const exactMatch = products.find(p => (p.code || '').toString() === term);
+      
       if (exactMatch) {
         handleSelectProduct(exactMatch);
       } else if (filteredProducts.length === 1) {

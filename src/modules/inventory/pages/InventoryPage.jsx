@@ -1,7 +1,15 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { Plus, Search, Edit2, Trash2, Package, Scale, AlertTriangle, ArrowUpRight, Filter, CheckSquare, Square, X, History } from 'lucide-react';
+import { 
+    Plus, Search, Edit2, Trash2, Package, Scale, AlertTriangle, 
+    ArrowUpRight, Filter, CheckSquare, Square, X, History,
+    CloudUpload, DollarSign, RefreshCw 
+} from 'lucide-react';
+
 import { productRepository } from '../repositories/productRepository';
 import { masterRepository } from '../repositories/masterRepository';
+import { salesRepository } from '../../sales/repositories/salesRepository'; 
+import { syncService } from '../../sync/services/syncService'; 
+
 import { Card } from '../../../core/ui/Card';
 import { Button } from '../../../core/ui/Button';
 import { ProductModal } from '../components/ProductModal';
@@ -9,10 +17,110 @@ import { MastersModal } from '../components/MastersModal';
 import { ProductHistoryModal } from '../components/ProductHistoryModal'; 
 import { cn } from '../../../core/utils/cn';
 
+// =================================================================
+// 1. COMPONENTE AUXILIAR: BULK UPDATE MODAL
+// (Definido aquí arriba para evitar errores de referencia)
+// =================================================================
+const BulkUpdateModal = ({ isOpen, onClose, onConfirm, allProducts, masters, manualSelectionIds }) => {
+    if (!isOpen) return null;
+
+    const [activeTab, setActiveTab] = useState('manual');
+    const [targetId, setTargetId] = useState('');
+    const [costPct, setCostPct] = useState(0);
+    const [pricePct, setPricePct] = useState(0);
+    const [targetList, setTargetList] = useState([]);
+
+    useEffect(() => {
+        let list = [];
+        if (activeTab === 'manual') list = allProducts.filter(p => manualSelectionIds.has(p.id));
+        else if (activeTab === 'brand' && targetId) list = allProducts.filter(p => p.brand === targetId);
+        else if (activeTab === 'category' && targetId) list = allProducts.filter(p => p.category === targetId);
+        setTargetList(list);
+    }, [activeTab, targetId, manualSelectionIds, allProducts]);
+
+    const removeProduct = (id) => setTargetList(prev => prev.filter(p => p.id !== id));
+
+    return (
+      <div className="fixed inset-0 z-[80] flex items-center justify-center bg-sys-900/60 backdrop-blur-sm p-4 animate-in fade-in zoom-in-95">
+        <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[85vh]">
+          
+          <div className="p-5 border-b border-sys-100 bg-sys-50 flex justify-between items-center shrink-0">
+             <h3 className="font-bold text-lg text-sys-900 flex items-center gap-2"><ArrowUpRight className="text-brand" /> Actualización Masiva</h3>
+             <button onClick={onClose}><X size={20} className="text-sys-400" /></button>
+          </div>
+
+          <div className="flex-1 overflow-hidden flex flex-col p-6">
+             <div className="flex bg-sys-100 p-1 rounded-xl mb-4 shrink-0">
+                {['manual', 'brand', 'category'].map(t => (
+                    <button key={t} onClick={() => { setActiveTab(t); setTargetId(''); }} className={cn("flex-1 py-2 text-xs font-bold rounded-lg capitalize transition-all", activeTab === t ? "bg-white shadow text-sys-900" : "text-sys-500")}>
+                        {t === 'manual' ? 'Selección' : t === 'brand' ? 'Marca' : 'Categoría'}
+                    </button>
+                ))}
+             </div>
+
+             <div className="shrink-0 mb-4">
+                {activeTab === 'brand' && (
+                    <select className="w-full p-3 border border-sys-200 rounded-xl text-sm bg-white outline-none focus:border-brand" onChange={(e) => setTargetId(e.target.value)}>
+                        <option value="">Selecciona Marca...</option>
+                        {masters.brands.map(b => <option key={b.id} value={b.name}>{b.name}</option>)}
+                    </select>
+                )}
+                {activeTab === 'category' && (
+                    <select className="w-full p-3 border border-sys-200 rounded-xl text-sm bg-white outline-none focus:border-brand" onChange={(e) => setTargetId(e.target.value)}>
+                        <option value="">Selecciona Categoría...</option>
+                        {masters.categories.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
+                    </select>
+                )}
+             </div>
+
+             {/* LISTA DE AFECTADOS */}
+             <div className="flex-1 overflow-y-auto custom-scrollbar border border-sys-200 rounded-xl bg-sys-50 mb-4 relative">
+                {targetList.length === 0 ? (
+                    <div className="h-full flex flex-col items-center justify-center text-sys-400 p-4 text-center"><Package size={32} className="mb-2 opacity-50"/><p className="text-xs">Sin productos afectados.</p></div>
+                ) : (
+                    <div className="divide-y divide-sys-200">
+                        <div className="sticky top-0 bg-sys-100 p-2 text-xs font-bold text-sys-500 uppercase border-b border-sys-200 flex justify-between z-10">
+                            <span>Producto ({targetList.length})</span><span>Precio Hoy</span>
+                        </div>
+                        {targetList.map(p => (
+                            <div key={p.id} className="p-3 flex justify-between items-center group hover:bg-white transition-colors bg-sys-50/50">
+                                <div className="flex items-center gap-3 overflow-hidden">
+                                    <button onClick={() => removeProduct(p.id)} className="p-1.5 bg-white border border-sys-200 rounded-md text-sys-400 hover:text-red-500 transition-colors shadow-sm"><X size={14} /></button>
+                                    <div className="truncate">
+                                        <p className="text-sm font-medium text-sys-800 truncate">{p.name}</p>
+                                        <p className="text-[10px] text-sys-400">{p.code}</p>
+                                    </div>
+                                </div>
+                                <span className="text-sm font-mono font-bold text-sys-600">$ {p.price}</span>
+                            </div>
+                        ))}
+                    </div>
+                )}
+             </div>
+
+             <div className="grid grid-cols-2 gap-4 pt-4 border-t border-sys-100 shrink-0">
+                <div><label className="text-[10px] font-bold text-sys-500 uppercase block mb-1">Subir Costo</label><div className="relative"><input type="number" className="w-full p-2 pl-8 border border-sys-200 rounded-lg font-bold outline-none focus:border-brand" value={costPct} onChange={e => setCostPct(parseFloat(e.target.value) || 0)} /><span className="absolute left-3 top-2 text-sys-400">%</span></div></div>
+                <div><label className="text-[10px] font-bold text-brand uppercase block mb-1">Subir Precio</label><div className="relative"><input type="number" className="w-full p-2 pl-8 border border-sys-200 rounded-lg font-bold text-brand bg-brand/5 outline-none focus:border-brand" value={pricePct} onChange={e => setPricePct(parseFloat(e.target.value) || 0)} /><span className="absolute left-3 top-2 text-brand">%</span></div></div>
+             </div>
+          </div>
+
+          <div className="p-5 bg-sys-50 border-t border-sys-100 flex gap-3 shrink-0">
+            <Button variant="ghost" onClick={onClose} className="flex-1">Cancelar</Button>
+            <Button onClick={() => onConfirm(targetList, costPct, pricePct)} className="flex-1 shadow-lg shadow-brand/20" disabled={targetList.length === 0 || (costPct === 0 && pricePct === 0)}>Aplicar Aumento</Button>
+          </div>
+        </div>
+      </div>
+    );
+};
+
+// =================================================================
+// 2. COMPONENTE PRINCIPAL (INVENTORY PAGE)
+// =================================================================
 export const InventoryPage = () => {
   // ===================== ESTADOS =====================
   const [products, setProducts] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [isSyncing, setIsSyncing] = useState(false);
   
   // Maestros
   const [masters, setMasters] = useState({ categories: [], brands: [], suppliers: [] });
@@ -84,12 +192,10 @@ export const InventoryPage = () => {
         const exactMatch = products.find(p => p.code === term);
         
         if (exactMatch) {
-            // ¡Producto encontrado! -> Abrir Edición
             setEditingProduct(exactMatch);
             setIsProductModalOpen(true);
             setSearchTerm(''); 
         } else {
-            // Alta Directa (Scanner Mode)
             setEditingProduct({ 
                 code: term, 
                 name: '', cost: 0, price: 0, stock: 0 
@@ -97,6 +203,42 @@ export const InventoryPage = () => {
             setIsProductModalOpen(true);
             setSearchTerm('');
         }
+    }
+  };
+
+  // ===================== LÓGICA SYNC MANUAL =====================
+  
+  // A) Forzar Productos
+  const handleForceUpload = async () => {
+    if (!confirm("¿Forzar la subida de TODOS los productos a la nube? Esto puede tardar unos segundos.")) return;
+    
+    setIsSyncing(true);
+    try {
+        const count = await productRepository.forcePendingState();
+        const result = await syncService.syncUp();
+        alert(`✅ ¡Éxito! Se sincronizaron ${result.products} productos.`);
+        loadData(); 
+    } catch (error) {
+        console.error(error);
+        alert("Error en la subida: " + error.message);
+    } finally {
+        setIsSyncing(false);
+    }
+  };
+
+  // B) Forzar Ventas (Fix Dashboard)
+  const handleForceSalesUpload = async () => {
+    if (!confirm("⚠️ ¿Deseas reenviar TODAS las ventas locales a Firebase?\n\nÚtil si el Dashboard del Admin está vacío.")) return;
+    
+    setIsSyncing(true);
+    try {
+        const count = await salesRepository.forcePendingState();
+        const result = await syncService.syncUp();
+        alert(`✅ Sincronización terminada.\nVentas subidas: ${result.sales}`);
+    } catch (error) {
+        alert("Error: " + error.message);
+    } finally {
+        setIsSyncing(false);
     }
   };
 
@@ -139,26 +281,18 @@ export const InventoryPage = () => {
     }
   };
 
-  // ===================== AUMENTO MASIVO (Con Redondeo a $50) =====================
+  // ===================== AUMENTO MASIVO =====================
   const executeBulkUpdate = async (targetProducts, costPct, pricePct) => {
     if (targetProducts.length === 0) return alert("No hay productos seleccionados.");
-    
     if (!window.confirm(`⚠️ CONFIRMACIÓN:\nSe actualizarán ${targetProducts.length} productos.\nCost: +${costPct}% | Precio: +${pricePct}%`)) return;
 
     setLoading(true);
     try {
       const updates = targetProducts.map(p => {
           const newCost = p.cost * (1 + costPct / 100);
-          
-          // Cálculo del precio teórico
           let calculatedPrice = p.price * (1 + pricePct / 100);
-          
-          // 🔥 REDONDEO A 50 (Hacia arriba)
-          const newPrice = Math.ceil(calculatedPrice / 50) * 50;
-
-          // Recalcular markup para mantener coherencia
+          const newPrice = Math.ceil(calculatedPrice / 50) * 50; // Redondeo a 50
           const newMarkup = newCost > 0 ? ((newPrice - newCost) / newCost * 100).toFixed(2) : p.markup;
-          
           return { ...p, cost: newCost, price: newPrice, markup: newMarkup };
       });
 
@@ -191,16 +325,42 @@ export const InventoryPage = () => {
              <p>Items: <span className="font-bold text-sys-800">{products.length}</span></p>
           </div>
         </div>
-        <div className="flex gap-2">
-           <Button variant="secondary" className="border-brand/20 text-brand bg-brand/5 hover:bg-brand/10" onClick={() => setIsBulkUpdateOpen(true)}>
-              <ArrowUpRight size={18} className="mr-2" /> Aumento Masivo
-           </Button>
-           <Button variant="secondary" onClick={() => setIsMastersModalOpen(true)}>
-              <Filter size={18} className="mr-2" /> Maestros
-           </Button>
-           <Button onClick={() => { setEditingProduct(null); setIsProductModalOpen(true); }} className="shadow-lg shadow-brand/20">
-              <Plus size={20} className="mr-2" /> Nuevo
-           </Button>
+        
+        <div className="flex flex-wrap gap-2 justify-end">
+            {/* 🔥 BOTONES DE SINCRONIZACIÓN MANUAL */}
+            <Button 
+                onClick={handleForceUpload} 
+                variant="secondary"
+                disabled={isSyncing}
+                className="bg-blue-50 text-blue-600 border border-blue-200 hover:bg-blue-100 px-3"
+                title="Subir todos los productos a Firebase"
+            >
+                {isSyncing ? <RefreshCw className="animate-spin mr-2" size={18}/> : <CloudUpload size={18} className="mr-2" />} 
+                Sync Prod
+            </Button>
+
+            <Button 
+                onClick={handleForceSalesUpload} 
+                variant="secondary"
+                disabled={isSyncing}
+                className="bg-green-50 text-green-600 border border-green-200 hover:bg-green-100 px-3"
+                title="Subir todas las ventas a Firebase"
+            >
+                {isSyncing ? <RefreshCw className="animate-spin mr-2" size={18}/> : <DollarSign size={18} className="mr-2" />} 
+                Sync Ventas
+            </Button>
+            
+            <div className="w-[1px] h-8 bg-sys-200 mx-1 hidden md:block"></div>
+
+            <Button variant="secondary" className="border-brand/20 text-brand bg-brand/5 hover:bg-brand/10" onClick={() => setIsBulkUpdateOpen(true)}>
+               <ArrowUpRight size={18} className="mr-2" /> Aumento Masivo
+            </Button>
+            <Button variant="secondary" onClick={() => setIsMastersModalOpen(true)}>
+               <Filter size={18} className="mr-2" /> Maestros
+            </Button>
+            <Button onClick={() => { setEditingProduct(null); setIsProductModalOpen(true); }} className="shadow-lg shadow-brand/20">
+               <Plus size={20} className="mr-2" /> Nuevo
+            </Button>
         </div>
       </div>
 
@@ -215,7 +375,7 @@ export const InventoryPage = () => {
                 className="w-full pl-10 pr-4 py-2 rounded-lg border border-sys-200 bg-sys-50 focus:bg-white focus:border-brand outline-none transition-all text-sm font-medium shadow-sm focus:shadow-md"
                 value={searchTerm} 
                 onChange={e => setSearchTerm(e.target.value)}
-                onKeyDown={handleSearchKeyDown} // Trigger Scanner
+                onKeyDown={handleSearchKeyDown} 
                 autoFocus
             />
             <div className="absolute right-3 top-2.5 text-[10px] text-sys-400 font-mono hidden md:block">ENTER para Acción</div>
@@ -342,97 +502,4 @@ export const InventoryPage = () => {
       `}</style>
     </div>
   );
-};
-
-// Componente Interno: Modal Masivo
-const BulkUpdateModal = ({ isOpen, onClose, onConfirm, allProducts, masters, manualSelectionIds }) => {
-    if (!isOpen) return null;
-
-    const [activeTab, setActiveTab] = useState('manual');
-    const [targetId, setTargetId] = useState('');
-    const [costPct, setCostPct] = useState(0);
-    const [pricePct, setPricePct] = useState(0);
-    const [targetList, setTargetList] = useState([]);
-
-    useEffect(() => {
-        let list = [];
-        if (activeTab === 'manual') list = allProducts.filter(p => manualSelectionIds.has(p.id));
-        else if (activeTab === 'brand' && targetId) list = allProducts.filter(p => p.brand === targetId);
-        else if (activeTab === 'category' && targetId) list = allProducts.filter(p => p.category === targetId);
-        setTargetList(list);
-    }, [activeTab, targetId, manualSelectionIds, allProducts]);
-
-    const removeProduct = (id) => setTargetList(prev => prev.filter(p => p.id !== id));
-
-    return (
-      <div className="fixed inset-0 z-[80] flex items-center justify-center bg-sys-900/60 backdrop-blur-sm p-4 animate-in fade-in zoom-in-95">
-        <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[85vh]">
-          
-          <div className="p-5 border-b border-sys-100 bg-sys-50 flex justify-between items-center shrink-0">
-             <h3 className="font-bold text-lg text-sys-900 flex items-center gap-2"><ArrowUpRight className="text-brand" /> Actualización Masiva</h3>
-             <button onClick={onClose}><X size={20} className="text-sys-400" /></button>
-          </div>
-
-          <div className="flex-1 overflow-hidden flex flex-col p-6">
-             <div className="flex bg-sys-100 p-1 rounded-xl mb-4 shrink-0">
-                {['manual', 'brand', 'category'].map(t => (
-                    <button key={t} onClick={() => { setActiveTab(t); setTargetId(''); }} className={cn("flex-1 py-2 text-xs font-bold rounded-lg capitalize transition-all", activeTab === t ? "bg-white shadow text-sys-900" : "text-sys-500")}>
-                        {t === 'manual' ? 'Selección' : t === 'brand' ? 'Marca' : 'Categoría'}
-                    </button>
-                ))}
-             </div>
-
-             <div className="shrink-0 mb-4">
-                {activeTab === 'brand' && (
-                    <select className="w-full p-3 border border-sys-200 rounded-xl text-sm bg-white outline-none focus:border-brand" onChange={(e) => setTargetId(e.target.value)}>
-                        <option value="">Selecciona Marca...</option>
-                        {masters.brands.map(b => <option key={b.id} value={b.name}>{b.name}</option>)}
-                    </select>
-                )}
-                {activeTab === 'category' && (
-                    <select className="w-full p-3 border border-sys-200 rounded-xl text-sm bg-white outline-none focus:border-brand" onChange={(e) => setTargetId(e.target.value)}>
-                        <option value="">Selecciona Categoría...</option>
-                        {masters.categories.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
-                    </select>
-                )}
-             </div>
-
-             {/* LISTA DE AFECTADOS */}
-             <div className="flex-1 overflow-y-auto custom-scrollbar border border-sys-200 rounded-xl bg-sys-50 mb-4 relative">
-                {targetList.length === 0 ? (
-                    <div className="h-full flex flex-col items-center justify-center text-sys-400 p-4 text-center"><Package size={32} className="mb-2 opacity-50"/><p className="text-xs">Sin productos afectados.</p></div>
-                ) : (
-                    <div className="divide-y divide-sys-200">
-                        <div className="sticky top-0 bg-sys-100 p-2 text-xs font-bold text-sys-500 uppercase border-b border-sys-200 flex justify-between z-10">
-                            <span>Producto ({targetList.length})</span><span>Precio Hoy</span>
-                        </div>
-                        {targetList.map(p => (
-                            <div key={p.id} className="p-3 flex justify-between items-center group hover:bg-white transition-colors bg-sys-50/50">
-                                <div className="flex items-center gap-3 overflow-hidden">
-                                    <button onClick={() => removeProduct(p.id)} className="p-1.5 bg-white border border-sys-200 rounded-md text-sys-400 hover:text-red-500 transition-colors shadow-sm"><X size={14} /></button>
-                                    <div className="truncate">
-                                        <p className="text-sm font-medium text-sys-800 truncate">{p.name}</p>
-                                        <p className="text-[10px] text-sys-400">{p.code}</p>
-                                    </div>
-                                </div>
-                                <span className="text-sm font-mono font-bold text-sys-600">$ {p.price}</span>
-                            </div>
-                        ))}
-                    </div>
-                )}
-             </div>
-
-             <div className="grid grid-cols-2 gap-4 pt-4 border-t border-sys-100 shrink-0">
-                <div><label className="text-[10px] font-bold text-sys-500 uppercase block mb-1">Subir Costo</label><div className="relative"><input type="number" className="w-full p-2 pl-8 border border-sys-200 rounded-lg font-bold outline-none focus:border-brand" value={costPct} onChange={e => setCostPct(parseFloat(e.target.value) || 0)} /><span className="absolute left-3 top-2 text-sys-400">%</span></div></div>
-                <div><label className="text-[10px] font-bold text-brand uppercase block mb-1">Subir Precio</label><div className="relative"><input type="number" className="w-full p-2 pl-8 border border-sys-200 rounded-lg font-bold text-brand bg-brand/5 outline-none focus:border-brand" value={pricePct} onChange={e => setPricePct(parseFloat(e.target.value) || 0)} /><span className="absolute left-3 top-2 text-brand">%</span></div></div>
-             </div>
-          </div>
-
-          <div className="p-5 bg-sys-50 border-t border-sys-100 flex gap-3 shrink-0">
-            <Button variant="ghost" onClick={onClose} className="flex-1">Cancelar</Button>
-            <Button onClick={() => onConfirm(targetList, costPct, pricePct)} className="flex-1 shadow-lg shadow-brand/20" disabled={targetList.length === 0 || (costPct === 0 && pricePct === 0)}>Aplicar Aumento</Button>
-          </div>
-        </div>
-      </div>
-    );
 };

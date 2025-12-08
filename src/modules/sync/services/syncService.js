@@ -1,65 +1,91 @@
-import { collection, writeBatch, doc, getDocs, query, where } from 'firebase/firestore';
-import { db } from '../../../database/firebase';
+import { collection, writeBatch, doc } from 'firebase/firestore';
+import { db } from '../../../database/firebase'; // Firestore
 import { salesRepository } from '../../sales/repositories/salesRepository';
 import { productRepository } from '../../inventory/repositories/productRepository';
-import { getDB } from '../../../database/db';
+import { getDB } from '../../../database/db'; // Solo para Ventas por ahora
 
 export const syncService = {
   /**
    * ORQUESTADOR PRINCIPAL
    * Sube Ventas y Actualiza Stock en la Nube
    */
-  async syncAll() {
-    console.log("🔄 Iniciando Ciclo de Sincronización...");
-    
-    // 1. Subir Ventas Pendientes
-    const salesResult = await this.syncPendingSales();
-    
-    // 2. Subir Cambios de Stock (Productos 'Sucios')
-    const productsResult = await this.syncPendingProducts();
+  async syncUp() { 
+    // Verificación rápida de red
+    if (!navigator.onLine) return { sales: 0, products: 0 };
 
-    return { 
-      sales: salesResult.synced, 
-      products: productsResult.synced 
-    };
+    console.log("🔄 SYNC: Iniciando sincronización subida...");
+    
+    try {
+        // 1. Subir Ventas Pendientes
+        const salesResult = await this.syncPendingSales();
+        
+        // 2. Subir Cambios de Productos (Precios, Stock, Bajas)
+        const productsResult = await this.syncPendingProducts();
+
+        if (salesResult.synced > 0 || productsResult.synced > 0) {
+            console.log(`✅ SYNC: Finalizado. Ventas: ${salesResult.synced}, Productos: ${productsResult.synced}`);
+        }
+        
+        return { 
+          sales: salesResult.synced, 
+          products: productsResult.synced 
+        };
+    } catch (error) {
+        console.error("❌ SYNC ERROR:", error);
+        return { sales: 0, products: 0 };
+    }
   },
 
   /**
-   * Subir ventas (Ya lo teníamos)
+   * 📤 SYNC VENTAS
+   * (Mantenemos lógica inline por ahora hasta refactorizar salesRepository)
    */
   async syncPendingSales() {
     const localDb = await getDB();
     const allSales = await salesRepository.getTodaySales(); 
-    const pendingSales = allSales.filter(s => s.syncStatus === 'PENDING');
+    
+    // Filtramos usando minúscula 'pending' por consistencia
+    const pendingSales = allSales.filter(s => 
+        s.syncStatus === 'pending' || s.syncStatus === 'PENDING'
+    );
 
     if (pendingSales.length === 0) return { synced: 0 };
 
     console.log(`📤 Subiendo ${pendingSales.length} ventas...`);
+    
     const batch = writeBatch(db);
     const salesCollection = collection(db, 'sales');
     const syncedIds = [];
 
     for (const sale of pendingSales) {
-      const docRef = doc(salesCollection);
-      // Limpiamos datos locales antes de subir
+      const docRef = doc(salesCollection); // Genera ID nuevo de Firestore
+      
+      // Limpiamos datos locales que no sirven en la nube
       const { localId, syncStatus, ...cleanSale } = sale;
       
       batch.set(docRef, {
           ...cleanSale,
+          // 🔥 FIX CRÍTICO: Aseguramos formato ISO String para que el Dashboard lo encuentre
+          date: new Date(cleanSale.date).toISOString(), 
+          
           firestoreId: docRef.id,
           syncedAt: new Date().toISOString(),
-          origin: 'POS_LOCAL_01' // Ideal para multi-sucursal
+          origin: 'POS_LOCAL_01' // Ideal parametrizar esto en settings
       });
       syncedIds.push(sale.localId);
     }
 
     await batch.commit();
 
-    // Marcar como SYNCED localmente
+    // Actualizar estado local a 'synced'
     const tx = localDb.transaction('sales', 'readwrite');
     for (const id of syncedIds) {
       const s = await tx.store.get(id);
-      if (s) { s.syncStatus = 'SYNCED'; tx.store.put(s); }
+      if (s) { 
+          s.syncStatus = 'synced'; 
+          s.firestoreId = s.firestoreId || 'uploaded'; 
+          tx.store.put(s); 
+      }
     }
     await tx.done;
 
@@ -67,53 +93,52 @@ export const syncService = {
   },
 
   /**
-   * 🔥 NUEVO: Subir productos cuyo stock cambió localmente
+   * 📦 SYNC PRODUCTOS
+   * Usa la nueva lógica robusta del Repository
    */
   async syncPendingProducts() {
-    const localDb = await getDB();
-    const allProducts = await productRepository.getAll();
-    
-    // Filtramos productos que se hayan modificado recientemente
-    // (Para hacerlo simple, asumimos que si updatedAt > lastSync, se sube.
-    //  Por ahora, subiremos todos los que tengan cambios locales pendientes si implementamos un flag,
-    //  o más sencillo: subimos los que tengan stock diferente a la nube.
-    //  ESTRATEGIA ENTERPRISE: Agregaremos un flag 'syncStatus' a los productos en productRepository).
-    
-    const pendingProducts = allProducts.filter(p => p.syncStatus === 'PENDING');
+    // 1. Obtener pendientes desde el repositorio (abstracción limpia)
+    const pendingProducts = await productRepository.getPendingSync();
 
     if (pendingProducts.length === 0) return { synced: 0 };
 
-    console.log(`📦 Actualizando stock nube de ${pendingProducts.length} productos...`);
+    console.log(`📦 Sincronizando ${pendingProducts.length} productos con la nube...`);
     
-    // Firebase Batch (Límite 500 ops, aquí lo simplificamos)
     const batch = writeBatch(db);
     const productsCollection = collection(db, 'products');
-
     const syncedIds = [];
 
     for (const product of pendingProducts) {
-      // Usamos el ID del producto como ID del documento en Firestore para consistencia
-      const docRef = doc(productsCollection, product.id); 
+      const docRef = doc(productsCollection, product.id);
       
-      const { syncStatus, ...cleanProduct } = product;
+      // Separamos la metadata local del objeto real de negocio
+      const { syncStatus, ...dataToUpload } = product;
 
-      batch.set(docRef, {
-        ...cleanProduct,
-        lastUpdated: new Date().toISOString()
-      }, { merge: true }); // Merge para no pisar otros datos si hubiera
+      // LÓGICA DE BORRADO (Soft Delete)
+      if (product.deleted) {
+          // Si está borrado localmente, actualizamos flags en nube
+          batch.set(docRef, {
+              ...dataToUpload,
+              active: false,
+              deleted: true,
+              lastUpdated: new Date().toISOString()
+          }, { merge: true });
+      } else {
+          // Actualización normal (Stock, Precio, Nombre)
+          batch.set(docRef, {
+              ...dataToUpload,
+              lastUpdated: new Date().toISOString()
+          }, { merge: true });
+      }
 
       syncedIds.push(product.id);
     }
 
+    // Ejecutar Batch
     await batch.commit();
 
-    // Marcar como SYNCED
-    const tx = localDb.transaction('products', 'readwrite');
-    for (const id of syncedIds) {
-      const p = await tx.store.get(id);
-      if (p) { p.syncStatus = 'SYNCED'; tx.store.put(p); }
-    }
-    await tx.done;
+    // 2. Avisar al repositorio que ya se subieron (él se encarga de limpiar/actualizar IDB)
+    await productRepository.markAsSynced(syncedIds);
 
     return { synced: pendingProducts.length };
   }

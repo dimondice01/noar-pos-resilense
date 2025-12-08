@@ -18,15 +18,16 @@ export const salesRepository = {
 
     // 1. Preparar datos de la venta
     const saleId = `sale_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    
+    const timestamp = new Date().toISOString(); // Estandarización ISO
+
     const sale = {
       ...saleData,
       localId: saleId,
-      // Aseguramos que exista 'date' para el ordenamiento en listados
-      date: saleData.date || new Date(), 
-      createdAt: new Date(),
+      // Aseguramos formato ISO para sincronización y ordenamiento
+      date: saleData.date ? new Date(saleData.date).toISOString() : timestamp, 
+      createdAt: timestamp,
       status: 'COMPLETED', 
-      syncStatus: 'PENDING',
+      syncStatus: 'pending', // Usamos minúscula por consistencia
     };
 
     // 2. Procesar cada ítem del carrito (Descuento de Stock)
@@ -47,8 +48,8 @@ export const salesRepository = {
         await productsStore.put({
             ...product,
             stock: newStock,
-            updatedAt: new Date(),
-            syncStatus: 'PENDING' // 👈 LA CLAVE DEL SYNC DE STOCK
+            updatedAt: timestamp,
+            syncStatus: 'pending' // 👈 LA CLAVE DEL SYNC DE STOCK
         });
 
         // d) Registrar en KARDEX (Auditoría)
@@ -57,7 +58,7 @@ export const salesRepository = {
             type: 'STOCK_OUT', 
             description: `Venta POS #${saleId.slice(-4)}`,
             amount: -quantityToDeduct, 
-            date: new Date(),
+            date: timestamp,
             user: saleData.client?.name || 'Cliente', 
             refId: saleId 
         });
@@ -98,7 +99,7 @@ export const salesRepository = {
     // 3. Normalizar Recibos para que parezcan Ventas en la tabla (Adapter Pattern)
     const normalizedReceipts = todayReceipts.map(r => ({
         localId: r.referenceId || `rec_${r.id}`,
-        date: r.date,
+        date: r.date, // Se asume ISO
         total: r.amount,
         type: 'RECEIPT', // 🚩 Flag para distinguir en UI
         
@@ -122,5 +123,23 @@ export const salesRepository = {
   // Mantener por compatibilidad (aunque getTodayOperations es el recomendado)
   async getTodaySales() {
     return this.getTodayOperations();
+  },
+
+  // 🔥 NUEVO: Forzar estado pendiente para todas las ventas
+  // (Usado para migración o reenvío masivo a Firebase)
+  async forcePendingState() {
+    const db = await getDB();
+    const tx = db.transaction('sales', 'readwrite');
+    const store = tx.store;
+    
+    const allSales = await store.getAll();
+    
+    for (const sale of allSales) {
+        sale.syncStatus = 'pending'; // Marcar para subir
+        store.put(sale);
+    }
+    
+    await tx.done;
+    return allSales.length;
   }
 };

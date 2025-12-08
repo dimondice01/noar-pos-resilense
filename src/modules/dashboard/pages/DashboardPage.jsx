@@ -5,7 +5,8 @@ import {
     TrendingUp, Users, Package, AlertTriangle, 
     Wallet, ArrowRight, RefreshCw, DollarSign,
     Lock, Unlock, Monitor, FileText, CheckCircle2, History, X, 
-    ShoppingBag, Banknote, Shield, Key, BarChart3, TrendingDown
+    ShoppingBag, Banknote, Shield, Key, BarChart3, TrendingDown,
+    Activity, Signal
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
@@ -14,6 +15,9 @@ import { useAuthStore } from '../../auth/store/useAuthStore';
 import { productRepository } from '../../inventory/repositories/productRepository';
 import { cashRepository } from '../../cash/repositories/cashRepository';
 import { salesRepository } from '../../sales/repositories/salesRepository';
+
+// 🔥 HOOK REAL-TIME
+import { useCloudDashboard } from '../hooks/useCloudDashboard';
 
 // UI
 import { Card } from '../../../core/ui/Card';
@@ -50,14 +54,13 @@ const AdminCashAuditPanel = ({ allShifts, loadIntelligence, navigate }) => {
     const [isReportModalOpen, setIsReportModalOpen] = useState(false);
     const [reportData, setReportData] = useState(null);
     const [loadingAudit, setLoadingAudit] = useState(false);
-    const [auditTarget, setAuditTarget] = useState(null); // Para confirmar auditoría al cerrar
+    const [auditTarget, setAuditTarget] = useState(null);
 
     // Filtros
     const shiftsToAudit = allShifts.filter(s => s.status === 'CLOSED' && !s.audited);
     const openShifts = allShifts.filter(s => s.status === 'OPEN');
     const auditedShifts = allShifts.filter(s => s.status === 'CLOSED' && s.audited).sort((a, b) => new Date(b.closedAt) - new Date(a.closedAt));
 
-    // Acción 1: Iniciar Auditoría (Abre el ticket para revisar)
     const handleStartAudit = async (shift) => {
         setLoadingAudit(true);
         try {
@@ -69,16 +72,11 @@ const AdminCashAuditPanel = ({ allShifts, loadIntelligence, navigate }) => {
                 deviation: shift.difference, 
                 closeTime: shift.closedAt 
             });
-            setAuditTarget(shift); // Guardamos el objetivo para confirmar luego
+            setAuditTarget(shift);
             setIsReportModalOpen(true);
-        } catch (error) { 
-            alert(`❌ Error al cargar datos: ${error.message}`); 
-        } finally { 
-            setLoadingAudit(false); 
-        }
+        } catch (error) { alert(`❌ Error: ${error.message}`); } finally { setLoadingAudit(false); }
     };
     
-    // Acción 2: Ver Histórico (Solo lectura)
     const handleViewClosedShift = async (shift) => {
         setLoadingAudit(true);
         try {
@@ -90,28 +88,20 @@ const AdminCashAuditPanel = ({ allShifts, loadIntelligence, navigate }) => {
                 deviation: shift.difference, 
                 closeTime: shift.closedAt 
             });
-            setAuditTarget(null); // No auditamos nada, solo vemos
+            setAuditTarget(null);
             setIsReportModalOpen(true);
-        } catch (err) { 
-            alert(err.message); 
-        } finally { 
-            setLoadingAudit(false); 
-        }
+        } catch (err) { alert(err.message); } finally { setLoadingAudit(false); }
     };
 
-    // Acción 3: Confirmar al cerrar modal
     const handleModalClose = async () => {
         setIsReportModalOpen(false);
-        
         if (auditTarget) {
-            const confirm = window.confirm(`¿Confirmar auditoría de la caja de ${auditTarget.userId}?\n\nSe marcará como revisada y pasará al historial.`);
+            const confirm = window.confirm(`¿Confirmar auditoría de la caja de ${auditTarget.userId}?`);
             if (confirm) {
                 try {
                     await cashRepository.updateShift({ ...auditTarget, audited: true });
-                    await loadIntelligence(); // Recargar datos
-                } catch (error) {
-                    alert("Error al guardar: " + error.message);
-                }
+                    await loadIntelligence();
+                } catch (error) { alert("Error: " + error.message); }
             }
             setAuditTarget(null);
         }
@@ -123,22 +113,14 @@ const AdminCashAuditPanel = ({ allShifts, loadIntelligence, navigate }) => {
                 <h3 className="font-bold text-xl text-sys-900 flex items-center gap-2">
                     <FileText size={24} className="text-brand"/> Auditoría de Cajas
                 </h3>
-                <Button 
-                    variant="ghost" 
-                    size="sm" 
-                    onClick={() => navigate('/cash')} 
-                    className="text-brand hover:bg-brand-light font-medium"
-                >
+                <Button variant="ghost" size="sm" onClick={() => navigate('/cash')} className="text-brand hover:bg-brand-light font-medium">
                     📜 Ir al Historial Completo
                 </Button>
             </div>
             
             <div className="grid grid-cols-1 md:grid-cols-3 text-sm font-medium gap-6">
-                
-                {/* COLUMNA 1: PENDIENTES */}
                 <div className="md:col-span-2 space-y-3">
                     <p className="text-xs font-semibold uppercase text-sys-500 mb-2">Pendientes de Revisión ({shiftsToAudit.length})</p>
-                    
                     {shiftsToAudit.length === 0 ? (
                         <div className="bg-green-50 text-green-700 p-4 rounded-xl border border-green-200 flex items-center gap-3">
                             <CheckCircle2/> <p>Todo al día. No hay cierres pendientes.</p>
@@ -156,12 +138,7 @@ const AdminCashAuditPanel = ({ allShifts, loadIntelligence, navigate }) => {
                                             </span>
                                         </div>
                                     </div>
-                                    <Button 
-                                        size="sm" 
-                                        onClick={() => handleStartAudit(s)} 
-                                        disabled={loadingAudit} 
-                                        className="bg-red-600 hover:bg-red-700 text-white shadow-lg shadow-red-500/20"
-                                    >
+                                    <Button size="sm" onClick={() => handleStartAudit(s)} disabled={loadingAudit} className="bg-red-600 hover:bg-red-700 text-white shadow-lg shadow-red-500/20">
                                         {loadingAudit ? <RefreshCw className="animate-spin" size={14}/> : "Auditar Z"}
                                     </Button>
                                 </div>
@@ -170,7 +147,6 @@ const AdminCashAuditPanel = ({ allShifts, loadIntelligence, navigate }) => {
                     )}
                 </div>
 
-                {/* COLUMNA 2: RESUMEN */}
                 <div className="space-y-4">
                     <div className="bg-blue-50/50 p-4 rounded-xl border border-blue-100">
                         <p className="text-xs font-bold uppercase text-blue-600 mb-2 flex items-center gap-2">
@@ -195,24 +171,15 @@ const AdminCashAuditPanel = ({ allShifts, loadIntelligence, navigate }) => {
                                 <div key={shift.id} className="flex justify-between items-center text-xs p-2 hover:bg-white rounded-lg transition-colors group border border-transparent hover:border-sys-200">
                                     <div>
                                         <span className="font-bold text-sys-700 block">{shift.userId}</span>
-                                        <span className="text-[10px] text-sys-400">{new Date(shift.closedAt).toLocaleDateString()}</span>
+                                        <span className="text-xs text-sys-400">{new Date(shift.closedAt).toLocaleDateString()}</span>
                                     </div>
-                                    <Button 
-                                        onClick={() => handleViewClosedShift(shift)} 
-                                        variant="ghost" 
-                                        size="sm"
-                                        className="h-7 px-2 text-[10px] text-sys-500 hover:text-brand hover:bg-brand-light"
-                                    >
-                                        Ver Z
-                                    </Button>
+                                    <Button onClick={() => handleViewClosedShift(shift)} variant="ghost" size="sm" className="h-7 px-2 text-[10px] text-sys-500 hover:text-brand hover:bg-brand-light">Ver Z</Button>
                                 </div>
                             ))}
                         </div>
                     </div>
                 </div>
             </div>
-            
-            {/* Modal de Reporte Z con cierre controlado */}
             <TicketZModal isOpen={isReportModalOpen} onClose={handleModalClose} reportData={reportData} />
         </Card>
     );
@@ -230,26 +197,18 @@ const AdminSecurityPanel = ({ onUpdatePin }) => {
                 <h3 className="font-bold text-sys-900 text-lg">Seguridad de Caja</h3>
             </div>
             <p className="text-xs text-sys-500 mb-4 leading-relaxed">
-                Configura el PIN maestro para autorizar <b>Retiros de Efectivo</b> y operaciones sensibles en las cajas.
+                Configura el PIN maestro para autorizar <b>Retiros de Efectivo</b>.
             </p>
             <div className="flex gap-2 items-center">
                 <div className="relative flex-1">
                     <Key size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-sys-400" />
                     <input 
-                        type="password" 
-                        placeholder="Nuevo PIN (6 dígitos)" 
+                        type="password" placeholder="Nuevo PIN" 
                         className="w-full pl-9 pr-4 py-2 rounded-lg border border-sys-300 focus:border-slate-800 outline-none text-sm font-mono tracking-widest"
-                        maxLength={6}
-                        value={newPin}
-                        onChange={(e) => setNewPin(e.target.value)}
+                        maxLength={6} value={newPin} onChange={(e) => setNewPin(e.target.value)}
                     />
                 </div>
-                <Button 
-                    size="sm" 
-                    className="bg-slate-800 hover:bg-slate-900 text-white"
-                    onClick={() => { onUpdatePin(newPin); setNewPin(''); }}
-                    disabled={newPin.length < 4}
-                >
+                <Button size="sm" className="bg-slate-800 hover:bg-slate-900 text-white" onClick={() => { onUpdatePin(newPin); setNewPin(''); }} disabled={newPin.length < 4}>
                     Actualizar
                 </Button>
             </div>
@@ -376,23 +335,31 @@ const CajeroDashboardView = ({ metrics, money, handleOpenShift, handleCloseShift
     );
 };
 
-const AdminDashboardView = ({ metrics, money, navigate, loadIntelligence, handleUpdatePin, allShifts }) => (
+const AdminDashboardView = ({ metrics, money, navigate, loadIntelligence, handleUpdatePin, allShifts, cloudLoading }) => (
     <div className="space-y-8 pb-20 animate-in fade-in">
-        {/* KPIs GLOBALES (HOY REAL) */}
+        
+        {/* KPI HERO REAL-TIME */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
             <Card className="col-span-1 md:col-span-2 bg-brand text-white border-none p-6 relative overflow-hidden shadow-lg shadow-brand/20">
                 <div className="relative z-10">
                     <div className="flex justify-between items-start mb-4">
                         <div>
-                            <p className="text-blue-100 font-medium uppercase tracking-wider text-xs">Ventas Globales (Hoy)</p>
-                            <h1 className="text-5xl font-black tracking-tight mt-1">$ {money(metrics.todaySales)}</h1>
+                            <div className="flex items-center gap-2 mb-1">
+                                <p className="text-blue-100 font-medium uppercase tracking-wider text-xs">Ventas Globales (Hoy)</p>
+                                <span className="bg-red-500/20 border border-red-500/50 text-red-200 text-[10px] px-1.5 rounded animate-pulse font-bold flex items-center gap-1">
+                                    <div className="w-1.5 h-1.5 rounded-full bg-red-500"></div> LIVE
+                                </span>
+                            </div>
+                            <h1 className="text-5xl font-black tracking-tight mt-1">
+                                {cloudLoading ? '...' : `$ ${money(metrics.todaySales)}`}
+                            </h1>
                         </div>
-                        <div className="p-3 bg-white/20 rounded-2xl backdrop-blur-md"><BarChart3 size={32}/></div>
+                        <div className="p-3 bg-white/20 rounded-2xl backdrop-blur-md"><Signal size={32}/></div>
                     </div>
                     <div className="grid grid-cols-3 gap-4 border-t border-white/10 pt-4">
                         <div><p className="text-[10px] uppercase opacity-70">Efectivo</p><p className="font-bold text-lg">$ {money(metrics.salesByMethod.cash)}</p></div>
                         <div><p className="text-[10px] uppercase opacity-70">Digital</p><p className="font-bold text-lg">$ {money(metrics.salesByMethod.digital)}</p></div>
-                        <div><p className="text-[10px] uppercase opacity-70">Fiscalizado</p><p className="font-bold text-lg">{metrics.fiscalCount} tkt</p></div>
+                        <div><p className="text-[10px] uppercase opacity-70">Tickets</p><p className="font-bold text-lg">{metrics.fiscalCount}</p></div>
                     </div>
                 </div>
             </Card>
@@ -414,28 +381,68 @@ const AdminDashboardView = ({ metrics, money, navigate, loadIntelligence, handle
             />
         </div>
         
-        <AdminCashAuditPanel allShifts={allShifts} loadIntelligence={loadIntelligence} navigate={navigate} />
+        {/* LIVE ACTIVITY FEED (NUEVO) */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div className="lg:col-span-2">
+                 <AdminCashAuditPanel allShifts={allShifts} loadIntelligence={loadIntelligence} navigate={navigate} />
+            </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 animate-in slide-in-from-bottom-4">
-            <Card className="p-6 border-l-4 border-l-orange-500 hover:shadow-lg transition-all cursor-pointer" onClick={() => navigate('/clients')}>
-                <div className="flex items-center gap-3 mb-4">
-                    <div className="p-2 bg-orange-100 rounded-lg text-orange-600"><Users size={20} /></div>
-                    <h3 className="font-bold text-sys-900 text-lg">Créditos</h3>
+            <div className="space-y-6">
+                 {/* FEED DE VENTAS */}
+                 <Card className="p-0 overflow-hidden">
+                    <div className="p-4 border-b border-sys-100 bg-sys-50 flex justify-between items-center">
+                         <h3 className="font-bold text-sys-800 flex items-center gap-2"><Activity size={18}/> Actividad Reciente</h3>
+                    </div>
+                    <div className="divide-y divide-sys-100 max-h-[300px] overflow-y-auto">
+                        {metrics.recentSales && metrics.recentSales.length > 0 ? (
+                            metrics.recentSales.map((sale) => (
+                                <div key={sale.id} className="p-3 hover:bg-sys-50 transition-colors flex items-center justify-between text-sm">
+                                    <div className="flex items-center gap-3">
+                                        <div className="w-8 h-8 rounded-full bg-sys-100 flex items-center justify-center text-sys-500">
+                                            <ShoppingBag size={14} />
+                                        </div>
+                                        <div>
+                                            <p className="font-bold text-sys-800">#{sale.id.slice(-4)}</p>
+                                            <p className="text-[10px] text-sys-500">{sale.time} hs • {sale.items} un.</p>
+                                        </div>
+                                    </div>
+                                    <div className="text-right">
+                                        <p className="font-bold text-sys-900">$ {money(sale.total)}</p>
+                                        <span className="text-[10px] uppercase text-sys-400">{sale.method === 'CASH' ? 'EFVO' : 'DIGITAL'}</span>
+                                    </div>
+                                </div>
+                            ))
+                        ) : (
+                            <div className="p-6 text-center text-sys-400 text-xs italic">Sin ventas recientes hoy</div>
+                        )}
+                    </div>
+                 </Card>
+
+                {/* Accesos Rápidos Verticales */}
+                <div className="grid grid-cols-1 gap-3">
+                    <Card className="p-4 border-l-4 border-l-orange-500 cursor-pointer hover:shadow-md transition-all" onClick={() => navigate('/clients')}>
+                        <div className="flex justify-between items-center">
+                            <div>
+                                <p className="text-xs text-sys-500 uppercase font-bold">Créditos / Deudas</p>
+                                <p className="text-2xl font-black text-sys-900">$ {money(metrics.totalDebt)}</p>
+                            </div>
+                            <Users className="text-orange-500 opacity-20" size={32}/>
+                        </div>
+                    </Card>
+
+                    <Card className="p-4 border-l-4 border-l-purple-500 cursor-pointer hover:shadow-md transition-all" onClick={() => navigate('/inventory')}>
+                        <div className="flex justify-between items-center">
+                            <div>
+                                <p className="text-xs text-sys-500 uppercase font-bold">Stock Crítico</p>
+                                <p className="text-2xl font-black text-sys-900">{metrics.lowStockCount}</p>
+                            </div>
+                            <Package className="text-purple-500 opacity-20" size={32}/>
+                        </div>
+                    </Card>
+
+                    <AdminSecurityPanel onUpdatePin={handleUpdatePin} />
                 </div>
-                <p className="text-3xl font-black text-sys-900 tracking-tight">$ {money(metrics.totalDebt)}</p>
-                <p className="text-xs text-sys-500 mt-1">Deuda clientes</p>
-            </Card>
-
-            <Card className="p-6 border-l-4 border-l-purple-500 hover:shadow-lg transition-all cursor-pointer" onClick={() => navigate('/inventory')}>
-                <div className="flex items-center gap-3 mb-4">
-                    <div className="p-2 bg-purple-100 rounded-lg text-purple-600"><Package size={20} /></div>
-                    <h3 className="font-bold text-sys-900 text-lg">Stock Bajo</h3>
-                </div>
-                <p className="text-3xl font-black text-sys-900">{metrics.lowStockCount}</p>
-                <p className="text-xs text-sys-500 mt-1">Productos críticos</p>
-            </Card>
-
-            <AdminSecurityPanel onUpdatePin={handleUpdatePin} />
+            </div>
         </div>
         
         <QuickActionsPanel navigate={navigate} isAdmin={true} />
@@ -450,186 +457,184 @@ export const DashboardPage = () => {
     const { user } = useAuthStore(); 
     
     const [loading, setLoading] = useState(true);
+    
+    // ESTADO LOCAL (Base)
     const [metrics, setMetrics] = useState({ 
         todaySales: 0, cashInHand: 0, digitalSales: 0, totalExpenses: 0, 
         fiscalCount: 0, salesByMethod: { cash: 0, digital: 0 },
-        activeShiftsCount: 0, activeShift: null, allShifts: [], totalDebt: 0, lowStockCount: 0
+        activeShiftsCount: 0, activeShift: null, allShifts: [], totalDebt: 0, lowStockCount: 0,
+        recentSales: [] 
     });
 
     const [isExpenseModalOpen, setIsExpenseModalOpen] = useState(false);
     const [isWithdrawalModalOpen, setIsWithdrawalModalOpen] = useState(false); 
     
-    if (!user) return <div className="p-10 text-center text-red-500">Error: Usuario no autenticado.</div>;
+    const isAdmin = user?.role?.toUpperCase() === 'ADMIN';
 
-    const isAdmin = user.role?.toUpperCase() === 'ADMIN';
+    // 🔥 HOOK DE NUBE (Solo activo si es Admin, aunque lo llamamos siempre por reglas de hooks)
+    const cloudStats = useCloudDashboard();
+
+    if (!user) return <div className="p-10 text-center text-red-500">Error: Usuario no autenticado.</div>;
     const money = (val) => val ? val.toLocaleString('es-AR', {minimumFractionDigits: 2}) : '0.00';
 
     useEffect(() => { if (user) loadIntelligence(); }, [user.name, user.role]);
 
-    // 🔥 LOGICA "A PRUEBA DE BALAS" REVISADA
     const loadIntelligence = async () => {
         setLoading(true);
         let products = [], allShifts = [], allSales = [];
 
-        // 1. CARGA INDEPENDIENTE (Para que no colapse si falla uno)
-        try { products = await productRepository.getAll(); } catch(e) { console.error("Err Prod:", e); }
-        try { allShifts = await cashRepository.getAllShifts(); } catch(e) { console.error("Err Shifts:", e); }
+        // 1. CARGA LOCAL (Siempre necesaria para Stock, Cajas y Deudas)
+        try { products = await productRepository.getAll(); } catch(e) {}
+        try { allShifts = await cashRepository.getAllShifts(); } catch(e) {}
         
-        // 🔥 FIX DE VENTAS: Intenta obtener todo, sino usa getTodaySales
-        try { 
-            if (typeof salesRepository.getAll === 'function') {
-                allSales = await salesRepository.getAll();
-            } else if (typeof salesRepository.getTodaySales === 'function') {
+        // Solo cargamos ventas locales si NO es admin (el admin usa la nube)
+        if (!isAdmin) {
+            try { 
                 allSales = await salesRepository.getTodaySales();
-            }
-        } catch(e) { console.error("Err Sales:", e); }
+            } catch(e) {}
+        }
 
-        // Inicializamos valores en 0
+        // Inicializar métricas locales
         let todaySales = 0, salesCash = 0, salesDigital = 0, fiscalCount = 0;
         let totalExpensesToday = 0, totalCashInHand = 0;
-        let lowStockCount = 0;
         let myActiveShift = null, globalActiveShifts = [];
 
         try {
-            // Configurar Shifts
+            // Shifts
             myActiveShift = allShifts.find(s => s.status === 'OPEN' && s.userId === user.name);
             globalActiveShifts = allShifts.filter(s => s.status === 'OPEN');
 
-            // --- A) VENTAS DE HOY (Desde las 00:00) ---
-            const today = new Date();
-            const startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
-            
-            // Filtro robusto: soporta 'date' (legacy) y 'createdAt' (nuevo)
-            const salesToday = allSales.filter(s => {
-                const dateStr = s.date || s.createdAt;
-                if (!dateStr) return false;
-                const d = new Date(dateStr);
-                return !isNaN(d.getTime()) && d.getTime() >= startOfToday;
-            });
-            
-            const mSales = salesToday.reduce((acc, s) => {
-                const total = parseFloat(s.total) || 0;
-                acc.total += total;
-                const method = s.payment?.method || 'unknown';
-                if (method === 'cash') acc.cash += total; else acc.digital += total;
-                if (s.afip?.status === 'APPROVED') acc.fiscalCount++;
-                return acc;
-            }, { total: 0, cash: 0, digital: 0, fiscalCount: 0 });
+            // --- LÓGICA HÍBRIDA ---
+            if (!isAdmin) {
+                // CAJERO: Calcula ventas desde IndexedDB
+                const mSales = allSales.reduce((acc, s) => {
+                    const total = parseFloat(s.total) || 0;
+                    acc.total += total;
+                    const method = s.payment?.method || 'unknown';
+                    if (method === 'CASH') acc.cash += total; else acc.digital += total;
+                    if (s.afip?.status === 'APPROVED') acc.fiscalCount++;
+                    return acc;
+                }, { total: 0, cash: 0, digital: 0, fiscalCount: 0 });
 
-            todaySales = mSales.total;
-            salesCash = mSales.cash;
-            salesDigital = mSales.digital;
-            fiscalCount = mSales.fiscalCount;
+                todaySales = mSales.total;
+                salesCash = mSales.cash;
+                salesDigital = mSales.digital;
+                fiscalCount = mSales.fiscalCount;
+            } else {
+                // ADMIN: Sobrescribe con datos de la Nube (Firebase Hook)
+                // Se actualizará en el render mediante la variable combinada, 
+                // pero aquí inicializamos para evitar parpadeos si falla la nube.
+            }
 
-            // --- B) CAJA: GASTOS Y EFECTIVO ---
-            const shiftsForExpenses = allShifts.filter(s => 
-                s.status === 'OPEN' || 
-                (s.closedAt && new Date(s.closedAt).getTime() >= startOfToday)
-            );
+            // Gastos y Efectivo en Caja (Local calculation per active shift logic)
+            // Esto sigue siendo local porque los gastos no se están subiendo a Firebase en tiempo real aún
+            const startOfToday = new Date().setHours(0,0,0,0);
+            const shiftsForExpenses = allShifts.filter(s => s.status === 'OPEN' || (s.closedAt && new Date(s.closedAt).getTime() >= startOfToday));
 
-            // Obtenemos balances uno por uno para seguridad
             for (const shift of shiftsForExpenses) {
                 try {
                     const balance = await cashRepository.getShiftBalance(shift.id);
-                    
                     if (isAdmin || shift.id === myActiveShift?.id) {
                         totalExpensesToday += (balance.expenses || 0);
+                        if (shift.status === 'OPEN') totalCashInHand += (balance.totalCash || 0);
                     }
-
-                    if (shift.status === 'OPEN') {
-                        if (isAdmin || shift.id === myActiveShift?.id) {
-                            totalCashInHand += (balance.totalCash || 0);
-                        }
-                    }
-                } catch (e) { console.error("Err Balance:", e); }
+                } catch (e) {}
             }
             
-            lowStockCount = products.filter(p => p.stock <= (p.minStock || 5)).length;
+            const lowStockCount = products.filter(p => p.stock <= (p.minStock || 5)).length;
 
-        } catch (error) {
-            console.error("Critical calculation error (ignored):", error);
-        }
+            setMetrics(prev => ({
+                ...prev,
+                todaySales, // Si es admin, esto se ignora visualmente
+                salesByMethod: { cash: salesCash, digital: salesDigital },
+                fiscalCount,
+                totalExpenses: totalExpensesToday,
+                cashInHand: totalCashInHand,
+                activeShift: myActiveShift,
+                activeShiftsCount: globalActiveShifts.length,
+                allShifts: allShifts, 
+                lowStockCount,
+                totalDebt: 0 // TODO: Implementar repositorio de deuda real
+            }));
 
-        // SIEMPRE ACTUALIZAMOS EL ESTADO CON LO QUE HAYA (Para mostrar listas)
-        setMetrics({
-            todaySales,
-            salesByMethod: { cash: salesCash, digital: salesDigital },
-            fiscalCount,
-            totalExpenses: totalExpensesToday,
-            cashInHand: totalCashInHand,
-            activeShift: myActiveShift,
-            activeShiftsCount: globalActiveShifts.length,
-            allShifts: allShifts, 
-            lowStockCount,
-            totalDebt: 0
-        });
-        
+        } catch (error) { console.error("Error Dashboard:", error); }
         setLoading(false);
     };
 
+    // --- FUSIÓN FINAL DE DATOS (LOCAL + NUBE) ---
+    const finalMetrics = isAdmin ? {
+        ...metrics,
+        todaySales: cloudStats.totalSales, // 🔥 OVERRIDE CON NUBE
+        salesByMethod: { 
+            cash: cloudStats.cashTotal, 
+            digital: cloudStats.digitalTotal 
+        },
+        fiscalCount: cloudStats.count,
+        recentSales: cloudStats.recentSales // 🔥 FEED EN VIVO
+    } : metrics;
+
+    // Handlers (Sin cambios)
     const handleOpenShift = async () => {
-        const input = prompt("Monto inicial en caja (Fondo de Cambio):", "1000");
+        const input = prompt("Monto inicial en caja:", "1000");
         if (input === null) return;
         const amount = parseFloat(input);
         if (isNaN(amount) || amount < 0) return alert("Monto inválido");
-        try { await cashRepository.openShift(amount, user?.name); await loadIntelligence(); alert("✅ Caja abierta con éxito!"); } catch (error) { alert(error.message); }
+        try { await cashRepository.openShift(amount, user?.name); await loadIntelligence(); alert("✅ Caja abierta!"); } catch (e) { alert(e.message); }
     };
     
     const handleCloseShift = async () => {
         if (!metrics.activeShift) return alert("No hay turno abierto.");
-        const declaredCashStr = prompt("CIERRE CIEGO DE CAJA:\n\nPor favor, cuente el dinero físico y escriba el total.\n\nEl sistema no le dirá cuánto debería haber.", "");
-        if (declaredCashStr === null || declaredCashStr.trim() === "") return;
+        const declaredCashStr = prompt("CIERRE CIEGO DE CAJA:\n\nCuente el dinero físico y escriba el total.", "");
+        if (!declaredCashStr) return;
         const declaredCash = parseFloat(declaredCashStr);
-        if (isNaN(declaredCash) || declaredCash < 0) return alert("Monto inválido.");
+        if (isNaN(declaredCash)) return alert("Inválido.");
 
         try {
             setLoading(true);
             const balance = await cashRepository.getShiftBalance(metrics.activeShift.id);
             await cashRepository.closeShift(metrics.activeShift.id, { expectedCash: balance.totalCash, declaredCash });
-            alert("✅ Cierre registrado. Notifique al Administrador.");
+            alert("✅ Cierre registrado.");
             await loadIntelligence();
         } catch (error) { alert(`❌ Error: ${error.message}`); } finally { setLoading(false); }
     };
 
     const handleRegisterExpense = async ({ amount, description }) => {
-        try {
-            await cashRepository.registerExpense(amount, description, '', user?.name);
-            await loadIntelligence();
-            alert(`✅ Gasto de $${amount} registrado.`);
-        } catch (error) { alert(error.message); }
+        try { await cashRepository.registerExpense(amount, description, '', user?.name); await loadIntelligence(); alert(`✅ Gasto registrado.`); } catch (e) { alert(e.message); }
     };
 
     const handleRegisterWithdrawal = async ({ amount, description, adminPin }) => {
         try {
             const storedPin = await cashRepository.getAdminCashPin();
-            const validPin = storedPin || "1234"; 
-            if (adminPin !== validPin) return alert("⛔ PIN DE ADMINISTRADOR INCORRECTO.");
-
+            if (adminPin !== (storedPin || "1234")) return alert("⛔ PIN INCORRECTO.");
             await cashRepository.registerWithdrawal(amount, description, 'Autorizado por PIN', user?.name);
             await loadIntelligence();
-            alert(`✅ Retiro de $${amount} autorizado.`);
-        } catch (error) { alert(error.message); }
+            alert(`✅ Retiro autorizado.`);
+        } catch (e) { alert(e.message); }
     };
 
     const handleUpdatePin = async (newPin) => {
-        if (!newPin || newPin.length < 4) return alert("El PIN debe tener al menos 4 dígitos.");
+        if (!newPin || newPin.length < 4) return alert("Mínimo 4 dígitos.");
         await cashRepository.setAdminCashPin(newPin);
-        alert("✅ PIN maestro actualizado.");
+        alert("✅ PIN actualizado.");
     };
     
-    if (loading) return <div className="p-10 text-center animate-pulse">Cargando sistema...</div>;
+    if (loading && !finalMetrics.allShifts.length) return <div className="p-10 text-center animate-pulse">Cargando sistema...</div>;
 
     return (
         <div className="w-full">
             {isAdmin ? (
                 <AdminDashboardView 
-                    metrics={metrics} money={money} navigate={navigate} 
-                    loadIntelligence={loadIntelligence} handleUpdatePin={handleUpdatePin}
-                    allShifts={metrics.allShifts}
+                    metrics={finalMetrics} 
+                    money={money} 
+                    navigate={navigate} 
+                    loadIntelligence={loadIntelligence} 
+                    handleUpdatePin={handleUpdatePin}
+                    allShifts={finalMetrics.allShifts}
+                    cloudLoading={cloudStats.loading}
                 />
             ) : (
                 <CajeroDashboardView 
-                    metrics={metrics} money={money} navigate={navigate} 
+                    metrics={finalMetrics} money={money} navigate={navigate} 
                     handleOpenShift={handleOpenShift} handleCloseShift={handleCloseShift}
                     onExpenseClick={() => setIsExpenseModalOpen(true)}
                     onWithdrawalClick={() => setIsWithdrawalModalOpen(true)}

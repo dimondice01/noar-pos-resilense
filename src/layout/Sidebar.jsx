@@ -2,7 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { NavLink } from 'react-router-dom';
 import { 
   LayoutDashboard, ShoppingCart, Package, Settings, 
-  FileText, Cloud, RefreshCw, LogOut, User, ShieldCheck, Wallet 
+  FileText, Cloud, RefreshCw, LogOut, User, ShieldCheck, Wallet,
+  Users // 👈 IMPORTANTE: Agregamos el ícono de usuarios
 } from 'lucide-react';
 
 import { cn } from '../core/utils/cn';
@@ -182,12 +183,13 @@ export const Sidebar = () => {
           <MenuLink to="/" icon={LayoutDashboard} label="Dashboard" />
           <MenuLink to="/pos" icon={ShoppingCart} label="Punto de Venta" />
           <MenuLink to="/sales" icon={FileText} label="Ventas" />
+          {/* 🔥 AGREGADO: Módulo de Clientes */}
+          <MenuLink to="/clients" icon={Users} label="Clientes" />
 
           {/* Accesible SOLO ADMIN */}
           {isAdmin && (
             <div className="animate-in slide-in-from-left-4 fade-in duration-300">
                 <div className="px-4 py-2 text-xs font-semibold text-sys-400 uppercase tracking-wider mt-6 mb-1">Gestión & Control</div>
-                {/* 🔥 LINK AGREGADO: Control de Caja */}
                 <MenuLink to="/cash" icon={Wallet} label="Control de Caja" />
                 <MenuLink to="/inventory" icon={Package} label="Inventario" />
                 <MenuLink to="/settings" icon={Settings} label="Configuración" />

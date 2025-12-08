@@ -16,14 +16,14 @@ import { PosPage } from './modules/pos/pages/PosPage';
 import { InventoryPage } from './modules/inventory/pages/InventoryPage';
 import { SalesPage } from './modules/sales/pages/SalesPage';
 import { TeamPage } from './modules/settings/pages/TeamPage'; 
-// 🔥 NUEVA IMPORTACIÓN: Control de Tesorería
 import { CashPage } from './modules/cash/pages/CashPage'; 
+// 👇 IMPORTAR LA PÁGINA DE CLIENTES
+import { ClientsPage } from './modules/clients/pages/ClientsPage';
 
 function App() {
     const isDbReady = useDbSeeder();
     const initAuthListener = useAuthStore(state => state.initAuthListener);
 
-    // 🔥 Inicializamos el listener de Auth una sola vez
     useEffect(() => {
         initAuthListener();
     }, []);
@@ -52,12 +52,11 @@ function App() {
                         <Route path="pos" element={<PosPage />} />
                         <Route path="sales" element={<SalesPage />} />
                         <Route path="inventory" element={<InventoryPage />} />
-                        
-                        {/* 💰 RUTA CRÍTICA: Control de Tesorería (CashPage) */}
                         <Route path="cash" element={<CashPage />} />
-                        
-                        {/* ✅ Ruta de Gestión de Equipo (Temporalmente en Settings) */}
                         <Route path="settings" element={<TeamPage />} />
+                        
+                        {/* 👇 AGREGAR LA RUTA AQUÍ */}
+                        <Route path="clients" element={<ClientsPage />} />
                     </Route>
                 </Route>
                 

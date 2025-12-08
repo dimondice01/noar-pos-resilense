@@ -7,24 +7,60 @@ export const productRepository = {
 
   async getAll() {
     const db = await getDB();
-    return db.getAll('products');
+    const all = await db.getAll('products');
+    // Filtramos los que están marcados como borrados (Soft Delete)
+    return all.filter(p => !p.deleted);
   },
 
   async findByCode(code) {
     const db = await getDB();
-    return db.getFromIndex('products', 'code', code);
+    const product = await db.getFromIndex('products', 'code', code);
+    if (product && product.deleted) return null; // Si está borrado lógico, no lo devolvemos
+    return product;
   },
 
-  // ✅ NUEVO: Obtener el historial de un producto específico
   async getHistory(productId) {
     const db = await getDB();
     const allMovs = await db.getAllFromIndex('movements', 'productId', productId);
-    // Ordenamos: Lo más reciente primero
     return allMovs.sort((a, b) => new Date(b.date) - new Date(a.date));
   },
 
   // ==========================================
-  // ✍️ MÉTODOS DE ESCRITURA (Con Trazabilidad)
+  // ☁️ MÉTODOS PARA EL SYNC SERVICE
+  // ==========================================
+
+  // Obtiene todo lo que cambió y no ha subido a Firebase
+  async getPendingSync() {
+    const db = await getDB();
+    const all = await db.getAll('products');
+    // Esto podría optimizarse con un índice 'syncStatus', pero por ahora filter está bien
+    return all.filter(p => p.syncStatus === 'pending');
+  },
+
+  // Marca como sincronizados (Status: synced)
+  async markAsSynced(ids) {
+    const db = await getDB();
+    const tx = db.transaction('products', 'readwrite');
+    const store = tx.objectStore('products');
+
+    for (const id of ids) {
+      const product = await store.get(id);
+      if (product) {
+        // Si estaba marcado para borrar y ya se subió, ahora sí lo borramos físico para limpiar espacio
+        if (product.deleted) {
+             await store.delete(id);
+        } else {
+             // Si es un producto normal, solo actualizamos el estado
+             product.syncStatus = 'synced';
+             await store.put(product);
+        }
+      }
+    }
+    await tx.done;
+  },
+
+  // ==========================================
+  // ✍️ MÉTODOS DE ESCRITURA (Con Trazabilidad + Sync)
   // ==========================================
 
   async saveAll(products) {
@@ -32,15 +68,18 @@ export const productRepository = {
     const tx = db.transaction('products', 'readwrite');
     const store = tx.objectStore('products');
     for (const product of products) {
-      store.put(product);
+      // Al importar masivamente, asumimos que ya vienen "bien" o definimos status
+      store.put({ 
+          ...product, 
+          syncStatus: product.syncStatus || 'synced' // Asumimos synced si es carga masiva inicial
+      });
     }
     return tx.done;
   },
 
-  // 🔥 EL MÉTODO "ESPÍA"
+  // 🔥 EL MÉTODO "ESPÍA" (Refactorizado para Sync)
   async save(product) {
     const db = await getDB();
-    // Abrimos transacción que toca ambas tablas para seguridad
     const tx = db.transaction(['products', 'movements'], 'readwrite');
     const productStore = tx.objectStore('products');
     const movementStore = tx.objectStore('movements');
@@ -48,7 +87,7 @@ export const productRepository = {
     // 1. Preparamos el ID
     const productId = product.id || crypto.randomUUID();
     
-    // 2. Buscamos el estado ANTERIOR (si existe)
+    // 2. Buscamos el estado ANTERIOR
     let oldProduct = null;
     if (product.id) {
         try {
@@ -57,14 +96,17 @@ export const productRepository = {
     }
 
     // 3. Preparamos el objeto a guardar
+    // 🚩 AQUÍ LA MAGIA: syncStatus = 'pending'
     const productToSave = {
       ...product,
       id: productId,
-      updatedAt: new Date()
+      updatedAt: new Date().toISOString(),
+      syncStatus: 'pending', 
+      deleted: false 
     };
 
     // 4. DETECTAR CAMBIOS Y GENERAR MOVIMIENTOS (KARDEX)
-    const timestamp = new Date();
+    const timestamp = new Date().toISOString(); // Usamos ISO para consistencia
     
     // Si no existía antes -> Es CREACIÓN
     if (!oldProduct) {
@@ -72,23 +114,23 @@ export const productRepository = {
             productId,
             type: 'CREATION',
             description: 'Producto dado de alta',
-            user: 'Admin',
+            user: 'Admin', // TODO: Usar usuario real del AuthStore si es posible pasarlo
             date: timestamp
         });
-        // Si nace con stock -> Ingreso Inicial
+        
         if (productToSave.stock > 0) {
             movementStore.put({
                 productId,
                 type: 'STOCK_IN',
                 description: `Stock inicial: ${productToSave.stock}`,
-                amount: productToSave.stock,
+                amount: parseFloat(productToSave.stock),
                 user: 'Admin',
                 date: timestamp
             });
         }
     } else {
-        // Si ya existía -> Es EDICIÓN (Comparamos campos)
-
+        // EDICIÓN
+        
         // A) Cambio de PRECIO
         if (parseFloat(oldProduct.price) !== parseFloat(productToSave.price)) {
             movementStore.put({
@@ -112,12 +154,11 @@ export const productRepository = {
         }
 
         // C) Ajuste Manual de STOCK
-        // (Nota: Las ventas restan stock por otro lado, esto es para ajustes manuales en el modal)
         if (parseFloat(oldProduct.stock) !== parseFloat(productToSave.stock)) {
             const diff = parseFloat(productToSave.stock) - parseFloat(oldProduct.stock);
             movementStore.put({
                 productId,
-                type: diff > 0 ? 'STOCK_ADJUST_IN' : 'STOCK_ADJUST_OUT',
+                type: 'STOCK_ADJUST_' + (diff > 0 ? 'IN' : 'OUT'),
                 description: `Ajuste manual: ${diff > 0 ? '+' : ''}${diff.toFixed(2)}`,
                 amount: Math.abs(diff),
                 user: 'Admin',
@@ -133,9 +174,21 @@ export const productRepository = {
     return productToSave;
   },
 
+  // 🗑️ SOFT DELETE (Para poder sincronizar el borrado)
   async delete(id) {
     const db = await getDB();
-    // Podríamos agregar un movimiento 'DELETION' aquí si quisiéramos auditoría forense
-    return db.delete('products', id);
+    const tx = db.transaction('products', 'readwrite');
+    const store = tx.objectStore('products');
+    
+    const product = await store.get(id);
+    if (product) {
+        // No borramos físico, marcamos para sync
+        product.deleted = true;
+        product.syncStatus = 'pending';
+        product.updatedAt = new Date().toISOString();
+        await store.put(product);
+    }
+    
+    await tx.done;
   }
 };
