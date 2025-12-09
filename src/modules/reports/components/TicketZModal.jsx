@@ -1,19 +1,14 @@
-// src/modules/reports/components/TicketZModal.jsx
 import React, { useRef } from 'react';
-import { X, Printer, Download, TrendingUp, TrendingDown, Clock, AlertTriangle, CheckCircle2 } from 'lucide-react';
+import { X, Download, TrendingUp, TrendingDown, CheckCircle2, ClipboardCheck } from 'lucide-react';
 import { Button } from '../../../core/ui/Button';
 import { cn } from '../../../core/utils/cn';
 
-// Dependencias de PDF (Asumiendo que se instalaron: jspdf, html2canvas)
-// Si fallan, el usuario debe instalar: npm install jspdf html2canvas
 import html2canvas from 'html2canvas'; 
 import jsPDF from 'jspdf';
 
-// Utilidades para formato
 const formatCurrency = (amount) => `$ ${Number(amount).toLocaleString('es-AR', { minimumFractionDigits: 2 })}`;
 
-// --- COMPONENTE ---
-export const TicketZModal = ({ isOpen, onClose, reportData }) => {
+export const TicketZModal = ({ isOpen, onClose, reportData, onConfirmAudit }) => {
   const reportRef = useRef(null);
   
   if (!isOpen || !reportData) return null;
@@ -25,12 +20,10 @@ export const TicketZModal = ({ isOpen, onClose, reportData }) => {
     const reportElement = reportRef.current;
     if (!reportElement) return;
 
-    // 1. Preparación para captura de alta resolución
     const scale = 3; 
     const originalWidth = reportElement.offsetWidth;
     const originalHeight = reportElement.offsetHeight;
 
-    // 2. Generar Canvas (Captura la estructura HTML)
     const canvas = await html2canvas(reportElement, {
       scale: scale, 
       useCORS: true,
@@ -41,51 +34,57 @@ export const TicketZModal = ({ isOpen, onClose, reportData }) => {
       windowHeight: originalHeight
     });
 
-    // 3. Generar PDF (Formato de ticket angosto: 80mm ancho)
     const imgData = canvas.toDataURL('image/jpeg', 1.0);
     const pdf = new jsPDF({
       orientation: 'portrait',
       unit: 'mm',
-      format: [80, 297] // Ancho 80mm, Altura A4 (base)
+      format: [80, 297]
     });
 
-    // Calcula la altura de la imagen en mm para el ancho de 80mm
     const imgWidth = 80;
-    const imgHeight = (canvas.height * imgWidth) / canvas.width / scale; // Dividir por scale para obtener el tamaño real en mm
+    const imgHeight = (canvas.height * imgWidth) / canvas.width / scale;
 
-    // Si la altura supera A4 (297mm), ajustamos el tamaño de la página para evitar cortes
     if (imgHeight > 297) {
         pdf.internal.pageSize.height = imgHeight; 
     }
     
-    // Convertir el canvas al tamaño del PDF
     pdf.addImage(imgData, 'JPEG', 0, 0, imgWidth, imgHeight);
     pdf.save(`Ticket_Z_${new Date().toISOString().substring(0, 10)}.pdf`);
   };
   
-  // Contenedor principal con efecto WOW (zoom-in)
   return (
     <div className="fixed inset-0 z-[90] flex items-center justify-center bg-sys-900/80 backdrop-blur-md p-4 animate-in fade-in zoom-in-95 duration-200 print:hidden">
       
-      {/* Botones de acción flotantes */}
+      {/* Botones de acción flotantes (Header) */}
       <div className="absolute top-4 right-4 flex gap-3 z-[100]">
+         {/* 🔥 BOTÓN DE CONFIRMACIÓN (SOLO SI SE PASA LA FUNCIÓN) */}
+         {onConfirmAudit && (
+             <Button 
+                onClick={onConfirmAudit} 
+                className="bg-green-600 hover:bg-green-700 text-white shadow-xl shadow-green-500/20 border-none animate-bounce-in"
+                title="Aprobar y Cerrar Auditoría"
+             >
+                <ClipboardCheck size={18} className="mr-2" /> Aprobar Auditoría
+             </Button>
+         )}
+
          <Button 
             onClick={handleDownloadPDF} 
-            className="shadow-xl shadow-brand/20"
+            className="shadow-xl shadow-brand/20 bg-white text-sys-900 border border-sys-200 hover:bg-sys-50"
             title="Descargar Reporte PDF"
          >
             <Download size={18} className="mr-2" /> Descargar
          </Button>
-         <Button onClick={onClose} variant="secondary" className="bg-white/10 text-white hover:bg-white/20 border-white/30">
+         
+         <Button onClick={onClose} variant="secondary" className="bg-black/20 text-white hover:bg-red-500/80 border-white/10 backdrop-blur-sm">
             <X size={20} />
          </Button>
       </div>
       
-      {/* Zona de Renderizado Oculta para captura (Ref) */}
+      {/* Zona de Renderizado */}
       <div 
         ref={reportRef}
-        // Tailwind para que el PDF se vea ancho y bien en el modal
-        className="bg-white text-sys-900 font-mono text-[11px] leading-tight w-full max-w-[320px] shadow-lg rounded-xl overflow-y-auto max-h-[90vh]" 
+        className="bg-white text-sys-900 font-mono text-[11px] leading-tight w-full max-w-[320px] shadow-2xl rounded-xl overflow-hidden max-h-[85vh] overflow-y-auto" 
       >
         <div className="p-6">
            <div className="text-center w-full border-b border-sys-900 pb-3 mb-4 space-y-1">
@@ -94,14 +93,12 @@ export const TicketZModal = ({ isOpen, onClose, reportData }) => {
               <p className="text-xs text-sys-500">CAJERO: {reportData.shiftName}</p> 
            </div>
 
-           {/* DATOS GENERALES */}
            <div className="w-full text-left mb-4 text-[11px]">
                <p className="flex justify-between border-b border-dashed border-sys-200 pb-1 mb-1"><span className="font-bold">Fecha/Hora Cierre:</span> {new Date(reportData.closeTime).toLocaleString('es-AR')}</p>
                <p className="flex justify-between border-b border-dashed border-sys-200 pb-1 mb-1"><span className="font-bold">Ventas Totales:</span> {reportData.salesCount}</p>
                <p className="flex justify-between border-b border-dashed border-sys-200 pb-1 mb-1"><span className="font-bold">Balance Inicial:</span> {formatCurrency(reportData.initialAmount)}</p>
            </div>
            
-           {/* RESUMEN FINANCIERO */}
            <div className="w-full border-b border-sys-900 pb-3 mb-4">
               <p className="font-bold text-sm mb-2">RESUMEN POR MEDIO</p>
               <div className="space-y-1 text-xs">
@@ -118,7 +115,6 @@ export const TicketZModal = ({ isOpen, onClose, reportData }) => {
               </div>
            </div>
            
-           {/* CUENTA DE EFECTIVO */}
            <div className="w-full mb-4">
               <p className="font-bold text-sm mb-2">MOVIMIENTOS DE CAJA</p>
               <div className="space-y-1 text-xs">
@@ -131,7 +127,6 @@ export const TicketZModal = ({ isOpen, onClose, reportData }) => {
               </div>
            </div>
            
-           {/* DESVÍO (RESULTADO CLAVE) */}
            <div className={cn(
              "p-4 rounded-xl text-center border-2",
              isPerfectMatch ? "bg-green-50 border-green-200" :
@@ -160,14 +155,12 @@ export const TicketZModal = ({ isOpen, onClose, reportData }) => {
                </div>
            </div>
 
-           {/* DATA FISCAL */}
            <div className="mt-6 border-t border-dashed border-sys-200 pt-4 text-xs text-sys-500 text-center">
               <p className="font-bold mb-1">RESUMEN FISCAL DEL TURNO</p>
               <p>Último Comp. Emitido: <span className="font-bold text-sys-700">{reportData.lastCbte}</span></p>
               <p>Monto Facturado AFIP: <span className="font-bold text-sys-700">{formatCurrency(reportData.totalAfip)}</span></p>
               <p>Comprobantes Pendientes (AFIP): <span className="font-bold text-red-500">{reportData.pendingAfip}</span></p>
            </div>
-
         </div>
       </div>
     </div>

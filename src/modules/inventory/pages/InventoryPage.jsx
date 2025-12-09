@@ -1,14 +1,15 @@
+// src/modules/inventory/pages/InventoryPage.jsx
+
 import React, { useEffect, useState, useRef } from 'react';
 import { 
     Plus, Search, Edit2, Trash2, Package, Scale, AlertTriangle, 
     ArrowUpRight, Filter, CheckSquare, Square, X, History,
-    CloudUpload, DollarSign, RefreshCw 
+    Printer // 👈 Icono para el nuevo botón
 } from 'lucide-react';
+import { useNavigate } from 'react-router-dom'; // 👈 Hook para navegar
 
 import { productRepository } from '../repositories/productRepository';
 import { masterRepository } from '../repositories/masterRepository';
-import { salesRepository } from '../../sales/repositories/salesRepository'; 
-import { syncService } from '../../sync/services/syncService'; 
 
 import { Card } from '../../../core/ui/Card';
 import { Button } from '../../../core/ui/Button';
@@ -19,7 +20,6 @@ import { cn } from '../../../core/utils/cn';
 
 // =================================================================
 // 1. COMPONENTE AUXILIAR: BULK UPDATE MODAL
-// (Definido aquí arriba para evitar errores de referencia)
 // =================================================================
 const BulkUpdateModal = ({ isOpen, onClose, onConfirm, allProducts, masters, manualSelectionIds }) => {
     if (!isOpen) return null;
@@ -117,10 +117,11 @@ const BulkUpdateModal = ({ isOpen, onClose, onConfirm, allProducts, masters, man
 // 2. COMPONENTE PRINCIPAL (INVENTORY PAGE)
 // =================================================================
 export const InventoryPage = () => {
+  const navigate = useNavigate(); // Hook de navegación
+
   // ===================== ESTADOS =====================
   const [products, setProducts] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [isSyncing, setIsSyncing] = useState(false);
   
   // Maestros
   const [masters, setMasters] = useState({ categories: [], brands: [], suppliers: [] });
@@ -206,42 +207,6 @@ export const InventoryPage = () => {
     }
   };
 
-  // ===================== LÓGICA SYNC MANUAL =====================
-  
-  // A) Forzar Productos
-  const handleForceUpload = async () => {
-    if (!confirm("¿Forzar la subida de TODOS los productos a la nube? Esto puede tardar unos segundos.")) return;
-    
-    setIsSyncing(true);
-    try {
-        const count = await productRepository.forcePendingState();
-        const result = await syncService.syncUp();
-        alert(`✅ ¡Éxito! Se sincronizaron ${result.products} productos.`);
-        loadData(); 
-    } catch (error) {
-        console.error(error);
-        alert("Error en la subida: " + error.message);
-    } finally {
-        setIsSyncing(false);
-    }
-  };
-
-  // B) Forzar Ventas (Fix Dashboard)
-  const handleForceSalesUpload = async () => {
-    if (!confirm("⚠️ ¿Deseas reenviar TODAS las ventas locales a Firebase?\n\nÚtil si el Dashboard del Admin está vacío.")) return;
-    
-    setIsSyncing(true);
-    try {
-        const count = await salesRepository.forcePendingState();
-        const result = await syncService.syncUp();
-        alert(`✅ Sincronización terminada.\nVentas subidas: ${result.sales}`);
-    } catch (error) {
-        alert("Error: " + error.message);
-    } finally {
-        setIsSyncing(false);
-    }
-  };
-
   // ===================== FILTROS =====================
   const filteredProducts = products.filter(p => {
     const term = searchTerm.toLowerCase();
@@ -291,7 +256,7 @@ export const InventoryPage = () => {
       const updates = targetProducts.map(p => {
           const newCost = p.cost * (1 + costPct / 100);
           let calculatedPrice = p.price * (1 + pricePct / 100);
-          const newPrice = Math.ceil(calculatedPrice / 50) * 50; // Redondeo a 50
+          const newPrice = Math.ceil(calculatedPrice / 50) * 50; 
           const newMarkup = newCost > 0 ? ((newPrice - newCost) / newCost * 100).toFixed(2) : p.markup;
           return { ...p, cost: newCost, price: newPrice, markup: newMarkup };
       });
@@ -327,27 +292,14 @@ export const InventoryPage = () => {
         </div>
         
         <div className="flex flex-wrap gap-2 justify-end">
-            {/* 🔥 BOTONES DE SINCRONIZACIÓN MANUAL */}
+            
+            {/* 🔥 BOTÓN PARA IR A LA PÁGINA DE ETIQUETAS */}
             <Button 
-                onClick={handleForceUpload} 
-                variant="secondary"
-                disabled={isSyncing}
-                className="bg-blue-50 text-blue-600 border border-blue-200 hover:bg-blue-100 px-3"
-                title="Subir todos los productos a Firebase"
+                variant="secondary" 
+                className="border-purple-200 text-purple-700 bg-purple-50 hover:bg-purple-100 px-3"
+                onClick={() => navigate('/inventory/print')}
             >
-                {isSyncing ? <RefreshCw className="animate-spin mr-2" size={18}/> : <CloudUpload size={18} className="mr-2" />} 
-                Sync Prod
-            </Button>
-
-            <Button 
-                onClick={handleForceSalesUpload} 
-                variant="secondary"
-                disabled={isSyncing}
-                className="bg-green-50 text-green-600 border border-green-200 hover:bg-green-100 px-3"
-                title="Subir todas las ventas a Firebase"
-            >
-                {isSyncing ? <RefreshCw className="animate-spin mr-2" size={18}/> : <DollarSign size={18} className="mr-2" />} 
-                Sync Ventas
+                <Printer size={18} className="mr-2" /> Etiquetas
             </Button>
             
             <div className="w-[1px] h-8 bg-sys-200 mx-1 hidden md:block"></div>

@@ -1,5 +1,8 @@
 {
   "projects": {
-    "default": "noar-pos-prod"
-  }
+    "default": "laesquina-pos",
+    "laesquina": "laesquina-pos"
+  },
+  "targets": {},
+  "etags": {}
 }

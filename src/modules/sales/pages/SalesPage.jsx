@@ -12,7 +12,7 @@ export const SalesPage = () => {
   // ==========================================
   // ESTADOS
   // ==========================================
-  const [operations, setOperations] = useState([]); // Antes 'sales', ahora 'operations' para incluir recibos
+  const [operations, setOperations] = useState([]); 
   const [loadingMap, setLoadingMap] = useState({}); 
   const [selectedOpForTicket, setSelectedOpForTicket] = useState(null); 
 
@@ -25,7 +25,6 @@ export const SalesPage = () => {
 
   const loadOperations = async () => {
     try {
-      // 🔥 Usamos el nuevo método unificado del repositorio
       const all = await salesRepository.getTodayOperations();
       setOperations(all);
     } catch (error) {
@@ -37,15 +36,13 @@ export const SalesPage = () => {
   // LÓGICA DE NEGOCIO
   // ==========================================
 
+  // Se mantiene la función por si se reactiva AFIP en el futuro
   const handleFacturar = async (op) => {
-    // Seguridad: Los recibos de cobranza NO se facturan
     if (op.type === 'RECEIPT') return;
-
     setLoadingMap(prev => ({ ...prev, [op.localId]: true }));
 
     try {
       const factura = await billingService.emitirFactura(op);
-
       const db = await getDB();
       const tx = db.transaction('sales', 'readwrite');
       const store = tx.objectStore('sales');
@@ -64,7 +61,6 @@ export const SalesPage = () => {
       
       await store.put(ventaActualizada);
       await tx.done;
-
       await loadOperations();
 
     } catch (error) {
@@ -107,17 +103,16 @@ export const SalesPage = () => {
                 <th className="p-4 font-semibold whitespace-nowrap">Cliente / Detalle</th>
                 <th className="p-4 font-semibold whitespace-nowrap">Monto</th>
                 <th className="p-4 font-semibold whitespace-nowrap">Pago</th>
-                <th className="p-4 font-semibold whitespace-nowrap">Estado Fiscal</th>
+                {/* <th className="p-4 font-semibold whitespace-nowrap">Estado Fiscal</th> */}
                 <th className="p-4 font-semibold text-right whitespace-nowrap">Acciones</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-sys-100">
               {operations.map((op) => {
                 const isReceipt = op.type === 'RECEIPT';
-                const isFacturado = op.afip?.status === 'APPROVED';
-                const isLoading = loadingMap[op.localId];
+                // const isFacturado = op.afip?.status === 'APPROVED';
+                // const isLoading = loadingMap[op.localId];
                 
-                // 🔥 LECTURA SEGURA DEL MÉTODO DE PAGO (Evita el crash)
                 const paymentMethod = op.payment?.method || op.paymentMethod || 'cash';
 
                 return (
@@ -173,16 +168,14 @@ export const SalesPage = () => {
                       </span>
                     </td>
                     
-                    {/* Estado Fiscal */}
-                    <td className="p-4">
+                    {/* Estado Fiscal (Oculto) */}
+                    {/* <td className="p-4">
                       {isReceipt ? (
-                          <span className="text-[10px] text-sys-400 italic">No Aplica (Recibo X)</span>
+                          <span className="text-[10px] text-sys-400 italic">No Aplica</span>
                       ) : isFacturado ? (
                         <div className="flex items-center gap-2 text-green-600 bg-green-50/50 px-2 py-1 rounded-lg w-fit border border-green-100">
                           <CheckCircle size={14} />
-                          <span className="text-xs font-bold font-mono">
-                            FC "{op.afip.cbteLetra}"
-                          </span>
+                          <span className="text-xs font-bold font-mono">FC "{op.afip.cbteLetra}"</span>
                         </div>
                       ) : (
                         <div className="flex items-center gap-1.5 text-sys-400 bg-sys-50 px-2 py-1 rounded-lg w-fit">
@@ -191,43 +184,20 @@ export const SalesPage = () => {
                         </div>
                       )}
                     </td>
+                    */}
                     
                     {/* Acciones */}
                     <td className="p-4 text-right whitespace-nowrap">
                       <div className="flex justify-end gap-2">
-                        {/* Botón Facturar (Solo Ventas No Facturadas) */}
-                        {!isFacturado && !isReceipt ? (
-                          <Button 
-                            variant="secondary" 
-                            className="h-8 text-xs px-3 border-brand/20 text-brand hover:bg-brand hover:text-white transition-all shadow-sm"
-                            onClick={() => handleFacturar(op)}
-                            disabled={isLoading}
-                          >
-                            {isLoading ? <RefreshCw size={12} className="animate-spin mr-1" /> : <FileText size={12} className="mr-1.5" />}
-                            {isLoading ? "..." : "Facturar"}
-                          </Button>
-                        ) : (
-                          // Botón Re-Imprimir (Para todo lo demás)
+                          
+                          {/* Botón Ticket (Reemplaza a Facturar por ahora) */}
                           <Button 
                             variant="ghost" 
                             className="h-8 text-xs px-3 text-sys-600 hover:text-sys-900 hover:bg-sys-100 border border-sys-200"
                             onClick={() => setSelectedOpForTicket(op)}
                           >
-                            <Printer size={12} className="mr-1.5" /> Re-Imprimir
+                            <Printer size={12} className="mr-1.5" /> Ticket
                           </Button>
-                        )}
-                        
-                        {/* Botón Extra Imprimir Ticket X para ventas pendientes */}
-                        {!isFacturado && !isReceipt && (
-                           <Button 
-                             variant="ghost"
-                             className="h-8 w-8 p-0 text-sys-400 hover:text-sys-600"
-                             title="Imprimir Comprobante Interno"
-                             onClick={() => setSelectedOpForTicket(op)}
-                           >
-                             <Printer size={14} />
-                           </Button>
-                        )}
                       </div>
                     </td>
                   </tr>
@@ -236,7 +206,7 @@ export const SalesPage = () => {
               
               {operations.length === 0 && (
                 <tr>
-                  <td colSpan="7" className="p-12 text-center">
+                  <td colSpan="6" className="p-12 text-center">
                     <div className="flex flex-col items-center justify-center text-sys-300">
                         <Search size={48} className="mb-4 opacity-50" />
                         <p className="font-medium text-sys-500">Sin movimientos hoy.</p>
@@ -249,12 +219,9 @@ export const SalesPage = () => {
         </div>
       </Card>
 
-      {/* ==================================================== 
-          MODAL DE TICKET (FLOTANTE)
-          ==================================================== */}
+      {/* MODAL DE TICKET */}
       <TicketModal 
          isOpen={!!selectedOpForTicket}
-         // 🔥 Pasamos la prop correcta según el tipo
          sale={selectedOpForTicket?.type !== 'RECEIPT' ? selectedOpForTicket : null}
          receipt={selectedOpForTicket?.type === 'RECEIPT' ? selectedOpForTicket : null}
          onClose={() => setSelectedOpForTicket(null)}

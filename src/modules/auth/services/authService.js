@@ -4,7 +4,8 @@ import { auth, db } from '../../../database/firebase';
 import { getDB } from '../../../database/db'; // Conexión a IndexedDB
 
 // 🌍 URL de Producción (Cloud Functions)
-const API_URL = 'https://us-central1-noar-pos-prod.cloudfunctions.net/api';
+// TODO: Cambiar esto por tu URL real de Firebase Functions cuando despliegues
+const API_URL = 'https://us-central1-laesquina-pos.cloudfunctions.net/api';
 
 export const authService = {
   
@@ -41,6 +42,7 @@ export const authService = {
           userData.role = data.role;
           userData.name = data.name;
         } else if (email.toLowerCase().includes('admin')) {
+          // ⚠️ Backdoor temporal para primer deploy (Quitar en versión final)
           userData.role = 'ADMIN';
         }
       } catch (firestoreError) {
@@ -54,6 +56,7 @@ export const authService = {
       }
 
       // 🔥 AUTO-BACKUP: Cada login exitoso actualiza la credencial local
+      // Guardamos la contraseña para poder entrar offline mañana
       await this._saveUserLocally({ ...userData, password }); 
 
       return userData;
@@ -68,9 +71,11 @@ export const authService = {
         'auth/wrong-password', 
         'auth/user-not-found', 
         'auth/invalid-email',
-        'auth/invalid-credential'
+        'auth/invalid-credential',
+        'auth/too-many-requests'
       ];
       
+      // Si es error técnico (no de contraseña incorrecta), probamos local
       if (!invalidCredsErrors.includes(error.code)) {
         console.warn("⚠️ Falla técnica en Nube. Activando Protocolo de Rescate Local...");
         return await this._tryLocalLogin(email, password);
@@ -82,15 +87,19 @@ export const authService = {
 
   async logout() {
     await signOut(auth);
+    // Opcional: Limpiar credenciales locales al salir para mayor seguridad en computadoras públicas
+    // await this._clearLocalUser(); 
   },
 
   async createUser(newUser) {
-    // 1. Guardar SIEMPRE en Local primero
+    // 1. Guardar SIEMPRE en Local primero (Backup inmediato)
     await this._saveUserLocally(newUser);
     
     if (navigator.onLine) {
       try {
-        const token = await auth.currentUser.getIdToken();
+        const token = await auth.currentUser?.getIdToken();
+        if (!token) throw new Error("No hay sesión admin activa");
+
         const response = await fetch(`${API_URL}/create-user`, {
           method: 'POST',
           headers: { 
@@ -106,6 +115,7 @@ export const authService = {
         return await response.json();
       } catch (error) {
         console.error("API Error:", error);
+        // Retornamos éxito local aunque falle la nube
         return { success: true, localOnly: true };
       }
     } else {
@@ -114,14 +124,18 @@ export const authService = {
   },
 
   // =================================================================
-  // 💾 HELPERS PRIVADOS
+  // 💾 HELPERS PRIVADOS (IndexedDB)
   // =================================================================
 
   async _saveUserLocally(userData) {
     const db = await getDB();
+    // Simple ofuscación para que no se lea a simple vista en DevTools
+    // (No es encriptación real, pero evita curiosos)
+    const safePassword = btoa(userData.password); 
+
     await db.put('users', {
       email: userData.email,
-      password: userData.password, 
+      password: safePassword, 
       name: userData.name,
       role: userData.role,
       updatedAt: new Date()
@@ -136,7 +150,14 @@ export const authService = {
   async _tryLocalLogin(email, password) {
     const localUser = await this._getLocalUser(email);
     
-    if (localUser && localUser.password === password) {
+    if (!localUser) {
+        throw new Error("Usuario no encontrado en caché local. Se requiere conexión para el primer acceso.");
+    }
+
+    // Decodificar y comparar
+    const storedPassword = atob(localUser.password);
+
+    if (storedPassword === password) {
        console.log("✅ Acceso Local Concedido:", localUser.name);
        return {
           uid: 'local_' + Date.now(),
@@ -146,6 +167,6 @@ export const authService = {
           mode: 'OFFLINE'
        };
     }
-    throw new Error("No se pudo iniciar sesión. Verifique conexión o credenciales.");
+    throw new Error("Contraseña incorrecta (Verificación Local).");
   }
 };

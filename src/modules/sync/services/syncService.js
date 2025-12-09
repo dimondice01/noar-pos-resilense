@@ -1,19 +1,19 @@
-import { collection, writeBatch, doc } from 'firebase/firestore';
-import { db } from '../../../database/firebase'; // Firestore
+import { collection, writeBatch, doc, getDocs } from 'firebase/firestore'; // 🔥 Agregamos getDocs
+import { db } from '../../../database/firebase'; 
 import { salesRepository } from '../../sales/repositories/salesRepository';
 import { productRepository } from '../../inventory/repositories/productRepository';
-import { getDB } from '../../../database/db'; // Solo para Ventas por ahora
+import { getDB } from '../../../database/db'; 
 
 export const syncService = {
   /**
    * ORQUESTADOR PRINCIPAL
-   * Sube Ventas y Actualiza Stock en la Nube
+   * Sube Ventas, Actualiza Stock y DESCARTA Novedades de la Nube
    */
   async syncUp() { 
     // Verificación rápida de red
-    if (!navigator.onLine) return { sales: 0, products: 0 };
+    if (!navigator.onLine) return { sales: 0, products: 0, downloaded: 0 };
 
-    console.log("🔄 SYNC: Iniciando sincronización subida...");
+    console.log("🔄 SYNC: Iniciando ciclo completo (Subida + Bajada)...");
     
     try {
         // 1. Subir Ventas Pendientes
@@ -22,29 +22,36 @@ export const syncService = {
         // 2. Subir Cambios de Productos (Precios, Stock, Bajas)
         const productsResult = await this.syncPendingProducts();
 
-        if (salesResult.synced > 0 || productsResult.synced > 0) {
-            console.log(`✅ SYNC: Finalizado. Ventas: ${salesResult.synced}, Productos: ${productsResult.synced}`);
+        // 3. 🔥 BAJADA: Traer novedades de la nube (Para ver lo que se cargó en web)
+        let downloadResult = 0;
+        try {
+            downloadResult = await this.downloadProductsFromCloud();
+        } catch (downloadError) {
+            console.warn("⚠️ Error en bajada de productos:", downloadError);
+        }
+
+        if (salesResult.synced > 0 || productsResult.synced > 0 || downloadResult > 0) {
+            console.log(`✅ SYNC: Finalizado. 📤 Ventas: ${salesResult.synced}, 📤 Prod: ${productsResult.synced}, 📥 Bajados: ${downloadResult}`);
         }
         
         return { 
           sales: salesResult.synced, 
-          products: productsResult.synced 
+          products: productsResult.synced,
+          downloaded: downloadResult
         };
     } catch (error) {
-        console.error("❌ SYNC ERROR:", error);
-        return { sales: 0, products: 0 };
+        console.error("❌ SYNC ERROR CRÍTICO:", error);
+        return { sales: 0, products: 0, downloaded: 0 };
     }
   },
 
   /**
    * 📤 SYNC VENTAS
-   * (Mantenemos lógica inline por ahora hasta refactorizar salesRepository)
    */
   async syncPendingSales() {
     const localDb = await getDB();
     const allSales = await salesRepository.getTodaySales(); 
     
-    // Filtramos usando minúscula 'pending' por consistencia
     const pendingSales = allSales.filter(s => 
         s.syncStatus === 'pending' || s.syncStatus === 'PENDING'
     );
@@ -58,19 +65,17 @@ export const syncService = {
     const syncedIds = [];
 
     for (const sale of pendingSales) {
-      const docRef = doc(salesCollection); // Genera ID nuevo de Firestore
+      const docRef = doc(salesCollection); 
       
-      // Limpiamos datos locales que no sirven en la nube
       const { localId, syncStatus, ...cleanSale } = sale;
       
       batch.set(docRef, {
           ...cleanSale,
-          // 🔥 FIX CRÍTICO: Aseguramos formato ISO String para que el Dashboard lo encuentre
+          // 🔥 FIX CRÍTICO: Aseguramos formato ISO String
           date: new Date(cleanSale.date).toISOString(), 
-          
           firestoreId: docRef.id,
           syncedAt: new Date().toISOString(),
-          origin: 'POS_LOCAL_01' // Ideal parametrizar esto en settings
+          origin: 'POS_LOCAL_01' 
       });
       syncedIds.push(sale.localId);
     }
@@ -93,11 +98,10 @@ export const syncService = {
   },
 
   /**
-   * 📦 SYNC PRODUCTOS
-   * Usa la nueva lógica robusta del Repository
+   * 📦 SYNC PRODUCTOS (Subida)
    */
   async syncPendingProducts() {
-    // 1. Obtener pendientes desde el repositorio (abstracción limpia)
+    // 1. Obtener pendientes desde el repositorio
     const pendingProducts = await productRepository.getPendingSync();
 
     if (pendingProducts.length === 0) return { synced: 0 };
@@ -111,20 +115,17 @@ export const syncService = {
     for (const product of pendingProducts) {
       const docRef = doc(productsCollection, product.id);
       
-      // Separamos la metadata local del objeto real de negocio
       const { syncStatus, ...dataToUpload } = product;
 
-      // LÓGICA DE BORRADO (Soft Delete)
+      // LÓGICA DE BORRADO (Soft Delete en Nube)
       if (product.deleted) {
-          // Si está borrado localmente, actualizamos flags en nube
           batch.set(docRef, {
               ...dataToUpload,
               active: false,
-              deleted: true,
+              deleted: true, // Marcamos como borrado en nube
               lastUpdated: new Date().toISOString()
           }, { merge: true });
       } else {
-          // Actualización normal (Stock, Precio, Nombre)
           batch.set(docRef, {
               ...dataToUpload,
               lastUpdated: new Date().toISOString()
@@ -134,12 +135,43 @@ export const syncService = {
       syncedIds.push(product.id);
     }
 
-    // Ejecutar Batch
     await batch.commit();
 
-    // 2. Avisar al repositorio que ya se subieron (él se encarga de limpiar/actualizar IDB)
+    // 2. Avisar al repositorio (él se encarga de borrar físicamente si deleted=true)
     await productRepository.markAsSynced(syncedIds);
 
     return { synced: pendingProducts.length };
+  },
+
+  /**
+   * 📥 BAJADA DE PRODUCTOS (Nuevo)
+   * Trae todo lo de Firestore para mantener la PWA actualizada
+   */
+  async downloadProductsFromCloud() {
+    // console.log("⬇️ Verificando actualizaciones en la nube...");
+    const productsCollection = collection(db, 'products');
+    
+    // NOTA: Para producción con miles de productos, aquí deberíamos usar 
+    // where('lastUpdated', '>', lastSyncDate). Por ahora traemos todo para garantizar consistencia.
+    const snapshot = await getDocs(productsCollection);
+    
+    if (snapshot.empty) return 0;
+
+    const cloudProducts = snapshot.docs.map(doc => {
+        const data = doc.data();
+        return {
+            id: doc.id,
+            ...data,
+            syncStatus: 'synced', // Vienen de la nube, están al día
+            // Si en la nube está soft-deleted, aquí llegará como deleted=true
+            // y el productRepository.saveAll lo guardará. 
+            // Luego el getAll filtra los deleted, así que desaparecen visualmente. Correcto.
+        };
+    });
+
+    // Guardamos masivamente en local
+    await productRepository.saveAll(cloudProducts);
+    
+    return cloudProducts.length;
   }
 };

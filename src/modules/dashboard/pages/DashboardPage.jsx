@@ -35,17 +35,72 @@ import { WithdrawalModal } from '../../cash/components/WithdrawalModal';
 const money = (val) => val ? val.toLocaleString('es-AR', {minimumFractionDigits: 2}) : '0.00';
 
 const StatCard = ({ title, value, subtext, icon: Icon, colorClass, borderClass, bgClass }) => (
-    <div className={cn("p-5 rounded-2xl border flex flex-col justify-between shadow-sm", borderClass, bgClass)}>
+    <div className={cn("p-5 rounded-2xl border flex flex-col justify-between shadow-sm transition-all hover:shadow-md", borderClass, bgClass)}>
         <div className="flex justify-between items-start mb-2">
             <p className={cn("text-xs font-bold uppercase tracking-wider", colorClass)}>{title}</p>
-            <div className={cn("p-2 rounded-lg bg-white/60", colorClass)}><Icon size={20} /></div>
+            <div className={cn("p-2 rounded-lg bg-white/80 backdrop-blur-sm", colorClass)}><Icon size={20} /></div>
         </div>
         <div>
             <h3 className={cn("text-2xl font-black tracking-tight", colorClass)}>{value}</h3>
-            {subtext && <p className="text-xs text-sys-500 mt-1">{subtext}</p>}
+            {subtext && <p className="text-xs text-sys-600/80 mt-1 font-medium">{subtext}</p>}
         </div>
     </div>
 );
+
+// =================================================================
+// COMPONENTE: TARJETA DE CAJA PROPIA (REDISEÑADA COMPACTA ✨)
+// =================================================================
+const MyShiftCard = ({ metrics, money, handleOpenShift }) => {
+    const isCajeroActive = !!metrics.activeShift;
+    return (
+        <Card className={cn(
+            "p-4 border-l-4 transition-all shadow-sm hover:shadow-md relative overflow-hidden group", 
+            isCajeroActive ? "border-l-green-500 bg-white" : "border-l-red-500 bg-white"
+        )}>
+            <div className="flex justify-between items-center mb-3">
+                <div className="flex items-center gap-2">
+                    <div className={cn("p-1.5 rounded-lg", isCajeroActive ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700")}>
+                        {isCajeroActive ? <Unlock size={18}/> : <Lock size={18}/>}
+                    </div>
+                    <div>
+                        <p className="text-[10px] font-bold uppercase tracking-wider text-sys-500">Estado de Caja</p>
+                        <h4 className={cn("text-sm font-black leading-none", isCajeroActive ? "text-green-700" : "text-red-700")}>
+                            {isCajeroActive ? "TURNO ABIERTO" : "TURNO CERRADO"}
+                        </h4>
+                    </div>
+                </div>
+                {isCajeroActive && (
+                    <span className="flex h-2.5 w-2.5 relative">
+                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                        <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-green-500"></span>
+                    </span>
+                )}
+            </div>
+
+            {!isCajeroActive ? (
+                <div className="mt-2">
+                    <p className="text-xs text-sys-400 mb-3">La caja está cerrada. No se pueden procesar ventas.</p>
+                    <Button size="sm" className="w-full bg-sys-900 hover:bg-black text-white h-9 text-xs font-bold shadow-md" onClick={handleOpenShift}>
+                        <Lock size={12} className="mr-2"/> ABRIR CAJA
+                    </Button>
+                </div>
+            ) : (
+                 <div className="bg-sys-50 rounded-lg p-3 border border-sys-100 mt-1 flex justify-between items-center">
+                    <div>
+                        <p className="text-[10px] text-sys-500 uppercase font-bold">Fondo Inicial</p>
+                        <p className="text-sm font-bold text-sys-900">$ {money(metrics.activeShift.initialAmount)}</p>
+                    </div>
+                    <div className="text-right">
+                        <p className="text-[10px] text-sys-500 uppercase font-bold">Hora Inicio</p>
+                        <p className="text-xs font-mono text-sys-700">
+                            {new Date(metrics.activeShift.openedAt).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                        </p>
+                    </div>
+                 </div>
+            )}
+        </Card>
+    );
+};
 
 // =================================================================
 // 1. PANEL DE AUDITORÍA (SOLO ADMIN)
@@ -56,7 +111,6 @@ const AdminCashAuditPanel = ({ allShifts, loadIntelligence, navigate }) => {
     const [loadingAudit, setLoadingAudit] = useState(false);
     const [auditTarget, setAuditTarget] = useState(null);
 
-    // Filtros
     const shiftsToAudit = allShifts.filter(s => s.status === 'CLOSED' && !s.audited);
     const openShifts = allShifts.filter(s => s.status === 'OPEN');
     const auditedShifts = allShifts.filter(s => s.status === 'CLOSED' && s.audited).sort((a, b) => new Date(b.closedAt) - new Date(a.closedAt));
@@ -93,53 +147,60 @@ const AdminCashAuditPanel = ({ allShifts, loadIntelligence, navigate }) => {
         } catch (err) { alert(err.message); } finally { setLoadingAudit(false); }
     };
 
-    const handleModalClose = async () => {
-        setIsReportModalOpen(false);
-        if (auditTarget) {
-            const confirm = window.confirm(`¿Confirmar auditoría de la caja de ${auditTarget.userId}?`);
-            if (confirm) {
-                try {
-                    await cashRepository.updateShift({ ...auditTarget, audited: true });
-                    await loadIntelligence();
-                } catch (error) { alert("Error: " + error.message); }
-            }
+    const handleConfirmAuditAction = async () => {
+        if (!auditTarget) return;
+        const confirm = window.confirm(`¿Aprobar y cerrar auditoría para la caja de ${auditTarget.userId}?`);
+        if (!confirm) return;
+
+        try {
+            await cashRepository.updateShift({ ...auditTarget, audited: true });
+            await loadIntelligence();
+            setIsReportModalOpen(false);
             setAuditTarget(null);
-        }
+        } catch (error) { alert("Error: " + error.message); }
+    };
+
+    const handleModalClose = () => {
+        setIsReportModalOpen(false);
+        setAuditTarget(null);
     };
     
     return (
         <Card className="lg:col-span-3">
             <div className="flex justify-between items-center mb-4">
-                <h3 className="font-bold text-xl text-sys-900 flex items-center gap-2">
-                    <FileText size={24} className="text-brand"/> Auditoría de Cajas
+                <h3 className="font-bold text-lg text-sys-900 flex items-center gap-2">
+                    <FileText size={20} className="text-brand"/> Auditoría de Cajas
                 </h3>
-                <Button variant="ghost" size="sm" onClick={() => navigate('/cash')} className="text-brand hover:bg-brand-light font-medium">
-                    📜 Ir al Historial Completo
+                <Button variant="ghost" size="sm" onClick={() => navigate('/cash')} className="text-brand hover:bg-brand-light font-medium text-xs">
+                    Ver Historial Completo
                 </Button>
             </div>
             
             <div className="grid grid-cols-1 md:grid-cols-3 text-sm font-medium gap-6">
+                
+                {/* COLUMNA 1: PENDIENTES */}
                 <div className="md:col-span-2 space-y-3">
-                    <p className="text-xs font-semibold uppercase text-sys-500 mb-2">Pendientes de Revisión ({shiftsToAudit.length})</p>
+                    <p className="text-[10px] font-bold uppercase text-sys-500 tracking-wider mb-2">Pendientes de Revisión ({shiftsToAudit.length})</p>
+                    
                     {shiftsToAudit.length === 0 ? (
-                        <div className="bg-green-50 text-green-700 p-4 rounded-xl border border-green-200 flex items-center gap-3">
-                            <CheckCircle2/> <p>Todo al día. No hay cierres pendientes.</p>
+                        <div className="bg-green-50 text-green-700 p-4 rounded-xl border border-green-200 flex items-center gap-3 text-xs">
+                            <CheckCircle2 size={16}/> <p>Todo al día. No hay cierres pendientes.</p>
                         </div>
                     ) : (
                         <div className="space-y-2">
                             {shiftsToAudit.map(s => (
-                                <div key={s.id} className="p-4 bg-red-50 rounded-xl border border-red-200 flex justify-between items-center animate-in slide-in-from-left-2">
+                                <div key={s.id} className="p-3 bg-red-50 rounded-xl border border-red-200 flex justify-between items-center animate-in slide-in-from-left-2">
                                     <div>
-                                        <p className="font-bold text-red-700">Cierre de: {s.userId}</p>
-                                        <div className="flex gap-3 text-xs text-sys-600 mt-1">
-                                            <span>Hora: {new Date(s.closedAt).toLocaleTimeString()}</span>
+                                        <p className="font-bold text-red-700 text-xs">Cierre de: {s.userId}</p>
+                                        <div className="flex gap-3 text-[10px] text-sys-600 mt-0.5">
+                                            <span>{new Date(s.closedAt).toLocaleTimeString()}</span>
                                             <span className={cn("font-bold", s.difference !== 0 ? "text-red-600" : "text-green-600")}>
                                                 Desvío: $ {money(s.difference)}
                                             </span>
                                         </div>
                                     </div>
-                                    <Button size="sm" onClick={() => handleStartAudit(s)} disabled={loadingAudit} className="bg-red-600 hover:bg-red-700 text-white shadow-lg shadow-red-500/20">
-                                        {loadingAudit ? <RefreshCw className="animate-spin" size={14}/> : "Auditar Z"}
+                                    <Button size="sm" onClick={() => handleStartAudit(s)} disabled={loadingAudit} className="bg-red-600 hover:bg-red-700 text-white shadow-lg shadow-red-500/20 text-xs h-8">
+                                        {loadingAudit ? <RefreshCw className="animate-spin" size={12}/> : "Auditar"}
                                     </Button>
                                 </div>
                             ))}
@@ -147,40 +208,47 @@ const AdminCashAuditPanel = ({ allShifts, loadIntelligence, navigate }) => {
                     )}
                 </div>
 
+                {/* COLUMNA 2: RESUMEN */}
                 <div className="space-y-4">
                     <div className="bg-blue-50/50 p-4 rounded-xl border border-blue-100">
-                        <p className="text-xs font-bold uppercase text-blue-600 mb-2 flex items-center gap-2">
-                            <Monitor size={14}/> En Operación ({openShifts.length})
+                        <p className="text-[10px] font-bold uppercase text-blue-600 mb-2 flex items-center gap-2">
+                            <Monitor size={12}/> Activos ({openShifts.length})
                         </p>
                         {openShifts.length === 0 && <p className="text-xs text-sys-400 italic">Sin actividad.</p>}
                         {openShifts.map(s => (
-                            <div key={s.id} className="text-sm p-2 bg-white rounded-lg border border-blue-100 mb-1 flex justify-between">
+                            <div key={s.id} className="text-xs p-2 bg-white rounded-lg border border-blue-100 mb-1 flex justify-between">
                                 <span className="font-bold text-sys-700">{s.userId}</span>
-                                <span className="text-xs text-sys-400">{new Date(s.openedAt).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</span>
+                                <span className="text-sys-400">{new Date(s.openedAt).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</span>
                             </div>
                         ))}
                     </div>
 
                     <div className="bg-sys-50 p-4 rounded-xl border border-sys-200">
-                        <p className="text-xs font-semibold uppercase text-sys-500 mb-2 flex items-center gap-2">
-                            <History size={14}/> Últimos Auditados
+                        <p className="text-[10px] font-bold uppercase text-sys-500 mb-2 flex items-center gap-2">
+                            <History size={12}/> Historial
                         </p>
                         <div className="space-y-1 max-h-48 overflow-y-auto custom-scrollbar pr-1">
-                            {auditedShifts.length === 0 && <p className="text-xs text-sys-400 italic">No hay historial.</p>}
+                            {auditedShifts.length === 0 && <p className="text-xs text-sys-400 italic">Vacío.</p>}
                             {auditedShifts.slice(0, 5).map(shift => (
-                                <div key={shift.id} className="flex justify-between items-center text-xs p-2 hover:bg-white rounded-lg transition-colors group border border-transparent hover:border-sys-200">
+                                <div key={shift.id} className="flex justify-between items-center text-xs p-2 hover:bg-white rounded-lg transition-colors group border border-transparent hover:border-sys-200 cursor-pointer" onClick={() => handleViewClosedShift(shift)}>
                                     <div>
                                         <span className="font-bold text-sys-700 block">{shift.userId}</span>
-                                        <span className="text-xs text-sys-400">{new Date(shift.closedAt).toLocaleDateString()}</span>
+                                        <span className="text-[10px] text-sys-400">{new Date(shift.closedAt).toLocaleDateString()}</span>
                                     </div>
-                                    <Button onClick={() => handleViewClosedShift(shift)} variant="ghost" size="sm" className="h-7 px-2 text-[10px] text-sys-500 hover:text-brand hover:bg-brand-light">Ver Z</Button>
+                                    <div className="text-sys-300 group-hover:text-brand"><ArrowRight size={14}/></div>
                                 </div>
                             ))}
                         </div>
                     </div>
                 </div>
             </div>
-            <TicketZModal isOpen={isReportModalOpen} onClose={handleModalClose} reportData={reportData} />
+            
+            <TicketZModal 
+                isOpen={isReportModalOpen} 
+                onClose={handleModalClose} 
+                reportData={reportData}
+                onConfirmAudit={auditTarget ? handleConfirmAuditAction : undefined}
+            />
         </Card>
     );
 };
@@ -191,25 +259,21 @@ const AdminCashAuditPanel = ({ allShifts, loadIntelligence, navigate }) => {
 const AdminSecurityPanel = ({ onUpdatePin }) => {
     const [newPin, setNewPin] = useState('');
     return (
-        <Card className="p-6 border-l-4 border-l-slate-800 bg-slate-50">
-            <div className="flex items-center gap-3 mb-4">
-                <div className="p-2 bg-slate-200 rounded-lg text-slate-700"><Shield size={20} /></div>
-                <h3 className="font-bold text-sys-900 text-lg">Seguridad de Caja</h3>
+        <Card className="p-4 border-l-4 border-l-slate-800 bg-slate-50">
+            <div className="flex items-center gap-2 mb-2">
+                <Shield size={16} className="text-slate-600" />
+                <h3 className="font-bold text-sys-900 text-sm">PIN Maestro</h3>
             </div>
-            <p className="text-xs text-sys-500 mb-4 leading-relaxed">
-                Configura el PIN maestro para autorizar <b>Retiros de Efectivo</b>.
-            </p>
             <div className="flex gap-2 items-center">
                 <div className="relative flex-1">
-                    <Key size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-sys-400" />
                     <input 
-                        type="password" placeholder="Nuevo PIN" 
-                        className="w-full pl-9 pr-4 py-2 rounded-lg border border-sys-300 focus:border-slate-800 outline-none text-sm font-mono tracking-widest"
+                        type="password" placeholder="******" 
+                        className="w-full px-3 py-1.5 rounded-lg border border-sys-300 focus:border-slate-800 outline-none text-xs font-mono tracking-widest"
                         maxLength={6} value={newPin} onChange={(e) => setNewPin(e.target.value)}
                     />
                 </div>
-                <Button size="sm" className="bg-slate-800 hover:bg-slate-900 text-white" onClick={() => { onUpdatePin(newPin); setNewPin(''); }} disabled={newPin.length < 4}>
-                    Actualizar
+                <Button size="sm" className="bg-slate-800 hover:bg-slate-900 text-white h-8 text-xs" onClick={() => { onUpdatePin(newPin); setNewPin(''); }} disabled={newPin.length < 4}>
+                    Ok
                 </Button>
             </div>
         </Card>
@@ -217,50 +281,59 @@ const AdminSecurityPanel = ({ onUpdatePin }) => {
 };
 
 // =================================================================
-// 3. TARJETA KPI COMPARTIDA (CON LÓGICA CIEGA)
+// 3. TARJETA KPI COMPARTIDA
 // =================================================================
 const SharedKPICard = ({ metrics, isAdmin, money, navigate, handleCloseShift, isCajeroActive }) => (
     <Card className={cn("lg:col-span-2 text-white border-none shadow-xl relative overflow-hidden", isAdmin ? "bg-sys-900" : "bg-brand")}>
         <div className="relative z-10 p-2 h-full flex flex-col justify-between">
             <div className="flex justify-between items-start">
                 <div>
-                    <p className="text-white/70 font-medium uppercase tracking-wider text-xs mb-1">
+                    <p className="text-white/70 font-medium uppercase tracking-wider text-[10px] mb-1">
                         {isAdmin ? "Ventas Globales (Hoy)" : (isCajeroActive ? "Mi Turno Actual" : "Caja Cerrada")}
                     </p>
-                    <h1 className="text-5xl font-black tracking-tight">
+                    <h1 className="text-4xl md:text-5xl font-black tracking-tight">
                         {isAdmin ? `$ ${money(metrics.todaySales)}` : (isCajeroActive ? 'OPERATIVO' : '---')}
                     </h1>
                 </div>
-                <div className="p-3 bg-white/20 rounded-2xl backdrop-blur-md">
-                    {isAdmin ? <Monitor size={32} /> : <Wallet size={32} />}
+                <div className="p-2 bg-white/20 rounded-xl backdrop-blur-md">
+                    {isAdmin ? <Monitor size={24} /> : <Wallet size={24} />}
                 </div>
             </div>
             
-            <div className="mt-8 flex gap-8 border-t border-white/10 pt-4">
+            <div className="mt-6 flex gap-6 border-t border-white/10 pt-4">
                 <div>
-                    <p className="text-xs uppercase font-bold text-white/60">Efectivo en Caja</p>
-                    <p className="text-xl font-bold font-mono tracking-widest">
-                        {isAdmin ? `$ ${money(metrics.cashInHand)}` : '• • • • • •'}
+                    <p className="text-[10px] uppercase font-bold text-white/60">Efectivo</p>
+                    <p className="text-lg font-bold font-mono tracking-widest">
+                        {isAdmin ? `$ ${money(metrics.cashInHand)}` : '• • •'}
                     </p>
                 </div>
                 <div>
-                    <p className="text-xs uppercase font-bold text-white/60">Digital</p>
-                    <p className="text-xl font-bold font-mono tracking-widest">
-                        {isAdmin ? `$ ${money(metrics.digitalSales)}` : '• • • • • •'}
+                    <p className="text-[10px] uppercase font-bold text-white/60">Digital</p>
+                    <p className="text-lg font-bold font-mono tracking-widest">
+                        {isAdmin ? `$ ${money(metrics.digitalSales)}` : '• • •'}
                     </p>
                 </div>
                 
-                {isAdmin && (
-                    <Button onClick={() => navigate('/sales')} variant="secondary" className="bg-white text-brand hover:bg-sys-100 shadow-lg ml-auto">
-                        <FileText size={18} className="mr-2" /> Historial
-                    </Button>
-                )}
-                
-                {!isAdmin && isCajeroActive && (
-                    <Button size="sm" variant="secondary" className="bg-white text-brand hover:bg-sys-100 shadow-lg ml-auto" onClick={handleCloseShift}>
-                        <Lock size={16} className="mr-2"/> Cerrar Caja Ciego
-                    </Button>
-                )}
+                <div className="ml-auto flex gap-2">
+                    {isAdmin && (
+                        <Button onClick={() => navigate('/sales')} variant="secondary" size="sm" className="bg-white text-brand hover:bg-sys-100 shadow-sm border-none h-8 text-xs">
+                            <FileText size={14} className="mr-2" /> Historial
+                        </Button>
+                    )}
+                    
+                    {!isAdmin && isCajeroActive && (
+                        <Button size="sm" variant="secondary" className="bg-white text-brand hover:bg-sys-100 shadow-sm border-none h-8 text-xs" onClick={handleCloseShift}>
+                            <Lock size={14} className="mr-2"/> Cerrar Ciego
+                        </Button>
+                    )}
+                    
+                    {/* Botón Admin cerrar caja propia */}
+                    {isAdmin && isCajeroActive && (
+                        <Button size="sm" variant="secondary" className="bg-white text-red-600 hover:bg-red-50 shadow-sm border-none h-8 text-xs font-bold" onClick={handleCloseShift}>
+                            <Lock size={14} className="mr-2"/> Cerrar Mí Caja
+                        </Button>
+                    )}
+                </div>
             </div>
         </div>
     </Card>
@@ -272,31 +345,27 @@ const SharedKPICard = ({ metrics, isAdmin, money, navigate, handleCloseShift, is
 const QuickActionsPanel = ({ navigate, onExpenseClick, onWithdrawalClick, isAdmin }) => (
     <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <button onClick={() => navigate('/pos')} className="p-4 bg-white border border-sys-200 rounded-xl shadow-sm hover:shadow-md hover:border-brand/30 transition-all flex flex-col items-center gap-2 group">
-            <ShoppingBag className="text-brand group-hover:scale-110 transition-transform" />
-            <span className="font-bold text-sys-700 text-sm">Punto de Venta</span>
+            <ShoppingBag className="text-brand group-hover:scale-110 transition-transform" size={24} />
+            <span className="font-bold text-sys-700 text-xs">Ir a Vender</span>
         </button>
         
-        {!isAdmin && (
-            <>
-                <button onClick={onExpenseClick} className="p-4 bg-white border border-sys-200 rounded-xl shadow-sm hover:shadow-md hover:border-red-200 transition-all flex flex-col items-center gap-2 group">
-                    <div className="p-2 bg-red-50 rounded-full group-hover:bg-red-100 transition-colors">
-                        <DollarSign className="text-red-600 group-hover:scale-110 transition-transform" size={20} />
-                    </div>
-                    <span className="font-bold text-sys-700 text-sm">Registrar Gasto</span>
-                </button>
+        <button onClick={onExpenseClick} className="p-4 bg-white border border-sys-200 rounded-xl shadow-sm hover:shadow-md hover:border-red-200 transition-all flex flex-col items-center gap-2 group">
+            <div className="p-1.5 bg-red-50 rounded-full group-hover:bg-red-100 transition-colors">
+                <DollarSign className="text-red-600 group-hover:scale-110 transition-transform" size={18} />
+            </div>
+            <span className="font-bold text-sys-700 text-xs">Registrar Gasto</span>
+        </button>
 
-                <button onClick={onWithdrawalClick} className="p-4 bg-white border border-sys-200 rounded-xl shadow-sm hover:shadow-md hover:border-orange-200 transition-all flex flex-col items-center gap-2 group">
-                    <div className="p-2 bg-orange-50 rounded-full group-hover:bg-orange-100 transition-colors">
-                        <Banknote className="text-orange-600 group-hover:scale-110 transition-transform" size={20} />
-                    </div>
-                    <span className="font-bold text-sys-700 text-sm">Retiro Efectivo</span>
-                </button>
-            </>
-        )}
+        <button onClick={onWithdrawalClick} className="p-4 bg-white border border-sys-200 rounded-xl shadow-sm hover:shadow-md hover:border-orange-200 transition-all flex flex-col items-center gap-2 group">
+            <div className="p-1.5 bg-orange-50 rounded-full group-hover:bg-orange-100 transition-colors">
+                <Banknote className="text-orange-600 group-hover:scale-110 transition-transform" size={18} />
+            </div>
+            <span className="font-bold text-sys-700 text-xs">Retiro Efectivo</span>
+        </button>
 
         <button onClick={() => navigate('/sales')} className="p-4 bg-white border border-sys-200 rounded-xl shadow-sm hover:shadow-md hover:hover:border-brand/30 transition-all flex flex-col items-center gap-2 group">
-            <FileText className="text-sys-500 group-hover:text-brand group-hover:scale-110 transition-transform" />
-            <span className="font-bold text-sys-700 text-sm">Historial</span>
+            <FileText className="text-sys-500 group-hover:text-brand group-hover:scale-110 transition-transform" size={24} />
+            <span className="font-bold text-sys-700 text-xs">Ver Ventas</span>
         </button>
     </div>
 );
@@ -305,29 +374,16 @@ const QuickActionsPanel = ({ navigate, onExpenseClick, onWithdrawalClick, isAdmi
 // 5. VISTAS DE ROL
 // =================================================================
 const CajeroDashboardView = ({ metrics, money, handleOpenShift, handleCloseShift, navigate, onExpenseClick, onWithdrawalClick }) => {
-    const isCajeroActive = !!metrics.activeShift;
     return (
-        <div className="space-y-8 pb-20 animate-in fade-in">
+        <div className="space-y-6 pb-20 animate-in fade-in">
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                 <SharedKPICard 
                     metrics={metrics} isAdmin={false} money={money} navigate={navigate} 
-                    handleCloseShift={handleCloseShift} isCajeroActive={isCajeroActive}
+                    handleCloseShift={handleCloseShift} isCajeroActive={!!metrics.activeShift}
                 />
                 <div className="space-y-4">
-                    <Card className={cn("border-l-4 p-5 flex flex-col justify-center h-full relative overflow-hidden", isCajeroActive ? "border-l-green-500 bg-green-50/50" : "border-l-red-500 bg-red-50/50")}>
-                        <div className="flex justify-between items-start mb-2">
-                            <p className="text-xs font-bold uppercase tracking-wider text-sys-500">Mi Caja</p>
-                            {isCajeroActive ? <Unlock size={16} className="text-green-600"/> : <Lock size={16} className="text-red-500"/>}
-                        </div>
-                        <h3 className={cn("text-xl font-black", isCajeroActive ? "text-green-700" : "text-red-700")}>
-                            {isCajeroActive ? "TURNO ABIERTO" : "CERRADA"}
-                        </h3>
-                        {!isCajeroActive ? (
-                            <Button size="sm" className="mt-3 w-full bg-red-600 hover:bg-red-700 text-white" onClick={handleOpenShift}>Abrir Caja Ahora</Button>
-                        ) : (
-                             <p className="text-xs text-sys-600 mt-1">Fondo inicial: ${money(metrics.activeShift.initialAmount)}</p>
-                        )}
-                    </Card>
+                    {/* USAMOS EL MISMO COMPONENTE COMPACTO */}
+                    <MyShiftCard metrics={metrics} money={money} handleOpenShift={handleOpenShift} />
                 </div>
             </div>
             <QuickActionsPanel navigate={navigate} onExpenseClick={onExpenseClick} onWithdrawalClick={onWithdrawalClick} isAdmin={false} />
@@ -335,31 +391,34 @@ const CajeroDashboardView = ({ metrics, money, handleOpenShift, handleCloseShift
     );
 };
 
-const AdminDashboardView = ({ metrics, money, navigate, loadIntelligence, handleUpdatePin, allShifts, cloudLoading }) => (
-    <div className="space-y-8 pb-20 animate-in fade-in">
+const AdminDashboardView = ({ 
+    metrics, money, navigate, loadIntelligence, handleUpdatePin, allShifts, cloudLoading,
+    handleOpenShift, handleCloseShift, onExpenseClick, onWithdrawalClick 
+}) => (
+    <div className="space-y-6 pb-20 animate-in fade-in">
         
         {/* KPI HERO REAL-TIME */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-            <Card className="col-span-1 md:col-span-2 bg-brand text-white border-none p-6 relative overflow-hidden shadow-lg shadow-brand/20">
+            <Card className="col-span-1 md:col-span-2 bg-brand text-white border-none p-5 relative overflow-hidden shadow-lg shadow-brand/20">
                 <div className="relative z-10">
-                    <div className="flex justify-between items-start mb-4">
+                    <div className="flex justify-between items-start mb-3">
                         <div>
                             <div className="flex items-center gap-2 mb-1">
-                                <p className="text-blue-100 font-medium uppercase tracking-wider text-xs">Ventas Globales (Hoy)</p>
-                                <span className="bg-red-500/20 border border-red-500/50 text-red-200 text-[10px] px-1.5 rounded animate-pulse font-bold flex items-center gap-1">
+                                <p className="text-blue-100 font-medium uppercase tracking-wider text-[10px]">Ventas Globales (Hoy)</p>
+                                <span className="bg-red-500/20 border border-red-500/50 text-red-200 text-[9px] px-1.5 rounded animate-pulse font-bold flex items-center gap-1">
                                     <div className="w-1.5 h-1.5 rounded-full bg-red-500"></div> LIVE
                                 </span>
                             </div>
-                            <h1 className="text-5xl font-black tracking-tight mt-1">
+                            <h1 className="text-4xl font-black tracking-tight mt-1">
                                 {cloudLoading ? '...' : `$ ${money(metrics.todaySales)}`}
                             </h1>
                         </div>
-                        <div className="p-3 bg-white/20 rounded-2xl backdrop-blur-md"><Signal size={32}/></div>
+                        <div className="p-2 bg-white/20 rounded-xl backdrop-blur-md"><Signal size={24}/></div>
                     </div>
-                    <div className="grid grid-cols-3 gap-4 border-t border-white/10 pt-4">
-                        <div><p className="text-[10px] uppercase opacity-70">Efectivo</p><p className="font-bold text-lg">$ {money(metrics.salesByMethod.cash)}</p></div>
-                        <div><p className="text-[10px] uppercase opacity-70">Digital</p><p className="font-bold text-lg">$ {money(metrics.salesByMethod.digital)}</p></div>
-                        <div><p className="text-[10px] uppercase opacity-70">Tickets</p><p className="font-bold text-lg">{metrics.fiscalCount}</p></div>
+                    <div className="grid grid-cols-3 gap-4 border-t border-white/10 pt-3">
+                        <div><p className="text-[9px] uppercase opacity-70">Efectivo</p><p className="font-bold text-sm">$ {money(metrics.salesByMethod.cash)}</p></div>
+                        <div><p className="text-[9px] uppercase opacity-70">Digital</p><p className="font-bold text-sm">$ {money(metrics.salesByMethod.digital)}</p></div>
+                        <div><p className="text-[9px] uppercase opacity-70">Fiscalizado</p><p className="font-bold text-sm">{metrics.fiscalCount} tkt</p></div>
                     </div>
                 </div>
             </Card>
@@ -380,72 +439,104 @@ const AdminDashboardView = ({ metrics, money, navigate, loadIntelligence, handle
                 colorClass="text-blue-600" borderClass="border-blue-100" bgClass="bg-blue-50"
             />
         </div>
-        
-        {/* LIVE ACTIVITY FEED (NUEVO) */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <div className="lg:col-span-2">
-                 <AdminCashAuditPanel allShifts={allShifts} loadIntelligence={loadIntelligence} navigate={navigate} />
-            </div>
 
-            <div className="space-y-6">
+        {/* BI: Ticket Promedio + Top Productos */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <Card className="p-4 flex items-center justify-between border-l-4 border-l-indigo-500 shadow-sm">
+                <div>
+                    <p className="text-[10px] font-bold uppercase text-sys-500 mb-1">Ticket Promedio</p>
+                    <h3 className="text-xl font-black text-sys-900">$ {money(metrics.averageTicket)}</h3>
+                    <p className="text-[9px] text-sys-400">Gasto medio</p>
+                </div>
+                <div className="p-2 bg-indigo-50 rounded-full text-indigo-600"><TrendingUp size={20} /></div>
+            </Card>
+
+            <Card className="col-span-1 md:col-span-2 p-0 overflow-hidden border border-sys-200 shadow-sm">
+                <div className="p-3 bg-sys-50 border-b border-sys-100 flex justify-between items-center">
+                    <h4 className="font-bold text-xs text-sys-800 flex items-center gap-2">
+                        <Package size={14} className="text-brand"/> Top 5 Más Vendidos (Hoy)
+                    </h4>
+                </div>
+                <div className="p-2">
+                    {metrics.topProducts && metrics.topProducts.length > 0 ? (
+                        <div className="flex gap-2 overflow-x-auto pb-2 no-scrollbar">
+                            {metrics.topProducts.map((p, idx) => (
+                                <div key={idx} className="flex-none w-28 bg-white border border-sys-100 p-2 rounded-lg text-center shadow-sm">
+                                    <div className="w-5 h-5 bg-brand/10 text-brand rounded-full flex items-center justify-center mx-auto mb-1 text-[10px] font-bold">#{idx + 1}</div>
+                                    <p className="text-[10px] font-bold text-sys-700 truncate" title={p.name}>{p.name}</p>
+                                    <p className="text-[9px] text-sys-500">{p.quantity} un.</p>
+                                </div>
+                            ))}
+                        </div>
+                    ) : (
+                        <p className="text-[10px] text-sys-400 text-center py-2">Sin datos.</p>
+                    )}
+                </div>
+            </Card>
+        </div>
+        
+        {/* PANEL AUDITORÍA + MI CAJA */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div className="lg:col-span-2 space-y-4">
+                 <AdminCashAuditPanel allShifts={allShifts} loadIntelligence={loadIntelligence} navigate={navigate} />
+                 
                  {/* FEED DE VENTAS */}
                  <Card className="p-0 overflow-hidden">
-                    <div className="p-4 border-b border-sys-100 bg-sys-50 flex justify-between items-center">
-                         <h3 className="font-bold text-sys-800 flex items-center gap-2"><Activity size={18}/> Actividad Reciente</h3>
+                    <div className="p-3 border-b border-sys-100 bg-sys-50 flex justify-between items-center">
+                         <h3 className="font-bold text-xs text-sys-800 flex items-center gap-2"><Activity size={14}/> Actividad Reciente</h3>
                     </div>
-                    <div className="divide-y divide-sys-100 max-h-[300px] overflow-y-auto">
+                    <div className="divide-y divide-sys-100 max-h-[250px] overflow-y-auto">
                         {metrics.recentSales && metrics.recentSales.length > 0 ? (
                             metrics.recentSales.map((sale) => (
-                                <div key={sale.id} className="p-3 hover:bg-sys-50 transition-colors flex items-center justify-between text-sm">
+                                <div key={sale.id} className="p-2.5 hover:bg-sys-50 transition-colors flex items-center justify-between text-xs">
                                     <div className="flex items-center gap-3">
-                                        <div className="w-8 h-8 rounded-full bg-sys-100 flex items-center justify-center text-sys-500">
-                                            <ShoppingBag size={14} />
-                                        </div>
+                                        <div className="w-7 h-7 rounded-full bg-sys-100 flex items-center justify-center text-sys-500"><ShoppingBag size={12} /></div>
                                         <div>
                                             <p className="font-bold text-sys-800">#{sale.id.slice(-4)}</p>
-                                            <p className="text-[10px] text-sys-500">{sale.time} hs • {sale.items} un.</p>
+                                            <p className="text-[9px] text-sys-500">{sale.time} hs • {sale.items} un.</p>
                                         </div>
                                     </div>
                                     <div className="text-right">
                                         <p className="font-bold text-sys-900">$ {money(sale.total)}</p>
-                                        <span className="text-[10px] uppercase text-sys-400">{sale.method === 'CASH' ? 'EFVO' : 'DIGITAL'}</span>
+                                        <span className="text-[9px] uppercase text-sys-400">{(sale.method || '').toUpperCase() === 'CASH' ? 'EFVO' : 'DIGITAL'}</span>
                                     </div>
                                 </div>
                             ))
                         ) : (
-                            <div className="p-6 text-center text-sys-400 text-xs italic">Sin ventas recientes hoy</div>
+                            <div className="p-4 text-center text-sys-400 text-[10px] italic">Sin ventas recientes hoy</div>
                         )}
                     </div>
                  </Card>
+            </div>
 
-                {/* Accesos Rápidos Verticales */}
-                <div className="grid grid-cols-1 gap-3">
-                    <Card className="p-4 border-l-4 border-l-orange-500 cursor-pointer hover:shadow-md transition-all" onClick={() => navigate('/clients')}>
-                        <div className="flex justify-between items-center">
-                            <div>
-                                <p className="text-xs text-sys-500 uppercase font-bold">Créditos / Deudas</p>
-                                <p className="text-2xl font-black text-sys-900">$ {money(metrics.totalDebt)}</p>
-                            </div>
-                            <Users className="text-orange-500 opacity-20" size={32}/>
+            <div className="space-y-4">
+                {/* 🔥 TARJETA OPERATIVA DEL ADMIN */}
+                <MyShiftCard metrics={metrics} money={money} handleOpenShift={handleOpenShift} />
+
+                {/* Accesos Rápidos Verticales (Compactos) */}
+                <div className="grid grid-cols-2 gap-3">
+                    <Card className="p-3 border-l-4 border-l-orange-500 cursor-pointer hover:shadow-md transition-all flex flex-col justify-between" onClick={() => navigate('/clients')}>
+                        <p className="text-[10px] text-sys-500 uppercase font-bold mb-1">Créditos</p>
+                        <div className="flex justify-between items-end">
+                             <p className="text-sm font-black text-sys-900">$ {money(metrics.totalDebt)}</p>
+                             <Users className="text-orange-500 opacity-20" size={20}/>
                         </div>
                     </Card>
 
-                    <Card className="p-4 border-l-4 border-l-purple-500 cursor-pointer hover:shadow-md transition-all" onClick={() => navigate('/inventory')}>
-                        <div className="flex justify-between items-center">
-                            <div>
-                                <p className="text-xs text-sys-500 uppercase font-bold">Stock Crítico</p>
-                                <p className="text-2xl font-black text-sys-900">{metrics.lowStockCount}</p>
-                            </div>
-                            <Package className="text-purple-500 opacity-20" size={32}/>
+                    <Card className="p-3 border-l-4 border-l-purple-500 cursor-pointer hover:shadow-md transition-all flex flex-col justify-between" onClick={() => navigate('/inventory')}>
+                         <p className="text-[10px] text-sys-500 uppercase font-bold mb-1">Stock Bajo</p>
+                         <div className="flex justify-between items-end">
+                             <p className="text-sm font-black text-sys-900">{metrics.lowStockCount}</p>
+                             <Package className="text-purple-500 opacity-20" size={20}/>
                         </div>
                     </Card>
-
-                    <AdminSecurityPanel onUpdatePin={handleUpdatePin} />
                 </div>
+                
+                <AdminSecurityPanel onUpdatePin={handleUpdatePin} />
             </div>
         </div>
         
-        <QuickActionsPanel navigate={navigate} isAdmin={true} />
+        <QuickActionsPanel navigate={navigate} isAdmin={true} onExpenseClick={onExpenseClick} onWithdrawalClick={onWithdrawalClick} />
     </div>
 );
 
@@ -457,13 +548,11 @@ export const DashboardPage = () => {
     const { user } = useAuthStore(); 
     
     const [loading, setLoading] = useState(true);
-    
-    // ESTADO LOCAL (Base)
     const [metrics, setMetrics] = useState({ 
         todaySales: 0, cashInHand: 0, digitalSales: 0, totalExpenses: 0, 
         fiscalCount: 0, salesByMethod: { cash: 0, digital: 0 },
         activeShiftsCount: 0, activeShift: null, allShifts: [], totalDebt: 0, lowStockCount: 0,
-        recentSales: [] 
+        recentSales: [], averageTicket: 0, topProducts: []
     });
 
     const [isExpenseModalOpen, setIsExpenseModalOpen] = useState(false);
@@ -471,7 +560,7 @@ export const DashboardPage = () => {
     
     const isAdmin = user?.role?.toUpperCase() === 'ADMIN';
 
-    // 🔥 HOOK DE NUBE (Solo activo si es Admin, aunque lo llamamos siempre por reglas de hooks)
+    // 🔥 HOOK DE NUBE
     const cloudStats = useCloudDashboard();
 
     if (!user) return <div className="p-10 text-center text-red-500">Error: Usuario no autenticado.</div>;
@@ -483,35 +572,30 @@ export const DashboardPage = () => {
         setLoading(true);
         let products = [], allShifts = [], allSales = [];
 
-        // 1. CARGA LOCAL (Siempre necesaria para Stock, Cajas y Deudas)
         try { products = await productRepository.getAll(); } catch(e) {}
         try { allShifts = await cashRepository.getAllShifts(); } catch(e) {}
         
-        // Solo cargamos ventas locales si NO es admin (el admin usa la nube)
         if (!isAdmin) {
             try { 
                 allSales = await salesRepository.getTodaySales();
             } catch(e) {}
         }
 
-        // Inicializar métricas locales
         let todaySales = 0, salesCash = 0, salesDigital = 0, fiscalCount = 0;
         let totalExpensesToday = 0, totalCashInHand = 0;
         let myActiveShift = null, globalActiveShifts = [];
 
         try {
-            // Shifts
             myActiveShift = allShifts.find(s => s.status === 'OPEN' && s.userId === user.name);
             globalActiveShifts = allShifts.filter(s => s.status === 'OPEN');
 
-            // --- LÓGICA HÍBRIDA ---
             if (!isAdmin) {
-                // CAJERO: Calcula ventas desde IndexedDB
                 const mSales = allSales.reduce((acc, s) => {
                     const total = parseFloat(s.total) || 0;
                     acc.total += total;
                     const method = s.payment?.method || 'unknown';
-                    if (method === 'CASH') acc.cash += total; else acc.digital += total;
+                    // Lógica local es minúscula
+                    if (method === 'cash') acc.cash += total; else acc.digital += total;
                     if (s.afip?.status === 'APPROVED') acc.fiscalCount++;
                     return acc;
                 }, { total: 0, cash: 0, digital: 0, fiscalCount: 0 });
@@ -520,14 +604,8 @@ export const DashboardPage = () => {
                 salesCash = mSales.cash;
                 salesDigital = mSales.digital;
                 fiscalCount = mSales.fiscalCount;
-            } else {
-                // ADMIN: Sobrescribe con datos de la Nube (Firebase Hook)
-                // Se actualizará en el render mediante la variable combinada, 
-                // pero aquí inicializamos para evitar parpadeos si falla la nube.
             }
 
-            // Gastos y Efectivo en Caja (Local calculation per active shift logic)
-            // Esto sigue siendo local porque los gastos no se están subiendo a Firebase en tiempo real aún
             const startOfToday = new Date().setHours(0,0,0,0);
             const shiftsForExpenses = allShifts.filter(s => s.status === 'OPEN' || (s.closedAt && new Date(s.closedAt).getTime() >= startOfToday));
 
@@ -545,7 +623,7 @@ export const DashboardPage = () => {
 
             setMetrics(prev => ({
                 ...prev,
-                todaySales, // Si es admin, esto se ignora visualmente
+                todaySales,
                 salesByMethod: { cash: salesCash, digital: salesDigital },
                 fiscalCount,
                 totalExpenses: totalExpensesToday,
@@ -554,26 +632,27 @@ export const DashboardPage = () => {
                 activeShiftsCount: globalActiveShifts.length,
                 allShifts: allShifts, 
                 lowStockCount,
-                totalDebt: 0 // TODO: Implementar repositorio de deuda real
+                totalDebt: 0 
             }));
 
         } catch (error) { console.error("Error Dashboard:", error); }
         setLoading(false);
     };
 
-    // --- FUSIÓN FINAL DE DATOS (LOCAL + NUBE) ---
+    // --- FUSIÓN FINAL ---
     const finalMetrics = isAdmin ? {
         ...metrics,
-        todaySales: cloudStats.totalSales, // 🔥 OVERRIDE CON NUBE
+        todaySales: cloudStats.totalSales, 
         salesByMethod: { 
             cash: cloudStats.cashTotal, 
             digital: cloudStats.digitalTotal 
         },
-        fiscalCount: cloudStats.count,
-        recentSales: cloudStats.recentSales // 🔥 FEED EN VIVO
+        fiscalCount: cloudStats.fiscalCount || 0,
+        recentSales: cloudStats.recentSales,
+        averageTicket: cloudStats.averageTicket || 0,
+        topProducts: cloudStats.topProducts || []
     } : metrics;
 
-    // Handlers (Sin cambios)
     const handleOpenShift = async () => {
         const input = prompt("Monto inicial en caja:", "1000");
         if (input === null) return;
@@ -631,6 +710,10 @@ export const DashboardPage = () => {
                     handleUpdatePin={handleUpdatePin}
                     allShifts={finalMetrics.allShifts}
                     cloudLoading={cloudStats.loading}
+                    handleOpenShift={handleOpenShift}
+                    handleCloseShift={handleCloseShift}
+                    onExpenseClick={() => setIsExpenseModalOpen(true)}
+                    onWithdrawalClick={() => setIsWithdrawalModalOpen(true)}
                 />
             ) : (
                 <CajeroDashboardView 

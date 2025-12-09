@@ -14,10 +14,10 @@ import { ProtectedRoute } from './core/components/ProtectedRoute';
 import { DashboardPage } from './modules/dashboard/pages/DashboardPage';
 import { PosPage } from './modules/pos/pages/PosPage';
 import { InventoryPage } from './modules/inventory/pages/InventoryPage';
+import { PrintLabelsPage } from './modules/inventory/pages/PrintLabelsPage'; // 👈 IMPORT NUEVO
 import { SalesPage } from './modules/sales/pages/SalesPage';
 import { TeamPage } from './modules/settings/pages/TeamPage'; 
 import { CashPage } from './modules/cash/pages/CashPage'; 
-// 👇 IMPORTAR LA PÁGINA DE CLIENTES
 import { ClientsPage } from './modules/clients/pages/ClientsPage';
 
 function App() {
@@ -51,11 +51,13 @@ function App() {
                         <Route index element={<DashboardPage />} />
                         <Route path="pos" element={<PosPage />} />
                         <Route path="sales" element={<SalesPage />} />
+                        
+                        {/* Rutas de Inventario */}
                         <Route path="inventory" element={<InventoryPage />} />
+                        <Route path="inventory/print" element={<PrintLabelsPage />} /> {/* 👈 RUTA NUEVA */}
+
                         <Route path="cash" element={<CashPage />} />
                         <Route path="settings" element={<TeamPage />} />
-                        
-                        {/* 👇 AGREGAR LA RUTA AQUÍ */}
                         <Route path="clients" element={<ClientsPage />} />
                     </Route>
                 </Route>
