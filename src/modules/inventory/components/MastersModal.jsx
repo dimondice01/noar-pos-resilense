@@ -3,7 +3,7 @@ import { X, Plus, Trash2, Tag, Truck, Award } from 'lucide-react';
 import { Button } from '../../../core/ui/Button';
 import { masterRepository } from '../repositories/masterRepository';
 import { cn } from '../../../core/utils/cn';
-
+//v1
 export const MastersModal = ({ isOpen, onClose }) => {
   const [activeTab, setActiveTab] = useState('categories'); // categories | brands | suppliers
   const [items, setItems] = useState([]);
