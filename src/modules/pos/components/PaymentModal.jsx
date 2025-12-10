@@ -8,8 +8,8 @@ import { Switch } from '../../../core/ui/Switch';
 import { cn } from '../../../core/utils/cn';
 import { paymentService } from '../../payments/services/paymentService';
 
-// 🔥 CONFIG: disableAfip = true (Oculto por defecto para este cliente)
-export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disableAfip = true }) => {
+// 🔥 CONFIG: disableAfip = false (Activado por defecto para este cliente)
+export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disableAfip = false }) => {
   // ==========================================
   // ESTADOS Y REFS
   // ==========================================
@@ -17,7 +17,7 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
   const [amountToPay, setAmountToPay] = useState(''); 
   const [reference, setReference] = useState(''); 
   
-  // 🔥 ESTADOS PARA EL FLUJO DIGITAL (Polling) - (Inactivos en esta versión)
+  // 🔥 ESTADOS PARA EL FLUJO DIGITAL (Polling)
   const [digitalState, setDigitalState] = useState('idle'); 
   const [paymentReference, setPaymentReference] = useState(null);
   
@@ -70,7 +70,10 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
       setReference('');
       setDigitalState('idle');
       setPaymentReference(null);
-      setWithAfip(false);
+
+      // Leemos preferencia si está habilitado
+      if (disableAfip) setWithAfip(false);
+      else setWithAfip(localStorage.getItem('POS_PREF_AFIP') === 'true');
       
       // Auto-focus
       setTimeout(() => {
@@ -116,7 +119,7 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
   }, [isOpen, total, amountToPay, method]);
 
 
-  // 2. LÓGICA DIGITAL (Mantenida pero inactiva si no hay botones)
+  // 2. INICIO DE TRANSACCIÓN DIGITAL
   useEffect(() => {
     if (isOpen && (method === 'mercadopago' || method === 'clover' || method === 'point')) {
       const startTransaction = async () => {
@@ -138,7 +141,7 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
     }
   }, [isOpen, method, total]);
 
-  // 3. POLLING (Inactivo si no se entra en flujo digital)
+  // 3. POLLING (Loop de estado)
   useEffect(() => {
     if (digitalState === 'waiting' && paymentReference) {
       const checkPayment = async () => {
@@ -191,14 +194,14 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
         onClick={() => setMethod(id)} 
         disabled={digitalState !== 'idle' && digitalState !== 'error'} 
         className={cn(
-            "flex flex-col items-center justify-center p-4 rounded-xl border-2 transition-all duration-200 h-28 relative overflow-hidden active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed group", 
+            "flex flex-col items-center justify-center p-3 rounded-xl border-2 transition-all duration-200 h-24 relative overflow-hidden active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed group", 
             method === id ? `bg-sys-50 border-${colorClass} shadow-md` : "bg-white border-sys-100 hover:border-sys-300 text-sys-500"
         )}
     >
-      <div className="absolute top-2 right-3 text-[10px] font-mono text-sys-400 opacity-50 group-hover:opacity-100 font-bold border border-sys-200 px-1.5 rounded">{shortcut}</div>
-      <Icon size={32} className={cn("mb-2 transition-colors", method === id ? `text-${colorClass}` : "text-sys-400")} />
-      <span className={cn("font-bold text-sm leading-tight", method === id ? "text-sys-900" : "")}>{label}</span>
-      {method === id && <div className={`absolute top-3 left-3 w-2.5 h-2.5 rounded-full bg-${colorClass}`}></div>}
+      <div className="absolute top-1 right-2 text-[9px] font-mono text-sys-400 opacity-50 group-hover:opacity-100 font-bold">{shortcut}</div>
+      <Icon size={28} className={cn("mb-1 transition-colors", method === id ? `text-${colorClass}` : "text-sys-400")} />
+      <span className={cn("font-semibold text-xs leading-tight", method === id ? "text-sys-900" : "")}>{label}</span>
+      {method === id && <div className={`absolute top-2 right-2 w-2 h-2 rounded-full bg-${colorClass}`}></div>}
     </button>
   );
 
@@ -224,8 +227,8 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
                 <p className="text-3xl font-black text-sys-900 tracking-tight">$ {total.toLocaleString('es-AR', {minimumFractionDigits: 0})}</p>
              </div>
 
-             {/* INPUT MONTO (Visible en Cash/Transfer) */}
-             {(method === 'cash' || method === 'transfer') && (
+             {/* INPUT MONTO (Visible en Cash/Transfer o Error) */}
+             {(method === 'cash' || method === 'transfer' || digitalState === 'error') && (
                  <div className={cn("p-4 rounded-xl border transition-colors ring-offset-2 animate-in slide-in-from-bottom-2", 
                     isPartialPayment ? "bg-orange-50 border-orange-300 ring-orange-100" : 
                     changeValue > 0 ? "bg-green-50 border-green-300 ring-green-100" : "bg-white border-brand ring-brand/10"
@@ -286,7 +289,7 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
             <div>
                 <h3 className="font-bold text-xl text-sys-900">Método de Pago</h3>
                 <p className="text-xs text-sys-500">
-                    Seleccione la forma de cobro
+                    {method !== 'cash' && method !== 'transfer' ? "Procesamiento Digital Seguro" : "Cobro manual / local"}
                 </p>
             </div>
             <button onClick={onClose} className="p-2 hover:bg-sys-100 rounded-full transition text-sys-500">
@@ -294,16 +297,15 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
             </button>
           </div>
 
-          {/* GRID DE BOTONES: Solo 2 Columnas (Efectivo y Transfer) */}
-          <div className="grid grid-cols-2 gap-4 mb-6">
+          {/* GRID DE BOTONES: Restaurado a 4 columnas */}
+          <div className="grid grid-cols-4 gap-3 mb-6">
             <PaymentOption id="cash" label="Efectivo" icon={Banknote} colorClass="brand" shortcut="F1" />
-            <PaymentOption id="transfer" label="Transferencia" icon={Landmark} colorClass="purple-600" shortcut="F2" />
+            <PaymentOption id="transfer" label="Transfer" icon={Landmark} colorClass="purple-600" shortcut="F2" />
             
-            {/* 🔥 OPCIONES DIGITALES OCULTAS PARA ESTE CLIENTE
+            {/* 🔥 OPCIONES DIGITALES ACTIVADAS */}
             <PaymentOption id="mercadopago" label="MP QR" icon={QrCode} colorClass="blue-500" />
             <PaymentOption id="point" label="Tarjeta" icon={CreditCard} colorClass="blue-600" />
-            <PaymentOption id="clover" label="Clover" icon={LayoutGrid} colorClass="green-600" />
-            */}
+            {/* <PaymentOption id="clover" label="Clover" icon={LayoutGrid} colorClass="green-600" /> */}
           </div>
 
           <div className="flex-1 flex flex-col justify-center items-center text-center min-h-[150px]">
@@ -320,11 +322,68 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
                         ref={transferRef}
                         type="text" 
                         className="w-full bg-white border border-sys-300 rounded-xl px-4 py-3 text-sm outline-none focus:border-purple-500 focus:ring-4 focus:ring-purple-500/10 transition-all text-center"
-                        placeholder="Nro. Comprobante / Referencia (Opcional)"
+                        placeholder="Nro. Comprobante (Opcional)"
                         value={reference}
                         onChange={(e) => setReference(e.target.value)}
                         onKeyDown={handleKeyDown}
                       />
+                 </div>
+             )}
+
+             {/* --- ESTADOS DIGITALES (MP, Point, Clover) --- */}
+             {(method === 'mercadopago' || method === 'clover' || method === 'point') && (
+                 <div className="w-full max-w-xs animate-in fade-in">
+                    
+                    {digitalState === 'creating' && (
+                        <>
+                           <Loader2 size={48} className="animate-spin text-sys-300 mx-auto mb-4"/>
+                           <p className="text-sys-500 font-medium">
+                               {method === 'point' ? 'Conectando con Terminal...' : 'Iniciando transacción segura...'}
+                           </p>
+                        </>
+                    )}
+
+                    {digitalState === 'waiting' && (
+                        <>
+                           <div className="relative w-24 h-24 mx-auto mb-4">
+                              <div className="absolute inset-0 rounded-full border-4 border-sys-100"></div>
+                              <div className={cn("absolute inset-0 rounded-full border-4 border-t-transparent animate-spin", 
+                                  (method === 'mercadopago' || method === 'point') ? "border-blue-500" : "border-green-500")}></div>
+                              <div className="absolute inset-0 flex items-center justify-center">
+                                 {method === 'point' ? <CreditCard size={32} className="text-blue-600"/> :
+                                  method === 'mercadopago' ? <QrCode size={32} className="text-blue-500"/> : <LayoutGrid size={32} className="text-green-600"/>}
+                              </div>
+                           </div>
+                           <h4 className="text-xl font-bold text-sys-900">Esperando Pago...</h4>
+                           <p className="text-sm text-sys-500 mt-2 bg-sys-50 p-2 rounded-lg border border-sys-100">
+                              {method === 'point' ? 'Inserte tarjeta en la terminal Point.' : 
+                               method === 'mercadopago' ? 'Solicite al cliente escanear el QR.' : 'Opere en la terminal Clover.'}
+                           </p>
+                        </>
+                    )}
+
+                    {digitalState === 'approved' && (
+                        <div className="animate-in zoom-in duration-300 transform scale-110">
+                           <div className="w-24 h-24 bg-green-100 rounded-full flex items-center justify-center mx-auto text-green-600 mb-4 shadow-lg shadow-green-100">
+                              <CheckCircle2 size={56} />
+                           </div>
+                           <h4 className="text-2xl font-black text-green-600">¡PAGO APROBADO!</h4>
+                           <p className="text-sm text-green-700 font-medium mt-1">Generando ticket...</p>
+                        </div>
+                    )}
+
+                    {digitalState === 'error' && (
+                        <div className="text-red-500 bg-red-50 p-6 rounded-2xl border border-red-100">
+                           <AlertCircle size={48} className="mx-auto mb-2"/>
+                           <p className="font-bold text-lg">Error de Conexión</p>
+                           <p className="text-sm opacity-80 mb-4">
+                               {method === 'point' ? 'No se encontró terminal física o fue rechazada.' : 'No se pudo conectar con el proveedor.'}
+                           </p>
+                           <Button variant="ghost" size="sm" onClick={() => setMethod('cash')} className="bg-white border border-red-200 text-red-700 hover:bg-red-50">
+                              Cambiar a Efectivo
+                           </Button>
+                        </div>
+                    )}
                  </div>
              )}
 
@@ -342,7 +401,7 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
           {/* FOOTER ACCIONES */}
           <div className="mt-4 pt-4 border-t border-sys-100">
              
-             {/* Switch AFIP (Solo si está habilitado) */}
+             {/* Switch AFIP: RESTAURADO (Visible siempre que no esté deshabilitado explícitamente) */}
              {!disableAfip && (
                  <div className="flex items-center justify-between mb-4">
                     <div className="flex items-center gap-2">
@@ -360,19 +419,21 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
                  </div>
              )}
 
-             {/* Botón Confirmar */}
-             <Button 
-                onClick={handleManualConfirm}
-                disabled={!canConfirm}
-                className={cn(
-                    "w-full py-4 text-lg shadow-xl transition-all", 
-                    !canConfirm ? "opacity-50 cursor-not-allowed bg-sys-400" : 
-                    method === 'transfer' ? "bg-purple-600 hover:bg-purple-700 shadow-purple-500/20" : "shadow-brand/20"
-                )}
-             >
-                {method === 'transfer' ? "Confirmar Transferencia (Enter)" : (isPartialPayment ? "Confirmar Pago Parcial" : "Confirmar Operación (Enter)")} 
-                <ArrowRight size={20} className="ml-2"/>
-             </Button>
+             {/* Botón Confirmar (Solo manual) */}
+             {(method === 'cash' || method === 'transfer') && (
+                <Button 
+                   onClick={handleManualConfirm}
+                   disabled={!canConfirm}
+                   className={cn(
+                       "w-full py-4 text-lg shadow-xl transition-all", 
+                       !canConfirm ? "opacity-50 cursor-not-allowed bg-sys-400" : 
+                       method === 'transfer' ? "bg-purple-600 hover:bg-purple-700 shadow-purple-500/20" : "shadow-brand/20"
+                   )}
+                >
+                   {method === 'transfer' ? "Confirmar Transferencia (Enter)" : (isPartialPayment ? "Confirmar Pago Parcial" : "Confirmar Operación (Enter)")} 
+                   <ArrowRight size={20} className="ml-2"/>
+                </Button>
+             )}
           </div>
 
         </div>

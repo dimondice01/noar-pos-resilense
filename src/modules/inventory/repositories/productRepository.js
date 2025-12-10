@@ -77,7 +77,7 @@ export const productRepository = {
     return tx.done;
   },
 
-  // 🔥 EL MÉTODO "ESPÍA" (Refactorizado para Sync)
+  // 🔥 EL MÉTODO "ESPÍA" (Refactorizado para Sync y Lotes)
   async save(product) {
     const db = await getDB();
     const tx = db.transaction(['products', 'movements'], 'readwrite');
@@ -95,18 +95,32 @@ export const productRepository = {
         } catch (e) { /* Es nuevo */ }
     }
 
+    // 🔥 GESTIÓN DE LOTES INICIAL
+    // Si el producto es nuevo, tiene stock inicial y fecha de vencimiento, 
+    // creamos el primer lote automáticamente.
+    let batches = product.batches || (oldProduct?.batches || []);
+
+    if (!oldProduct && parseFloat(product.stock) > 0 && product.expiryDate) {
+        batches = [{
+            id: crypto.randomUUID(),
+            quantity: parseFloat(product.stock),
+            expiryDate: product.expiryDate,
+            dateAdded: new Date().toISOString()
+        }];
+    }
+
     // 3. Preparamos el objeto a guardar
-    // 🚩 AQUÍ LA MAGIA: syncStatus = 'pending'
     const productToSave = {
       ...product,
       id: productId,
+      batches: batches, // Guardamos los lotes
       updatedAt: new Date().toISOString(),
       syncStatus: 'pending', 
       deleted: false 
     };
 
     // 4. DETECTAR CAMBIOS Y GENERAR MOVIMIENTOS (KARDEX)
-    const timestamp = new Date().toISOString(); // Usamos ISO para consistencia
+    const timestamp = new Date().toISOString(); 
     
     // Si no existía antes -> Es CREACIÓN
     if (!oldProduct) {
@@ -114,7 +128,7 @@ export const productRepository = {
             productId,
             type: 'CREATION',
             description: 'Producto dado de alta',
-            user: 'Admin', // TODO: Usar usuario real del AuthStore si es posible pasarlo
+            user: 'Admin', 
             date: timestamp
         });
         
@@ -153,7 +167,7 @@ export const productRepository = {
             });
         }
 
-        // C) Ajuste Manual de STOCK
+        // C) Ajuste Manual de STOCK (Edición directa desde el modal)
         if (parseFloat(oldProduct.stock) !== parseFloat(productToSave.stock)) {
             const diff = parseFloat(productToSave.stock) - parseFloat(oldProduct.stock);
             movementStore.put({
@@ -172,6 +186,66 @@ export const productRepository = {
     await tx.done;
     
     return productToSave;
+  },
+
+  // 🔥 NUEVO MÉTODO: INGRESO RÁPIDO DE STOCK (Botón "+")
+  async addStock(productId, quantity, expiryDate) {
+    const db = await getDB();
+    const tx = db.transaction(['products', 'movements'], 'readwrite');
+    const productStore = tx.objectStore('products');
+    const movementStore = tx.objectStore('movements');
+
+    const product = await productStore.get(productId);
+    if (!product) throw new Error("Producto no encontrado");
+
+    const qty = parseFloat(quantity);
+    
+    // 1. Actualizar Stock Total
+    const newStock = (parseFloat(product.stock) || 0) + qty;
+
+    // 2. Gestión de Lotes (Batches)
+    let batches = product.batches || [];
+    
+    // Si entra stock positivo, creamos un nuevo lote
+    if (qty > 0) {
+        batches.push({
+            id: crypto.randomUUID(),
+            quantity: qty,
+            expiryDate: expiryDate || null, 
+            dateAdded: new Date().toISOString()
+        });
+    }
+
+    // 3. Recalcular Fecha de Vencimiento Visible (La más próxima)
+    // Filtramos lotes que tengan stock y fecha, ordenamos por fecha más cercana
+    const activeBatchesWithDate = batches
+        .filter(b => b.quantity > 0 && b.expiryDate)
+        .sort((a, b) => new Date(a.expiryDate) - new Date(b.expiryDate));
+    
+    // La nueva fecha de alerta es la del lote que vence primero
+    const nextExpiry = activeBatchesWithDate.length > 0 ? activeBatchesWithDate[0].expiryDate : product.expiryDate;
+
+    const updatedProduct = {
+        ...product,
+        stock: newStock,
+        batches: batches,
+        expiryDate: nextExpiry, // Actualizamos la fecha visible para las alertas
+        updatedAt: new Date().toISOString(),
+        syncStatus: 'pending'
+    };
+
+    // 4. Guardar Movimiento en Historial
+    await movementStore.put({
+        productId,
+        type: 'STOCK_IN',
+        description: `Ingreso Rápido (+${qty}) ${expiryDate ? 'Vence: ' + expiryDate : ''}`,
+        amount: qty,
+        user: 'Admin',
+        date: new Date().toISOString()
+    });
+
+    await productStore.put(updatedProduct);
+    await tx.done;
   },
 
   // 🗑️ SOFT DELETE (Para poder sincronizar el borrado)

@@ -1,7 +1,7 @@
 // src/modules/inventory/components/ProductModal.jsx
 
 import React, { useState, useEffect, useRef } from 'react';
-import { X, Save, ScanLine, Scale, Package, DollarSign, Tag, Truck, AlertTriangle, Award, ChevronDown, Check } from 'lucide-react';
+import { X, Save, ScanLine, Scale, Package, DollarSign, Tag, Truck, AlertTriangle, Award, ChevronDown, Check, Calendar } from 'lucide-react';
 import { Button } from '../../../core/ui/Button';
 import { Switch } from '../../../core/ui/Switch';
 import { cn } from '../../../core/utils/cn';
@@ -129,6 +129,7 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
     stock: '',
     minStock: '5',
     supplier: '',
+    expiryDate: '', // 🔥 Nuevo campo
     isWeighable: false
   });
 
@@ -165,13 +166,14 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
             brand: productToEdit.brand || '',
             category: productToEdit.category || '',
             supplier: productToEdit.supplier || '',
-            minStock: productToEdit.minStock || '5'
+            minStock: productToEdit.minStock || '5',
+            expiryDate: productToEdit.expiryDate || '' // Cargar si existe
         });
       } else {
         setFormData({ 
             name: '', code: '', category: '', brand: '',
             cost: '', markup: '30', price: '',
-            stock: '', minStock: '5', supplier: '', isWeighable: false 
+            stock: '', minStock: '5', supplier: '', expiryDate: '', isWeighable: false 
         });
       }
       setActiveTab('general');
@@ -210,16 +212,14 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
 
     try {
         // 1. Limpieza de datos (SANITIZACIÓN)
-        // Si el código está vacío, LO BORRAMOS del objeto para que la DB no lo indexe como duplicado
         const dataToSave = { ...formData };
         if (!dataToSave.code || dataToSave.code.trim() === '') {
-            delete dataToSave.code; // 🔥 ESTA LÍNEA ES LA CLAVE DE TU ARREGLO
+            delete dataToSave.code;
         }
 
         // 2. Validación de duplicados (Solo si hay código real)
         if (dataToSave.code) {
             const existing = await productRepository.findByCode(dataToSave.code);
-            // Si existe otro producto con ese código
             if (existing && (!productToEdit || existing.id !== productToEdit.id)) {
                 setIsSaving(false);
                 return alert(`⛔ EL CÓDIGO YA EXISTE\n\nEl código "${dataToSave.code}" ya pertenece a: "${existing.name}".`);
@@ -425,6 +425,20 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
                             options={lists.suppliers} value={formData.supplier}
                             onChange={(val) => setFormData({...formData, supplier: val})}
                         />
+                    </div>
+
+                    {/* 🔥 NUEVO CAMPO: VENCIMIENTO LOTE INICIAL */}
+                    <div className="col-span-2 border-t border-sys-100 pt-4 mt-2">
+                        <div className="bg-red-50 p-4 rounded-xl border border-red-100 flex flex-col gap-2">
+                            <h4 className="text-sm font-bold text-red-800 flex items-center gap-2"><Calendar size={16}/> Vencimiento (Lote Inicial)</h4>
+                            <p className="text-xs text-red-600 mb-2">Si el producto tiene fecha de caducidad, ingrésela aquí. Se creará el primer lote con esta fecha.</p>
+                            <input 
+                                type="date" 
+                                className="w-full bg-white border border-red-200 text-sys-900 rounded-lg py-2 px-3 text-sm outline-none focus:border-red-500 focus:ring-2 focus:ring-red-200"
+                                value={formData.expiryDate}
+                                onChange={e => setFormData({...formData, expiryDate: e.target.value})}
+                            />
+                        </div>
                     </div>
                 </div>
              </div>
