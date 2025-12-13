@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { 
   Search, Trash2, ShoppingCart, PackageOpen, 
-  Keyboard, User, Tag, 
+  Keyboard, User, 
   DollarSign, ChevronRight, Plus 
 } from 'lucide-react';
 
@@ -52,23 +52,43 @@ export const PosPage = () => {
   const { cart, addItem, removeItem, getTotal, clearCart } = useCartStore();
   const { user } = useAuthStore(); 
 
+  // 🔥 CÁLCULOS MATEMÁTICOS SEGUROS
   const subtotal = getTotal();
-  const totalFinal = subtotal * (1 - discount / 100);
+  // Redondeamos a 2 decimales para evitar 99.99999999
+  const totalFinalRaw = subtotal * (1 - discount / 100);
+  const totalFinal = Math.round((totalFinalRaw + Number.EPSILON) * 100) / 100;
+
+  // 🔥 HELPER 1: FORMATEO MONEDA (Limpio: sin decimales si es entero)
+  const formatMoney = (amount) => {
+    return amount.toLocaleString('es-AR', {
+        minimumFractionDigits: 0, 
+        maximumFractionDigits: 2  
+    });
+  };
+
+  // 🔥 HELPER 2: FORMATEO STOCK/CANTIDAD (Max 3 decimales, sin ceros extra)
+  const formatStock = (value) => {
+    if (!value) return '0';
+    // parseFloat convierte "0.35000000001" -> 0.35
+    return parseFloat(Number(value).toFixed(3));
+  };
 
   // ==========================================
   // CARGA DE DATOS
   // ==========================================
-  useEffect(() => {
-    const loadProducts = async () => {
-      try {
-        const all = await productRepository.getAll();
-        setProducts(all || []);
-      } catch (error) {
-        console.error("Error cargando catálogo:", error);
-      }
-    };
-    loadProducts();
+  
+  const loadProducts = useCallback(async () => {
+    try {
+      const all = await productRepository.getAll();
+      setProducts(all || []);
+    } catch (error) {
+      console.error("Error cargando catálogo:", error);
+    }
   }, []);
+
+  useEffect(() => {
+    loadProducts();
+  }, [loadProducts]);
 
   // Mantener foco en el buscador (UX Clásica de POS)
   const keepFocus = () => {
@@ -107,20 +127,30 @@ export const PosPage = () => {
     }
   }, [focusedIndex]);
 
+  // 🔥 CORE: Lógica de Selección Unitario vs Pesable
   const handleSelectProduct = useCallback((product) => {
     if (!product) return;
     
-    // 🔥 VALIDACIÓN DE STOCK (Critical Path)
+    // Validación de Stock
     if (parseFloat(product.stock || 0) <= 0) {
         alert(`⛔ SIN STOCK: ${product.name}\nNo quedan unidades disponibles.`);
         setSearchTerm('');
         return;
     }
 
-    setSelectedProduct(product);
-    setSearchTerm(''); 
-    setFocusedIndex(-1);
-  }, []);
+    // Decisión Modal vs Directo
+    if (product.isWeighable) {
+        // Es pesable: Abrimos modal para poner kg
+        setSelectedProduct(product);
+    } else {
+        // Es unitario: Agregamos 1 directo (Efecto Pistola Código de Barras)
+        addItem(product, 1, product.price);
+        setSearchTerm(''); 
+        setFocusedIndex(-1);
+        // Aseguramos foco inmediato para el siguiente producto
+        setTimeout(() => searchInputRef.current?.focus(), 50);
+    }
+  }, [addItem]);
 
   const handleKeyDownInput = (e) => {
     if (e.key === 'ArrowDown') {
@@ -142,6 +172,7 @@ export const PosPage = () => {
         const term = searchTerm.trim();
         if (!term) return;
 
+        // Busqueda exacta por código primero (Prioridad Scanner)
         const exactMatch = products.find(p => (p.code || '').toString() === term);
         
         if (exactMatch) {
@@ -192,7 +223,6 @@ export const PosPage = () => {
           }
           break;
         case 'F6': e.preventDefault(); handleDiscount(); break;
-        // case 'F8': e.preventDefault(); handleSuspend(); break; // Opcional
         case 'F12': 
           e.preventDefault();
           if (cart.length > 0 && !selectedProduct && !isPaymentOpen) {
@@ -271,7 +301,7 @@ export const PosPage = () => {
             total: paymentData.totalSale        
         },
         client: saleClient,
-        sellerName: user?.name || 'Cajero', // 🔥 Guardamos Usuario
+        sellerName: user?.name || 'Cajero', 
         itemCount: cart.length,
         date: new Date(),
         afip: afipData || { status: 'SKIPPED' } 
@@ -283,8 +313,8 @@ export const PosPage = () => {
       if (paymentData.amountPaid > 0) {
           promises.push(
               cashRepository.registerIncome(
-                  paymentData.amountPaid,                                  
-                  paymentData.method,                                      
+                  paymentData.amountPaid,                                     
+                  paymentData.method,                                         
                   `Venta #${savedSale.localId.slice(-6)}`                 
               )
           );
@@ -304,6 +334,9 @@ export const PosPage = () => {
 
       await Promise.all(promises);
       
+      // 🔥 CRITICO: Actualizar stock VISUALMENTE
+      await loadProducts();
+
       clearCart();
       setDiscount(0);
       setClient(null);
@@ -378,7 +411,8 @@ export const PosPage = () => {
                 <div key={item.cartId} className="group flex items-center p-2 bg-white hover:bg-sys-50 rounded-lg transition-all border border-sys-100 hover:border-sys-200 shadow-sm animate-in slide-in-from-left-2 duration-200">
                   {/* Cantidad Badge */}
                   <div className="w-10 h-10 bg-sys-100 rounded-md flex flex-col items-center justify-center shrink-0 border border-sys-200 text-sys-700 font-mono">
-                      <span className="text-base font-bold leading-none">{item.quantity}</span>
+                      {/* 🔥 APLICACIÓN DE FORMATSTOCK EN CANTIDAD TICKET */}
+                      <span className="text-base font-bold leading-none">{formatStock(item.quantity)}</span>
                       <span className="text-[8px] uppercase opacity-70">{item.isWeighable ? 'KG' : 'UN'}</span>
                   </div>
                   
@@ -388,13 +422,15 @@ export const PosPage = () => {
                       <span className="font-mono text-[10px] bg-sys-50 px-1 rounded text-sys-600 border border-sys-100">
                         {item.code}
                       </span>
-                      <span>x ${item.price.toLocaleString('es-AR')}</span>
+                      {/* 🔥 TICKET: PRECIO FORMATEADO */}
+                      <span>x ${formatMoney(item.price)}</span>
                     </div>
                   </div>
 
                   <div className="text-right">
+                    {/* 🔥 TICKET: SUBTOTAL FORMATEADO */}
                     <p className="font-black text-sys-900 text-base tracking-tight">
-                      $ {item.subtotal.toLocaleString('es-AR', {minimumFractionDigits: 2})}
+                      $ {formatMoney(item.subtotal)}
                     </p>
                     <button onClick={() => removeItem(item.cartId)} className="text-[10px] font-medium text-red-500 hover:text-red-700 hover:underline opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-end gap-1 ml-auto mt-0.5">
                       <Trash2 size={10}/> Quitar
@@ -411,7 +447,8 @@ export const PosPage = () => {
                 <div className="flex flex-col">
                     <span className="text-xs text-sys-500 font-bold uppercase tracking-wider mb-1">Total a Pagar</span>
                     {discount > 0 && <span className="text-[10px] text-green-600 font-bold bg-green-50 px-1.5 py-0.5 rounded self-start mb-1">Desc. {discount}%</span>}
-                    <span className="text-4xl font-black text-sys-900 tracking-tighter leading-none">$ {totalFinal.toLocaleString('es-AR', {minimumFractionDigits: 2})}</span>
+                    {/* 🔥 TICKET: TOTAL FORMATEADO */}
+                    <span className="text-4xl font-black text-sys-900 tracking-tighter leading-none">$ {formatMoney(totalFinal)}</span>
                 </div>
                 
                 <div className="flex gap-2 items-end">
@@ -486,12 +523,14 @@ export const PosPage = () => {
                                   index === focusedIndex ? "bg-white/20 text-white" : 
                                   product.stock <= (product.minStock || 5) ? "text-red-600 bg-red-50" : "text-green-600 bg-green-50"
                               )}>
-                                  {product.stock} un
+                                  {/* 🔥 LISTA: STOCK FORMATEADO */}
+                                  {formatStock(product.stock)} {product.isWeighable ? 'kg' : 'un'}
                               </span>
                           </div>
                       </div>
                       <div className="text-right">
-                          <span className={cn("block font-bold text-sm", index === focusedIndex ? "text-white" : "text-sys-900")}>$ {product.price.toLocaleString('es-AR')}</span>
+                          {/* 🔥 LISTA: PRECIO FORMATEADO */}
+                          <span className={cn("block font-bold text-sm", index === focusedIndex ? "text-white" : "text-sys-900")}>$ {formatMoney(product.price)}</span>
                           <div className={cn("mt-1 transition-opacity", index === focusedIndex ? "opacity-100" : "opacity-0 group-hover:opacity-100")}>
                               <div className={cn("w-5 h-5 rounded-full flex items-center justify-center shadow-sm ml-auto", index === focusedIndex ? "bg-white text-brand" : "bg-brand text-white")}>
                                   <Plus size={12} strokeWidth={3} />

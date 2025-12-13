@@ -8,7 +8,7 @@ import { Switch } from '../../../core/ui/Switch';
 import { cn } from '../../../core/utils/cn';
 import { paymentService } from '../../payments/services/paymentService';
 
-// 🔥 CONFIG: disableAfip = false (Activado por defecto para este cliente)
+// 🔥 CONFIG: disableAfip = false (Activado por defecto, inicia en OFF)
 export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disableAfip = false }) => {
   // ==========================================
   // ESTADOS Y REFS
@@ -26,10 +26,10 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
   const cashInputRef = useRef(null);
   const transferRef = useRef(null);
 
-  // ID Terminal (Configuración futura)
+  // ID Terminal Point (Configuración)
   const POINT_DEVICE_ID = "PAX_00000000"; 
 
-  // Estado AFIP
+  // Estado AFIP (Siempre inicia FALSE)
   const [withAfip, setWithAfip] = useState(false);
 
   // Datos Cuenta para Transferencia
@@ -58,24 +58,22 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
   
   const handleAfipChange = (checked) => {
     setWithAfip(checked);
-    if (!disableAfip) localStorage.setItem('POS_PREF_AFIP', checked);
   };
 
-  // 1. Inicialización
+  // 1. Inicialización y Limpieza al abrir
   useEffect(() => {
     if (isOpen) {
       setMethod('cash');
-      // Redondeo explícito para UX limpia
       setAmountToPay(Math.round(total).toString());
       setReference('');
+      
+      // 🔥 RESET ABSOLUTO DEL ESTADO DIGITAL
       setDigitalState('idle');
       setPaymentReference(null);
+      if (pollingRef.current) clearInterval(pollingRef.current);
 
-      // Leemos preferencia si está habilitado
-      if (disableAfip) setWithAfip(false);
-      else setWithAfip(localStorage.getItem('POS_PREF_AFIP') === 'true');
+      setWithAfip(false);
       
-      // Auto-focus
       setTimeout(() => {
         if (cashInputRef.current) {
             cashInputRef.current.focus();
@@ -83,41 +81,11 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
         }
       }, 50);
     } else {
+        // Limpieza de seguridad al desmontar/ocultar
         if (pollingRef.current) clearInterval(pollingRef.current);
+        setDigitalState('idle'); 
     }
-  }, [isOpen, total, disableAfip]);
-
-  // 🔥 ATAJOS DE TECLADO (F1 / F2)
-  useEffect(() => {
-    const handleKeys = (e) => {
-        if (!isOpen) return;
-        
-        if (e.key === 'F1') {
-            e.preventDefault();
-            setMethod('cash');
-            if (!amountToPay || method !== 'cash') {
-                 setAmountToPay(Math.round(total).toString());
-            }
-            setTimeout(() => {
-                cashInputRef.current?.focus();
-                cashInputRef.current?.select();
-            }, 50);
-        }
-        
-        if (e.key === 'F2') {
-            e.preventDefault();
-            setMethod('transfer');
-            setAmountToPay(Math.round(total).toString()); 
-            setTimeout(() => {
-                transferRef.current?.focus();
-            }, 50);
-        }
-    };
-    
-    window.addEventListener('keydown', handleKeys);
-    return () => window.removeEventListener('keydown', handleKeys);
-  }, [isOpen, total, amountToPay, method]);
-
+  }, [isOpen, total]);
 
   // 2. INICIO DE TRANSACCIÓN DIGITAL
   useEffect(() => {
@@ -137,11 +105,11 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
       startTransaction();
     } else {
       if (pollingRef.current) clearInterval(pollingRef.current);
-      setDigitalState('idle');
+      // No reseteamos a 'idle' aquí para no romper el ciclo si cambiamos de método manualmente
     }
   }, [isOpen, method, total]);
 
-  // 3. POLLING (Loop de estado)
+  // 3. POLLING
   useEffect(() => {
     if (digitalState === 'waiting' && paymentReference) {
       const checkPayment = async () => {
@@ -166,7 +134,30 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
     }
   }, [digitalState, paymentReference, method, total, withAfip, onConfirm]);
 
-  // 4. Confirmación Manual
+  // 🔥 4. LÓGICA DE CIERRE SEGURO (Intercepción)
+  const handleCloseAttempt = () => {
+    // Si estamos en medio de una transacción digital, pedimos confirmación
+    if (digitalState === 'waiting' || digitalState === 'creating') {
+        const confirmCancel = window.confirm(
+            "⚠️ ¿CANCELAR PAGO EN PROCESO?\n\n" +
+            "Se está esperando respuesta de la terminal/QR.\n" +
+            "Si cancela aquí, asegúrese de que el cliente NO haya pagado.\n\n" +
+            "¿Desea cancelar la operación y volver?"
+        );
+
+        if (confirmCancel) {
+            // Limpieza manual forzada antes de cerrar
+            if (pollingRef.current) clearInterval(pollingRef.current);
+            setDigitalState('idle'); 
+            setMethod('cash'); // Volver a cash por seguridad
+            onClose();
+        }
+    } else {
+        // Cierre normal
+        onClose();
+    }
+  };
+
   const handleManualConfirm = () => {
     if (!canConfirm) return;
     onConfirm({
@@ -184,7 +175,7 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
         e.preventDefault();
         if (canConfirm) handleManualConfirm();
     }
-    if (e.key === 'Escape') onClose();
+    if (e.key === 'Escape') handleCloseAttempt(); // 🔥 Usamos el cierre seguro en ESC
   };
 
   if (!isOpen) return null;
@@ -192,7 +183,8 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
   const PaymentOption = ({ id, label, icon: Icon, colorClass, shortcut }) => (
     <button 
         onClick={() => setMethod(id)} 
-        disabled={digitalState !== 'idle' && digitalState !== 'error'} 
+        // Deshabilitamos botones SOLO si está cargando o esperando, PERO NO si dio error (para permitir reintentar)
+        disabled={digitalState === 'creating' || digitalState === 'waiting' || digitalState === 'approved'} 
         className={cn(
             "flex flex-col items-center justify-center p-3 rounded-xl border-2 transition-all duration-200 h-24 relative overflow-hidden active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed group", 
             method === id ? `bg-sys-50 border-${colorClass} shadow-md` : "bg-white border-sys-100 hover:border-sys-300 text-sys-500"
@@ -227,7 +219,7 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
                 <p className="text-3xl font-black text-sys-900 tracking-tight">$ {total.toLocaleString('es-AR', {minimumFractionDigits: 0})}</p>
              </div>
 
-             {/* INPUT MONTO (Visible en Cash/Transfer o Error) */}
+             {/* INPUT MONTO */}
              {(method === 'cash' || method === 'transfer' || digitalState === 'error') && (
                  <div className={cn("p-4 rounded-xl border transition-colors ring-offset-2 animate-in slide-in-from-bottom-2", 
                     isPartialPayment ? "bg-orange-50 border-orange-300 ring-orange-100" : 
@@ -292,20 +284,21 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
                     {method !== 'cash' && method !== 'transfer' ? "Procesamiento Digital Seguro" : "Cobro manual / local"}
                 </p>
             </div>
-            <button onClick={onClose} className="p-2 hover:bg-sys-100 rounded-full transition text-sys-500">
+            
+            {/* 🔥 BOTÓN X CON LÓGICA DE INTERCEPCIÓN */}
+            <button onClick={handleCloseAttempt} className="p-2 hover:bg-sys-100 rounded-full transition text-sys-500">
               <X size={24} />
             </button>
           </div>
 
-          {/* GRID DE BOTONES: Restaurado a 4 columnas */}
+          {/* GRID DE BOTONES */}
           <div className="grid grid-cols-4 gap-3 mb-6">
             <PaymentOption id="cash" label="Efectivo" icon={Banknote} colorClass="brand" shortcut="F1" />
             <PaymentOption id="transfer" label="Transfer" icon={Landmark} colorClass="purple-600" shortcut="F2" />
             
-            {/* 🔥 OPCIONES DIGITALES ACTIVADAS */}
             <PaymentOption id="mercadopago" label="MP QR" icon={QrCode} colorClass="blue-500" />
             <PaymentOption id="point" label="Tarjeta" icon={CreditCard} colorClass="blue-600" />
-            {/* <PaymentOption id="clover" label="Clover" icon={LayoutGrid} colorClass="green-600" /> */}
+            <PaymentOption id="clover" label="Clover" icon={LayoutGrid} colorClass="green-600" />
           </div>
 
           <div className="flex-1 flex flex-col justify-center items-center text-center min-h-[150px]">
@@ -330,7 +323,7 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
                  </div>
              )}
 
-             {/* --- ESTADOS DIGITALES (MP, Point, Clover) --- */}
+             {/* --- ESTADOS DIGITALES --- */}
              {(method === 'mercadopago' || method === 'clover' || method === 'point') && (
                  <div className="w-full max-w-xs animate-in fade-in">
                     
@@ -338,7 +331,8 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
                         <>
                            <Loader2 size={48} className="animate-spin text-sys-300 mx-auto mb-4"/>
                            <p className="text-sys-500 font-medium">
-                               {method === 'point' ? 'Conectando con Terminal...' : 'Iniciando transacción segura...'}
+                               {method === 'point' ? 'Conectando con Terminal...' : 
+                                method === 'clover' ? 'Conectando con Clover...' : 'Iniciando transacción segura...'}
                            </p>
                         </>
                     )}
@@ -377,7 +371,7 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
                            <AlertCircle size={48} className="mx-auto mb-2"/>
                            <p className="font-bold text-lg">Error de Conexión</p>
                            <p className="text-sm opacity-80 mb-4">
-                               {method === 'point' ? 'No se encontró terminal física o fue rechazada.' : 'No se pudo conectar con el proveedor.'}
+                               {method === 'point' ? 'Terminal no responde o rechazada.' : 'No se pudo conectar con el proveedor.'}
                            </p>
                            <Button variant="ghost" size="sm" onClick={() => setMethod('cash')} className="bg-white border border-red-200 text-red-700 hover:bg-red-50">
                               Cambiar a Efectivo
@@ -401,7 +395,6 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
           {/* FOOTER ACCIONES */}
           <div className="mt-4 pt-4 border-t border-sys-100">
              
-             {/* Switch AFIP: RESTAURADO (Visible siempre que no esté deshabilitado explícitamente) */}
              {!disableAfip && (
                  <div className="flex items-center justify-between mb-4">
                     <div className="flex items-center gap-2">
@@ -419,7 +412,6 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
                  </div>
              )}
 
-             {/* Botón Confirmar (Solo manual) */}
              {(method === 'cash' || method === 'transfer') && (
                 <Button 
                    onClick={handleManualConfirm}
