@@ -1,5 +1,3 @@
-// src/modules/dashboard/pages/DashboardPage.jsx
-
 import React, { useEffect, useState } from 'react';
 import { 
     TrendingUp, Users, Package, AlertTriangle, 
@@ -15,6 +13,9 @@ import { useAuthStore } from '../../auth/store/useAuthStore';
 import { productRepository } from '../../inventory/repositories/productRepository';
 import { cashRepository } from '../../cash/repositories/cashRepository';
 import { salesRepository } from '../../sales/repositories/salesRepository';
+
+// 🔥 IMPORTAMOS EL SERVICIO DE SEGURIDAD CENTRALIZADO
+import { securityService } from '../../security/services/securityService';
 
 // 🔥 HOOK REAL-TIME
 import { useCloudDashboard } from '../hooks/useCloudDashboard';
@@ -262,18 +263,19 @@ const AdminSecurityPanel = ({ onUpdatePin }) => {
         <Card className="p-4 border-l-4 border-l-slate-800 bg-slate-50">
             <div className="flex items-center gap-2 mb-2">
                 <Shield size={16} className="text-slate-600" />
-                <h3 className="font-bold text-sys-900 text-sm">PIN Maestro</h3>
+                <h3 className="font-bold text-sys-900 text-sm">PIN Maestro (Global)</h3>
             </div>
+            <p className="text-[10px] text-slate-500 mb-3">Este PIN permite autorizar retiros y acceso al inventario para cajeros.</p>
             <div className="flex gap-2 items-center">
                 <div className="relative flex-1">
                     <input 
-                        type="password" placeholder="******" 
+                        type="password" placeholder="Nuevo PIN (4-6 dígitos)" 
                         className="w-full px-3 py-1.5 rounded-lg border border-sys-300 focus:border-slate-800 outline-none text-xs font-mono tracking-widest"
                         maxLength={6} value={newPin} onChange={(e) => setNewPin(e.target.value)}
                     />
                 </div>
                 <Button size="sm" className="bg-slate-800 hover:bg-slate-900 text-white h-8 text-xs" onClick={() => { onUpdatePin(newPin); setNewPin(''); }} disabled={newPin.length < 4}>
-                    Ok
+                    Actualizar
                 </Button>
             </div>
         </Card>
@@ -532,6 +534,7 @@ const AdminDashboardView = ({
                     </Card>
                 </div>
                 
+                {/* 🔥 PANEL SEGURIDAD CONECTADO A SECURITY SERVICE */}
                 <AdminSecurityPanel onUpdatePin={handleUpdatePin} />
             </div>
         </div>
@@ -681,20 +684,24 @@ export const DashboardPage = () => {
         try { await cashRepository.registerExpense(amount, description, '', user?.name); await loadIntelligence(); alert(`✅ Gasto registrado.`); } catch (e) { alert(e.message); }
     };
 
+    // 🔥 RETIRO DE EFECTIVO VALIDADO CON SECURITY SERVICE
     const handleRegisterWithdrawal = async ({ amount, description, adminPin }) => {
         try {
-            const storedPin = await cashRepository.getAdminCashPin();
-            if (adminPin !== (storedPin || "1234")) return alert("⛔ PIN INCORRECTO.");
+            // VERIFICACIÓN CENTRALIZADA
+            const isValid = await securityService.verifyMasterPin(adminPin);
+            if (!isValid) return alert("⛔ PIN INCORRECTO.");
+            
             await cashRepository.registerWithdrawal(amount, description, 'Autorizado por PIN', user?.name);
             await loadIntelligence();
             alert(`✅ Retiro autorizado.`);
         } catch (e) { alert(e.message); }
     };
 
+    // 🔥 ACTUALIZACIÓN DE PIN MEDIANTE SECURITY SERVICE
     const handleUpdatePin = async (newPin) => {
         if (!newPin || newPin.length < 4) return alert("Mínimo 4 dígitos.");
-        await cashRepository.setAdminCashPin(newPin);
-        alert("✅ PIN actualizado.");
+        await securityService.setMasterPin(newPin); // Usamos el servicio central
+        alert("✅ PIN Maestro actualizado correctamente.");
     };
     
     if (loading && !finalMetrics.allShifts.length) return <div className="p-10 text-center animate-pulse">Cargando sistema...</div>;

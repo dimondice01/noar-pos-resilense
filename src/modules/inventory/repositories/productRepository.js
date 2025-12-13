@@ -1,21 +1,42 @@
 import { getDB } from '../../../database/db';
+import { db } from '../../../database/firebase';
+import { doc, setDoc, updateDoc } from 'firebase/firestore';
+
+// Helper para subir sin bloquear
+const syncToCloud = async (collection, data) => {
+  if (!navigator.onLine) return;
+  try {
+    const { syncStatus, ...cloudData } = data;
+    await setDoc(doc(db, collection, data.id), {
+      ...cloudData,
+      firestoreId: data.id,
+      syncedAt: new Date().toISOString()
+    }, { merge: true });
+    
+    // Marcar como synced localmente
+    const dbLocal = await getDB();
+    const storeName = collection === 'movements' ? 'movements' : 'products'; // Mapeo simple
+    await dbLocal.put(storeName, { ...data, syncStatus: 'SYNCED' });
+  } catch (e) {
+    console.warn(`⚠️ Error sync ${collection}:`, e);
+  }
+};
 
 export const productRepository = {
   // ==========================================
-  // 📖 MÉTODOS DE LECTURA
+  // 📖 MÉTODOS DE LECTURA (Local First)
   // ==========================================
 
   async getAll() {
     const db = await getDB();
     const all = await db.getAll('products');
-    // Filtramos los que están marcados como borrados (Soft Delete)
     return all.filter(p => !p.deleted);
   },
 
   async findByCode(code) {
     const db = await getDB();
     const product = await db.getFromIndex('products', 'code', code);
-    if (product && product.deleted) return null; // Si está borrado lógico, no lo devolvemos
+    if (product && product.deleted) return null;
     return product;
   },
 
@@ -29,15 +50,12 @@ export const productRepository = {
   // ☁️ MÉTODOS PARA EL SYNC SERVICE
   // ==========================================
 
-  // Obtiene todo lo que cambió y no ha subido a Firebase
   async getPendingSync() {
     const db = await getDB();
     const all = await db.getAll('products');
-    // Esto podría optimizarse con un índice 'syncStatus', pero por ahora filter está bien
-    return all.filter(p => p.syncStatus === 'pending');
+    return all.filter(p => p.syncStatus === 'pending' || p.syncStatus === 'PENDING');
   },
 
-  // Marca como sincronizados (Status: synced)
   async markAsSynced(ids) {
     const db = await getDB();
     const tx = db.transaction('products', 'readwrite');
@@ -46,12 +64,10 @@ export const productRepository = {
     for (const id of ids) {
       const product = await store.get(id);
       if (product) {
-        // Si estaba marcado para borrar y ya se subió, ahora sí lo borramos físico para limpiar espacio
         if (product.deleted) {
              await store.delete(id);
         } else {
-             // Si es un producto normal, solo actualizamos el estado
-             product.syncStatus = 'synced';
+             product.syncStatus = 'synced'; // lowercase para estándar
              await store.put(product);
         }
       }
@@ -60,7 +76,7 @@ export const productRepository = {
   },
 
   // ==========================================
-  // ✍️ MÉTODOS DE ESCRITURA (Con Trazabilidad + Sync)
+  // ✍️ MÉTODOS DE ESCRITURA (Cloud Enabled)
   // ==========================================
 
   async saveAll(products) {
@@ -68,38 +84,27 @@ export const productRepository = {
     const tx = db.transaction('products', 'readwrite');
     const store = tx.objectStore('products');
     for (const product of products) {
-      // Al importar masivamente, asumimos que ya vienen "bien" o definimos status
       store.put({ 
           ...product, 
-          syncStatus: product.syncStatus || 'synced' // Asumimos synced si es carga masiva inicial
+          syncStatus: product.syncStatus || 'synced' 
       });
     }
     return tx.done;
   },
 
-  // 🔥 EL MÉTODO "ESPÍA" (Refactorizado para Sync y Lotes)
+  // 🔥 EL MÉTODO "ESPÍA" (Local + Nube)
   async save(product) {
-    const db = await getDB();
-    const tx = db.transaction(['products', 'movements'], 'readwrite');
-    const productStore = tx.objectStore('products');
-    const movementStore = tx.objectStore('movements');
-
-    // 1. Preparamos el ID
+    const dbLocal = await getDB();
+    
+    // 1. Preparar ID
     const productId = product.id || crypto.randomUUID();
     
-    // 2. Buscamos el estado ANTERIOR
+    // 2. Obtener estado previo (para movimientos)
     let oldProduct = null;
-    if (product.id) {
-        try {
-            oldProduct = await productStore.get(product.id);
-        } catch (e) { /* Es nuevo */ }
-    }
+    try { oldProduct = await dbLocal.get('products', productId); } catch (e) {}
 
-    // 🔥 GESTIÓN DE LOTES INICIAL
-    // Si el producto es nuevo, tiene stock inicial y fecha de vencimiento, 
-    // creamos el primer lote automáticamente.
+    // 3. Gestión de Lotes
     let batches = product.batches || (oldProduct?.batches || []);
-
     if (!oldProduct && parseFloat(product.stock) > 0 && product.expiryDate) {
         batches = [{
             id: crypto.randomUUID(),
@@ -109,31 +114,33 @@ export const productRepository = {
         }];
     }
 
-    // 3. Preparamos el objeto a guardar
+    // 4. Objeto Producto Final
     const productToSave = {
       ...product,
       id: productId,
-      batches: batches, // Guardamos los lotes
+      batches: batches,
       updatedAt: new Date().toISOString(),
-      syncStatus: 'pending', 
-      deleted: false 
+      syncStatus: 'PENDING',
+      deleted: false
     };
 
-    // 4. DETECTAR CAMBIOS Y GENERAR MOVIMIENTOS (KARDEX)
-    const timestamp = new Date().toISOString(); 
+    // 5. Detectar Cambios y Generar Movimientos
+    const movementsToSave = [];
+    const timestamp = new Date().toISOString();
     
-    // Si no existía antes -> Es CREACIÓN
     if (!oldProduct) {
-        movementStore.put({
+        // Creación
+        movementsToSave.push({
+            id: `mov_${Date.now()}_create`,
             productId,
             type: 'CREATION',
             description: 'Producto dado de alta',
             user: 'Admin', 
             date: timestamp
         });
-        
         if (productToSave.stock > 0) {
-            movementStore.put({
+            movementsToSave.push({
+                id: `mov_${Date.now()}_init`,
                 productId,
                 type: 'STOCK_IN',
                 description: `Stock inicial: ${productToSave.stock}`,
@@ -143,11 +150,10 @@ export const productRepository = {
             });
         }
     } else {
-        // EDICIÓN
-        
-        // A) Cambio de PRECIO
+        // Edición
         if (parseFloat(oldProduct.price) !== parseFloat(productToSave.price)) {
-            movementStore.put({
+            movementsToSave.push({
+                id: `mov_${Date.now()}_price`,
                 productId,
                 type: 'PRICE_CHANGE',
                 description: `Precio: $${oldProduct.price} ➝ $${productToSave.price}`,
@@ -155,22 +161,10 @@ export const productRepository = {
                 date: timestamp
             });
         }
-
-        // B) Cambio de COSTO
-        if (parseFloat(oldProduct.cost || 0) !== parseFloat(productToSave.cost || 0)) {
-            movementStore.put({
-                productId,
-                type: 'COST_CHANGE',
-                description: `Costo: $${oldProduct.cost || 0} ➝ $${productToSave.cost}`,
-                user: 'Admin',
-                date: timestamp
-            });
-        }
-
-        // C) Ajuste Manual de STOCK (Edición directa desde el modal)
         if (parseFloat(oldProduct.stock) !== parseFloat(productToSave.stock)) {
             const diff = parseFloat(productToSave.stock) - parseFloat(oldProduct.stock);
-            movementStore.put({
+            movementsToSave.push({
+                id: `mov_${Date.now()}_adj`,
                 productId,
                 type: 'STOCK_ADJUST_' + (diff > 0 ? 'IN' : 'OUT'),
                 description: `Ajuste manual: ${diff > 0 ? '+' : ''}${diff.toFixed(2)}`,
@@ -181,32 +175,33 @@ export const productRepository = {
         }
     }
 
-    // 5. Guardar producto y confirmar transacción
-    await productStore.put(productToSave);
+    // 6. Transacción Local
+    const tx = dbLocal.transaction(['products', 'movements'], 'readwrite');
+    await tx.objectStore('products').put(productToSave);
+    for (const mov of movementsToSave) {
+        await tx.objectStore('movements').put({ ...mov, syncStatus: 'PENDING' });
+    }
     await tx.done;
-    
+
+    // 7. Sincronizar Nube (Background)
+    syncToCloud('products', productToSave);
+    movementsToSave.forEach(mov => syncToCloud('movements', mov)); // Subir historial también (Opcional pero recomendado)
+
     return productToSave;
   },
 
-  // 🔥 NUEVO MÉTODO: INGRESO RÁPIDO DE STOCK (Botón "+")
+  // 🔥 INGRESO RÁPIDO DE STOCK (Cloud Enabled)
   async addStock(productId, quantity, expiryDate) {
-    const db = await getDB();
-    const tx = db.transaction(['products', 'movements'], 'readwrite');
-    const productStore = tx.objectStore('products');
-    const movementStore = tx.objectStore('movements');
-
-    const product = await productStore.get(productId);
+    const dbLocal = await getDB();
+    
+    const product = await dbLocal.get('products', productId);
     if (!product) throw new Error("Producto no encontrado");
 
     const qty = parseFloat(quantity);
-    
-    // 1. Actualizar Stock Total
     const newStock = (parseFloat(product.stock) || 0) + qty;
 
-    // 2. Gestión de Lotes (Batches)
+    // Lotes
     let batches = product.batches || [];
-    
-    // Si entra stock positivo, creamos un nuevo lote
     if (qty > 0) {
         batches.push({
             id: crypto.randomUUID(),
@@ -216,53 +211,61 @@ export const productRepository = {
         });
     }
 
-    // 3. Recalcular Fecha de Vencimiento Visible (La más próxima)
-    // Filtramos lotes que tengan stock y fecha, ordenamos por fecha más cercana
+    // Recalcular Vencimiento Visible
     const activeBatchesWithDate = batches
         .filter(b => b.quantity > 0 && b.expiryDate)
         .sort((a, b) => new Date(a.expiryDate) - new Date(b.expiryDate));
-    
-    // La nueva fecha de alerta es la del lote que vence primero
     const nextExpiry = activeBatchesWithDate.length > 0 ? activeBatchesWithDate[0].expiryDate : product.expiryDate;
 
     const updatedProduct = {
         ...product,
         stock: newStock,
         batches: batches,
-        expiryDate: nextExpiry, // Actualizamos la fecha visible para las alertas
+        expiryDate: nextExpiry,
         updatedAt: new Date().toISOString(),
-        syncStatus: 'pending'
+        syncStatus: 'PENDING'
     };
 
-    // 4. Guardar Movimiento en Historial
-    await movementStore.put({
+    const movement = {
+        id: `mov_${Date.now()}_quick`,
         productId,
         type: 'STOCK_IN',
         description: `Ingreso Rápido (+${qty}) ${expiryDate ? 'Vence: ' + expiryDate : ''}`,
         amount: qty,
         user: 'Admin',
-        date: new Date().toISOString()
-    });
+        date: new Date().toISOString(),
+        syncStatus: 'PENDING'
+    };
 
-    await productStore.put(updatedProduct);
+    // Local
+    const tx = dbLocal.transaction(['products', 'movements'], 'readwrite');
+    await tx.objectStore('products').put(updatedProduct);
+    await tx.objectStore('movements').put(movement);
     await tx.done;
+
+    // Nube
+    syncToCloud('products', updatedProduct);
+    syncToCloud('movements', movement);
   },
 
-  // 🗑️ SOFT DELETE (Para poder sincronizar el borrado)
+  // 🗑️ SOFT DELETE (Cloud Enabled)
   async delete(id) {
-    const db = await getDB();
-    const tx = db.transaction('products', 'readwrite');
-    const store = tx.objectStore('products');
+    const dbLocal = await getDB();
+    const product = await dbLocal.get('products', id);
     
-    const product = await store.get(id);
     if (product) {
-        // No borramos físico, marcamos para sync
-        product.deleted = true;
-        product.syncStatus = 'pending';
-        product.updatedAt = new Date().toISOString();
-        await store.put(product);
+        const deletedProduct = {
+            ...product,
+            deleted: true,
+            syncStatus: 'PENDING',
+            updatedAt: new Date().toISOString()
+        };
+
+        // Local
+        await dbLocal.put('products', deletedProduct);
+
+        // Nube (Se actualiza como deleted=true, no se borra físico aún)
+        syncToCloud('products', deletedProduct);
     }
-    
-    await tx.done;
   }
 };

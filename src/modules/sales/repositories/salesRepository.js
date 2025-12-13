@@ -1,15 +1,39 @@
 import { getDB } from '../../../database/db';
+import { db } from '../../../database/firebase';
+import { doc, setDoc } from 'firebase/firestore';
+
+// Helper para subir a la nube sin bloquear la UI
+const syncToCloud = async (collectionName, data) => {
+  if (!navigator.onLine) return; 
+  try {
+    const { syncStatus, ...cloudData } = data;
+    await setDoc(doc(db, collectionName, data.id || data.localId), {
+      ...cloudData,
+      firestoreId: data.id || data.localId,
+      syncedAt: new Date().toISOString(),
+      origin: 'POS_TABLET'
+    }, { merge: true });
+    
+    // Si es una venta, actualizamos su estado local a SYNCED
+    if (collectionName === 'sales') {
+        const dbLocal = await getDB();
+        await dbLocal.put('sales', { ...data, syncStatus: 'SYNCED' });
+    }
+  } catch (e) {
+    console.warn(`⚠️ Error sincronizando ${collectionName}:`, e);
+  }
+};
 
 export const salesRepository = {
   /**
-   * Crea una venta y descuenta stock atómicamente.
-   * Maneja la transacción ACID: Venta + Stock (Lotes FIFO Estricto) + Kardex.
+   * Crea una venta y descuenta stock atómicamente (Local + Cloud).
+   * Maneja la transacción ACID: Venta + Stock (Lotes FIFO) + Kardex.
    */
   async createSale(saleData) {
-    const db = await getDB();
+    const dbLocal = await getDB();
     
     // 🔥 INICIO DE TRANSACCIÓN MULTI-STORE
-    const tx = db.transaction(['sales', 'products', 'movements'], 'readwrite');
+    const tx = dbLocal.transaction(['sales', 'products', 'movements'], 'readwrite');
     
     const salesStore = tx.objectStore('sales');
     const productsStore = tx.objectStore('products');
@@ -21,12 +45,15 @@ export const salesRepository = {
 
     const sale = {
       ...saleData,
-      localId: saleId,
+      localId: saleId, // Usamos esto como ID en Firestore
       date: saleData.date ? new Date(saleData.date).toISOString() : timestamp, 
       createdAt: timestamp,
       status: 'COMPLETED', 
-      syncStatus: 'pending',
+      syncStatus: 'pending', // Se marcará SYNCED si sube bien
     };
+
+    // Array para recolectar movimientos y subirlos luego
+    const movementsToSync = [];
 
     // 2. Procesar cada ítem del carrito (Descuento de Stock)
     for (const item of saleData.items) {
@@ -42,12 +69,10 @@ export const salesRepository = {
         // A) Descuento del Stock Total
         const newStock = (parseFloat(product.stock || 0) - quantityToDeduct);
 
-        // B) LÓGICA DE LOTES (FIFO STRICTO - Por fecha de ingreso)
+        // B) LÓGICA DE LOTES (FIFO STRICTO)
         let batches = product.batches || [];
         
         if (batches.length > 0) {
-            // 1. Ordenar por fecha de creación (dateAdded). El más viejo primero.
-            // Esto asegura FIFO estricto: Primero entra, primero sale.
             batches.sort((a, b) => {
                  const dateA = a.dateAdded ? new Date(a.dateAdded) : new Date(0);
                  const dateB = b.dateAdded ? new Date(b.dateAdded) : new Date(0);
@@ -56,78 +81,79 @@ export const salesRepository = {
 
             let remaining = quantityToDeduct;
             
-            // 2. Recorremos los lotes descontando
             batches = batches.map(batch => {
-                if (remaining <= 0) return batch; // Ya descontamos todo
+                if (remaining <= 0) return batch;
 
                 const currentQty = parseFloat(batch.quantity);
                 
                 if (currentQty >= remaining) {
-                    // Este lote cubre lo que falta
                     batch.quantity = currentQty - remaining;
                     remaining = 0;
                     return batch;
                 } else {
-                    // Consumimos todo este lote y pasamos al siguiente
                     remaining -= currentQty;
                     batch.quantity = 0;
                     return batch;
                 }
             });
-            
-            // Nota: Mantenemos los lotes en 0 por trazabilidad, el filtro de visualización los ocultará.
         }
 
-        // C) Recalcular Próximo Vencimiento VISIBLE para el futuro
-        // Ahora que descontamos, buscamos cuál es el nuevo lote más antiguo con stock > 0
-        let nextExpiry = product.expiryDate; // Fallback
-        
+        // C) Recalcular Próximo Vencimiento
+        let nextExpiry = product.expiryDate;
         if (batches.length > 0) {
-             // Filtramos solo los lotes que quedaron "vivos"
              const activeBatches = batches.filter(b => parseFloat(b.quantity) > 0);
-             
-             // Re-ordenamos por fecha de ingreso para ser consistentes con FIFO
              activeBatches.sort((a, b) => {
                  const dateA = a.dateAdded ? new Date(a.dateAdded) : new Date(0);
                  const dateB = b.dateAdded ? new Date(b.dateAdded) : new Date(0);
                  return dateA - dateB;
             });
-            
             if (activeBatches.length > 0) {
-                // El vencimiento visible será el del lote más viejo activo
                 nextExpiry = activeBatches[0].expiryDate;
             }
         }
 
-        // D) Actualizar Producto y MARCAR PARA SYNC
+        // D) Actualizar Producto Localmente (Marcado para Sync)
+        // Nota: No subimos el producto aquí para no saturar la red con N peticiones.
+        // El syncService se encargará de subir los productos 'pending' en lote.
         await productsStore.put({
             ...product,
             stock: newStock,
-            batches: batches, // Guardamos los lotes con las cantidades restadas
-            expiryDate: nextExpiry, // Actualizamos la alerta de vencimiento
+            batches: batches,
+            expiryDate: nextExpiry,
             updatedAt: timestamp,
-            syncStatus: 'pending'
+            syncStatus: 'pending' 
         });
 
         // E) Registrar en KARDEX (Auditoría)
-        await movementsStore.put({
+        // Generamos ID explícito para poder sincronizarlo
+        const movementId = `mov_sale_${saleId}_${item.id}`;
+        const movement = {
+            id: movementId,
             productId: product.id,
             type: 'STOCK_OUT', 
             description: `Venta POS #${saleId.slice(-4)}`,
             amount: -quantityToDeduct, 
             date: timestamp,
-            // Guardamos quién hizo la venta (Cajero)
             user: saleData.sellerName || 'Cajero', 
-            refId: saleId 
-        });
+            refId: saleId,
+            syncStatus: 'pending'
+        };
+
+        await movementsStore.put(movement);
+        movementsToSync.push(movement);
     }
 
     // 3. Guardar la Venta
     await salesStore.put(sale);
 
-    // 4. Confirmar Transacción
+    // 4. Confirmar Transacción Local
     await tx.done;
     
+    // 5. 🚀 SINCRONIZACIÓN CLOUD (Fire & Forget)
+    // No esperamos a que termine para devolver la respuesta a la UI
+    syncToCloud('sales', sale);
+    movementsToSync.forEach(m => syncToCloud('movements', m));
+
     return sale;
   },
 
@@ -135,16 +161,16 @@ export const salesRepository = {
    * Obtiene Ventas del día + Cobros de Deuda del día.
    */
   async getTodayOperations() {
-    const db = await getDB();
+    const dbLocal = await getDB();
     const today = new Date();
     today.setHours(0,0,0,0);
 
     // 1. Obtener Ventas
-    const allSales = await db.getAll('sales');
+    const allSales = await dbLocal.getAll('sales');
     const todaySales = allSales.filter(s => new Date(s.date) >= today);
 
     // 2. Obtener Cobros de Deuda
-    const allMovements = await db.getAll('cash_movements');
+    const allMovements = await dbLocal.getAll('cash_movements');
     const todayReceipts = allMovements.filter(m => 
         new Date(m.date) >= today && 
         m.type === 'DEPOSIT' && 
@@ -174,8 +200,8 @@ export const salesRepository = {
   },
 
   async forcePendingState() {
-    const db = await getDB();
-    const tx = db.transaction('sales', 'readwrite');
+    const dbLocal = await getDB();
+    const tx = dbLocal.transaction('sales', 'readwrite');
     const store = tx.store;
     
     const allSales = await store.getAll();

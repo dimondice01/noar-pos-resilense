@@ -1,35 +1,52 @@
-// src/modules/security/services/securityService.js
+import { getDB } from '../../../database/db';
+import { syncService } from '../../sync/services/syncService'; // 🔥 Importamos el servicio conectado
 
-// En un futuro, esto vendrá de la base de datos (tabla 'users')
-const MOCK_USERS = [
-  { id: 'u_admin', name: 'Gerente General', pin: '9999', role: 'MANAGER' },
-  { id: 'u_cajero1', name: 'Cajero Mañana', pin: '1234', role: 'CASHIER' }
-];
+const DEFAULT_MASTER_PIN = '1234';
 
 export const securityService = {
+  
   /**
-   * Valida un PIN y retorna el usuario si es correcto
-   * @param {string} pin 
+   * 🔥 VERIFICACIÓN REAL (Lectura Local Rápida)
+   * Lee de IndexedDB, que se mantiene actualizado gracias a los listeners del syncService.
    */
-  async login(pin) {
-    // Simulamos delay de red/criptografía
-    await new Promise(resolve => setTimeout(resolve, 300));
-    
-    const user = MOCK_USERS.find(u => u.pin === pin);
-    if (!user) {
-      throw new Error('PIN Incorrecto');
+  async verifyMasterPin(inputPin) {
+    try {
+      const db = await getDB();
+      const configEntry = await db.get('config', 'MASTER_PIN');
+      const realPin = configEntry ? configEntry.value : DEFAULT_MASTER_PIN;
+      return inputPin === realPin;
+    } catch (error) {
+      console.error("Error verificando PIN en DB:", error);
+      return false;
     }
-    return user;
   },
 
   /**
-   * Verifica específicamente si un PIN tiene permisos de GERENTE (para retiros)
+   * Valida si el PIN corresponde a un Gerente/Admin
    */
-  async authorizeManager(pin) {
-    const user = await this.login(pin);
-    if (user.role !== 'MANAGER') {
-      throw new Error('Permisos insuficientes. Se requiere un Gerente.');
+  async authorizeManager(inputPin) {
+    const isValid = await this.verifyMasterPin(inputPin);
+    if (!isValid) {
+      throw new Error('PIN Incorrecto o Permisos Insuficientes.');
     }
-    return user;
+    return { role: 'ADMIN', name: 'Administrador (PIN)' };
+  },
+
+  /**
+   * 🔥 ACTUALIZACIÓN CLOUD-FIRST
+   * Al cambiar el PIN, lo enviamos a Firebase. Los listeners se encargarán
+   * de bajarlo a este y otros dispositivos.
+   */
+  async setMasterPin(newPin) {
+    await syncService.pushGlobalConfig('MASTER_PIN', newPin);
+    console.log("🔒 PIN Maestro enviado a la nube y actualizado localmente.");
+  },
+
+  async login(pin) {
+    const isMaster = await this.verifyMasterPin(pin);
+    if (isMaster) {
+      return { id: 'admin_pin', name: 'Admin', role: 'ADMIN' };
+    }
+    throw new Error('PIN no reconocido');
   }
 };

@@ -6,6 +6,9 @@ import { MainLayout } from './layout/MainLayout';
 import { useDbSeeder } from './core/hooks/useDbSeeder';
 import { useAuthStore } from './modules/auth/store/useAuthStore';
 
+// 🔥 IMPORTAR SERVICIO DE SINCRONIZACIÓN
+import { syncService } from './modules/sync/services/syncService';
+
 // Componentes Auth
 import { LoginPage } from './modules/auth/pages/LoginPage';
 import { ProtectedRoute } from './core/components/ProtectedRoute';
@@ -15,7 +18,7 @@ import { DashboardPage } from './modules/dashboard/pages/DashboardPage';
 import { PosPage } from './modules/pos/pages/PosPage';
 import { InventoryPage } from './modules/inventory/pages/InventoryPage';
 import { PrintLabelsPage } from './modules/inventory/pages/PrintLabelsPage';
-import { MovementsPage } from './modules/inventory/pages/MovementsPage'; // 👈 IMPORTANTE: Importar la página
+import { MovementsPage } from './modules/inventory/pages/MovementsPage'; 
 import { SalesPage } from './modules/sales/pages/SalesPage';
 import { TeamPage } from './modules/settings/pages/TeamPage'; 
 import { CashPage } from './modules/cash/pages/CashPage'; 
@@ -26,7 +29,12 @@ function App() {
     const initAuthListener = useAuthStore(state => state.initAuthListener);
 
     useEffect(() => {
+        // 1. Inicializar Autenticación (Firebase Auth)
         initAuthListener();
+        
+        // 2. 🔥 ENCENDER ESCUCHA REAL-TIME (Configuración y Stock)
+        // Esto mantiene la tablet sincronizada con el Admin Remoto
+        syncService.startRealTimeListeners();
     }, []);
 
     if (!isDbReady) {
@@ -56,7 +64,7 @@ function App() {
                         {/* Rutas de Inventario */}
                         <Route path="inventory" element={<InventoryPage />} />
                         <Route path="inventory/print" element={<PrintLabelsPage />} />
-                        <Route path="inventory/movements" element={<MovementsPage />} /> {/* 👈 RUTA AGREGADA */}
+                        <Route path="inventory/movements" element={<MovementsPage />} /> 
 
                         <Route path="cash" element={<CashPage />} />
                         <Route path="settings" element={<TeamPage />} />

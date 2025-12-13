@@ -1,19 +1,128 @@
-import { collection, writeBatch, doc, getDocs } from 'firebase/firestore'; // 🔥 Agregamos getDocs
+import { 
+  collection, 
+  writeBatch, 
+  doc, 
+  getDocs, 
+  onSnapshot, 
+  setDoc 
+} from 'firebase/firestore'; 
 import { db } from '../../../database/firebase'; 
 import { salesRepository } from '../../sales/repositories/salesRepository';
 import { productRepository } from '../../inventory/repositories/productRepository';
 import { getDB } from '../../../database/db'; 
 
 export const syncService = {
+  
+  // =================================================================
+  // 📡 1. ESCUCHA ACTIVA (NUBE -> LOCAL)
+  // =================================================================
+  
+  /**
+   * Inicia los listeners de Firestore. 
+   * Llama a esto al iniciar la App (ej: en App.jsx o MainLayout).
+   */
+  startRealTimeListeners() {
+    console.log("📡 Conectando antena de sincronización en tiempo real...");
+
+    // A. LISTENER DE CONFIGURACIÓN (PIN Maestro, Datos Empresa)
+    // Si el Admin cambia el PIN en su casa, la tablet se entera al instante.
+    onSnapshot(collection(db, 'config'), async (snapshot) => {
+      const localDb = await getDB();
+      const tx = localDb.transaction('config', 'readwrite');
+      
+      let changes = 0;
+      snapshot.docChanges().forEach((change) => {
+        const data = change.doc.data();
+        if (change.type === 'added' || change.type === 'modified') {
+           // Guardamos en local: { key: 'MASTER_PIN', value: '...' }
+           tx.store.put({ key: change.doc.id, value: data.value });
+           changes++;
+        }
+        if (change.type === 'removed') {
+           tx.store.delete(change.doc.id);
+        }
+      });
+      await tx.done;
+      if(changes > 0) console.log(`⚙️ Configuración sincronizada (${changes} cambios).`);
+    });
+
+    // B. LISTENER DE PRODUCTOS (Stock y Precios)
+    // Mantiene el inventario actualizado si hay movimientos en la web u otras cajas.
+    onSnapshot(collection(db, 'products'), async (snapshot) => {
+      const localDb = await getDB();
+      
+      // Procesamos cambios uno a uno para usar el repositorio (que maneja índices y lógica extra si la hubiera)
+      // O vamos directo a IDB para velocidad. Aquí iremos directo a IDB pero respetando la estructura.
+      const tx = localDb.transaction('products', 'readwrite');
+      
+      let pChanges = 0;
+      snapshot.docChanges().forEach((change) => {
+        if (change.type === 'added' || change.type === 'modified') {
+           const data = change.doc.data();
+           // Importante: Marcar como 'synced' para evitar rebote (que el POS intente subirlo de nuevo)
+           const productData = { 
+             id: change.doc.id, 
+             ...data, 
+             syncStatus: 'synced' // lowerCase para consistencia con tu código
+           };
+           tx.store.put(productData);
+           pChanges++;
+        }
+        if (change.type === 'removed') {
+           tx.store.delete(change.doc.id);
+        }
+      });
+      await tx.done;
+      if(pChanges > 0) console.log(`📦 Inventario actualizado en vivo (${pChanges} productos).`);
+    });
+  },
+
+  // =================================================================
+  // 🚀 2. ESCRITURA GLOBAL (LOCAL -> NUBE DIRECTO)
+  // =================================================================
+
+  /**
+   * Guarda configuraciones críticas directamente en la nube.
+   * Usado por securityService para cambiar el PIN.
+   */
+  async pushGlobalConfig(key, value) {
+    try {
+      // 1. Escribir en Firestore (La Verdad Absoluta)
+      await setDoc(doc(db, 'config', key), { 
+        value, 
+        updatedAt: new Date().toISOString() 
+      });
+      
+      // 2. Reflejo Local Inmediato (Optimistic UI)
+      // Aunque el listener lo traería después, lo guardamos ya para que la UI no espere.
+      const localDb = await getDB();
+      await localDb.put('config', { key, value });
+      
+      return true;
+    } catch (error) {
+      console.error("Error subiendo configuración:", error);
+      // Fallback: Si no hay internet, guardamos local para no bloquear al usuario,
+      // pero sabiendo que no se propagó al admin remoto.
+      const localDb = await getDB();
+      await localDb.put('config', { key, value });
+      return false;
+    }
+  },
+
+  // =================================================================
+  // 🔄 3. CICLO DE SINCRONIZACIÓN (SUBIDA + RESTAURACIÓN)
+  // =================================================================
+
   /**
    * ORQUESTADOR PRINCIPAL
-   * Sube Ventas, Actualiza Stock y DESCARTA Novedades de la Nube
+   * Sube Ventas y Novedades Locales.
+   * (La bajada ahora es manejada principalmente por los listeners, 
+   * pero mantenemos downloadProductsFromCloud como respaldo inicial).
    */
   async syncUp() { 
-    // Verificación rápida de red
     if (!navigator.onLine) return { sales: 0, products: 0, downloaded: 0 };
 
-    console.log("🔄 SYNC: Iniciando ciclo completo (Subida + Bajada)...");
+    console.log("🔄 SYNC: Ejecutando ciclo de subida...");
     
     try {
         // 1. Subir Ventas Pendientes
@@ -22,16 +131,17 @@ export const syncService = {
         // 2. Subir Cambios de Productos (Precios, Stock, Bajas)
         const productsResult = await this.syncPendingProducts();
 
-        // 3. 🔥 BAJADA: Traer novedades de la nube (Para ver lo que se cargó en web)
+        // 3. Bajada Pasiva (Opcional si tenemos listeners, pero útil para forzar refresh)
+        // Lo dejamos para garantizar integridad al abrir la app o volver de offline.
         let downloadResult = 0;
         try {
             downloadResult = await this.downloadProductsFromCloud();
         } catch (downloadError) {
-            console.warn("⚠️ Error en bajada de productos:", downloadError);
+            console.warn("⚠️ Bajada manual omitida (Listeners activos o error red).");
         }
 
-        if (salesResult.synced > 0 || productsResult.synced > 0 || downloadResult > 0) {
-            console.log(`✅ SYNC: Finalizado. 📤 Ventas: ${salesResult.synced}, 📤 Prod: ${productsResult.synced}, 📥 Bajados: ${downloadResult}`);
+        if (salesResult.synced > 0 || productsResult.synced > 0) {
+            console.log(`✅ SYNC: Subida completada. 📤 Ventas: ${salesResult.synced}, 📤 Prod: ${productsResult.synced}`);
         }
         
         return { 
@@ -71,7 +181,6 @@ export const syncService = {
       
       batch.set(docRef, {
           ...cleanSale,
-          // 🔥 FIX CRÍTICO: Aseguramos formato ISO String
           date: new Date(cleanSale.date).toISOString(), 
           firestoreId: docRef.id,
           syncedAt: new Date().toISOString(),
@@ -101,28 +210,27 @@ export const syncService = {
    * 📦 SYNC PRODUCTOS (Subida)
    */
   async syncPendingProducts() {
-    // 1. Obtener pendientes desde el repositorio
     const pendingProducts = await productRepository.getPendingSync();
 
     if (pendingProducts.length === 0) return { synced: 0 };
 
-    console.log(`📦 Sincronizando ${pendingProducts.length} productos con la nube...`);
+    console.log(`📦 Subiendo ${pendingProducts.length} cambios de producto...`);
     
     const batch = writeBatch(db);
     const productsCollection = collection(db, 'products');
     const syncedIds = [];
 
     for (const product of pendingProducts) {
+      // Usamos el ID del producto como ID del documento para consistencia total
       const docRef = doc(productsCollection, product.id);
       
       const { syncStatus, ...dataToUpload } = product;
 
-      // LÓGICA DE BORRADO (Soft Delete en Nube)
       if (product.deleted) {
           batch.set(docRef, {
               ...dataToUpload,
               active: false,
-              deleted: true, // Marcamos como borrado en nube
+              deleted: true,
               lastUpdated: new Date().toISOString()
           }, { merge: true });
       } else {
@@ -137,22 +245,16 @@ export const syncService = {
 
     await batch.commit();
 
-    // 2. Avisar al repositorio (él se encarga de borrar físicamente si deleted=true)
     await productRepository.markAsSynced(syncedIds);
 
     return { synced: pendingProducts.length };
   },
 
   /**
-   * 📥 BAJADA DE PRODUCTOS (Nuevo)
-   * Trae todo lo de Firestore para mantener la PWA actualizada
+   * 📥 BAJADA MASIVA (Respaldo)
    */
   async downloadProductsFromCloud() {
-    // console.log("⬇️ Verificando actualizaciones en la nube...");
     const productsCollection = collection(db, 'products');
-    
-    // NOTA: Para producción con miles de productos, aquí deberíamos usar 
-    // where('lastUpdated', '>', lastSyncDate). Por ahora traemos todo para garantizar consistencia.
     const snapshot = await getDocs(productsCollection);
     
     if (snapshot.empty) return 0;
@@ -162,16 +264,11 @@ export const syncService = {
         return {
             id: doc.id,
             ...data,
-            syncStatus: 'synced', // Vienen de la nube, están al día
-            // Si en la nube está soft-deleted, aquí llegará como deleted=true
-            // y el productRepository.saveAll lo guardará. 
-            // Luego el getAll filtra los deleted, así que desaparecen visualmente. Correcto.
+            syncStatus: 'synced',
         };
     });
 
-    // Guardamos masivamente en local
     await productRepository.saveAll(cloudProducts);
-    
     return cloudProducts.length;
   }
 };

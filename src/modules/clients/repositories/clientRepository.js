@@ -1,9 +1,31 @@
-// src/modules/clients/repositories/clientRepository.js
 import { getDB } from '../../../database/db';
+import { db } from '../../../database/firebase';
+import { doc, setDoc, deleteDoc } from 'firebase/firestore';
+
+// Helper para subir a la nube sin bloquear la UI
+const syncToCloud = async (collectionName, data) => {
+  if (!navigator.onLine) return; // Si offline, lo agarra el syncService después
+  
+  try {
+    const { syncStatus, ...cloudData } = data;
+    // Usamos el mismo ID para mantener consistencia Local <-> Nube
+    await setDoc(doc(db, collectionName, data.id), {
+      ...cloudData,
+      firestoreId: data.id,
+      syncedAt: new Date().toISOString()
+    }, { merge: true });
+    
+    // Marcar local como SYNCED
+    const dbLocal = await getDB();
+    await dbLocal.put(collectionName, { ...data, syncStatus: 'SYNCED' });
+  } catch (e) {
+    console.warn(`⚠️ Error sincronizando ${collectionName}:`, e);
+  }
+};
 
 export const clientRepository = {
   // ==========================================
-  // 📖 LECTURA
+  // 📖 LECTURA (Local First - Velocidad)
   // ==========================================
 
   async getAll() {
@@ -20,19 +42,16 @@ export const clientRepository = {
 
   /**
    * Obtiene el historial financiero (Ledger) de un cliente
-   * Ordenado del más reciente al más antiguo.
    */
   async getLedger(clientId) {
     const db = await getDB();
-    // Obtenemos todos los movimientos de este cliente
     const movements = await db.getAllFromIndex('customer_ledger', 'clientId', clientId);
     // Ordenamos por fecha descendente
     return movements.sort((a, b) => new Date(b.date) - new Date(a.date));
   },
 
   /**
-   * Búsqueda híbrida optimizada para el POS
-   * @param {string} query - Texto a buscar (Nombre, DNI o CUIT)
+   * Búsqueda híbrida optimizada
    */
   async search(query) {
     const db = await getDB();
@@ -40,10 +59,9 @@ export const clientRepository = {
     
     if (!term) return [];
 
-    // Estrategia 1: Si es numérico, usar índice docNumber (Muy rápido)
+    // Estrategia 1: Si es numérico, usar índice docNumber
     if (/^\d+$/.test(term)) {
         const byDoc = await db.getAllFromIndex('clients', 'docNumber');
-        // Filtramos "starts with" para búsqueda parcial
         return byDoc.filter(c => c.docNumber.startsWith(term));
     }
 
@@ -56,89 +74,106 @@ export const clientRepository = {
   },
 
   // ==========================================
-  // 💰 GESTIÓN FINANCIERA (Cuenta Corriente)
+  // 💰 GESTIÓN FINANCIERA (Cloud Enabled)
   // ==========================================
 
-  /**
-   * Registra un movimiento en la Cta Cte y actualiza el saldo de forma ATÓMICA.
-   * @param {string} clientId 
-   * @param {string} type - 'SALE_DEBT' (Fiado/Deuda) | 'PAYMENT' (Pago/Entrega)
-   * @param {number} amount - Monto positivo siempre
-   * @param {string} description 
-   * @param {string} referenceId - ID de la venta o recibo asociado (opcional)
-   */
   async registerMovement(clientId, type, amount, description, referenceId = null) {
-    const db = await getDB();
-    // Usamos una transacción que abarca ambas tablas para garantizar integridad
-    const tx = db.transaction(['clients', 'customer_ledger'], 'readwrite');
+    const dbLocal = await getDB();
     
+    // 1. Transacción Local (Atomicidad)
+    const tx = dbLocal.transaction(['clients', 'customer_ledger'], 'readwrite');
     const clientStore = tx.objectStore('clients');
     const ledgerStore = tx.objectStore('customer_ledger');
 
-    // 1. Obtener cliente actual para saber su saldo previo
     const client = await clientStore.get(clientId);
     if (!client) throw new Error("Cliente no encontrado");
 
     const currentBalance = client.balance || 0;
     
-    // 2. Calcular nuevo saldo
-    // SALE_DEBT (Fiado) -> Aumenta la deuda (Saldo positivo)
-    // PAYMENT (Pago)    -> Disminuye la deuda
+    // Calcular nuevo saldo
     const newBalance = type === 'SALE_DEBT' 
         ? currentBalance + amount 
         : currentBalance - amount;
 
-    // 3. Crear el registro en el Ledger
+    // Crear ID consistente para el movimiento
+    const movementId = `ledger_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
+
     const movement = {
+        id: movementId,
         clientId,
-        date: new Date(),
+        date: new Date().toISOString(),
         type,
         amount,
         oldBalance: currentBalance,
         newBalance: newBalance,
         description,
         referenceId,
-        syncStatus: 'PENDING' // Para subir a Firestore
+        syncStatus: 'PENDING'
     };
 
-    // 4. Actualizar Cliente
-    client.balance = newBalance;
-    client.updatedAt = new Date();
-    client.syncStatus = 'PENDING';
+    // Actualizar Cliente
+    const updatedClient = {
+        ...client,
+        balance: newBalance,
+        updatedAt: new Date().toISOString(),
+        syncStatus: 'PENDING'
+    };
 
-    // 5. Ejecutar operaciones en paralelo dentro de la transacción
+    // Ejecutar en local
     await Promise.all([
-        clientStore.put(client),
-        ledgerStore.add(movement)
+        clientStore.put(updatedClient),
+        ledgerStore.put(movement) // Usamos PUT con ID explícito
     ]);
 
     await tx.done;
+
+    // 2. Sincronizar Nube (Background)
+    // Disparamos ambas subidas en paralelo
+    syncToCloud('clients', updatedClient);
+    syncToCloud('customer_ledger', movement);
+
     return newBalance;
   },
 
   // ==========================================
-  // ✍️ ABM BÁSICO (Local First)
+  // ✍️ ABM (Cloud Enabled)
   // ==========================================
 
   async save(client) {
-    const db = await getDB();
+    const dbLocal = await getDB();
     
     const clientToSave = {
       ...client,
       id: client.id || crypto.randomUUID(),
-      name: client.name.toUpperCase().trim(), // Normalización
-      docNumber: client.docNumber.replace(/\D/g, ''), // Solo números
-      balance: client.balance || 0, // Asegurar inicialización de saldo
-      updatedAt: new Date(),
+      name: client.name.toUpperCase().trim(),
+      docNumber: client.docNumber.replace(/\D/g, ''),
+      balance: client.balance || 0,
+      updatedAt: new Date().toISOString(),
       syncStatus: 'PENDING'
     };
 
-    await db.put('clients', clientToSave);
+    // 1. Local
+    await dbLocal.put('clients', clientToSave);
+
+    // 2. Nube
+    syncToCloud('clients', clientToSave);
+
     return clientToSave;
   },
 
   async delete(id) {
-    const db = await getDB();
-    return db.delete('clients', id);
+    const dbLocal = await getDB();
+    
+    // 1. Local
+    await dbLocal.delete('clients', id);
+
+    // 2. Nube (Si hay red)
+    if (navigator.onLine) {
+        try {
+            await deleteDoc(doc(db, 'clients', id));
+        } catch (e) {
+            console.error("Error borrando cliente nube:", e);
+        }
+    }
   }
 };

@@ -1,9 +1,9 @@
-// src/modules/cash/repositories/cashRepository.js
-
 import { getDB } from '../../../database/db';
+import { db } from '../../../database/firebase';
+import { doc, setDoc, updateDoc } from 'firebase/firestore';
 
-// 💡 Clave de configuración para el PIN de IndexedDB 'config'
-const CASH_PIN_KEY = 'adminCashPin';
+// Helper para IDs únicos consistentes (Local + Nube)
+const generateId = (prefix) => `${prefix}_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
 
 export const cashRepository = {
     
@@ -11,25 +11,28 @@ export const cashRepository = {
     // 🟢 GESTIÓN DE TURNO (APERTURA)
     // =========================================
     async openShift(initialAmount, userName) {
-        const db = await getDB();
+        const dbLocal = await getDB();
         
         const active = await this.getCurrentShift();
         if (active) throw new Error("Ya tienes un turno abierto. Ciérralo antes de abrir otro.");
 
         const shift = {
-            id: `shift_${Date.now()}`,
+            id: generateId('shift'), // ID robusto
             userId: userName || 'Sistema',
             status: 'OPEN',
-            openedAt: new Date().toISOString(), // Guardamos siempre en ISO
+            openedAt: new Date().toISOString(),
             initialAmount: parseFloat(initialAmount),
             expectedCash: 0,     
             finalCash: 0,       
             difference: 0,       
-            audited: false
+            audited: false,
+            syncStatus: 'PENDING' // 🔥 Marcamos para sincronizar
         };
 
-        await db.put('shifts', shift);
+        // 1. Guardar Local (Prioridad Absoluta)
+        await dbLocal.put('shifts', shift);
         
+        // 2. Movimiento Inicial (Fondo de Caja)
         await this.addMovement({
             shiftId: shift.id,
             type: 'DEPOSIT', 
@@ -38,6 +41,9 @@ export const cashRepository = {
             description: 'Fondo Inicial de Caja'
         });
 
+        // 3. ☁️ Intentar subir a Nube (Background)
+        this._syncToCloud('shifts', shift);
+
         return shift;
     },
 
@@ -45,8 +51,8 @@ export const cashRepository = {
     // 🔴 GESTIÓN DE TURNO (CIERRE)
     // =========================================
     async closeShift(shiftId, closingData) {
-        const db = await getDB();
-        const shift = await db.get('shifts', shiftId);
+        const dbLocal = await getDB();
+        const shift = await dbLocal.get('shifts', shiftId);
         if (!shift) throw new Error("Turno no encontrado");
 
         const difference = closingData.declaredCash - closingData.expectedCash;
@@ -57,42 +63,81 @@ export const cashRepository = {
             closedAt: new Date().toISOString(),
             finalCash: parseFloat(closingData.declaredCash),
             expectedCash: parseFloat(closingData.expectedCash),
+            expectedDigital: parseFloat(closingData.expectedDigital || 0), // Guardamos total digital también
             difference: difference,
             audited: false,
+            syncStatus: 'PENDING'
         };
 
-        await db.put('shifts', closedShift);
+        // 1. Actualizar Local
+        await dbLocal.put('shifts', closedShift);
+
+        // 2. ☁️ Subir Cierre a Nube
+        this._syncToCloud('shifts', closedShift);
+
         return closedShift;
     },
     
-    async updateShift(shift) {
-        const db = await getDB();
-        return db.put('shifts', shift);
+    // Método auxiliar para actualizar (ej: Auditoría)
+    async updateShift(shiftData) {
+        const dbLocal = await getDB();
+        await dbLocal.put('shifts', { ...shiftData, syncStatus: 'PENDING' });
+        this._syncToCloud('shifts', shiftData);
+        return shiftData;
     },
 
     async getCurrentShift() {
-        const db = await getDB();
-        const all = await db.getAll('shifts');
+        const dbLocal = await getDB();
+        const all = await dbLocal.getAll('shifts');
         return all.find(s => s.status === 'OPEN');
     },
 
     async getAllShifts() {
-        const db = await getDB();
-        return await db.getAll('shifts');
+        const dbLocal = await getDB();
+        return await dbLocal.getAll('shifts');
     },
 
     // =========================================
-    // 💰 MOVIMIENTOS DE CAJA
+    // 💰 MOVIMIENTOS DE CAJA (CLOUD ENABLED)
     // =========================================
     async addMovement(movement) {
-        const db = await getDB();
+        const dbLocal = await getDB();
         const newMov = {
+            id: generateId('mov'),
             ...movement,
-            id: `mov_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
-            date: new Date().toISOString()
+            date: new Date().toISOString(),
+            syncStatus: 'PENDING'
         };
-        await db.put('cash_movements', newMov);
+
+        // 1. Guardar Local
+        await dbLocal.put('cash_movements', newMov);
+
+        // 2. ☁️ Subir a Nube
+        this._syncToCloud('cash_movements', newMov);
+
         return newMov;
+    },
+
+    // Helper privado para subir sin bloquear la UI
+    async _syncToCloud(collectionName, data) {
+        if (!navigator.onLine) return; // Si offline, lo agarra el syncService después
+        
+        try {
+            const { syncStatus, ...cloudData } = data;
+            // Usamos setDoc con el mismo ID para mantener consistencia
+            await setDoc(doc(db, collectionName, data.id), {
+                ...cloudData,
+                firestoreId: data.id,
+                syncedAt: new Date().toISOString()
+            }, { merge: true });
+
+            // Si subió éxito, marcamos local como SYNCED
+            const dbLocal = await getDB();
+            await dbLocal.put(collectionName, { ...data, syncStatus: 'SYNCED' });
+            
+        } catch (e) {
+            console.warn(`⚠️ Error subiendo ${collectionName} (se reintentará):`, e);
+        }
     },
 
     async registerIncome(amount, method, description = 'Venta') {
@@ -139,25 +184,17 @@ export const cashRepository = {
     },
 
     // =========================================
-    // 🔐 SEGURIDAD (PIN)
+    // 🧹 LIMPIEZA DE CÓDIGO (PIN OBSOLETO)
     // =========================================
-    async setAdminCashPin(pin) {
-        const db = await getDB();
-        await db.put('config', { key: CASH_PIN_KEY, value: pin.toString() });
-    },
-
-    async getAdminCashPin() {
-        const db = await getDB();
-        const config = await db.get('config', CASH_PIN_KEY);
-        return config ? config.value : null;
-    },
+    // Eliminamos setAdminCashPin y getAdminCashPin 
+    // porque ahora usamos securityService para todo.
 
     // =========================================
     // ⚖️ BALANCE EN TIEMPO REAL (Para el Cajero)
     // =========================================
     async getShiftBalance(shiftId) {
-        const db = await getDB();
-        const tx = db.transaction(['cash_movements', 'shifts'], 'readonly');
+        const dbLocal = await getDB();
+        const tx = dbLocal.transaction(['cash_movements', 'shifts'], 'readonly');
         
         const shift = await tx.objectStore('shifts').get(shiftId);
         const allMovements = await tx.objectStore('cash_movements').index('shiftId').getAll(shiftId);
@@ -180,7 +217,6 @@ export const cashRepository = {
             const amount = Number(m.amount) || 0; 
             const method = (m.method || 'unknown').toLowerCase(); 
 
-            // Normalización de método digital
             const isDigitalKnown = method.includes('mercado') || method.includes('clover') || method.includes('card') || method === 'point';
 
             if (m.type === 'SALE') {
@@ -205,7 +241,6 @@ export const cashRepository = {
             }
         }
         
-        // Redondeo final
         const round2 = (num) => Math.round((num + Number.EPSILON) * 100) / 100;
         
         return {
@@ -218,11 +253,11 @@ export const cashRepository = {
     },
     
     // =========================================
-    // 🧾 MOTOR DE REPORTE Z (FIX CRÍTICO APLICADO)
+    // 🧾 MOTOR DE REPORTE Z
     // =========================================
     async getShiftAuditData(shiftId) {
-        const db = await getDB();
-        const tx = db.transaction(['cash_movements', 'shifts', 'sales'], 'readonly'); 
+        const dbLocal = await getDB();
+        const tx = dbLocal.transaction(['cash_movements', 'shifts', 'sales'], 'readonly'); 
         
         const shift = await tx.objectStore('shifts').get(shiftId);
         if (!shift) throw new Error("Turno no encontrado");
@@ -230,23 +265,17 @@ export const cashRepository = {
         const allMovements = await tx.objectStore('cash_movements').index('shiftId').getAll(shiftId);
         const allSales = await tx.objectStore('sales').getAll(); 
 
-        // Definir límites de tiempo del turno
         const openedAt = new Date(shift.openedAt).getTime();
         const closedAt = shift.closedAt ? new Date(shift.closedAt).getTime() : Date.now();
 
-        // 🔥 FILTRO CRÍTICO: Solo ventas dentro del rango de tiempo Y activas
         const shiftSales = allSales.filter(s => {
-            const rawDate = s.date || s.createdAt; // Soporte legacy
+            const rawDate = s.date || s.createdAt;
             if (!rawDate) return false;
-
             const saleDate = new Date(rawDate).getTime();
-            const isActive = s.status !== 'CANCELLED'; // Ignorar anuladas
+            const isActive = s.status !== 'CANCELLED';
             const isInRange = saleDate >= openedAt && saleDate <= closedAt;
-
             return isActive && isInRange;
         });
-
-        console.log(`🔍 Auditoría Z: ${shiftSales.length} ventas encontradas para el turno.`);
 
         let audit = {
             shiftId: shift.id,
@@ -271,12 +300,11 @@ export const cashRepository = {
         let lastAfipCbte = null;
         const round2 = (num) => Math.round((num + Number.EPSILON) * 100) / 100;
 
-        // 1. Procesar Ventas del Turno
+        // 1. Procesar Ventas
         for (const sale of shiftSales) {
             const total = parseFloat(sale.total) || 0;
             audit.totalSales += total;
             
-            // Normalización de método
             const methodRaw = sale.payment?.method || 'unknown';
             const method = methodRaw.toLowerCase();
             
@@ -290,7 +318,6 @@ export const cashRepository = {
                 audit.salesByMethod.digitalOther += total;
             }
             
-            // Métricas AFIP
             if (sale.afip?.status === 'APPROVED') {
                 audit.totalAfip += total;
                 if (!lastAfipCbte || sale.afip.cbteNumero > lastAfipCbte.cbteNumero) {
@@ -307,12 +334,11 @@ export const cashRepository = {
             audit.lastCbte = `FC-${lastAfipCbte.cbteLetra} ${String(lastAfipCbte.cbteNumero).padStart(5, '0')}`;
         }
 
-        // 2. Procesar Movimientos de Caja (Calcula EXPECTED CASH)
+        // 2. Procesar Movimientos
         for (const m of allMovements) {
             const amount = Number(m.amount) || 0;
             const method = (m.method || 'unknown').toLowerCase(); 
 
-            // Detectar ventas en efectivo registradas como movimiento
             if (m.type === 'SALE') {
                 const isDigitalKnown = method.includes('mercado') || method.includes('clover') || method.includes('card');
                 if ((method === 'cash' || !isDigitalKnown) && !m.isVirtual) { 
@@ -334,12 +360,10 @@ export const cashRepository = {
             }
         }
 
-        // 3. Redondeo Final
         audit.expectedCash = round2(audit.expectedCash);
         audit.totalSales = round2(audit.totalSales);
         audit.totalDigital = round2(audit.totalDigital);
         
-        // 4. Calcular Desvío
         const declaredCash = shift.status === 'CLOSED' ? shift.finalCash : audit.expectedCash; 
         audit.actualCash = declaredCash;
         audit.deviation = round2(declaredCash - audit.expectedCash);

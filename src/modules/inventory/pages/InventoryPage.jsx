@@ -16,6 +16,16 @@ import { MastersModal } from '../components/MastersModal';
 import { ProductHistoryModal } from '../components/ProductHistoryModal'; 
 import { cn } from '../../../core/utils/cn';
 
+// 🔥 HELPER DE FORMATEO (Consistente con POS)
+const formatMoney = (amount) => {
+    return amount ? amount.toLocaleString('es-AR', { minimumFractionDigits: 0, maximumFractionDigits: 2 }) : '0';
+};
+
+const formatStock = (stock) => {
+    if (!stock) return '0';
+    return parseFloat(Number(stock).toFixed(3));
+};
+
 // =================================================================
 // 1. STOCK ENTRY MODAL (Ingreso Rápido de Stock)
 // =================================================================
@@ -179,13 +189,15 @@ const BulkUpdateModal = ({ isOpen, onClose, onConfirm, allProducts, masters, man
 export const InventoryPage = () => {
   const navigate = useNavigate();
 
-  // Estados
+  // Estados de Datos
   const [products, setProducts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [masters, setMasters] = useState({ categories: [], brands: [], suppliers: [] });
   
-  // Filtros
+  // 🔥 ESTADO DE BÚSQUEDA OPTIMIZADO (DEBOUNCE)
+  const [inputValue, setInputValue] = useState(''); 
   const [searchTerm, setSearchTerm] = useState('');
+  
   const [filters, setFilters] = useState({ category: '', brand: '', supplier: '' });
   const searchInputRef = useRef(null);
 
@@ -204,6 +216,15 @@ export const InventoryPage = () => {
   const [editingProduct, setEditingProduct] = useState(null);
   const [historyProduct, setHistoryProduct] = useState(null);
   const [stockEntryProduct, setStockEntryProduct] = useState(null); 
+
+  // 🔥 EFECTO DEBOUNCE
+  useEffect(() => {
+    const timer = setTimeout(() => {
+        setSearchTerm(inputValue);
+    }, 300);
+
+    return () => clearTimeout(timer);
+  }, [inputValue]);
 
   // Valuación
   const totalStockValuado = products.reduce((acc, p) => {
@@ -236,35 +257,46 @@ export const InventoryPage = () => {
       setCurrentPage(1);
   }, [searchTerm, filters]);
 
+  // 🔥 FOCUS MANAGEMENT
   useEffect(() => {
       if (!isProductModalOpen && !isMastersModalOpen && !isBulkUpdateOpen && !historyProduct && !stockEntryProduct) {
-          setTimeout(() => searchInputRef.current?.focus(), 100);
+          setTimeout(() => searchInputRef.current?.focus(), 150);
       }
   }, [isProductModalOpen, isMastersModalOpen, isBulkUpdateOpen, historyProduct, stockEntryProduct]);
 
-  // Scanner
+  // 🔥 SCANNER HANDLER
   const handleSearchKeyDown = (e) => {
     if (e.key === 'Enter') {
-        const term = searchTerm.trim();
+        const term = e.target.value.trim(); 
+        
         if (!term) return;
-        const exactMatch = products.find(p => p.code === term);
+
+        // Búsqueda segura
+        const exactMatch = products.find(p => (p.code || '').toString() === term);
         
         if (exactMatch) {
             setEditingProduct(exactMatch);
             setIsProductModalOpen(true);
+            setInputValue(''); 
             setSearchTerm(''); 
         } else {
             setEditingProduct({ code: term, name: '', cost: 0, price: 0, stock: 0 });
             setIsProductModalOpen(true);
+            setInputValue('');
             setSearchTerm('');
         }
     }
   };
 
-  // Filtrado
+  // 🔥 FILTRADO DEFENSIVO (SOLUCIÓN DEL BUG)
   const filteredProducts = products.filter(p => {
     const term = searchTerm.toLowerCase();
-    const matchesSearch = p.name.toLowerCase().includes(term) || p.code.includes(term);
+    
+    // Protección contra valores nulos/undefined
+    const name = (p.name || '').toLowerCase();
+    const code = (p.code || '').toString().toLowerCase();
+
+    const matchesSearch = name.includes(term) || code.includes(term);
     const matchesCat = filters.category ? p.category === filters.category : true;
     const matchesBrand = filters.brand ? p.brand === filters.brand : true;
     const matchesSupp = filters.supplier ? p.supplier === filters.supplier : true;
@@ -346,7 +378,7 @@ export const InventoryPage = () => {
         <div>
           <h2 className="text-2xl font-bold text-sys-900">Inventario</h2>
           <div className="flex gap-4 mt-2 text-xs text-sys-500">
-             <p>Valuación Total (Costo): <span className="font-bold text-sys-800">$ {totalStockValuado.toLocaleString('es-AR', {minimumFractionDigits: 0})}</span></p>
+             <p>Valuación Total (Costo): <span className="font-bold text-sys-800">$ {formatMoney(totalStockValuado)}</span></p>
              <p>Items: <span className="font-bold text-sys-800">{filteredProducts.length}</span></p>
           </div>
         </div>
@@ -377,9 +409,13 @@ export const InventoryPage = () => {
             <Search className="absolute left-3 top-2.5 text-sys-400 group-focus-within:text-brand transition-colors" size={18} />
             <input 
                 ref={searchInputRef}
-                type="text" placeholder="Escanear código o buscar nombre..." 
+                type="text" 
+                placeholder="Escanear código o buscar nombre..." 
                 className="w-full pl-10 pr-4 py-2 rounded-lg border border-sys-200 bg-sys-50 focus:bg-white focus:border-brand outline-none transition-all text-sm font-medium shadow-sm focus:shadow-md"
-                value={searchTerm} onChange={e => setSearchTerm(e.target.value)} onKeyDown={handleSearchKeyDown} autoFocus
+                value={inputValue} 
+                onChange={e => setInputValue(e.target.value)} 
+                onKeyDown={handleSearchKeyDown} 
+                autoFocus
             />
         </div>
         <div className="flex gap-2 w-full md:w-2/3 overflow-x-auto no-scrollbar">
@@ -432,31 +468,21 @@ export const InventoryPage = () => {
                 const isSelected = selectedIds.has(p.id);
                 const isLowStock = p.stock <= (p.minStock || 5);
                 
-                // 🔥 LÓGICA DE VENCIMIENTO FIFO (First In First Out)
-                // Buscamos el lote más antiguo (por fecha de ingreso) que aún tenga stock.
-                
+                // 🔥 LÓGICA DE VENCIMIENTO FIFO
                 let expiryDate = null;
                 let expiryText = '-';
                 
                 if (p.batches && p.batches.length > 0) {
-                    // 1. Solo lotes con stock "vivo"
                     const activeBatches = p.batches.filter(b => parseFloat(b.quantity) > 0);
-                    
-                    // 2. Ordenar por fecha de CREACIÓN (dateAdded) ASCENDENTE
-                    // El primero de la lista es el que entró primero al depósito
                     activeBatches.sort((a, b) => {
                          const dateA = a.dateAdded ? new Date(a.dateAdded) : new Date(0);
                          const dateB = b.dateAdded ? new Date(b.dateAdded) : new Date(0);
                          return dateA - dateB;
                     });
-                    
-                    // 3. Mostrar la fecha de vencimiento de ESE lote (si tiene)
                     if (activeBatches.length > 0 && activeBatches[0].expiryDate) {
                         expiryDate = new Date(activeBatches[0].expiryDate);
                     }
                 } 
-                
-                // Fallback: Si no hay lotes activos, usamos la fecha general del producto
                 if (!expiryDate && p.expiryDate) {
                     expiryDate = new Date(p.expiryDate);
                 }
@@ -464,14 +490,11 @@ export const InventoryPage = () => {
                 // Cálculo visual (Alertas)
                 let isExpiring = false;
                 if (expiryDate) {
-                    // Ajuste de zona horaria para visualización
                     const userTimezoneOffset = expiryDate.getTimezoneOffset() * 60000;
                     const localDate = new Date(expiryDate.getTime() + userTimezoneOffset);
-                    
                     const now = new Date();
                     const daysLeft = (localDate - now) / (1000 * 60 * 60 * 24);
                     isExpiring = daysLeft < 30; // Alerta 30 días
-                    
                     expiryText = localDate.toLocaleDateString();
                 }
 
@@ -500,8 +523,8 @@ export const InventoryPage = () => {
                         ) : <span className="text-sys-300 text-xs">-</span>}
                     </td>
                     <td className="p-4 text-right">
-                        <div className="text-[10px] text-sys-400">Costo: ${p.cost?.toLocaleString() || '-'}</div>
-                        <div className="font-bold text-sys-900 text-base">$ {p.price.toLocaleString('es-AR')}</div>
+                        <div className="text-[10px] text-sys-400">Costo: ${formatMoney(p.cost)}</div>
+                        <div className="font-bold text-sys-900 text-base">$ {formatMoney(p.price)}</div>
                     </td>
                     <td className="p-4 text-center">
                         <div className="flex items-center justify-center gap-2">
@@ -510,7 +533,7 @@ export const InventoryPage = () => {
                              </button>
                              <div className={cn("stock-badge", isLowStock ? "text-red-600 border-red-100 bg-red-50" : "text-sys-700 border-sys-200 bg-white")}>
                                 {isLowStock && <AlertTriangle size={12} />}
-                                {p.isWeighable ? p.stock.toFixed(3) : p.stock}
+                                {formatStock(p.stock)} {p.isWeighable ? 'kg' : 'un'}
                              </div>
                         </div>
                     </td>

@@ -1,14 +1,15 @@
-import React, { useState, useEffect } from 'react';
-import { NavLink } from 'react-router-dom';
+import React, { useState, useEffect, useRef } from 'react';
+import { NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { 
   LayoutDashboard, ShoppingCart, Package, Settings, 
   FileText, Cloud, RefreshCw, LogOut, User, ShieldCheck, Wallet,
-  Users 
+  Users, Lock, ArrowRight, X, Loader2 
 } from 'lucide-react';
 
 import { cn } from '../core/utils/cn';
 import { useAutoSync } from '../core/hooks/useAutoSync';
 import { useAuthStore } from '../modules/auth/store/useAuthStore';
+import { securityService } from '../modules/security/services/securityService';
 
 // Imports del Módulo de Caja
 import { CashClosingModal } from '../modules/cash/components/CashClosingModal'; 
@@ -18,32 +19,152 @@ import { cashRepository } from '../modules/cash/repositories/cashRepository';
 import logoEmpresa from '../assets/logo.png'; 
 
 // ============================================================================
-// COMPONENTE HELPER: ENLACE DE MENÚ
+// 1. COMPONENTE HELPER: ENLACE DE MENÚ (Híbrido Link/Botón)
 // ============================================================================
-const MenuLink = ({ to, icon: Icon, label }) => (
-  <NavLink
-    to={to}
-    className={({ isActive }) => cn(
-      "flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 group relative",
-      isActive 
-        ? "bg-brand-light text-brand font-semibold shadow-sm" 
-        : "text-sys-500 hover:bg-sys-100 hover:text-sys-900"
-    )}
-  >
-    {({ isActive }) => (
-      <>
-        <Icon className="w-5 h-5" />
-        <span>{label}</span>
-        {isActive && (
-          <div className="absolute right-2 w-1.5 h-1.5 rounded-full bg-brand" />
-        )}
-      </>
-    )}
-  </NavLink>
-);
+const MenuLink = ({ to, icon: Icon, label, onClick, isRestricted }) => {
+  const location = useLocation();
+  const isActiveRoute = location.pathname === to;
+
+  const baseClasses = cn(
+    "w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 group relative text-left outline-none focus:ring-2 focus:ring-brand/20",
+    isActiveRoute 
+      ? "bg-brand-light text-brand font-semibold shadow-sm" 
+      : "text-sys-500 hover:bg-sys-100 hover:text-sys-900"
+  );
+
+  const content = (
+    <>
+      <Icon className="w-5 h-5" />
+      <span className="flex-1">{label}</span>
+      {isActiveRoute && (
+        <div className="absolute right-2 w-1.5 h-1.5 rounded-full bg-brand" />
+      )}
+      {isRestricted && !isActiveRoute && (
+        <Lock size={14} className="text-sys-300 group-hover:text-sys-400 transition-colors" />
+      )}
+    </>
+  );
+
+  // Si hay onClick, actuamos como botón (interceptor)
+  if (onClick) {
+    return (
+      <button onClick={onClick} className={baseClasses}>
+        {content}
+      </button>
+    );
+  }
+
+  // Si no, enlace normal
+  return (
+    <NavLink to={to} className={({ isActive }) => cn(baseClasses, isActive ? "" : "")}>
+      {content}
+    </NavLink>
+  );
+};
 
 // ============================================================================
-// COMPONENTE WRAPPER: LÓGICA DE CIERRE DE CAJA
+// 2. COMPONENTE: MODAL PIN ELEGANTE (CORREGIDO)
+// ============================================================================
+const PinRequestModal = ({ isOpen, onClose, onSuccess }) => {
+    const [pin, setPin] = useState('');
+    const [error, setError] = useState(false);
+    const [verifying, setVerifying] = useState(false); // Estado de carga
+    const inputRef = useRef(null);
+
+    // Auto-focus y limpieza al abrir
+    useEffect(() => {
+        if (isOpen) {
+            setPin('');
+            setError(false);
+            setVerifying(false);
+            setTimeout(() => inputRef.current?.focus(), 100);
+        }
+    }, [isOpen]);
+
+    const handleSubmit = async (e) => {
+        e.preventDefault();
+        if (verifying) return; // Evitar doble submit
+
+        setVerifying(true);
+        setError(false);
+
+        try {
+            // 🔥 Verificación robusta (espera a la promesa)
+            const isValid = await securityService.verifyMasterPin(pin);
+            
+            if (isValid === true) {
+                // Si es correcto, ejecutamos éxito
+                onSuccess();
+                // Nota: El cierre lo maneja el padre tras onSuccess
+            } else {
+                // Si es incorrecto
+                setError(true);
+                setPin('');
+                setTimeout(() => inputRef.current?.focus(), 50);
+            }
+        } catch (err) {
+            console.error("Error validando PIN:", err);
+            alert("Error de conexión al validar el PIN.");
+        } finally {
+            setVerifying(false);
+        }
+    };
+
+    if (!isOpen) return null;
+
+    return (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-sys-900/40 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-xs overflow-hidden transform transition-all scale-100">
+                <div className="p-5 flex justify-between items-center border-b border-sys-100">
+                    <h3 className="font-bold text-sys-800 flex items-center gap-2">
+                        <ShieldCheck size={18} className="text-brand"/> Acceso Admin
+                    </h3>
+                    <button onClick={onClose} className="text-sys-400 hover:text-sys-600"><X size={18}/></button>
+                </div>
+                
+                <form onSubmit={handleSubmit} className="p-6">
+                    <p className="text-xs text-sys-500 mb-4">Esta sección requiere autorización. Ingrese el PIN Maestro.</p>
+                    
+                    <div className="relative mb-4">
+                        <input 
+                            ref={inputRef}
+                            type="password" 
+                            autoComplete="off"
+                            className={cn(
+                                "w-full text-center text-2xl font-black tracking-widest py-3 rounded-xl border-2 outline-none transition-all placeholder:text-2xl placeholder:tracking-normal",
+                                error 
+                                    ? "border-red-300 bg-red-50 text-red-600 focus:border-red-500 focus:ring-4 focus:ring-red-500/10 animate-shake" 
+                                    : "border-sys-200 bg-sys-50 text-sys-900 focus:border-brand focus:bg-white"
+                            )}
+                            placeholder="••••"
+                            maxLength={6}
+                            value={pin}
+                            onChange={(e) => { setError(false); setPin(e.target.value.replace(/\D/g, '')); }}
+                        />
+                    </div>
+
+                    <button 
+                        type="submit" 
+                        disabled={pin.length < 4 || verifying}
+                        className={cn(
+                            "w-full py-3 text-white font-bold rounded-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed flex justify-center items-center gap-2 shadow-lg",
+                            verifying ? "bg-sys-600" : "bg-sys-900 hover:bg-black shadow-sys-900/20"
+                        )}
+                    >
+                        {verifying ? (
+                            <>Verificando <Loader2 size={16} className="animate-spin"/></>
+                        ) : (
+                            <>Autorizar <ArrowRight size={16}/></>
+                        )}
+                    </button>
+                </form>
+            </div>
+        </div>
+    );
+};
+
+// ============================================================================
+// 3. COMPONENTE WRAPPER: LÓGICA DE CIERRE DE CAJA
 // ============================================================================
 const CloseShiftModalWrapper = ({ isOpen, onClose }) => {
     const [balance, setBalance] = useState(null);
@@ -56,7 +177,6 @@ const CloseShiftModalWrapper = ({ isOpen, onClose }) => {
                 setLoading(true);
                 try {
                     if (!cashRepository) {
-                        console.warn("Módulo de Caja no implementado aún.");
                         onClose();
                         return;
                     }
@@ -118,14 +238,21 @@ const CloseShiftModalWrapper = ({ isOpen, onClose }) => {
 };
 
 // ============================================================================
-// COMPONENTE PRINCIPAL: SIDEBAR
+// 4. COMPONENTE PRINCIPAL: SIDEBAR
 // ============================================================================
 export const Sidebar = () => {
   const { isSyncing } = useAutoSync(15000);
   const [isOnline, setIsOnline] = useState(navigator.onLine);
-  const [isCloseModalOpen, setIsCloseModalOpen] = useState(false);
   
+  // Modales
+  const [isCloseModalOpen, setIsCloseModalOpen] = useState(false);
+  const [isPinModalOpen, setIsPinModalOpen] = useState(false);
+  
+  // Ruta pendiente de autorización
+  const [pendingRoute, setPendingRoute] = useState(null);
+
   const { user, logout } = useAuthStore();
+  const navigate = useNavigate();
   
   const isAdmin = user?.role?.toUpperCase() === 'ADMIN';
 
@@ -139,50 +266,61 @@ export const Sidebar = () => {
     };
   }, []);
 
+  // 🔥 LÓGICA DE NAVEGACIÓN PROTEGIDA
+  const handleRestrictedNavigation = (route) => {
+      if (isAdmin) {
+          // Si es admin, pase usted
+          navigate(route);
+      } else {
+          // Si es cajero, guardamos la ruta y abrimos modal
+          setPendingRoute(route);
+          setIsPinModalOpen(true);
+      }
+  };
+
+  // Callback de éxito
+  const handlePinSuccess = () => {
+      // 1. Cerramos el modal primero
+      setIsPinModalOpen(false);
+      
+      // 2. Si hay ruta pendiente, navegamos
+      if (pendingRoute) {
+          navigate(pendingRoute);
+          setPendingRoute(null);
+      }
+  };
+
   return (
     <>
       <aside className="w-64 h-screen bg-white border-r border-sys-200 flex flex-col fixed left-0 top-0 z-20 hidden md:flex shadow-[4px_0_24px_rgba(0,0,0,0.02)]">
         
-        {/* Header con Branding */}
+        {/* Header */}
         <div className="p-6 border-b border-sys-100 flex flex-col items-center text-center">
-          
-          {/* Logo del Cliente */}
           <div className="w-20 h-20 mb-3 bg-white rounded-full flex items-center justify-center overflow-hidden border border-sys-100 shadow-sm p-2">
               <img 
                  src={logoEmpresa} 
                  alt="Logo" 
                  className="w-full h-full object-contain"
-                 onError={(e) => {
-                     e.target.style.display = 'none'; // Si falla, ocultamos imagen
-                 }}
+                 onError={(e) => { e.target.style.display = 'none'; }}
               />
-              {/* Fallback si no carga imagen */}
               <span className="text-xs font-bold text-sys-300 absolute -z-10">Logo</span>
           </div>
 
           <div className="flex flex-col gap-0.5">
-            <h1 className="text-lg font-black text-sys-900 tracking-tight leading-none">
-              MAXI KIOSCO
-            </h1>
-            <p className="text-sm font-bold text-blue-600 font-serif italic tracking-wide">
-              La Esquina
-            </p>
+            <h1 className="text-lg font-black text-sys-900 tracking-tight leading-none">MAXI KIOSCO</h1>
+            <p className="text-sm font-bold text-blue-600 font-serif italic tracking-wide">La Esquina</p>
           </div>
 
-          {/* Tarjeta Usuario (Compacta) */}
+          {/* Tarjeta Usuario */}
           <div className="w-full text-left flex items-center gap-2.5 bg-sys-50 p-2 rounded-xl border border-sys-200 mt-5">
               <div className={cn("w-7 h-7 rounded-full flex items-center justify-center text-white shadow-sm shrink-0", isAdmin ? "bg-sys-900" : "bg-brand")}>
-                 {isAdmin ? <ShieldCheck size={14} /> : <User size={14} />}
+                  {isAdmin ? <ShieldCheck size={14} /> : <User size={14} />}
               </div>
               <div className="flex-1 min-w-0">
-                 <p className="text-[11px] font-bold text-sys-800 truncate leading-tight">{user?.name || user?.email}</p>
-                 <p className="text-[9px] text-sys-500 truncate font-mono uppercase leading-tight">{user?.role || 'Cajero'}</p>
+                  <p className="text-[11px] font-bold text-sys-800 truncate leading-tight">{user?.name || user?.email}</p>
+                  <p className="text-[9px] text-sys-500 truncate font-mono uppercase leading-tight">{user?.role || 'Cajero'}</p>
               </div>
-              <button 
-                onClick={logout} 
-                className="text-sys-400 hover:text-red-500 transition-colors p-1 rounded-lg hover:bg-sys-200" 
-                title="Cerrar Sesión"
-              >
+              <button onClick={logout} className="text-sys-400 hover:text-red-500 transition-colors p-1 rounded-lg hover:bg-sys-200" title="Cerrar Sesión">
                   <LogOut size={14} />
               </button>
           </div>
@@ -198,19 +336,33 @@ export const Sidebar = () => {
           <MenuLink to="/sales" icon={FileText} label="Ventas" />
           <MenuLink to="/clients" icon={Users} label="Clientes" />
 
-          {isAdmin && (
-            <div className="animate-in slide-in-from-left-4 fade-in duration-300">
-                <div className="px-4 py-2 text-xs font-semibold text-sys-400 uppercase tracking-wider mt-6 mb-1">Gestión & Control</div>
-                <MenuLink to="/cash" icon={Wallet} label="Control de Caja" />
-                <MenuLink to="/inventory" icon={Package} label="Inventario" />
-                <MenuLink to="/settings" icon={Settings} label="Configuración" />
-            </div>
-          )}
+          {/* SECCIÓN GESTIÓN */}
+          <div className="mt-6 mb-1">
+             <div className="px-4 py-2 text-xs font-semibold text-sys-400 uppercase tracking-wider">
+                Gestión
+             </div>
+             
+             {/* 1. INVENTARIO (Visible Todos - Protegido PIN) */}
+             <MenuLink 
+                to="/inventory" // Para que se marque activo si ya estamos ahí
+                label="Inventario" 
+                icon={Package} 
+                onClick={() => handleRestrictedNavigation('/inventory')}
+                isRestricted={!isAdmin} 
+             />
+
+             {/* 2. CAJA Y CONFIG (Solo Admin - Ocultos para Cajero) */}
+             {isAdmin && (
+                <div className="animate-in slide-in-from-left-4 fade-in duration-300 space-y-1 mt-1">
+                    <MenuLink to="/cash" icon={Wallet} label="Control de Caja" />
+                    <MenuLink to="/settings" icon={Settings} label="Configuración" />
+                </div>
+             )}
+          </div>
         </nav>
 
         {/* Footer */}
         <div className="p-4 border-t border-sys-100 bg-sys-50/50 space-y-3">
-          
           <button 
             onClick={() => setIsCloseModalOpen(true)}
             className="w-full flex items-center justify-center gap-2 bg-white border border-red-200 text-red-600 hover:bg-red-50 py-2.5 rounded-xl text-sm font-bold transition-all shadow-sm active:scale-95 group"
@@ -228,6 +380,14 @@ export const Sidebar = () => {
         </div>
       </aside>
 
+      {/* Modal PIN Elegante */}
+      <PinRequestModal 
+        isOpen={isPinModalOpen} 
+        onClose={() => { setIsPinModalOpen(false); setPendingRoute(null); }}
+        onSuccess={handlePinSuccess}
+      />
+
+      {/* Modal Cierre de Caja */}
       <CloseShiftModalWrapper 
         isOpen={isCloseModalOpen} 
         onClose={() => setIsCloseModalOpen(false)} 
