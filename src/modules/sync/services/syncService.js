@@ -19,13 +19,12 @@ export const syncService = {
   
   /**
    * Inicia los listeners de Firestore. 
-   * Llama a esto al iniciar la App (ej: en App.jsx o MainLayout).
+   * Llama a esto al iniciar la App.
    */
   startRealTimeListeners() {
     console.log("📡 Conectando antena de sincronización en tiempo real...");
 
-    // A. LISTENER DE CONFIGURACIÓN (PIN Maestro, Datos Empresa)
-    // Si el Admin cambia el PIN en su casa, la tablet se entera al instante.
+    // A. LISTENER DE CONFIGURACIÓN
     onSnapshot(collection(db, 'config'), async (snapshot) => {
       const localDb = await getDB();
       const tx = localDb.transaction('config', 'readwrite');
@@ -34,7 +33,6 @@ export const syncService = {
       snapshot.docChanges().forEach((change) => {
         const data = change.doc.data();
         if (change.type === 'added' || change.type === 'modified') {
-           // Guardamos en local: { key: 'MASTER_PIN', value: '...' }
            tx.store.put({ key: change.doc.id, value: data.value });
            changes++;
         }
@@ -46,24 +44,20 @@ export const syncService = {
       if(changes > 0) console.log(`⚙️ Configuración sincronizada (${changes} cambios).`);
     });
 
-    // B. LISTENER DE PRODUCTOS (Stock y Precios)
-    // Mantiene el inventario actualizado si hay movimientos en la web u otras cajas.
+    // B. LISTENER DE PRODUCTOS
     onSnapshot(collection(db, 'products'), async (snapshot) => {
       const localDb = await getDB();
-      
-      // Procesamos cambios uno a uno para usar el repositorio (que maneja índices y lógica extra si la hubiera)
-      // O vamos directo a IDB para velocidad. Aquí iremos directo a IDB pero respetando la estructura.
       const tx = localDb.transaction('products', 'readwrite');
       
       let pChanges = 0;
       snapshot.docChanges().forEach((change) => {
+        // Evitamos rebote si soy yo el que acaba de subirlo
         if (change.type === 'added' || change.type === 'modified') {
            const data = change.doc.data();
-           // Importante: Marcar como 'synced' para evitar rebote (que el POS intente subirlo de nuevo)
            const productData = { 
              id: change.doc.id, 
              ...data, 
-             syncStatus: 'synced' // lowerCase para consistencia con tu código
+             syncStatus: 'synced' 
            };
            tx.store.put(productData);
            pChanges++;
@@ -81,28 +75,19 @@ export const syncService = {
   // 🚀 2. ESCRITURA GLOBAL (LOCAL -> NUBE DIRECTO)
   // =================================================================
 
-  /**
-   * Guarda configuraciones críticas directamente en la nube.
-   * Usado por securityService para cambiar el PIN.
-   */
   async pushGlobalConfig(key, value) {
     try {
-      // 1. Escribir en Firestore (La Verdad Absoluta)
       await setDoc(doc(db, 'config', key), { 
         value, 
         updatedAt: new Date().toISOString() 
       });
       
-      // 2. Reflejo Local Inmediato (Optimistic UI)
-      // Aunque el listener lo traería después, lo guardamos ya para que la UI no espere.
       const localDb = await getDB();
       await localDb.put('config', { key, value });
       
       return true;
     } catch (error) {
       console.error("Error subiendo configuración:", error);
-      // Fallback: Si no hay internet, guardamos local para no bloquear al usuario,
-      // pero sabiendo que no se propagó al admin remoto.
       const localDb = await getDB();
       await localDb.put('config', { key, value });
       return false;
@@ -110,38 +95,38 @@ export const syncService = {
   },
 
   // =================================================================
-  // 🔄 3. CICLO DE SINCRONIZACIÓN (SUBIDA + RESTAURACIÓN)
+  // 🔄 3. CICLO DE SINCRONIZACIÓN (SUBIDA POR LOTES)
   // =================================================================
 
   /**
    * ORQUESTADOR PRINCIPAL
-   * Sube Ventas y Novedades Locales.
-   * (La bajada ahora es manejada principalmente por los listeners, 
-   * pero mantenemos downloadProductsFromCloud como respaldo inicial).
    */
   async syncUp() { 
+    return this.syncAll();
+  },
+
+  async syncAll() { 
     if (!navigator.onLine) return { sales: 0, products: 0, downloaded: 0 };
 
     console.log("🔄 SYNC: Ejecutando ciclo de subida...");
     
     try {
-        // 1. Subir Ventas Pendientes
+        // 1. Subir Ventas
         const salesResult = await this.syncPendingSales();
         
-        // 2. Subir Cambios de Productos (Precios, Stock, Bajas)
+        // 2. Subir Productos
         const productsResult = await this.syncPendingProducts();
 
-        // 3. Bajada Pasiva (Opcional si tenemos listeners, pero útil para forzar refresh)
-        // Lo dejamos para garantizar integridad al abrir la app o volver de offline.
+        // 3. Bajada Pasiva (Opcional, los listeners ya hacen esto)
         let downloadResult = 0;
         try {
-            downloadResult = await this.downloadProductsFromCloud();
+            // downloadResult = await this.downloadProductsFromCloud();
         } catch (downloadError) {
-            console.warn("⚠️ Bajada manual omitida (Listeners activos o error red).");
+            console.warn("⚠️ Bajada manual omitida.");
         }
 
         if (salesResult.synced > 0 || productsResult.synced > 0) {
-            console.log(`✅ SYNC: Subida completada. 📤 Ventas: ${salesResult.synced}, 📤 Prod: ${productsResult.synced}`);
+            console.log(`✅ SYNC EXITOSO: 📤 ${salesResult.synced} Ventas | 📤 ${productsResult.synced} Productos`);
         }
         
         return { 
@@ -156,7 +141,7 @@ export const syncService = {
   },
 
   /**
-   * 📤 SYNC VENTAS
+   * 📤 SYNC VENTAS (Con Chunking)
    */
   async syncPendingSales() {
     const localDb = await getDB();
@@ -170,84 +155,101 @@ export const syncService = {
 
     console.log(`📤 Subiendo ${pendingSales.length} ventas...`);
     
-    const batch = writeBatch(db);
-    const salesCollection = collection(db, 'sales');
-    const syncedIds = [];
+    // Dividimos en lotes de 450
+    const chunks = this.chunkArray(pendingSales, 450);
+    let totalSynced = 0;
 
-    for (const sale of pendingSales) {
-      const docRef = doc(salesCollection); 
-      
-      const { localId, syncStatus, ...cleanSale } = sale;
-      
-      batch.set(docRef, {
-          ...cleanSale,
-          date: new Date(cleanSale.date).toISOString(), 
-          firestoreId: docRef.id,
-          syncedAt: new Date().toISOString(),
-          origin: 'POS_LOCAL_01' 
-      });
-      syncedIds.push(sale.localId);
+    for (const batchSales of chunks) {
+        const batch = writeBatch(db);
+        const salesCollection = collection(db, 'sales');
+        const syncedIds = [];
+
+        for (const sale of batchSales) {
+            const docRef = doc(salesCollection); 
+            const { localId, syncStatus, ...cleanSale } = sale;
+            
+            // Sanitización básica
+            const finalSale = Object.keys(cleanSale).reduce((acc, key) => {
+                acc[key] = cleanSale[key] === undefined ? null : cleanSale[key];
+                return acc;
+            }, {});
+            
+            batch.set(docRef, {
+                ...finalSale,
+                date: new Date(cleanSale.date).toISOString(), 
+                firestoreId: docRef.id,
+                syncedAt: new Date().toISOString(),
+                origin: 'POS_LOCAL_01' 
+            });
+            syncedIds.push(sale.localId);
+        }
+
+        await batch.commit();
+
+        const tx = localDb.transaction('sales', 'readwrite');
+        for (const id of syncedIds) {
+            const s = await tx.store.get(id);
+            if (s) { 
+                s.syncStatus = 'synced'; 
+                s.firestoreId = s.firestoreId || 'uploaded'; 
+                tx.store.put(s); 
+            }
+        }
+        await tx.done;
+        totalSynced += batchSales.length;
     }
 
-    await batch.commit();
-
-    // Actualizar estado local a 'synced'
-    const tx = localDb.transaction('sales', 'readwrite');
-    for (const id of syncedIds) {
-      const s = await tx.store.get(id);
-      if (s) { 
-          s.syncStatus = 'synced'; 
-          s.firestoreId = s.firestoreId || 'uploaded'; 
-          tx.store.put(s); 
-      }
-    }
-    await tx.done;
-
-    return { synced: pendingSales.length };
+    return { synced: totalSynced };
   },
 
   /**
-   * 📦 SYNC PRODUCTOS (Subida)
+   * 📦 SYNC PRODUCTOS (Con Chunking y Sanitización Anti-Crash)
    */
   async syncPendingProducts() {
     const pendingProducts = await productRepository.getPendingSync();
 
     if (pendingProducts.length === 0) return { synced: 0 };
 
-    console.log(`📦 Subiendo ${pendingProducts.length} cambios de producto...`);
+    console.log(`📦 Subiendo ${pendingProducts.length} cambios de inventario...`);
     
-    const batch = writeBatch(db);
-    const productsCollection = collection(db, 'products');
-    const syncedIds = [];
+    // 🔥 CHUNKING: Lotes de 450 para respetar límite de Firebase (500)
+    const chunks = this.chunkArray(pendingProducts, 450);
+    let totalSynced = 0;
+    let chunkIndex = 1;
 
-    for (const product of pendingProducts) {
-      // Usamos el ID del producto como ID del documento para consistencia total
-      const docRef = doc(productsCollection, product.id);
-      
-      const { syncStatus, ...dataToUpload } = product;
+    for (const chunk of chunks) {
+        console.log(`   cloud_upload: Procesando lote ${chunkIndex}/${chunks.length}...`);
+        
+        const batch = writeBatch(db);
+        const productsCollection = collection(db, 'products');
+        const syncedIds = [];
 
-      if (product.deleted) {
-          batch.set(docRef, {
-              ...dataToUpload,
-              active: false,
-              deleted: true,
-              lastUpdated: new Date().toISOString()
-          }, { merge: true });
-      } else {
-          batch.set(docRef, {
-              ...dataToUpload,
-              lastUpdated: new Date().toISOString()
-          }, { merge: true });
-      }
+        for (const product of chunk) {
+            const docRef = doc(productsCollection, product.id);
+            const { syncStatus, ...dataToUpload } = product;
 
-      syncedIds.push(product.id);
+            // 🧹 SANITIZACIÓN: Convertir 'undefined' a 'null'
+            const cleanData = Object.keys(dataToUpload).reduce((acc, key) => {
+                acc[key] = dataToUpload[key] === undefined ? null : dataToUpload[key];
+                return acc;
+            }, {});
+
+            const payload = product.deleted 
+                ? { ...cleanData, active: false, deleted: true, lastUpdated: new Date().toISOString() }
+                : { ...cleanData, lastUpdated: new Date().toISOString() };
+
+            batch.set(docRef, payload, { merge: true });
+            syncedIds.push(product.id);
+        }
+
+        await batch.commit();
+        await productRepository.markAsSynced(syncedIds);
+
+        totalSynced += chunk.length;
+        chunkIndex++;
     }
 
-    await batch.commit();
-
-    await productRepository.markAsSynced(syncedIds);
-
-    return { synced: pendingProducts.length };
+    return { synced: totalSynced };
   },
 
   /**
@@ -270,5 +272,14 @@ export const syncService = {
 
     await productRepository.saveAll(cloudProducts);
     return cloudProducts.length;
+  },
+
+  // 🛠️ HELPER PARA DIVIDIR ARRAYS
+  chunkArray(myArray, chunk_size){
+      var results = [];
+      while (myArray.length) {
+          results.push(myArray.splice(0, chunk_size));
+      }
+      return results;
   }
 };

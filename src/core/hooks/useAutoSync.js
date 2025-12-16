@@ -5,8 +5,7 @@ export const useAutoSync = (intervalMs = 30000) => { // Default: 30 segundos
   const [isSyncing, setIsSyncing] = useState(false);
   const [lastSync, setLastSync] = useState(null);
   
-  // Usamos ref para controlar el estado de sincronización dentro del intervalo
-  // sin causar re-renders innecesarios o dependencias circulares en el useEffect
+  // Usamos ref para "semáforo" (evitar que se solapen dos sincronizaciones)
   const syncingRef = useRef(false);
 
   useEffect(() => {
@@ -14,23 +13,28 @@ export const useAutoSync = (intervalMs = 30000) => { // Default: 30 segundos
     const runSync = async () => {
       // 1. Chequeos de seguridad:
       // - Si no hay internet: abortar.
-      // - Si ya se está sincronizando: abortar (evitar solapamiento).
+      // - Si ya se está sincronizando: abortar.
       if (!navigator.onLine || syncingRef.current) return;
       
       syncingRef.current = true;
       setIsSyncing(true);
 
       try {
-        // 🔥 CAMBIO CRÍTICO: Llamamos al orquestador que sube Ventas Y Productos
-        const result = await syncService.syncUp();
+        console.log("☁️ AutoSync: Buscando cambios pendientes...");
+
+        // 🔥 CRÍTICO: Llamamos a 'syncAll' que orquesta Ventas + Productos
+        // (Asegúrate de que en syncService.js la función se llame syncAll)
+        const result = await syncService.syncAll();
         
-        // Si hubo algún movimiento de datos, actualizamos la estampa de tiempo
+        // Si hubo movimiento real (subida), actualizamos la fecha
         if (result.sales > 0 || result.products > 0) {
+           console.log(`✅ Sincronización Exitosa: ${result.sales} ventas, ${result.products} productos.`);
            setLastSync(new Date());
         }
 
       } catch (error) {
-        console.error("Sync falló (silencioso)", error);
+        // Error silencioso para no interrumpir al cajero
+        console.error("⚠️ Sync falló (silencioso):", error);
       } finally {
         setIsSyncing(false);
         syncingRef.current = false;
