@@ -11,12 +11,19 @@ import { getFunctions, connectFunctionsEmulator } from 'firebase/functions';
 import { getAuth, connectAuthEmulator } from 'firebase/auth';
 
 const firebaseConfig = {
-  apiKey: "AIzaSyA1FuE-HmJnMmA844qTtmp-KcX_5YJL4Ng",
-  authDomain: "noar-pos-prod.firebaseapp.com",
-  projectId: "noar-pos-prod",
-  storageBucket: "noar-pos-prod.firebasestorage.app",
-  messagingSenderId: "19241423106",
-  appId: "1:19241423106:web:ed1a2af595221ee1e9b21b"
+
+  apiKey: "AIzaSyCYfKaTKoI6q1FZYT4v8Lnqsp4osBd5aP8",
+
+  authDomain: "salvadorpos1.firebaseapp.com",
+
+  projectId: "salvadorpos1",
+
+  storageBucket: "salvadorpos1.firebasestorage.app",
+
+  messagingSenderId: "975094283854",
+
+  appId: "1:975094283854:web:5ce9c42f6470c186920d1f"
+
 };
 
 const app = initializeApp(firebaseConfig);

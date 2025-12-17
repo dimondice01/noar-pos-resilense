@@ -269,4 +269,33 @@ app.post("/create-invoice", async (req, res) => {
   }
 });
 
+// ==================================================================
+// 🔄 ENDPOINT 6: NOTA DE CRÉDITO (CORREGIDO)
+// ==================================================================
+app.post("/create-credit-note", async (req, res) => {
+  try {
+    const { total, client, associatedDocument } = req.body; 
+    const amount = Number(Number(total).toFixed(2));
+    const datosCliente = client || { docNumber: "0", fiscalCondition: "CONSUMIDOR_FINAL" };
+
+    if (!associatedDocument) {
+        return res.status(400).json({ error: "Falta documento asociado para anular" });
+    }
+
+    logger.info(`🔄 AFIP: Solicitud NC por $${amount} (Anula FC #${associatedDocument.nro})`);
+
+    // 👇 Pasamos el 4to parámetro con los datos de la factura original
+    const notaCredito = await afip.emitirFactura(amount, datosCliente, true, associatedDocument);
+
+    logger.info(`✅ NC Autorizada: CAE ${notaCredito.cae}`);
+    res.status(200).json(notaCredito);
+
+  } catch (error) {
+    logger.error("❌ Error Nota Crédito:", error.message);
+    res.status(500).json({ 
+      error: "Error al emitir NC", 
+      details: error.message 
+    });
+  }
+});
 exports.api = onRequest(app);

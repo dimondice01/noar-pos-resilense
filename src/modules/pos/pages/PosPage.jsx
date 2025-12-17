@@ -47,6 +47,9 @@ export const PosPage = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [focusedIndex, setFocusedIndex] = useState(-1);
   
+  // ⚡ PAGINACIÓN (OPTIMIZACIÓN DE RENDIMIENTO)
+  const [visibleLimit, setVisibleLimit] = useState(20); 
+
   const [client, setClient] = useState(null); 
   const [discount, setDiscount] = useState(0); 
 
@@ -65,7 +68,7 @@ export const PosPage = () => {
   const totalFinalRaw = subtotal * (1 - discount / 100);
   const totalFinal = Math.round((totalFinalRaw + Number.EPSILON) * 100) / 100;
 
-  // 🔥 HELPER DE FORMATEO
+  // HELPER DE FORMATEO
   const formatMoney = (amount) => {
     return amount ? amount.toLocaleString('es-AR', { minimumFractionDigits: 0, maximumFractionDigits: 2 }) : '0';
   };
@@ -86,7 +89,7 @@ export const PosPage = () => {
               setHasOpenShift(true);
           } else {
               setHasOpenShift(false);
-              clearCart(); // 🔥 Limpieza de seguridad si la caja está cerrada
+              clearCart(); // Limpieza de seguridad si la caja está cerrada
               setTimeout(() => openingInputRef.current?.focus(), 200);
           }
       } catch (error) {
@@ -162,7 +165,20 @@ export const PosPage = () => {
     return name.includes(term) || code.includes(term);
   });
 
-  useEffect(() => { setFocusedIndex(-1); }, [searchTerm]);
+  // Resetear paginación y foco al buscar
+  useEffect(() => { 
+      setFocusedIndex(-1); 
+      setVisibleLimit(20); // ⚡ Resetea a 20 items al buscar
+  }, [searchTerm]);
+
+  // Manejador de Scroll Infinito
+  const handleListScroll = useCallback((e) => {
+      const { scrollTop, clientHeight, scrollHeight } = e.currentTarget;
+      // Si llegamos cerca del final (100px antes), cargamos más
+      if (scrollHeight - scrollTop <= clientHeight + 100) {
+          setVisibleLimit(prev => prev + 20);
+      }
+  }, []);
 
   useEffect(() => {
     if (focusedIndex >= 0 && productsListRef.current) {
@@ -184,6 +200,7 @@ export const PosPage = () => {
         addItem(product, 1, product.price);
         setSearchTerm(''); 
         setFocusedIndex(-1);
+        setVisibleLimit(20); // Reset al seleccionar
         setTimeout(() => searchInputRef.current?.focus(), 50);
     }
   }, [addItem]);
@@ -191,7 +208,12 @@ export const PosPage = () => {
   const handleKeyDownInput = (e) => {
     if (e.key === 'ArrowDown') {
         e.preventDefault();
-        setFocusedIndex(prev => (prev < filteredProducts.length - 1 ? prev + 1 : prev));
+        setFocusedIndex(prev => {
+            const next = prev < filteredProducts.length - 1 ? prev + 1 : prev;
+            // ⚡ Si bajamos con teclado más allá de lo visible, cargamos más
+            if (next >= visibleLimit - 2) setVisibleLimit(l => l + 20);
+            return next;
+        });
     } else if (e.key === 'ArrowUp') {
         e.preventDefault();
         setFocusedIndex(prev => (prev > 0 ? prev - 1 : prev));
@@ -233,7 +255,7 @@ export const PosPage = () => {
   // Teclas Globales
   useEffect(() => {
     const handleGlobalKeys = (e) => {
-      // 🔥 BLOQUEO DE TECLAS SI NO HAY CAJA
+      // Bloqueo de teclas si no hay caja
       if (!hasOpenShift || isProcessingSale || isClientSelectorOpen) return;
 
       switch(e.key) {
@@ -269,7 +291,7 @@ export const PosPage = () => {
   const handlePaymentConfirm = async (paymentData) => {
     setIsProcessingSale(true);
     try {
-      // 🔥 TRIPLE CHECK DE SEGURIDAD
+      // Triple check de seguridad
       if (paymentData.amountPaid > 0) {
           const shift = await cashRepository.getCurrentShift();
           if (!shift) {
@@ -366,7 +388,6 @@ export const PosPage = () => {
       );
   }
 
-  // 🔥 AQUÍ ESTÁ LA MAGIA: Si no hay turno, retornamos ESTO y nada más.
   if (!hasOpenShift) {
       return (
           <div className="h-[calc(100vh-4rem)] flex items-center justify-center bg-sys-100 p-4">
@@ -532,38 +553,52 @@ export const PosPage = () => {
             </div>
           </div>
 
-          <div ref={productsListRef} className="flex-1 overflow-y-auto px-2 py-2 space-y-1 custom-scrollbar bg-sys-50/30">
+          {/* 🔥 LISTA CON SCROLL INFINITO */}
+          <div 
+            ref={productsListRef} 
+            onScroll={handleListScroll} 
+            className="flex-1 overflow-y-auto px-2 py-2 space-y-1 custom-scrollbar bg-sys-50/30"
+          >
             {filteredProducts.length > 0 ? (
-              filteredProducts.map((product, index) => {
-                const hasStock = parseFloat(product.stock || 0) > 0;
-                return (
-                  <div 
-                      key={product.id} 
-                      onClick={() => handleSelectProduct(product)}
-                      className={cn(
-                          "group flex items-center justify-between p-2.5 rounded-lg border cursor-pointer transition-all active:scale-[0.98]",
-                          index === focusedIndex ? "bg-brand text-white border-brand shadow-md transform scale-[1.02]" : "bg-white hover:bg-brand-light/10 border-transparent hover:border-brand/20",
-                          !hasStock && "opacity-60 grayscale"
-                      )}
-                  >
-                      <div className="flex-1 min-w-0 pr-3">
-                          <h4 className={cn("font-bold text-sm truncate transition-colors", index === focusedIndex ? "text-white" : "text-sys-800 group-hover:text-brand")}>{product.name}</h4>
-                          <div className="flex items-center gap-2 mt-1">
-                              <span className={cn("text-[10px] font-mono px-1 rounded", index === focusedIndex ? "bg-white/20 text-white" : "bg-sys-50 text-sys-400")}>{product.code}</span>
-                              <span className={cn("text-[10px] font-bold px-1.5 rounded", index === focusedIndex ? "bg-white/20 text-white" : product.stock <= (product.minStock || 5) ? "text-red-600 bg-red-50" : "text-green-600 bg-green-50")}>
-                                  {formatStock(product.stock)} {product.isWeighable ? 'kg' : 'un'}
-                              </span>
-                          </div>
-                      </div>
-                      <div className="text-right">
-                          <span className={cn("block font-bold text-sm", index === focusedIndex ? "text-white" : "text-sys-900")}>$ {formatMoney(product.price)}</span>
-                          <div className={cn("mt-1 transition-opacity", index === focusedIndex ? "opacity-100" : "opacity-0 group-hover:opacity-100")}>
-                              <div className={cn("w-5 h-5 rounded-full flex items-center justify-center shadow-sm ml-auto", index === focusedIndex ? "bg-white text-brand" : "bg-brand text-white")}><Plus size={12} strokeWidth={3} /></div>
-                          </div>
-                      </div>
-                  </div>
-                );
-              })
+              <>
+                {filteredProducts.slice(0, visibleLimit).map((product, index) => {
+                  const hasStock = parseFloat(product.stock || 0) > 0;
+                  return (
+                    <div 
+                        key={product.id} 
+                        onClick={() => handleSelectProduct(product)}
+                        className={cn(
+                            "group flex items-center justify-between p-2.5 rounded-lg border cursor-pointer transition-all active:scale-[0.98]",
+                            index === focusedIndex ? "bg-brand text-white border-brand shadow-md transform scale-[1.02]" : "bg-white hover:bg-brand-light/10 border-transparent hover:border-brand/20",
+                            !hasStock && "opacity-60 grayscale"
+                        )}
+                    >
+                        <div className="flex-1 min-w-0 pr-3">
+                            <h4 className={cn("font-bold text-sm truncate transition-colors", index === focusedIndex ? "text-white" : "text-sys-800 group-hover:text-brand")}>{product.name}</h4>
+                            <div className="flex items-center gap-2 mt-1">
+                                <span className={cn("text-[10px] font-mono px-1 rounded", index === focusedIndex ? "bg-white/20 text-white" : "bg-sys-50 text-sys-400")}>{product.code}</span>
+                                <span className={cn("text-[10px] font-bold px-1.5 rounded", index === focusedIndex ? "bg-white/20 text-white" : product.stock <= (product.minStock || 5) ? "text-red-600 bg-red-50" : "text-green-600 bg-green-50")}>
+                                    {formatStock(product.stock)} {product.isWeighable ? 'kg' : 'un'}
+                                </span>
+                            </div>
+                        </div>
+                        <div className="text-right">
+                            <span className={cn("block font-bold text-sm", index === focusedIndex ? "text-white" : "text-sys-900")}>$ {formatMoney(product.price)}</span>
+                            <div className={cn("mt-1 transition-opacity", index === focusedIndex ? "opacity-100" : "opacity-0 group-hover:opacity-100")}>
+                                <div className={cn("w-5 h-5 rounded-full flex items-center justify-center shadow-sm ml-auto", index === focusedIndex ? "bg-white text-brand" : "bg-brand text-white")}><Plus size={12} strokeWidth={3} /></div>
+                            </div>
+                        </div>
+                    </div>
+                  );
+                })}
+                {/* Loader al final de la lista si hay más */}
+                {filteredProducts.length > visibleLimit && (
+                    <div className="py-4 text-center text-sys-400 text-xs flex items-center justify-center gap-2">
+                        <Loader2 size={12} className="animate-spin" />
+                        Cargando más productos...
+                    </div>
+                )}
+              </>
             ) : (
               <div className="h-full flex flex-col items-center justify-center text-sys-400 p-6 text-center">
                 <PackageOpen size={48} strokeWidth={1} className="mb-4 opacity-30" />

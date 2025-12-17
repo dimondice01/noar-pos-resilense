@@ -5,7 +5,7 @@ import { getDB } from '../../../database/db'; // Conexión a IndexedDB
 
 // 🌍 URL de Producción (Cloud Functions)
 // TODO: Cambiar esto por tu URL real de Firebase Functions cuando despliegues
-const API_URL = 'https://us-central1-noar-pos-prod.cloudfunctions.net/api';
+const API_URL = 'https://us-central1-salvadorpos1.cloudfunctions.net/api';
 
 export const authService = {
   

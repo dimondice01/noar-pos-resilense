@@ -1,6 +1,7 @@
 /**
- * MÓDULO AFIP - NOAR POS
- * Corrección: Mapeo dinámico de Condición Fiscal del Cliente
+ * MÓDULO AFIP - NOAR POS (PRODUCCIÓN)
+ * Cliente: EL SALVADOR (Silvina Lorena Gaitan)
+ * Estado: LISTO + FIX NOTA CRÉDITO (CbtesAsoc)
  */
 const admin = require("firebase-admin");
 const soap = require("soap");
@@ -8,26 +9,46 @@ const xmlbuilder = require("xmlbuilder");
 const forge = require("node-forge");
 const fs = require("fs");
 const path = require("path");
+const https = require("https"); 
+const axios = require("axios");
 
 if (!admin.apps.length) {
   admin.initializeApp();
 }
 const db = admin.firestore();
 
-// ⚙️ CONFIGURACIÓN
+// ⚙️ CONFIGURACIÓN DE PRODUCCIÓN
 const CONFIG = {
   CUIT: "27278612932", 
   PTO_VTA: 5,
   CONDICION: "MONOTRIBUTO",
   CERT: path.join(__dirname, "keys", "certificado.crt"),
   KEY: path.join(__dirname, "keys", "clave.key"),
-  WSDL: "https://wswhomo.afip.gov.ar/wsfev1/service.asmx?WSDL", 
-  WSAA: "https://wsaahomo.afip.gov.ar/ws/services/LoginCms?WSDL"
+  WSDL: "https://servicios1.afip.gov.ar/wsfev1/service.asmx?WSDL", 
+  WSAA: "https://wsaa.afip.gov.ar/ws/services/LoginCms?WSDL"
 };
 
 const TA_REF = db.doc("config/afip_token");
 
-// --- UTILS: MAPEO DE CONDICIONES FISCALES ---
+// 🛡️ PARCHE DE SEGURIDAD SSL
+const legacyAgent = new https.Agent({
+  ciphers: 'DEFAULT@SECLEVEL=1',
+  keepAlive: true,
+});
+
+const afipAxios = axios.create({
+  httpsAgent: legacyAgent,
+  headers: {
+    'Content-Type': 'text/xml; charset=utf-8'
+  }
+});
+
+const SOAP_OPTIONS = {
+  request: afipAxios,
+  wsdl_options: { httpsAgent: legacyAgent }
+};
+
+// --- UTILS ---
 const CONDICION_IVA = {
   'RESPONSABLE_INSCRIPTO': 1,
   'MONOTRIBUTO': 6,
@@ -36,24 +57,30 @@ const CONDICION_IVA = {
   'NO_RESPONSABLE': 3,
 };
 
-// ... [Lógica de getValidToken y generateNewToken SE MANTIENE IGUAL] ...
 async function getValidToken() {
-  const doc = await TA_REF.get();
-  if (doc.exists) {
-    const data = doc.data();
-    const expires = new Date(data.expirationTime);
-    if (expires > new Date(Date.now() + 10 * 60000)) {
-      return data;
+  try {
+    const doc = await TA_REF.get();
+    if (doc.exists) {
+      const data = doc.data();
+      const expires = new Date(data.expirationTime);
+      if (expires > new Date(Date.now() + 10 * 60000)) {
+        return data;
+      }
     }
+    return generateNewToken();
+  } catch (error) {
+    console.error("⚠️ Error token cacheado:", error);
+    return generateNewToken();
   }
-  return generateNewToken();
 }
 
 async function generateNewToken() {
-  console.log("🔐 AFIP: Generando nuevo Ticket de Acceso...");
+  console.log("🔐 AFIP PROD: Generando nuevo Ticket de Acceso...");
+  
   if (!fs.existsSync(CONFIG.CERT) || !fs.existsSync(CONFIG.KEY)) {
-    throw new Error("Faltan archivos .crt o .key");
+    throw new Error(`CRÍTICO: Faltan archivos .crt o .key en ${path.join(__dirname, "keys")}`);
   }
+
   const certPem = fs.readFileSync(CONFIG.CERT, "utf8");
   const keyPem = fs.readFileSync(CONFIG.KEY, "utf8");
   const cert = forge.pki.certificateFromPem(certPem);
@@ -81,7 +108,7 @@ async function generateNewToken() {
   p7.sign();
   const cms = forge.util.encode64(forge.asn1.toDer(p7.toAsn1()).getBytes());
 
-  const client = await soap.createClientAsync(CONFIG.WSAA);
+  const client = await soap.createClientAsync(CONFIG.WSAA, SOAP_OPTIONS);
   const [result] = await client.loginCmsAsync({ in0: cms });
   const xml = result.loginCmsReturn;
   const token = xml.match(/<token>(.*?)<\/token>/)[1];
@@ -92,7 +119,6 @@ async function generateNewToken() {
   return authData;
 }
 
-// ... [Lógica de getUltimoComprobante SE MANTIENE IGUAL] ...
 async function getUltimoComprobante(client, auth, tipoCbte) {
   const [res] = await client.FECompUltimoAutorizadoAsync({
     Auth: { Token: auth.token, Sign: auth.sign, Cuit: CONFIG.CUIT },
@@ -103,38 +129,63 @@ async function getUltimoComprobante(client, auth, tipoCbte) {
 }
 
 /**
- * Función Principal: Emitir Factura
- * @param {number} total - Monto total
- * @param {object} cliente - Objeto con { docNumber, docType, fiscalCondition }
+ * Función Principal: Emitir Comprobante (Factura o Nota de Crédito)
+ * @param {boolean} esNotaCredito - Si es true, emite Nota de Crédito C (13)
+ * @param {object} comprobanteAsociado - Datos de la factura a anular (Obligatorio para NC)
  */
-async function emitirFactura(total, cliente = {}) {
+async function emitirFactura(total, cliente = {}, esNotaCredito = false, comprobanteAsociado = null) {
   const auth = await getValidToken();
-  const clientSoap = await soap.createClientAsync(CONFIG.WSDL);
+  const clientSoap = await soap.createClientAsync(CONFIG.WSDL, SOAP_OPTIONS);
 
-  // 1. Procesar Datos del Cliente
   const docNro = cliente.docNumber || "0";
-  // Si no viene condición, asumimos Consumidor Final
   const condFiscalStr = cliente.fiscalCondition || 'CONSUMIDOR_FINAL';
   const condicionIvaId = CONDICION_IVA[condFiscalStr] || 5;
 
-  // Determinar Tipo Documento AFIP
-  // 99: Final, 80: CUIT, 96: DNI
   let docTipo = 99; 
   if (docNro !== "0") {
      docTipo = docNro.length === 11 ? 80 : 96;
   }
 
-  // 2. Configurar Tipo de Comprobante
-  // Al ser Monotributista, SIEMPRE emites Factura C (11), sin importar el receptor.
-  // Si fueras Resp. Inscripto, aquí iría lógica para elegir A (1) o B (6).
-  const CBTE_TIPO = 11; 
+  // 11 = Factura C, 13 = Nota de Crédito C
+  const CBTE_TIPO = esNotaCredito ? 13 : 11; 
 
   const ultimo = await getUltimoComprobante(clientSoap, auth, CBTE_TIPO);
   const proximo = ultimo + 1;
 
-  console.log(`📠 AFIP: Factura C #${proximo} a Doc: ${docNro} (${condFiscalStr})`);
+  const tipoTxt = esNotaCredito ? "Nota Crédito C" : "Factura C";
+  console.log(`📠 AFIP PROD: Generando ${tipoTxt} #${proximo} por $${total}`);
 
   const fecha = new Date().toISOString().substring(0, 10).replace(/-/g, "");
+
+  // Construimos el objeto del detalle
+  const FeDetReq = {
+    Concepto: 1, 
+    DocTipo: docTipo,
+    DocNro: docNro,
+    CbteDesde: proximo,
+    CbteHasta: proximo,
+    CbteFch: fecha,
+    ImpTotal: total.toFixed(2),
+    ImpTotConc: 0,
+    ImpNeto: total.toFixed(2),
+    ImpOpEx: 0,
+    ImpTrib: 0,
+    ImpIVA: 0,
+    MonId: "PES",
+    MonCotiz: 1,
+    CondicionIVAReceptorId: condicionIvaId
+  };
+
+  // 👇 CORRECCIÓN CLAVE: Agregamos CbtesAsoc si es Nota de Crédito
+  if (esNotaCredito && comprobanteAsociado) {
+    FeDetReq.CbtesAsoc = {
+      CbteAsoc: {
+        Tipo: comprobanteAsociado.tipo,    // Ej: 11
+        PtoVta: comprobanteAsociado.ptoVta, // Ej: 5
+        Nro: comprobanteAsociado.nro       // Ej: 123
+      }
+    };
+  }
 
   const payload = {
     Auth: { Token: auth.token, Sign: auth.sign, Cuit: CONFIG.CUIT },
@@ -145,23 +196,7 @@ async function emitirFactura(total, cliente = {}) {
         CbteTipo: CBTE_TIPO
       },
       FeDetReq: {
-        FECAEDetRequest: {
-          Concepto: 1, 
-          DocTipo: docTipo,
-          DocNro: docNro,
-          CbteDesde: proximo,
-          CbteHasta: proximo,
-          CbteFch: fecha,
-          ImpTotal: total.toFixed(2),
-          ImpTotConc: 0,
-          ImpNeto: total.toFixed(2),
-          ImpOpEx: 0,
-          ImpTrib: 0,
-          ImpIVA: 0,
-          MonId: "PES",
-          MonCotiz: 1,
-          CondicionIVAReceptorId: condicionIvaId // 🔥 AQUÍ ESTABA EL CAMBIO CLAVE
-        }
+        FECAEDetRequest: FeDetReq // Usamos el objeto construido arriba
       }
     }
   };
@@ -169,9 +204,17 @@ async function emitirFactura(total, cliente = {}) {
   const [res] = await clientSoap.FECAESolicitarAsync(payload);
   const resultado = res.FECAESolicitarResult;
 
-  if (resultado.FeCabResp.Resultado === "R") {
-    const err = resultado.FeDetResp.FECAEDetResponse[0].Observaciones.Obs[0];
-    throw new Error(`Rechazo AFIP (${err.Code}): ${err.Msg}`);
+  if (resultado.FeCabResp.Resultado === "R" || resultado.FeCabResp.Resultado === "P") {
+    const obs = resultado.FeDetResp.FECAEDetResponse[0] ? resultado.FeDetResp.FECAEDetResponse[0].Observaciones : null;
+    const errs = resultado.Errors;
+    
+    let msgError = "Rechazo AFIP desconocido";
+    if (errs && errs.Err) {
+        msgError = Array.isArray(errs.Err) ? errs.Err[0].Msg : errs.Err.Msg;
+    } else if (obs && obs.Obs) {
+        msgError = Array.isArray(obs.Obs) ? obs.Obs[0].Msg : obs.Obs.Msg;
+    }
+    throw new Error(`AFIP Error: ${msgError}`);
   }
 
   const detalle = resultado.FeDetResp.FECAEDetResponse[0] || resultado.FeDetResp.FECAEDetResponse;
@@ -181,7 +224,7 @@ async function emitirFactura(total, cliente = {}) {
     cae: detalle.CAE,
     vto: detalle.CAEFchVto,
     numero: proximo,
-    tipo: "C",
+    tipo: esNotaCredito ? "NC" : "C",
     qr_data: `https://www.afip.gob.ar/fe/qr/?p=${btoa(JSON.stringify({
        ver: 1, fecha: fecha, cuit: CONFIG.CUIT, ptoVta: CONFIG.PTO_VTA, tipoCmp: CBTE_TIPO, nroCmp: proximo, importe: total, moneda: "PES", ctz: 1, tipoDocRec: docTipo, nroDocRec: parseInt(docNro), tipoCodAut: "E", codAut: detalle.CAE
     }))}`

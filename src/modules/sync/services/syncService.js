@@ -14,13 +14,37 @@ import { getDB } from '../../../database/db';
 export const syncService = {
   
   // =================================================================
+  // 🛠️ HELPER: SANITIZACIÓN PROFUNDA (EL FIX CLAVE)
+  // =================================================================
+  // Recorre recursivamente el objeto y convierte undefined en null
+  _deepSanitize(obj) {
+    if (obj === undefined) return null;
+    if (obj === null) return null;
+    
+    if (typeof obj === 'object') {
+      // Si es fecha, la pasamos a ISO String para evitar problemas
+      if (obj instanceof Date) return obj.toISOString();
+      
+      // Si es array, limpiamos cada elemento
+      if (Array.isArray(obj)) {
+        return obj.map(v => this._deepSanitize(v));
+      }
+      
+      // Si es objeto, limpiamos cada propiedad
+      const res = {};
+      for (const key in obj) {
+        res[key] = this._deepSanitize(obj[key]);
+      }
+      return res;
+    }
+    
+    return obj;
+  },
+
+  // =================================================================
   // 📡 1. ESCUCHA ACTIVA (NUBE -> LOCAL)
   // =================================================================
   
-  /**
-   * Inicia los listeners de Firestore. 
-   * Llama a esto al iniciar la App.
-   */
   startRealTimeListeners() {
     console.log("📡 Conectando antena de sincronización en tiempo real...");
 
@@ -51,7 +75,6 @@ export const syncService = {
       
       let pChanges = 0;
       snapshot.docChanges().forEach((change) => {
-        // Evitamos rebote si soy yo el que acaba de subirlo
         if (change.type === 'added' || change.type === 'modified') {
            const data = change.doc.data();
            const productData = { 
@@ -98,9 +121,6 @@ export const syncService = {
   // 🔄 3. CICLO DE SINCRONIZACIÓN (SUBIDA POR LOTES)
   // =================================================================
 
-  /**
-   * ORQUESTADOR PRINCIPAL
-   */
   async syncUp() { 
     return this.syncAll();
   },
@@ -117,14 +137,8 @@ export const syncService = {
         // 2. Subir Productos
         const productsResult = await this.syncPendingProducts();
 
-        // 3. Bajada Pasiva (Opcional, los listeners ya hacen esto)
         let downloadResult = 0;
-        try {
-            // downloadResult = await this.downloadProductsFromCloud();
-        } catch (downloadError) {
-            console.warn("⚠️ Bajada manual omitida.");
-        }
-
+        
         if (salesResult.synced > 0 || productsResult.synced > 0) {
             console.log(`✅ SYNC EXITOSO: 📤 ${salesResult.synced} Ventas | 📤 ${productsResult.synced} Productos`);
         }
@@ -141,7 +155,7 @@ export const syncService = {
   },
 
   /**
-   * 📤 SYNC VENTAS (Con Chunking)
+   * 📤 SYNC VENTAS (Con Deep Sanitize)
    */
   async syncPendingSales() {
     const localDb = await getDB();
@@ -155,7 +169,6 @@ export const syncService = {
 
     console.log(`📤 Subiendo ${pendingSales.length} ventas...`);
     
-    // Dividimos en lotes de 450
     const chunks = this.chunkArray(pendingSales, 450);
     let totalSynced = 0;
 
@@ -166,13 +179,11 @@ export const syncService = {
 
         for (const sale of batchSales) {
             const docRef = doc(salesCollection); 
+            // Separamos propiedades de control local
             const { localId, syncStatus, ...cleanSale } = sale;
             
-            // Sanitización básica
-            const finalSale = Object.keys(cleanSale).reduce((acc, key) => {
-                acc[key] = cleanSale[key] === undefined ? null : cleanSale[key];
-                return acc;
-            }, {});
+            // 👇 AQUI APLICAMOS LA LIMPIEZA PROFUNDA
+            const finalSale = this._deepSanitize(cleanSale);
             
             batch.set(docRef, {
                 ...finalSale,
@@ -203,7 +214,7 @@ export const syncService = {
   },
 
   /**
-   * 📦 SYNC PRODUCTOS (Con Chunking y Sanitización Anti-Crash)
+   * 📦 SYNC PRODUCTOS (Con Deep Sanitize)
    */
   async syncPendingProducts() {
     const pendingProducts = await productRepository.getPendingSync();
@@ -212,7 +223,6 @@ export const syncService = {
 
     console.log(`📦 Subiendo ${pendingProducts.length} cambios de inventario...`);
     
-    // 🔥 CHUNKING: Lotes de 450 para respetar límite de Firebase (500)
     const chunks = this.chunkArray(pendingProducts, 450);
     let totalSynced = 0;
     let chunkIndex = 1;
@@ -228,11 +238,8 @@ export const syncService = {
             const docRef = doc(productsCollection, product.id);
             const { syncStatus, ...dataToUpload } = product;
 
-            // 🧹 SANITIZACIÓN: Convertir 'undefined' a 'null'
-            const cleanData = Object.keys(dataToUpload).reduce((acc, key) => {
-                acc[key] = dataToUpload[key] === undefined ? null : dataToUpload[key];
-                return acc;
-            }, {});
+            // 👇 AQUI TAMBIÉN APLICAMOS LA LIMPIEZA PROFUNDA
+            const cleanData = this._deepSanitize(dataToUpload);
 
             const payload = product.deleted 
                 ? { ...cleanData, active: false, deleted: true, lastUpdated: new Date().toISOString() }
@@ -249,12 +256,10 @@ export const syncService = {
         chunkIndex++;
     }
 
+    
     return { synced: totalSynced };
   },
 
-  /**
-   * 📥 BAJADA MASIVA (Respaldo)
-   */
   async downloadProductsFromCloud() {
     const productsCollection = collection(db, 'products');
     const snapshot = await getDocs(productsCollection);
@@ -277,8 +282,9 @@ export const syncService = {
   // 🛠️ HELPER PARA DIVIDIR ARRAYS
   chunkArray(myArray, chunk_size){
       var results = [];
-      while (myArray.length) {
-          results.push(myArray.splice(0, chunk_size));
+      const arrayCopy = [...myArray]; // Copia para no mutar el original
+      while (arrayCopy.length) {
+          results.push(arrayCopy.splice(0, chunk_size));
       }
       return results;
   }
