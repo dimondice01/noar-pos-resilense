@@ -4,9 +4,9 @@ import React, { useEffect, useState, useRef } from 'react';
 import { 
     Plus, Search, Edit2, Trash2, Package, Scale, AlertTriangle, 
     ArrowUpRight, Filter, CheckSquare, Square, X, History,
-    Printer // 👈 Icono para el nuevo botón
+    Printer, ChevronLeft, ChevronRight // 👈 Iconos para paginación
 } from 'lucide-react';
-import { useNavigate } from 'react-router-dom'; // 👈 Hook para navegar
+import { useNavigate } from 'react-router-dom';
 
 import { productRepository } from '../repositories/productRepository';
 import { masterRepository } from '../repositories/masterRepository';
@@ -117,12 +117,16 @@ const BulkUpdateModal = ({ isOpen, onClose, onConfirm, allProducts, masters, man
 // 2. COMPONENTE PRINCIPAL (INVENTORY PAGE)
 // =================================================================
 export const InventoryPage = () => {
-  const navigate = useNavigate(); // Hook de navegación
+  const navigate = useNavigate();
 
   // ===================== ESTADOS =====================
   const [products, setProducts] = useState([]);
   const [loading, setLoading] = useState(true);
   
+  // Paginación
+  const [currentPage, setCurrentPage] = useState(1);
+  const itemsPerPage = 20; // ⚡ 20 items por página para velocidad extrema
+
   // Maestros
   const [masters, setMasters] = useState({ categories: [], brands: [], suppliers: [] });
   
@@ -130,7 +134,7 @@ export const InventoryPage = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [filters, setFilters] = useState({ category: '', brand: '', supplier: '' });
   
-  // Ref para el input de búsqueda (Scanner Focus)
+  // Ref para el input de búsqueda
   const searchInputRef = useRef(null);
 
   // Selección
@@ -145,7 +149,6 @@ export const InventoryPage = () => {
   // Estado para Historial
   const [historyProduct, setHistoryProduct] = useState(null); 
 
-  // ✅ CORRECCIÓN VALUACIÓN (Evita NaN)
   const totalStockValuado = products.reduce((acc, p) => {
       const costo = parseFloat(p.cost) || 0;
       const stock = parseFloat(p.stock) || 0;
@@ -176,7 +179,6 @@ export const InventoryPage = () => {
 
   useEffect(() => { loadData(); }, []);
 
-  // Recuperar foco al cerrar modales
   useEffect(() => {
       if (!isProductModalOpen && !isMastersModalOpen && !isBulkUpdateOpen && !historyProduct) {
           setTimeout(() => searchInputRef.current?.focus(), 100);
@@ -189,8 +191,10 @@ export const InventoryPage = () => {
         const term = searchTerm.trim();
         if (!term) return;
 
-        // 1. Buscar coincidencia EXACTA por código
-        const exactMatch = products.find(p => p.code === term);
+        // Búsqueda segura (protegida contra undefined)
+        const exactMatch = products.find(p => 
+            (p.code ? String(p.code) : '') === term
+        );
         
         if (exactMatch) {
             setEditingProduct(exactMatch);
@@ -208,14 +212,31 @@ export const InventoryPage = () => {
   };
 
   // ===================== FILTROS =====================
+  // 1. Resetear página al filtrar
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchTerm, filters]);
+
+  // 2. Filtrado
   const filteredProducts = products.filter(p => {
     const term = searchTerm.toLowerCase();
-    const matchesSearch = p.name.toLowerCase().includes(term) || p.code.includes(term);
+    
+    // FIX: Protección contra undefined
+    const name = p.name ? String(p.name).toLowerCase() : '';
+    const code = p.code ? String(p.code).toLowerCase() : '';
+
+    const matchesSearch = name.includes(term) || code.includes(term);
     const matchesCat = filters.category ? p.category === filters.category : true;
     const matchesBrand = filters.brand ? p.brand === filters.brand : true;
     const matchesSupp = filters.supplier ? p.supplier === filters.supplier : true;
+    
     return matchesSearch && matchesCat && matchesBrand && matchesSupp;
   });
+
+  // 3. PAGINACIÓN (Slicing)
+  const totalPages = Math.ceil(filteredProducts.length / itemsPerPage);
+  const startIndex = (currentPage - 1) * itemsPerPage;
+  const paginatedProducts = filteredProducts.slice(startIndex, startIndex + itemsPerPage);
 
   // ===================== SELECCIÓN =====================
   const toggleSelection = (id) => {
@@ -226,10 +247,10 @@ export const InventoryPage = () => {
   };
 
   const toggleSelectAll = () => {
-    if (selectedIds.size === filteredProducts.length && filteredProducts.length > 0) {
+    if (selectedIds.size === paginatedProducts.length && paginatedProducts.length > 0) {
       setSelectedIds(new Set());
     } else {
-      setSelectedIds(new Set(filteredProducts.map(p => p.id)));
+      setSelectedIds(new Set(paginatedProducts.map(p => p.id)));
     }
   };
 
@@ -246,7 +267,6 @@ export const InventoryPage = () => {
     }
   };
 
-  // ===================== AUMENTO MASIVO =====================
   const executeBulkUpdate = async (targetProducts, costPct, pricePct) => {
     if (targetProducts.length === 0) return alert("No hay productos seleccionados.");
     if (!window.confirm(`⚠️ CONFIRMACIÓN:\nSe actualizarán ${targetProducts.length} productos.\nCost: +${costPct}% | Precio: +${pricePct}%`)) return;
@@ -254,10 +274,10 @@ export const InventoryPage = () => {
     setLoading(true);
     try {
       const updates = targetProducts.map(p => {
-          const newCost = p.cost * (1 + costPct / 100);
-          let calculatedPrice = p.price * (1 + pricePct / 100);
+          const newCost = (p.cost || 0) * (1 + costPct / 100);
+          let calculatedPrice = (p.price || 0) * (1 + pricePct / 100);
           const newPrice = Math.ceil(calculatedPrice / 50) * 50; 
-          const newMarkup = newCost > 0 ? ((newPrice - newCost) / newCost * 100).toFixed(2) : p.markup;
+          const newMarkup = newCost > 0 ? ((newPrice - newCost) / newCost * 100).toFixed(2) : (p.markup || 0);
           return { ...p, cost: newCost, price: newPrice, markup: newMarkup };
       });
 
@@ -293,7 +313,6 @@ export const InventoryPage = () => {
         
         <div className="flex flex-wrap gap-2 justify-end">
             
-            {/* 🔥 BOTÓN PARA IR A LA PÁGINA DE ETIQUETAS */}
             <Button 
                 variant="secondary" 
                 className="border-purple-200 text-purple-700 bg-purple-50 hover:bg-purple-100 px-3"
@@ -361,7 +380,7 @@ export const InventoryPage = () => {
         </div>
       )}
 
-      {/* Tabla */}
+      {/* Tabla (Paginada) */}
       <Card className="p-0 overflow-hidden shadow-soft border-0 min-h-[400px]">
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse">
@@ -369,7 +388,7 @@ export const InventoryPage = () => {
               <tr className="bg-sys-50/80 backdrop-blur-sm text-sys-500 text-xs uppercase tracking-wider border-b border-sys-100">
                 <th className="p-4 w-10 text-center">
                     <button onClick={toggleSelectAll} className="text-sys-400 hover:text-brand">
-                        {selectedIds.size === filteredProducts.length && filteredProducts.length > 0 ? <CheckSquare size={18} /> : <Square size={18} />}
+                        {selectedIds.size === paginatedProducts.length && paginatedProducts.length > 0 ? <CheckSquare size={18} /> : <Square size={18} />}
                     </button>
                 </th>
                 <th className="p-4 font-semibold">Producto</th>
@@ -380,9 +399,10 @@ export const InventoryPage = () => {
               </tr>
             </thead>
             <tbody className="divide-y divide-sys-100">
-              {filteredProducts.map(p => {
+              {/* 🔥 RENDERIZAMOS SOLO LOS 20 PRODUCTOS DE LA PÁGINA */}
+              {paginatedProducts.map(p => {
                 const isSelected = selectedIds.has(p.id);
-                const isLowStock = p.stock <= (p.minStock || 5);
+                const isLowStock = (p.stock || 0) <= (p.minStock || 5);
                 return (
                   <tr key={p.id} className={cn("transition-colors group", isSelected ? "bg-brand-light/20" : "hover:bg-sys-50/50")}>
                     <td className="p-4 text-center">
@@ -391,8 +411,8 @@ export const InventoryPage = () => {
                         </button>
                     </td>
                     <td className="p-4">
-                        <div className="font-medium text-sys-900">{p.name}</div>
-                        <div className="text-xs text-sys-400 font-mono">{p.code}</div>
+                        <div className="font-medium text-sys-900">{p.name || 'Sin Nombre'}</div>
+                        <div className="text-xs text-sys-400 font-mono">{p.code || '-'}</div>
                     </td>
                     <td className="p-4">
                         <div className="flex flex-col gap-1">
@@ -402,12 +422,12 @@ export const InventoryPage = () => {
                     </td>
                     <td className="p-4 text-right">
                         <div className="text-[10px] text-sys-400">Costo: ${p.cost?.toLocaleString() || '-'}</div>
-                        <div className="font-bold text-sys-900 text-base">$ {p.price.toLocaleString('es-AR')}</div>
+                        <div className="font-bold text-sys-900 text-base">$ {(p.price || 0).toLocaleString('es-AR')}</div>
                     </td>
                     <td className="p-4 text-center">
                         <div className={cn("stock-badge", isLowStock ? "text-red-600 border-red-100 bg-red-50" : "text-sys-700 border-sys-200 bg-white")}>
                             {isLowStock && <AlertTriangle size={12} />}
-                            {p.isWeighable ? p.stock.toFixed(3) : p.stock}
+                            {p.isWeighable ? (p.stock || 0).toFixed(3) : (p.stock || 0)}
                         </div>
                     </td>
                     <td className="p-4 text-right">
@@ -424,6 +444,38 @@ export const InventoryPage = () => {
               })}
             </tbody>
           </table>
+        </div>
+        
+        {/* Footer de Paginación */}
+        <div className="p-4 border-t border-sys-100 bg-sys-50 flex justify-between items-center text-sm">
+            <span className="text-sys-500 font-medium">
+                Mostrando {paginatedProducts.length} de {filteredProducts.length} productos
+            </span>
+            <div className="flex items-center gap-2">
+                <Button 
+                    variant="ghost" 
+                    size="sm" 
+                    disabled={currentPage === 1} 
+                    onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                    className="h-8 w-8 p-0"
+                >
+                    <ChevronLeft size={18} />
+                </Button>
+                
+                <span className="font-bold text-sys-700 min-w-[3rem] text-center">
+                    {currentPage} / {totalPages || 1}
+                </span>
+
+                <Button 
+                    variant="ghost" 
+                    size="sm" 
+                    disabled={currentPage === totalPages || totalPages === 0} 
+                    onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                    className="h-8 w-8 p-0"
+                >
+                    <ChevronRight size={18} />
+                </Button>
+            </div>
         </div>
       </Card>
 
