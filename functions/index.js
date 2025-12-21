@@ -21,7 +21,7 @@ app.use(express.json());
 // CONFIG MP
 const MP_ACCESS_TOKEN = "APP_USR-613005236982546-120215-3a81b19fe8fa9372f1c0161bef4676ac-2126819795"; 
 const MP_USER_ID = "2126819795"; 
-const MP_EXTERNAL_POS_ID = "NOARPOS1"; 
+const MP_EXTERNAL_POS_ID = "NOARPOS2"; 
 
 // ==================================================================
 // 🛡️ ENDPOINT: GESTIÓN DE USUARIOS (ADMIN ONLY)
@@ -143,7 +143,7 @@ app.post("/create-clover-order", async (req, res) => {
 });
 
 // ==================================================================
-// 📟 ENDPOINT 5: MERCADOPAGO POINT (TERMINAL FÍSICA) - NUEVO
+// 📟 ENDPOINT 5: MERCADOPAGO POINT (CORREGIDO)
 // ==================================================================
 app.post("/create-point-order", async (req, res) => {
   try {
@@ -151,19 +151,18 @@ app.post("/create-point-order", async (req, res) => {
     const amount = Number(Number(total).toFixed(2));
 
     // Si no envían ID, usamos uno de prueba o fallamos
-    // En producción esto viene de la configuración de la caja
     const targetDevice = deviceId || "DISPOSITIVO_NO_CONFIGURADO"; 
 
     logger.info(`📟 (Point) Enviando cobro de $${amount} a terminal ${targetDevice}`);
 
-    // La API de Point espera CENTAVOS (Integer)
+    // 🔥 CORRECCIÓN CRÍTICA:
+    // MercadoPago Point API NO acepta 'description' ni 'print_on_terminal' en la raíz.
+    // Solo acepta 'amount' y 'additional_info'.
     const body = {
         amount: Math.round(amount * 100), 
-        description: "Consumo Noar POS",
-        print_on_terminal: true, // Imprimir ticket en el aparato
         additional_info: {
             external_reference: `NOAR-POINT-${Date.now()}`,
-            print_on_terminal: true
+            print_on_terminal: true // ✅ Aquí es donde debe ir
         }
     };
 
@@ -181,10 +180,12 @@ app.post("/create-point-order", async (req, res) => {
     });
 
   } catch (error) {
-    logger.error("❌ Error Point:", error.response?.data || error.message);
+    // Log detallado para ver qué rechaza MP si vuelve a pasar
+    logger.error("❌ Error Point Data:", error.response?.data || error.message);
+    
     res.status(500).json({ 
         error: "Error de comunicación con Terminal", 
-        details: error.response?.data?.message || "Dispositivo no encontrado o desconectado." 
+        details: error.response?.data?.message || error.message
     });
   }
 });

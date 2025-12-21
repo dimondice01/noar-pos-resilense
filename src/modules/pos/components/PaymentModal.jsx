@@ -27,7 +27,7 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
   const transferRef = useRef(null);
 
   // ID Terminal Point (Configuración)
-  const POINT_DEVICE_ID = "PAX_00000000"; 
+  const POINT_DEVICE_ID = "NEWLAND_N950__N950NCC904500758"; 
 
   // Estado AFIP (Siempre inicia FALSE)
   const [withAfip, setWithAfip] = useState(false);
@@ -297,8 +297,13 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
             <PaymentOption id="transfer" label="Transfer" icon={Landmark} colorClass="purple-600" shortcut="F2" />
             
             <PaymentOption id="mercadopago" label="MP QR" icon={QrCode} colorClass="blue-500" />
-            <PaymentOption id="point" label="Tarjeta" icon={CreditCard} colorClass="blue-600" />
-            <PaymentOption id="clover" label="Clover" icon={LayoutGrid} colorClass="green-600" />
+            
+            {/* Se mantiene POINT (Posnet) */}
+            <PaymentOption id="point" label="MP Point" icon={CreditCard} colorClass="blue-600" />
+            
+            {/* CLOVER COMENTADO 
+            <PaymentOption id="clover" label="Clover" icon={LayoutGrid} colorClass="green-600" /> 
+            */}
           </div>
 
           <div className="flex-1 flex flex-col justify-center items-center text-center min-h-[150px]">
