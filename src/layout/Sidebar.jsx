@@ -3,7 +3,7 @@ import { NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { 
   LayoutDashboard, ShoppingCart, Package, Settings, 
   FileText, Cloud, RefreshCw, LogOut, User, ShieldCheck, Wallet,
-  Users, Lock, ArrowRight, X, Loader2 
+  Users, Lock, ArrowRight, X, Loader2, Plug // 🆕 Importamos Plug
 } from 'lucide-react';
 
 import { cn } from '../core/utils/cn';
@@ -355,6 +355,8 @@ export const Sidebar = () => {
              {isAdmin && (
                 <div className="animate-in slide-in-from-left-4 fade-in duration-300 space-y-1 mt-1">
                     <MenuLink to="/cash" icon={Wallet} label="Control de Caja" />
+                    {/* 🆕 NUEVO ENLACE: INTEGRACIONES (SaaS) */}
+                    <MenuLink to="/settings/integrations" icon={Plug} label="Integraciones" />
                     <MenuLink to="/settings" icon={Settings} label="Configuración" />
                 </div>
              )}

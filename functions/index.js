@@ -1,7 +1,8 @@
 /**
- * BACKEND - NOAR POS RESILENSE
+ * BACKEND - NOAR POS RESILENSE (SaaS READY)
  * Cloud Functions for Firebase
  * VERSIÓN FINAL: MercadoPago (QR + Point) + Clover (Simulado) + AFIP + RBAC
+ * Lee credenciales dinámicamente desde Firestore.
  */
 const { onRequest } = require("firebase-functions/v2/https");
 const logger = require("firebase-functions/logger");
@@ -13,15 +14,34 @@ const admin = require("firebase-admin");
 if (!admin.apps.length) {
   admin.initializeApp();
 }
+const db = admin.firestore();
 
 const app = express();
 app.use(cors({ origin: true }));
 app.use(express.json());
 
-// CONFIG MP
-const MP_ACCESS_TOKEN = "APP_USR-613005236982546-120215-3a81b19fe8fa9372f1c0161bef4676ac-2126819795"; 
-const MP_USER_ID = "2126819795"; 
-const MP_EXTERNAL_POS_ID = "NOARPOS2"; 
+// ==================================================================
+// 🛠️ HELPER: OBTENER CREDENCIALES MP DINÁMICAS
+// ==================================================================
+async function getMpConfig() {
+    const doc = await db.doc("secrets/mercadopago").get();
+    
+    if (!doc.exists) {
+        throw new Error("MercadoPago no está configurado en el sistema.");
+    }
+    
+    const data = doc.data();
+    if (!data.isActive) {
+        throw new Error("La integración con MercadoPago está desactivada.");
+    }
+    
+    // Validamos que tenga lo mínimo necesario
+    if (!data.accessToken || !data.userId || !data.externalPosId) {
+        throw new Error("Configuración MP incompleta (Faltan Tokens o IDs).");
+    }
+    
+    return data; // Retorna { accessToken, userId, externalPosId }
+}
 
 // ==================================================================
 // 🛡️ ENDPOINT: GESTIÓN DE USUARIOS (ADMIN ONLY)
@@ -35,8 +55,6 @@ app.post("/create-user", async (req, res) => {
       return res.status(401).json({ error: 'Unauthorized: No token provided' });
     }
     const idToken = authHeader.split('Bearer ')[1];
-    
-    // Verificamos token
     const decodedToken = await admin.auth().verifyIdToken(idToken);
     
     logger.info(`👤 Creando usuario: ${email} (${role}) solicitado por ${decodedToken.email}`);
@@ -49,7 +67,7 @@ app.post("/create-user", async (req, res) => {
     });
 
     // Guardar Rol en Firestore
-    await admin.firestore().collection('users').doc(userRecord.uid).set({
+    await db.collection('users').doc(userRecord.uid).set({
       name,
       email,
       role: role || 'CAJERO', 
@@ -66,7 +84,7 @@ app.post("/create-user", async (req, res) => {
 });
 
 // ==================================================================
-// 🚀 ENDPOINT 1: MERCADOPAGO (QR)
+// 🚀 ENDPOINT 1: MERCADOPAGO (QR DINÁMICO)
 // ==================================================================
 app.post("/create-order", async (req, res) => {
   try {
@@ -74,6 +92,9 @@ app.post("/create-order", async (req, res) => {
     const amount = Number(Number(total).toFixed(2));
 
     if (!amount || amount <= 0) return res.status(400).json({ error: "Monto inválido" });
+
+    // 1. Obtener Credenciales de la DB
+    const mpConfig = await getMpConfig();
 
     const externalReference = `NOAR-${Date.now()}`;
 
@@ -96,11 +117,12 @@ app.post("/create-order", async (req, res) => {
       ],
     };
 
-    const url = `https://api.mercadopago.com/instore/orders/qr/seller/collectors/${MP_USER_ID}/pos/${MP_EXTERNAL_POS_ID}/qrs`;
+    // Usamos userId y externalPosId de la configuración
+    const url = `https://api.mercadopago.com/instore/orders/qr/seller/collectors/${mpConfig.userId}/pos/${mpConfig.externalPosId}/qrs`;
     
     await axios.put(url, orderData, {
       headers: {
-        "Authorization": `Bearer ${MP_ACCESS_TOKEN}`, 
+        "Authorization": `Bearer ${mpConfig.accessToken}`, 
         "Content-Type": "application/json"
       }
     });
@@ -113,7 +135,7 @@ app.post("/create-order", async (req, res) => {
 
   } catch (error) {
     const mpError = error.response ? error.response.data : error.message;
-    logger.error("❌ Error MP:", mpError);
+    logger.error("❌ Error MP QR:", mpError);
     res.status(500).json({ error: "Error MP", details: mpError });
   }
 });
@@ -143,36 +165,35 @@ app.post("/create-clover-order", async (req, res) => {
 });
 
 // ==================================================================
-// 📟 ENDPOINT 5: MERCADOPAGO POINT (CORREGIDO)
+// 📟 ENDPOINT 5: MERCADOPAGO POINT (DINÁMICO)
 // ==================================================================
 app.post("/create-point-order", async (req, res) => {
   try {
     const { total, deviceId } = req.body;
     const amount = Number(Number(total).toFixed(2));
 
+    // 1. Obtener Credenciales de la DB
+    const mpConfig = await getMpConfig();
+
     // Si no envían ID, usamos uno de prueba o fallamos
     const targetDevice = deviceId || "DISPOSITIVO_NO_CONFIGURADO"; 
 
     logger.info(`📟 (Point) Enviando cobro de $${amount} a terminal ${targetDevice}`);
 
-    // 🔥 CORRECCIÓN CRÍTICA:
-    // MercadoPago Point API NO acepta 'description' ni 'print_on_terminal' en la raíz.
-    // Solo acepta 'amount' y 'additional_info'.
     const body = {
         amount: Math.round(amount * 100), 
         additional_info: {
             external_reference: `NOAR-POINT-${Date.now()}`,
-            print_on_terminal: true // ✅ Aquí es donde debe ir
+            print_on_terminal: true 
         }
     };
 
     const url = `https://api.mercadopago.com/point/integration-api/devices/${targetDevice}/payment-intents`;
     
     const response = await axios.post(url, body, {
-       headers: { "Authorization": `Bearer ${MP_ACCESS_TOKEN}` }
+       headers: { "Authorization": `Bearer ${mpConfig.accessToken}` }
     });
 
-    // Devolvemos el ID del intento (payment_intent_id) para hacer polling
     res.status(200).json({ 
         success: true, 
         reference: response.data.id, 
@@ -180,9 +201,7 @@ app.post("/create-point-order", async (req, res) => {
     });
 
   } catch (error) {
-    // Log detallado para ver qué rechaza MP si vuelve a pasar
     logger.error("❌ Error Point Data:", error.response?.data || error.message);
-    
     res.status(500).json({ 
         error: "Error de comunicación con Terminal", 
         details: error.response?.data?.message || error.message
@@ -197,34 +216,39 @@ app.post("/check-payment-status", async (req, res) => {
   try {
     const { reference, provider } = req.body;
 
-    // A. MERCADOPAGO QR
-    if (provider === 'mercadopago') {
-      const url = `https://api.mercadopago.com/v1/payments/search?external_reference=${reference}&status=approved`;
-      const response = await axios.get(url, { headers: { "Authorization": `Bearer ${MP_ACCESS_TOKEN}` } });
-      
-      if (response.data.results?.length > 0) {
-        const p = response.data.results[0];
-        return res.status(200).json({ status: 'approved', id: p.id, method: p.payment_method_id });
-      }
-      return res.status(200).json({ status: 'pending' });
-    } 
-    
-    // B. MERCADOPAGO POINT - NUEVO
-    else if (provider === 'point') {
-        const url = `https://api.mercadopago.com/point/integration-api/payment-intents/${reference}`;
-        const response = await axios.get(url, { headers: { "Authorization": `Bearer ${MP_ACCESS_TOKEN}` } });
-        const intent = response.data;
-        
-        if (intent.state === 'FINISHED') {
-             if (intent.payment_ids && intent.payment_ids.length > 0) {
-                 return res.status(200).json({ status: 'approved', id: intent.payment_ids[0] });
-             }
-             return res.status(200).json({ status: 'rejected' });
+    // Solo MP necesita credenciales dinámicas
+    if (provider === 'mercadopago' || provider === 'point') {
+        const mpConfig = await getMpConfig();
+        const headers = { "Authorization": `Bearer ${mpConfig.accessToken}` };
+
+        // A. MERCADOPAGO QR
+        if (provider === 'mercadopago') {
+            const url = `https://api.mercadopago.com/v1/payments/search?external_reference=${reference}&status=approved`;
+            const response = await axios.get(url, { headers });
+            
+            if (response.data.results?.length > 0) {
+                const p = response.data.results[0];
+                return res.status(200).json({ status: 'approved', id: p.id, method: p.payment_method_id });
+            }
+            return res.status(200).json({ status: 'pending' });
         } 
-        else if (intent.state === 'CANCELED') {
-             return res.status(200).json({ status: 'canceled' });
+        
+        // B. MERCADOPAGO POINT
+        else if (provider === 'point') {
+            const url = `https://api.mercadopago.com/point/integration-api/payment-intents/${reference}`;
+            const response = await axios.get(url, { headers });
+            const intent = response.data;
+            
+            if (intent.state === 'FINISHED') {
+                 // Intentamos obtener el ID del pago real si existe
+                 const paymentId = (intent.payment_ids && intent.payment_ids.length > 0) ? intent.payment_ids[0] : 'POINT-OK';
+                 return res.status(200).json({ status: 'approved', id: paymentId });
+            } 
+            else if (intent.state === 'CANCELED') {
+                 return res.status(200).json({ status: 'canceled' });
+            }
+            return res.status(200).json({ status: 'pending' });
         }
-        return res.status(200).json({ status: 'pending' });
     }
 
     // C. CLOVER (Simulado)
@@ -246,17 +270,19 @@ app.post("/check-payment-status", async (req, res) => {
 const afip = require("./afip");
 
 // ==================================================================
-// 🚀 ENDPOINT 4: FACTURACIÓN AFIP
+// 🚀 ENDPOINT 4: FACTURACIÓN AFIP (SAAS)
 // ==================================================================
 app.post("/create-invoice", async (req, res) => {
   try {
     const { total, client } = req.body; 
     const amount = Number(Number(total).toFixed(2));
+    // Corrección: Pasamos el objeto cliente completo, no solo el número
     const datosCliente = client || { docNumber: "0", fiscalCondition: "CONSUMIDOR_FINAL" };
 
-    logger.info(`📠 AFIP: Solicitud Factura por $${amount} para ${datosCliente.docNumber}`);
+    logger.info(`📠 AFIP: Solicitud Factura por $${amount}`);
 
-    const factura = await afip.emitirFactura(amount, datosCliente.docNumber || "0");
+    // afip.js ahora se encarga de buscar las credenciales en DB
+    const factura = await afip.emitirFactura(amount, datosCliente);
 
     logger.info(`✅ Factura Autorizada: CAE ${factura.cae}`);
     res.status(200).json(factura);
@@ -271,7 +297,7 @@ app.post("/create-invoice", async (req, res) => {
 });
 
 // ==================================================================
-// 🔄 ENDPOINT 6: NOTA DE CRÉDITO (CORREGIDO)
+// 🔄 ENDPOINT 6: NOTA DE CRÉDITO (SAAS)
 // ==================================================================
 app.post("/create-credit-note", async (req, res) => {
   try {
@@ -285,7 +311,7 @@ app.post("/create-credit-note", async (req, res) => {
 
     logger.info(`🔄 AFIP: Solicitud NC por $${amount} (Anula FC #${associatedDocument.nro})`);
 
-    // 👇 Pasamos el 4to parámetro con los datos de la factura original
+    // Pasamos el objeto cliente completo
     const notaCredito = await afip.emitirFactura(amount, datosCliente, true, associatedDocument);
 
     logger.info(`✅ NC Autorizada: CAE ${notaCredito.cae}`);
@@ -299,4 +325,5 @@ app.post("/create-credit-note", async (req, res) => {
     });
   }
 });
+
 exports.api = onRequest(app);

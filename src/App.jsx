@@ -21,6 +21,9 @@ import { PrintLabelsPage } from './modules/inventory/pages/PrintLabelsPage';
 import { MovementsPage } from './modules/inventory/pages/MovementsPage'; 
 import { SalesPage } from './modules/sales/pages/SalesPage';
 import { TeamPage } from './modules/settings/pages/TeamPage'; 
+// 👇 1. IMPORTAMOS LA NUEVA PÁGINA
+import { IntegrationsPage } from './modules/settings/pages/IntegrationsPage'; 
+
 import { CashPage } from './modules/cash/pages/CashPage'; 
 import { ClientsPage } from './modules/clients/pages/ClientsPage';
 
@@ -67,7 +70,11 @@ function App() {
                         <Route path="inventory/movements" element={<MovementsPage />} /> 
 
                         <Route path="cash" element={<CashPage />} />
+                        
+                        {/* 👇 2. RUTAS DE CONFIGURACIÓN */}
                         <Route path="settings" element={<TeamPage />} />
+                        <Route path="settings/integrations" element={<IntegrationsPage />} />
+                        
                         <Route path="clients" element={<ClientsPage />} />
                     </Route>
                 </Route>
