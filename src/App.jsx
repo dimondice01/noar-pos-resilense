@@ -1,12 +1,11 @@
-// src/App.jsx
-
 import React, { useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { MainLayout } from './layout/MainLayout';
-import { useDbSeeder } from './core/hooks/useDbSeeder';
-import { useAuthStore } from './modules/auth/store/useAuthStore';
 
-// 🔥 IMPORTAR SERVICIO DE SINCRONIZACIÓN
+// ✅ IMPORTANTE: Verifica que esta ruta coincida con tu carpeta real ('store' o 'hooks')
+import { useAuthStore } from './modules/auth/store/useAuthStore'; 
+
+// 🔥 SERVICIO DE SINCRONIZACIÓN
 import { syncService } from './modules/sync/services/syncService';
 
 // Componentes Auth
@@ -21,65 +20,59 @@ import { PrintLabelsPage } from './modules/inventory/pages/PrintLabelsPage';
 import { MovementsPage } from './modules/inventory/pages/MovementsPage'; 
 import { SalesPage } from './modules/sales/pages/SalesPage';
 import { TeamPage } from './modules/settings/pages/TeamPage'; 
-// 👇 1. IMPORTAMOS LA NUEVA PÁGINA
 import { IntegrationsPage } from './modules/settings/pages/IntegrationsPage'; 
-
+import { SuperAdminPage } from './modules/admin/pages/SuperAdminPage'; 
 import { CashPage } from './modules/cash/pages/CashPage'; 
 import { ClientsPage } from './modules/clients/pages/ClientsPage';
 
 function App() {
-    const isDbReady = useDbSeeder();
+    // 👇 Solo inicializamos el listener de Auth
     const initAuthListener = useAuthStore(state => state.initAuthListener);
 
     useEffect(() => {
-        // 1. Inicializar Autenticación (Firebase Auth)
+        // 1. Iniciar escucha de usuario (Firebase Auth)
         initAuthListener();
         
-        // 2. 🔥 ENCENDER ESCUCHA REAL-TIME (Configuración y Stock)
-        // Esto mantiene la tablet sincronizada con el Admin Remoto
+        // 2. Iniciar sincronización en segundo plano (Stock, Config)
         syncService.startRealTimeListeners();
     }, []);
 
-    if (!isDbReady) {
-        return (
-            <div className="h-screen w-screen flex items-center justify-center bg-sys-50">
-                <div className="text-center">
-                    <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-brand mx-auto mb-4"></div>
-                    <p className="text-sys-500 font-medium">Iniciando sistema local...</p>
-                </div>
-            </div>
-        );
-    }
-
+    // 🚀 SIN BLOQUEOS: Renderizamos directo el Router
     return (
         <BrowserRouter>
             <Routes>
                 {/* Ruta Pública: Login */}
                 <Route path="/login" element={<LoginPage />} />
 
-                {/* Rutas Protegidas */}
+                {/* Rutas Protegidas (Requieren Login) */}
                 <Route element={<ProtectedRoute />}>
                     <Route path="/" element={<MainLayout />}>
+                        {/* Dashboard Principal */}
                         <Route index element={<DashboardPage />} />
+                        
+                        {/* Punto de Venta */}
                         <Route path="pos" element={<PosPage />} />
                         <Route path="sales" element={<SalesPage />} />
+                        <Route path="cash" element={<CashPage />} />
                         
-                        {/* Rutas de Inventario */}
+                        {/* Inventario */}
                         <Route path="inventory" element={<InventoryPage />} />
                         <Route path="inventory/print" element={<PrintLabelsPage />} />
                         <Route path="inventory/movements" element={<MovementsPage />} /> 
 
-                        <Route path="cash" element={<CashPage />} />
+                        {/* Gestión de Clientes */}
+                        <Route path="clients" element={<ClientsPage />} />
                         
-                        {/* 👇 2. RUTAS DE CONFIGURACIÓN */}
+                        {/* Configuración */}
                         <Route path="settings" element={<TeamPage />} />
                         <Route path="settings/integrations" element={<IntegrationsPage />} />
                         
-                        <Route path="clients" element={<ClientsPage />} />
+                        {/* 🕵️‍♂️ RUTA SECRETA: Panel de Super Admin (Crear Empresas / Cargar Catálogo) */}
+                        <Route path="/master-admin" element={<SuperAdminPage />} />
                     </Route>
                 </Route>
                 
-                {/* Catch all */}
+                {/* Cualquier ruta desconocida redirige al inicio */}
                 <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
         </BrowserRouter>

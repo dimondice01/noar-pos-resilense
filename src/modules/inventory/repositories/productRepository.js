@@ -1,12 +1,13 @@
 import { getDB } from '../../../database/db';
 import { db } from '../../../database/firebase';
-import { doc, setDoc, updateDoc } from 'firebase/firestore';
+import { doc, setDoc, updateDoc, writeBatch } from 'firebase/firestore'; // ⚠️ Agregado writeBatch
 
-// Helper para subir sin bloquear
+// Helper para subir sin bloquear (PARA CLIENTES)
 const syncToCloud = async (collection, data) => {
   if (!navigator.onLine) return;
   try {
     const { syncStatus, ...cloudData } = data;
+    // TODO: En Fase 2, esto apuntará a `companies/{companyId}/{collection}`
     await setDoc(doc(db, collection, data.id), {
       ...cloudData,
       firestoreId: data.id,
@@ -15,7 +16,7 @@ const syncToCloud = async (collection, data) => {
     
     // Marcar como synced localmente
     const dbLocal = await getDB();
-    const storeName = collection === 'movements' ? 'movements' : 'products'; // Mapeo simple
+    const storeName = collection === 'movements' ? 'movements' : 'products'; 
     await dbLocal.put(storeName, { ...data, syncStatus: 'SYNCED' });
   } catch (e) {
     console.warn(`⚠️ Error sync ${collection}:`, e);
@@ -67,7 +68,7 @@ export const productRepository = {
         if (product.deleted) {
              await store.delete(id);
         } else {
-             product.syncStatus = 'synced'; // lowercase para estándar
+             product.syncStatus = 'synced'; 
              await store.put(product);
         }
       }
@@ -76,7 +77,47 @@ export const productRepository = {
   },
 
   // ==========================================
-  // ✍️ MÉTODOS DE ESCRITURA (Cloud Enabled)
+  // 👑 MÉTODO SAAS: CATALOGO MAESTRO
+  // ==========================================
+  
+  // Este método guarda DIRECTO en Firestore 'master_products' usando lotes.
+  // No toca la base de datos local (IndexedDB) del usuario actual.
+  async saveToMasterCatalog(products) {
+    const BATCH_SIZE = 500; // Límite de Firestore
+    const chunks = [];
+
+    // Dividimos en trozos de 500
+    for (let i = 0; i < products.length; i += BATCH_SIZE) {
+        chunks.push(products.slice(i, i + BATCH_SIZE));
+    }
+
+    let batchCount = 0;
+    for (const chunk of chunks) {
+        const batch = writeBatch(db);
+        
+        chunk.forEach(product => {
+            // Referencia a la colección GLOBAL oculta
+            const docRef = doc(db, "master_products", product.id);
+            
+            // Limpiamos datos locales antes de subir
+            const { syncStatus, ...cleanProduct } = product;
+            
+            batch.set(docRef, {
+                ...cleanProduct,
+                isMaster: true, // Marca de agua
+                updatedAt: new Date().toISOString()
+            });
+        });
+
+        await batch.commit();
+        batchCount++;
+        console.log(`☁️ [SaaS] Lote Maestro ${batchCount}/${chunks.length} subido a Firestore.`);
+    }
+    return true;
+  },
+
+  // ==========================================
+  // ✍️ MÉTODOS DE ESCRITURA (Local - Tienda Cliente)
   // ==========================================
 
   async saveAll(products) {
@@ -185,7 +226,7 @@ export const productRepository = {
 
     // 7. Sincronizar Nube (Background)
     syncToCloud('products', productToSave);
-    movementsToSave.forEach(mov => syncToCloud('movements', mov)); // Subir historial también (Opcional pero recomendado)
+    movementsToSave.forEach(mov => syncToCloud('movements', mov)); 
 
     return productToSave;
   },

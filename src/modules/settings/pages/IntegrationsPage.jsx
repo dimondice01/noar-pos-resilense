@@ -1,44 +1,131 @@
 import React, { useState, useEffect } from 'react';
 import { 
   CreditCard, Save, HelpCircle, CheckCircle2, 
-  AlertCircle, ExternalLink, Eye, EyeOff, Plug, FileText, ScrollText, Download, Key 
+  AlertCircle, ExternalLink, Eye, EyeOff, Plug, FileText, ScrollText, Download, Key,
+  Search, X, Loader2, Info, Link as LinkIcon
 } from 'lucide-react';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { db } from '../../../database/firebase';
-import forge from 'node-forge'; // ⚠️ Asegúrate de haber hecho: npm install node-forge
+import forge from 'node-forge'; // ⚠️ Asegúrate de haber ejecutado: npm install node-forge
 
 import { Card } from '../../../core/ui/Card';
 import { Button } from '../../../core/ui/Button';
 import { cn } from '../../../core/utils/cn';
 
-// Input Secreto (Para Token MP)
-const SecretInput = ({ label, value, onChange, placeholder, helpText }) => {
+// URL del Backend (En producción usa la relativa, en local la completa si es necesario)
+const API_URL = import.meta.env.VITE_API_URL || "https://us-central1-salvadorpos1.cloudfunctions.net/api"; 
+
+// ==================================================================================
+// 🎓 MODAL TUTORIAL (SÚPER EXPLICADO)
+// ==================================================================================
+const TutorialModal = ({ isOpen, onClose, type }) => {
+    if (!isOpen) return null;
+
+    const steps = type === 'MP' ? [
+        { 
+            title: "1. MercadoPago Developers", 
+            desc: "Entra al panel de desarrolladores con la cuenta del negocio.",
+            link: "https://www.mercadopago.com.ar/developers/panel",
+            icon: ExternalLink
+        },
+        { 
+            title: "2. Crear Aplicación", 
+            desc: "Haz clic en '+ Crear Aplicación'. Elige 'Pagos Presenciales'. Ponle de nombre 'Sistema Noar'.",
+            icon: Plug
+        },
+        { 
+            title: "3. Copiar Access Token", 
+            desc: "En el menú izquierdo ve a 'Credenciales de Producción'. Copia el 'Access Token' (empieza con APP_USR-...).",
+            icon: Key
+        },
+        { 
+            title: "4. Buscar Caja", 
+            desc: "¡Listo! Pega ese Token en esta pantalla y usa el botón de la LUPA para encontrar tus cajas automáticamente.",
+            icon: Search
+        }
+    ] : [
+        {
+            title: "1. Generar Pedido", 
+            desc: "Completa CUIT y Razón Social abajo. Toca 'Generar Pedido .CSR' y guarda el archivo en tu PC.",
+            icon: Download
+        },
+        { 
+            title: "2. Crear Certificado en AFIP", 
+            desc: "Entra a AFIP -> 'Admin. de Certificados Digitales'. Agrega un Alias (ej: 'punto_venta'), sube el archivo .CSR y descarga el certificado .crt.",
+            link: "https://auth.afip.gob.ar/contribuyente_/login.xhtml",
+            icon: ExternalLink
+        },
+        { 
+            title: "3. ¡VINCULAR SERVICIO! (Crucial)", 
+            desc: "Ve a 'Admin. de Relaciones'. Nueva Relación -> AFIP -> WebServices -> Facturación Electrónica. En 'Representante' busca el Alias (Computador) creado antes.",
+            icon: LinkIcon
+        },
+        { 
+            title: "4. Pegar Certificado", 
+            desc: "Abre el archivo .crt con Bloc de Notas. Copia TODO el texto y pégalo en el campo 'Certificado' de esta pantalla.",
+            icon: ScrollText
+        }
+    ];
+
+    return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-sys-900/60 backdrop-blur-sm p-4 animate-in fade-in">
+            <div className="bg-white w-full max-w-lg rounded-2xl shadow-2xl overflow-hidden relative border border-sys-200">
+                <div className={cn("p-5 text-white flex justify-between items-center shadow-md", type === 'MP' ? "bg-[#009EE3]" : "bg-[#2C3E50]")}>
+                    <h3 className="font-bold text-lg flex items-center gap-2">
+                        <HelpCircle size={22}/> Guía Rápida: {type === 'MP' ? 'Mercado Pago' : 'AFIP'}
+                    </h3>
+                    <button onClick={onClose} className="hover:bg-white/20 p-1.5 rounded-full transition-colors"><X size={20}/></button>
+                </div>
+                
+                <div className="p-6 max-h-[65vh] overflow-y-auto custom-scrollbar bg-sys-50/50">
+                    <div className="space-y-5 relative">
+                        <div className="absolute left-[19px] top-4 bottom-4 w-0.5 bg-sys-200 -z-10"></div>
+                        {steps.map((step, i) => (
+                            <div key={i} className="flex gap-4 group">
+                                <div className={cn("w-10 h-10 rounded-full flex items-center justify-center shrink-0 font-bold shadow-sm transition-transform group-hover:scale-110 z-10", type === 'MP' ? "bg-blue-50 text-blue-600 border-2 border-blue-100" : "bg-white text-sys-700 border-2 border-sys-200")}>
+                                    <step.icon size={18}/>
+                                </div>
+                                <div className="bg-white p-4 rounded-xl border border-sys-100 shadow-sm flex-1 hover:border-sys-300 transition-colors group-hover:shadow-md">
+                                    <h4 className="font-bold text-sm text-sys-800 mb-1.5">{step.title}</h4>
+                                    <p className="text-xs text-sys-500 leading-relaxed">{step.desc}</p>
+                                    {step.link && (
+                                        <a href={step.link} target="_blank" rel="noreferrer" className="mt-3 inline-flex items-center gap-1.5 text-[11px] font-bold text-blue-600 hover:text-blue-700 bg-blue-50 hover:bg-blue-100 px-3 py-1.5 rounded-lg transition-colors">
+                                            Ir al sitio web <ExternalLink size={12}/>
+                                        </a>
+                                    )}
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+                
+                <div className="p-5 bg-white border-t border-sys-100 text-center">
+                    <Button onClick={onClose} className="w-full bg-sys-900 text-white font-bold h-11 text-sm shadow-lg hover:bg-black transform active:scale-95 transition-all">
+                        ¡Entendido!
+                    </Button>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+// ==================================================================================
+// 🧩 COMPONENTES UI (Inputs Bonitos)
+// ==================================================================================
+const SecretInput = ({ label, value, onChange, placeholder }) => {
   const [show, setShow] = useState(false);
   return (
     <div className="mb-4">
-      <div className="flex justify-between items-center mb-1.5">
-        <label className="text-[11px] font-bold text-sys-500 uppercase tracking-wider ml-1">
-            {label}
-        </label>
-        {helpText && (
-            <span className="text-[10px] text-blue-500 cursor-pointer hover:underline flex items-center gap-1">
-                <HelpCircle size={10} /> ¿Dónde lo encuentro?
-            </span>
-        )}
-      </div>
+      <label className="text-[11px] font-bold text-sys-500 uppercase tracking-wider ml-1 mb-1.5 block">{label}</label>
       <div className="relative group">
         <input 
           type={show ? "text" : "password"} 
-          className="w-full bg-sys-50 border border-sys-200 rounded-xl pl-3 pr-10 py-2.5 text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/10 transition-all font-mono text-sys-800"
+          className="w-full bg-sys-50 border border-sys-200 rounded-xl pl-3 pr-10 py-2.5 text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/10 transition-all font-mono text-sys-800 placeholder:text-sys-300"
           placeholder={placeholder}
           value={value}
           onChange={(e) => onChange(e.target.value)}
         />
-        <button 
-          type="button"
-          onClick={() => setShow(!show)}
-          className="absolute right-3 top-2.5 text-sys-400 hover:text-sys-600 transition-colors"
-        >
+        <button type="button" onClick={() => setShow(!show)} className="absolute right-3 top-2.5 text-sys-400 hover:text-sys-600 transition-colors">
           {show ? <EyeOff size={16} /> : <Eye size={16} />}
         </button>
       </div>
@@ -46,14 +133,11 @@ const SecretInput = ({ label, value, onChange, placeholder, helpText }) => {
   );
 };
 
-// Textarea simple para Certificado
 const CertInput = ({ label, value, onChange, placeholder }) => (
     <div className="mb-4">
-        <label className="text-[11px] font-bold text-sys-500 uppercase tracking-wider ml-1 mb-1.5 block">
-            {label}
-        </label>
+        <label className="text-[11px] font-bold text-sys-500 uppercase tracking-wider ml-1 mb-1.5 block">{label}</label>
         <textarea 
-            className="w-full bg-sys-50 border border-sys-200 rounded-xl px-3 py-2.5 text-[10px] outline-none focus:border-brand transition-all font-mono text-sys-600 h-24 resize-y leading-tight"
+            className="w-full bg-sys-50 border border-sys-200 rounded-xl px-3 py-2.5 text-[10px] outline-none focus:border-brand transition-all font-mono text-sys-600 h-28 resize-y leading-tight placeholder:text-sys-300"
             placeholder={placeholder}
             value={value}
             onChange={(e) => onChange(e.target.value)}
@@ -61,80 +145,116 @@ const CertInput = ({ label, value, onChange, placeholder }) => (
     </div>
 );
 
+// ==================================================================================
+// 🚀 PÁGINA PRINCIPAL
+// ==================================================================================
 export const IntegrationsPage = () => {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [generatingCsr, setGeneratingCsr] = useState(false);
-  
-  // MP State
-  const [mpConfig, setMpConfig] = useState({
-    accessToken: '',
-    userId: '', 
-    externalPosId: 'SUC001', 
-    isActive: false
-  });
-
-  // AFIP State
-  const [afipConfig, setAfipConfig] = useState({
-    cuit: '',
-    ptoVta: 1,
-    razonSocial: '', 
-    cert: '', 
-    key: '', 
-    condicion: 'MONOTRIBUTO', 
-    isActive: false
-  });
-
   const [status, setStatus] = useState('idle'); 
+  const [tutorialOpen, setTutorialOpen] = useState(null);
+
+  // Estados de Procesos
+  const [generatingCsr, setGeneratingCsr] = useState(false);
+  const [searchingPos, setSearchingPos] = useState(false);
+  const [posList, setPosList] = useState([]); // Lista de cajas encontradas
+
+  // Configs
+  const [mpConfig, setMpConfig] = useState({ accessToken: '', userId: '', externalPosId: '', isActive: false });
+  const [afipConfig, setAfipConfig] = useState({ cuit: '', ptoVta: 1, razonSocial: '', cert: '', key: '', condicion: 'MONOTRIBUTO', isActive: false });
 
   useEffect(() => { loadConfig(); }, []);
 
   const loadConfig = async () => {
     try {
-      // ✅ CORRECTO: Leemos de 'secrets'
-      const mpDoc = await getDoc(doc(db, 'secrets', 'mercadopago'));
+      // 🔒 Leemos de 'secrets' (Plural)
+      const mpDoc = await getDoc(doc(db, 'secrets', 'mercadopago')); 
       if (mpDoc.exists()) setMpConfig(mpDoc.data());
 
-      const afipDoc = await getDoc(doc(db, 'secrets', 'afip'));
+      const afipDoc = await getDoc(doc(db, 'secrets', 'afip')); 
       if (afipDoc.exists()) setAfipConfig(prev => ({...prev, ...afipDoc.data()}));
-
     } catch (error) { console.error(error); } finally { setLoading(false); }
   };
 
-  // 🔥 MAGIA: GENERAR CSR Y CLAVE PRIVADA AUTOMÁTICAMENTE
+  // --- 🪄 1. MAGIA MP: BUSCAR CAJAS (Adiós Scripts manuales) ---
+  const handleSearchPos = async () => {
+      if (!mpConfig.accessToken || mpConfig.accessToken.length < 20) {
+          return alert("⚠️ Primero pega el 'Access Token' de MercadoPago.");
+      }
+
+      setSearchingPos(true);
+      setPosList([]);
+
+      try {
+          // Llamamos a nuestro Backend
+          const response = await fetch(`${API_URL}/get-mp-stores`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ accessToken: mpConfig.accessToken })
+          });
+
+          const data = await response.json();
+
+          if (!response.ok) throw new Error(data.error || "Error al buscar cajas");
+
+          // 1. Autocompletar UserID
+          if (data.userId) {
+              setMpConfig(prev => ({ ...prev, userId: data.userId.toString() }));
+          }
+
+          // 2. Mostrar lista de cajas
+          if (data.cajas && data.cajas.length > 0) {
+              setPosList(data.cajas);
+              // Si solo hay una, la elegimos automáticamente
+              if (data.cajas.length === 1) {
+                  setMpConfig(prev => ({ ...prev, externalPosId: data.cajas[0].external_id }));
+                  alert(`✅ ¡Caja encontrada y seleccionada!\nNombre: ${data.cajas[0].name}`);
+              } else {
+                  alert(`✅ Encontramos ${data.cajas.length} cajas. Por favor selecciona una de la lista.`);
+              }
+          } else {
+              alert("⚠️ Tu cuenta funciona, pero NO tiene Cajas (Sucursales) creadas.\nVe al panel de MP -> Tu Negocio -> Sucursales y crea una.");
+          }
+
+      } catch (error) {
+          console.error(error);
+          alert("❌ Error buscando cajas: " + error.message);
+      } finally {
+          setSearchingPos(false);
+      }
+  };
+
+  // --- 🪄 2. MAGIA AFIP: GENERAR CLAVES ---
   const handleGenerateCSR = async () => {
-    if (!afipConfig.cuit || !afipConfig.razonSocial) {
-        return alert("⚠️ Por favor completa el CUIT y la Razón Social (Nombre del dueño) primero.");
-    }
-
+    if (!afipConfig.cuit || !afipConfig.razonSocial) return alert("⚠️ Escribe tu CUIT y Nombre arriba primero.");
     setGeneratingCsr(true);
-    
     try {
-        // 1. Crear par de claves RSA
+        // Generación asíncrona para no congelar la UI
         const keypair = await new Promise((resolve, reject) => {
-            forge.pki.rsa.generateKeyPair({ bits: 2048, workers: 2 }, (err, keypair) => {
-                if (err) reject(err); else resolve(keypair);
-            });
+            forge.pki.rsa.generateKeyPair({ bits: 2048, workers: 2 }, (err, k) => err ? reject(err) : resolve(k));
         });
-
-        // 2. Guardar la Clave Privada en el Estado
+        
         const privateKeyPem = forge.pki.privateKeyToPem(keypair.privateKey);
         
-        // 3. Crear el CSR
         const csr = forge.pki.createCertificationRequest();
         csr.publicKey = keypair.publicKey;
-        csr.setSubject([{ name: 'commonName', value: afipConfig.razonSocial }, { name: 'serialNumber', value: `CUIT ${afipConfig.cuit}` }, { name: 'countryName', value: 'AR' }, { name: 'organizationName', value: 'Noar POS SaaS' }]);
+        csr.setSubject([
+            { name: 'commonName', value: afipConfig.razonSocial }, 
+            { name: 'serialNumber', value: `CUIT ${afipConfig.cuit}` }, 
+            { name: 'countryName', value: 'AR' }, 
+            { name: 'organizationName', value: 'Noar POS' }
+        ]);
         csr.sign(keypair.privateKey);
         const csrPem = forge.pki.certificationRequestToPem(csr);
 
-        // 4. Actualizar estado y Guardar Clave Privada en DB Inmediatamente
+        // Guardamos la key en 'secrets' AUTOMÁTICAMENTE
         const newConfig = { ...afipConfig, key: privateKeyPem };
         setAfipConfig(newConfig);
         
-        // 🛡️ CORREGIDO: Guardar en 'secrets' (plural)
-        await setDoc(doc(db, 'secrets', 'afip'), { ...newConfig, updatedAt: new Date().toISOString() });
+        // Guardado inmediato en Firestore
+        await setDoc(doc(db, 'secrets', 'afip'), { ...newConfig, updatedAt: new Date().toISOString() }, { merge: true });
 
-        // 5. Descargar el archivo .CSR
+        // Descarga del archivo .csr
         const blob = new Blob([csrPem], { type: "text/plain;charset=utf-8" });
         const url = URL.createObjectURL(blob);
         const link = document.createElement('a');
@@ -142,159 +262,191 @@ export const IntegrationsPage = () => {
         link.download = `pedido_afip_${afipConfig.cuit}.csr`;
         link.click();
 
-        alert("✅ ¡Archivo de pedido generado!\n\n1. Se descargó un archivo .csr\n2. Súbelo a la web de AFIP.\n3. AFIP te dará un .crt (certificado).\n4. Pega el contenido del certificado aquí abajo.");
-
-    } catch (error) {
-        console.error("Error generando CSR:", error);
-        alert("Error al generar claves: " + error.message);
-    } finally {
-        setGeneratingCsr(false);
+        alert("✅ ¡LISTO!\n\n1. La Clave Privada se guardó sola en el sistema.\n2. Se descargó el archivo .CSR.\n3. Sube ese archivo a la web de AFIP para obtener tu certificado.\n4. ¡NO OLVIDES VINCULAR EL SERVICIO EN AFIP!");
+    } catch (error) { 
+        console.error(error);
+        alert("Error generando claves: " + error.message); 
+    } finally { 
+        setGeneratingCsr(false); 
     }
   };
 
   const handleSave = async (e) => {
     e.preventDefault();
     setSaving(true);
-    setStatus('idle');
-
     try {
-      // Validaciones MP
-      if (mpConfig.isActive && !mpConfig.accessToken.startsWith('APP_USR-')) throw new Error("Token MP inválido.");
+      if (mpConfig.isActive && !mpConfig.accessToken) throw new Error("Falta el Token de MP.");
+      if (mpConfig.isActive && !mpConfig.externalPosId) throw new Error("Falta seleccionar la Caja de MP.");
+      if (afipConfig.isActive && !afipConfig.key) throw new Error("Falta generar la clave de AFIP (Usa el botón Generar Pedido).");
 
-      // Validaciones AFIP
-      if (afipConfig.isActive) {
-          if (afipConfig.cuit.length !== 11) throw new Error("El CUIT debe tener 11 dígitos.");
-          if (!afipConfig.key) throw new Error("Falta la Clave Privada. Usa el botón 'Generar Pedido'.");
-          if (!afipConfig.cert.includes("BEGIN CERTIFICATE")) throw new Error("El Certificado es incorrecto o está vacío.");
-      }
-
-      // 🛡️ CORREGIDO: Guardar en 'secrets' (plural)
+      // Guardado seguro en 'secrets'
       await setDoc(doc(db, 'secrets', 'mercadopago'), { ...mpConfig, updatedAt: new Date().toISOString() });
-      await setDoc(doc(db, 'secrets', 'afip'), { ...afipConfig, updatedAt: new Date().toISOString() });
+      // Usamos merge para no sobrescribir la clave privada si ya estaba
+      await setDoc(doc(db, 'secrets', 'afip'), { ...afipConfig, updatedAt: new Date().toISOString() }, { merge: true });
 
       setStatus('success');
       setTimeout(() => setStatus('idle'), 3000);
-
-    } catch (error) {
-      alert("❌ " + error.message);
-      setStatus('error');
-    } finally {
-      setSaving(false);
-    }
+    } catch (error) { alert("❌ " + error.message); setStatus('error'); } finally { setSaving(false); }
   };
 
-  if (loading) return <div className="p-10 text-center animate-pulse text-sys-400">Cargando ecosistema...</div>;
+  if (loading) return <div className="p-10 text-center animate-pulse text-sys-400">Cargando...</div>;
 
   return (
-    <div className="max-w-5xl mx-auto space-y-8 pb-20">
-      <header>
-        <h2 className="text-2xl font-bold text-sys-900 flex items-center gap-2">
-          <Plug className="text-brand" /> Integraciones & Ecosistema
-        </h2>
-        <p className="text-sys-500">Configura Mercado Pago y AFIP en pocos pasos.</p>
+    <div className="max-w-5xl mx-auto space-y-8 pb-24 px-4 md:px-0">
+      
+      {/* HEADER */}
+      <header className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div>
+            <h2 className="text-2xl font-bold text-sys-900 flex items-center gap-2"><Plug className="text-brand" /> Configuración de Pagos</h2>
+            <p className="text-sys-500 text-sm">Conecta MercadoPago y AFIP fácilmente.</p>
+        </div>
+        <div className="bg-blue-50 text-blue-700 px-4 py-2 rounded-lg text-xs font-bold flex items-center gap-2 border border-blue-100 shadow-sm">
+            <Info size={16}/> Tip: Abre las webs de AFIP y MercadoPago en otra pestaña.
+        </div>
       </header>
 
       <form onSubmit={handleSave} className="grid grid-cols-1 lg:grid-cols-2 gap-8">
         
         {/* === MERCADO PAGO === */}
-        <Card className="border-t-4 border-t-[#009EE3] relative overflow-hidden h-fit">
-             <div className="absolute -right-4 -top-4 opacity-5 pointer-events-none"><CreditCard size={150} /></div>
-             <div className="flex justify-between items-start mb-6 relative z-10">
+        <Card className={cn("border-t-4 border-t-[#009EE3] relative overflow-hidden transition-all duration-300", mpConfig.isActive ? "shadow-lg" : "opacity-80 grayscale-[0.5]")}>
+             <div className="flex justify-between items-start mb-6">
                 <div className="flex items-center gap-3">
                     <div className="w-12 h-12 bg-[#009EE3]/10 rounded-xl flex items-center justify-center text-[#009EE3]"><CreditCard size={24} /></div>
                     <div><h3 className="font-bold text-lg text-sys-900">Mercado Pago</h3><p className="text-xs text-sys-500">Cobros QR y Point</p></div>
                 </div>
-                <div className="flex items-center gap-2 bg-sys-50 p-1 rounded-lg border border-sys-200">
-                    <button type="button" onClick={() => setMpConfig({...mpConfig, isActive: false})} className={cn("px-3 py-1 rounded text-xs font-bold transition-all", !mpConfig.isActive ? "bg-white shadow text-sys-700" : "text-sys-400 hover:text-sys-600")}>OFF</button>
-                    <button type="button" onClick={() => setMpConfig({...mpConfig, isActive: true})} className={cn("px-3 py-1 rounded text-xs font-bold transition-all", mpConfig.isActive ? "bg-[#009EE3] text-white shadow" : "text-sys-400 hover:text-sys-600")}>ON</button>
-                </div>
-             </div>
-             <div className={cn("space-y-4 transition-all", !mpConfig.isActive && "opacity-50 pointer-events-none grayscale")}>
-                <SecretInput label="Access Token" placeholder="APP_USR-..." value={mpConfig.accessToken} onChange={(val) => setMpConfig({...mpConfig, accessToken: val})} helpText={true} />
-                <div className="grid grid-cols-2 gap-4">
-                    <div>
-                        <label className="text-[11px] font-bold text-sys-500 uppercase tracking-wider ml-1 mb-1.5 block">User ID</label>
-                        <input type="text" className="w-full bg-sys-50 border border-sys-200 rounded-xl px-3 py-2.5 text-sm outline-none focus:border-[#009EE3]" placeholder="Ej: 12345678" value={mpConfig.userId} onChange={(e) => setMpConfig({...mpConfig, userId: e.target.value})} />
-                    </div>
-                    <div>
-                        <label className="text-[11px] font-bold text-sys-500 uppercase tracking-wider ml-1 mb-1.5 block">External POS</label>
-                        <input type="text" className="w-full bg-sys-50 border border-sys-200 rounded-xl px-3 py-2.5 text-sm outline-none focus:border-[#009EE3] font-mono uppercase" placeholder="SUC001" value={mpConfig.externalPosId} onChange={(e) => setMpConfig({...mpConfig, externalPosId: e.target.value})} />
+                <div className="flex items-center gap-2">
+                    <button type="button" onClick={() => setTutorialOpen('MP')} className="text-[#009EE3] hover:bg-[#009EE3]/10 px-3 py-1.5 rounded-full text-xs font-bold flex items-center gap-1 transition-colors border border-transparent hover:border-[#009EE3]/20">
+                        <HelpCircle size={14}/> Ayuda
+                    </button>
+                    <div className="flex bg-sys-100 p-1 rounded-lg">
+                        <button type="button" onClick={() => setMpConfig({...mpConfig, isActive: false})} className={cn("px-3 py-1 rounded text-xs font-bold", !mpConfig.isActive ? "bg-white shadow text-sys-800" : "text-sys-400")}>OFF</button>
+                        <button type="button" onClick={() => setMpConfig({...mpConfig, isActive: true})} className={cn("px-3 py-1 rounded text-xs font-bold", mpConfig.isActive ? "bg-[#009EE3] text-white shadow" : "text-sys-400")}>ON</button>
                     </div>
                 </div>
              </div>
+
+             {mpConfig.isActive && (
+                 <div className="space-y-4 animate-in slide-in-from-top-2 fade-in duration-300">
+                    
+                    {/* PASO 1: TOKEN */}
+                    <div className="flex gap-2 items-end">
+                        <div className="flex-1">
+                             <SecretInput label="1. Pega tu Access Token" placeholder="APP_USR-..." value={mpConfig.accessToken} onChange={(val) => setMpConfig({...mpConfig, accessToken: val})} />
+                        </div>
+                        <Button type="button" onClick={handleSearchPos} disabled={searchingPos} className="mb-4 h-[42px] bg-[#009EE3] hover:bg-[#007eb5] text-white px-3 shadow-md" title="Buscar Cajas Automáticamente">
+                            {searchingPos ? <Loader2 className="animate-spin"/> : <Search size={20} />}
+                        </Button>
+                    </div>
+
+                    {/* PASO 2: SELECCIONAR CAJA */}
+                    <div className="grid grid-cols-2 gap-4">
+                        <div>
+                            <label className="text-[11px] font-bold text-sys-500 uppercase tracking-wider ml-1 mb-1.5 block">User ID (Automático)</label>
+                            <input type="text" className="input-std bg-sys-50" readOnly placeholder="..." value={mpConfig.userId} />
+                        </div>
+                        
+                        <div>
+                            <label className="text-[11px] font-bold text-sys-500 uppercase tracking-wider ml-1 mb-1.5 block">2. Elige tu Caja</label>
+                            {posList.length > 0 ? (
+                                <select 
+                                    className="w-full p-2 bg-white border-2 border-[#009EE3] rounded-lg text-sm font-bold text-sys-800 outline-none h-[42px]"
+                                    value={mpConfig.externalPosId}
+                                    onChange={(e) => setMpConfig({...mpConfig, externalPosId: e.target.value})}
+                                >
+                                    <option value="">-- Seleccionar --</option>
+                                    {posList.map(pos => (
+                                        <option key={pos.id} value={pos.external_id}>
+                                            {pos.name}
+                                        </option>
+                                    ))}
+                                </select>
+                            ) : (
+                                <input 
+                                    type="text" 
+                                    className="input-std font-mono uppercase" 
+                                    placeholder="SUC001 (O usa la lupa)" 
+                                    value={mpConfig.externalPosId} 
+                                    onChange={(e) => setMpConfig({...mpConfig, externalPosId: e.target.value})} 
+                                />
+                            )}
+                        </div>
+                    </div>
+                 </div>
+             )}
         </Card>
 
         {/* === AFIP ARCA === */}
-        <Card className="border-t-4 border-t-[#2C3E50] relative overflow-hidden h-fit">
-             <div className="absolute -right-4 -top-4 opacity-5 pointer-events-none"><FileText size={150} /></div>
-             <div className="flex justify-between items-start mb-6 relative z-10">
+        <Card className={cn("border-t-4 border-t-[#2C3E50] relative overflow-hidden transition-all duration-300", afipConfig.isActive ? "shadow-lg" : "opacity-80 grayscale-[0.5]")}>
+             <div className="flex justify-between items-start mb-6">
                 <div className="flex items-center gap-3">
                     <div className="w-12 h-12 bg-[#2C3E50]/10 rounded-xl flex items-center justify-center text-[#2C3E50]"><ScrollText size={24} /></div>
                     <div><h3 className="font-bold text-lg text-sys-900">ARCA (AFIP)</h3><p className="text-xs text-sys-500">Facturación Electrónica</p></div>
                 </div>
-                <div className="flex items-center gap-2 bg-sys-50 p-1 rounded-lg border border-sys-200">
-                    <button type="button" onClick={() => setAfipConfig({...afipConfig, isActive: false})} className={cn("px-3 py-1 rounded text-xs font-bold transition-all", !afipConfig.isActive ? "bg-white shadow text-sys-700" : "text-sys-400 hover:text-sys-600")}>OFF</button>
-                    <button type="button" onClick={() => setAfipConfig({...afipConfig, isActive: true})} className={cn("px-3 py-1 rounded text-xs font-bold transition-all", afipConfig.isActive ? "bg-[#2C3E50] text-white shadow" : "text-sys-400 hover:text-sys-600")}>ON</button>
+                <div className="flex items-center gap-2">
+                    <button type="button" onClick={() => setTutorialOpen('AFIP')} className="text-[#2C3E50] hover:bg-[#2C3E50]/10 px-3 py-1.5 rounded-full text-xs font-bold flex items-center gap-1 transition-colors border border-transparent hover:border-[#2C3E50]/20">
+                        <HelpCircle size={14}/> Ayuda
+                    </button>
+                    <div className="flex bg-sys-100 p-1 rounded-lg">
+                        <button type="button" onClick={() => setAfipConfig({...afipConfig, isActive: false})} className={cn("px-3 py-1 rounded text-xs font-bold", !afipConfig.isActive ? "bg-white shadow text-sys-800" : "text-sys-400")}>OFF</button>
+                        <button type="button" onClick={() => setAfipConfig({...afipConfig, isActive: true})} className={cn("px-3 py-1 rounded text-xs font-bold", afipConfig.isActive ? "bg-[#2C3E50] text-white shadow" : "text-sys-400")}>ON</button>
+                    </div>
                 </div>
              </div>
 
-             <div className={cn("space-y-4 transition-all", !afipConfig.isActive && "opacity-50 pointer-events-none grayscale")}>
-                {/* Paso 1: Datos Base */}
-                <div className="grid grid-cols-2 gap-4">
-                    <div className="col-span-2">
-                        <label className="text-[11px] font-bold text-sys-500 uppercase tracking-wider ml-1 mb-1.5 block">Nombre / Razón Social</label>
-                        <input type="text" className="w-full bg-sys-50 border border-sys-200 rounded-xl px-3 py-2.5 text-sm outline-none focus:border-[#2C3E50]" placeholder="Ej: Juan Perez" value={afipConfig.razonSocial} onChange={(e) => setAfipConfig({...afipConfig, razonSocial: e.target.value})} />
+             {afipConfig.isActive && (
+                 <div className="space-y-6 animate-in slide-in-from-top-2 fade-in duration-300">
+                    <div className="grid grid-cols-2 gap-4">
+                        <div className="col-span-2">
+                            <label className="text-[11px] font-bold text-sys-500 uppercase tracking-wider ml-1 mb-1.5 block">Nombre del Titular</label>
+                            <input type="text" className="input-std" placeholder="Ej: Juan Perez" value={afipConfig.razonSocial} onChange={(e) => setAfipConfig({...afipConfig, razonSocial: e.target.value})} />
+                        </div>
+                        <div>
+                            <label className="text-[11px] font-bold text-sys-500 uppercase tracking-wider ml-1 mb-1.5 block">CUIT</label>
+                            <input type="text" className="input-std" placeholder="20112223339" maxLength={11} value={afipConfig.cuit} onChange={(e) => setAfipConfig({...afipConfig, cuit: e.target.value})} />
+                        </div>
+                        <div>
+                            <label className="text-[11px] font-bold text-sys-500 uppercase tracking-wider ml-1 mb-1.5 block">Pto. Venta</label>
+                            <input type="number" className="input-std" placeholder="1" value={afipConfig.ptoVta} onChange={(e) => setAfipConfig({...afipConfig, ptoVta: parseInt(e.target.value)})} />
+                        </div>
                     </div>
-                    <div>
-                        <label className="text-[11px] font-bold text-sys-500 uppercase tracking-wider ml-1 mb-1.5 block">CUIT (Sin guiones)</label>
-                        <input type="text" className="w-full bg-sys-50 border border-sys-200 rounded-xl px-3 py-2.5 text-sm outline-none focus:border-[#2C3E50]" placeholder="20123456789" maxLength={11} value={afipConfig.cuit} onChange={(e) => setAfipConfig({...afipConfig, cuit: e.target.value})} />
-                    </div>
-                    <div>
-                        <label className="text-[11px] font-bold text-sys-500 uppercase tracking-wider ml-1 mb-1.5 block">Punto de Venta</label>
-                        <input type="number" className="w-full bg-sys-50 border border-sys-200 rounded-xl px-3 py-2.5 text-sm outline-none focus:border-[#2C3E50]" placeholder="Ej: 5" value={afipConfig.ptoVta} onChange={(e) => setAfipConfig({...afipConfig, ptoVta: parseInt(e.target.value)})} />
-                    </div>
-                </div>
 
-                {/* Paso 2: Generador de Keys */}
-                <div className="bg-sys-50 p-4 rounded-xl border border-sys-200">
-                    <h4 className="font-bold text-xs text-sys-700 mb-2">1. Generación de Claves</h4>
-                    <p className="text-[10px] text-sys-500 mb-3">Esto generará tu Clave Privada (segura y oculta) y descargará el archivo de pedido (.csr) para subir a AFIP.</p>
-                    
-                    <div className="flex items-center justify-between">
-                         <div className="flex items-center gap-2">
-                             <div className={cn("w-2 h-2 rounded-full", afipConfig.key ? "bg-green-500" : "bg-red-400")}/>
-                             <span className="text-xs font-bold text-sys-600">{afipConfig.key ? "Clave Privada Generada" : "Falta Clave Privada"}</span>
-                         </div>
-                         <Button type="button" size="sm" onClick={handleGenerateCSR} disabled={generatingCsr || !afipConfig.cuit} className={cn("h-8 text-xs", afipConfig.key ? "bg-sys-200 text-sys-700 hover:bg-sys-300" : "bg-brand text-white")}>
-                             {generatingCsr ? "Generando..." : (afipConfig.key ? "Regenerar Pedido" : "Generar Pedido .CSR")} <Download size={14} className="ml-2"/>
-                         </Button>
+                    <div className="bg-sys-50 p-4 rounded-xl border border-sys-200">
+                        <div className="flex items-center justify-between">
+                             <div className="flex items-center gap-2">
+                                 <div className={cn("w-3 h-3 rounded-full", afipConfig.key ? "bg-green-500" : "bg-red-400")}/>
+                                 <span className="text-xs font-bold text-sys-600">{afipConfig.key ? "Claves Listas" : "Falta Clave"}</span>
+                             </div>
+                             <Button type="button" size="sm" onClick={handleGenerateCSR} disabled={generatingCsr || !afipConfig.cuit} className="h-8 text-xs bg-brand text-white">
+                                 {generatingCsr ? "Procesando..." : "Generar Pedido .CSR"} <Download size={14} className="ml-2"/>
+                             </Button>
+                        </div>
                     </div>
-                </div>
 
-                {/* Paso 3: Pegar Certificado */}
-                <div>
-                     <div className="flex justify-between items-end mb-1.5">
-                        <label className="text-[11px] font-bold text-sys-500 uppercase tracking-wider ml-1 block">2. Certificado Digital (.crt)</label>
-                        <a href="https://www.afip.gob.ar" target="_blank" rel="noreferrer" className="text-[10px] text-blue-600 hover:underline flex items-center gap-1">Ir a AFIP <ExternalLink size={10}/></a>
-                     </div>
-                     <CertInput label="" placeholder="Abre el archivo .crt con el bloc de notas y pega el contenido aquí..." value={afipConfig.cert} onChange={(val) => setAfipConfig({...afipConfig, cert: val})} />
-                </div>
-             </div>
+                    <CertInput label="Pegar Certificado (.crt)" placeholder="Pega aquí el contenido del archivo .crt..." value={afipConfig.cert} onChange={(val) => setAfipConfig({...afipConfig, cert: val})} />
+                 </div>
+             )}
         </Card>
 
-        {/* Footer flotante */}
-        <div className="lg:col-span-2 sticky bottom-6 z-20">
-            <Card className="p-4 flex items-center justify-between shadow-2xl border-sys-900/10 bg-sys-900 text-white">
-                <div className="flex items-center gap-3">
-                    {status === 'success' && <div className="text-green-400 font-bold flex items-center gap-2"><CheckCircle2/> Guardado OK</div>}
-                    {status === 'idle' && <p className="text-xs text-sys-300">Guarda los cambios tras pegar el certificado.</p>}
-                </div>
-                <Button type="submit" disabled={saving} className="bg-white text-sys-900 hover:bg-sys-100 font-black shadow-none border-none">
-                    {saving ? 'Guardando...' : 'Guardar Todo'} <Save size={18} className="ml-2"/>
+        {/* Footer */}
+        <div className="lg:col-span-2 sticky bottom-6 z-20 flex justify-end">
+            <Card className="p-2 pl-6 pr-2 flex items-center gap-6 shadow-2xl border-sys-900/10 bg-sys-900 text-white rounded-full">
+                <span className="text-xs">{status === 'success' ? '✅ Guardado' : 'No olvides guardar'}</span>
+                <Button type="submit" disabled={saving} className="bg-white text-sys-900 hover:bg-sys-100 font-black shadow-none border-none rounded-full px-6 h-10">
+                    {saving ? 'Guardando...' : 'Guardar'}
                 </Button>
             </Card>
         </div>
       </form>
+      <TutorialModal isOpen={!!tutorialOpen} onClose={() => setTutorialOpen(null)} type={tutorialOpen} />
+      
+      {/* Estilos locales */}
+      <style>{`
+        .input-std { width: 100%; background: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 0.75rem; padding: 0.6rem 0.9rem; font-size: 0.875rem; outline: none; transition: all 0.2s; color: #1E293B; font-weight: 500; }
+        .input-std:focus { border-color: #0F172A; box-shadow: 0 0 0 3px rgba(15,23,42,0.05); background: white; }
+        .custom-scrollbar::-webkit-scrollbar { width: 6px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 10px; }
+      `}</style>
     </div>
   );
 };

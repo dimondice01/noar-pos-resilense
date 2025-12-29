@@ -4,17 +4,17 @@ import { auth, db } from '../../../database/firebase';
 import { getDB } from '../../../database/db'; // Conexión a IndexedDB
 
 // 🌍 URL de Producción (Cloud Functions)
-// TODO: Cambiar esto por tu URL real de Firebase Functions cuando despliegues
 const API_URL = 'https://us-central1-salvadorpos1.cloudfunctions.net/api';
 
 export const authService = {
   
   /**
    * 🔐 LOGIN BLINDADO (NUBE -> LOCAL)
+   * Ahora soporta Multi-Tenant (SaaS)
    */
   async login(email, password) {
     
-    // 1. ATAJO OFFLINE: Si el navegador ya sabe que no hay red, no perdemos tiempo.
+    // 1. ATAJO OFFLINE
     if (!navigator.onLine) {
         console.log("🌐 Navegador Offline. Iniciando modo local directo...");
         return await this._tryLocalLogin(email, password);
@@ -25,38 +25,52 @@ export const authService = {
       const userCredential = await signInWithEmailAndPassword(auth, email, password);
       const uid = userCredential.user.uid;
 
-      // Recuperar Rol de Firestore
+      // Recuperar Rol y EMPRESA de Firestore
       const userDocRef = doc(db, 'users', uid);
+      
+      // Estructura base
       let userData = {
         uid,
         email: userCredential.user.email,
         name: userCredential.user.displayName || 'Usuario',
-        role: 'CAJERO', // Rol por defecto
+        role: 'CAJERO', 
+        companyId: null, // 🏢 NUEVO: ID de la empresa
         mode: 'ONLINE'
       };
 
       try {
         const userDoc = await getDoc(userDocRef);
+        
         if (userDoc.exists()) {
           const data = userDoc.data();
-          userData.role = data.role;
-          userData.name = data.name;
+          userData.role = data.role || 'CAJERO';
+          userData.name = data.name || userData.name;
+          
+          // 🏢 ASIGNACIÓN DE EMPRESA (CRÍTICO PARA SAAS)
+          userData.companyId = data.companyId; 
+
         } else if (email.toLowerCase().includes('admin')) {
-          // ⚠️ Backdoor temporal para primer deploy (Quitar en versión final)
+          // Backdoor temporal para admin global (si fuera necesario)
           userData.role = 'ADMIN';
+          userData.companyId = 'master_admin'; // Ojo con esto en prod
         }
+
+        if (!userData.companyId) {
+             console.warn("⚠️ Usuario sin empresa asignada. Posible error de migración.");
+        }
+
       } catch (firestoreError) {
-        console.warn("⚠️ Firestore no respondió (Offline parcial), usando datos básicos.");
+        console.warn("⚠️ Firestore no respondió (Offline parcial), usando datos locales.");
         // Intentamos enriquecer con datos locales si existen
         const localData = await this._getLocalUser(email);
         if (localData) {
             userData.role = localData.role;
             userData.name = localData.name;
+            userData.companyId = localData.companyId; // Recuperamos la empresa del caché
         }
       }
 
-      // 🔥 AUTO-BACKUP: Cada login exitoso actualiza la credencial local
-      // Guardamos la contraseña para poder entrar offline mañana
+      // 🔥 AUTO-BACKUP: Guardamos TODO, incluido el companyId
       await this._saveUserLocally({ ...userData, password }); 
 
       return userData;
@@ -65,8 +79,6 @@ export const authService = {
       console.error("❌ Error Auth Nube:", error.code || error);
 
       // 3. FALLBACK INTELIGENTE
-      // Si el error es de credenciales, avisamos al usuario.
-      // Para CUALQUIER OTRO ERROR (Red, Error 8, Timeout, etc), intentamos local.
       const invalidCredsErrors = [
         'auth/wrong-password', 
         'auth/user-not-found', 
@@ -75,7 +87,6 @@ export const authService = {
         'auth/too-many-requests'
       ];
       
-      // Si es error técnico (no de contraseña incorrecta), probamos local
       if (!invalidCredsErrors.includes(error.code)) {
         console.warn("⚠️ Falla técnica en Nube. Activando Protocolo de Rescate Local...");
         return await this._tryLocalLogin(email, password);
@@ -87,12 +98,13 @@ export const authService = {
 
   async logout() {
     await signOut(auth);
-    // Opcional: Limpiar credenciales locales al salir para mayor seguridad en computadoras públicas
-    // await this._clearLocalUser(); 
+    // IMPORTANTE: En SaaS, al hacer logout, podrías querer limpiar
+    // la base de datos local para que otro usuario no vea datos de la empresa anterior.
+    // await this._clearLocalData(); // (Implementar si se desea seguridad estricta)
   },
 
   async createUser(newUser) {
-    // 1. Guardar SIEMPRE en Local primero (Backup inmediato)
+    // Guardar local primero
     await this._saveUserLocally(newUser);
     
     if (navigator.onLine) {
@@ -106,6 +118,7 @@ export const authService = {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${token}` 
           },
+          // Enviamos companyId al backend para que lo vincule
           body: JSON.stringify(newUser)
         });
 
@@ -115,7 +128,6 @@ export const authService = {
         return await response.json();
       } catch (error) {
         console.error("API Error:", error);
-        // Retornamos éxito local aunque falle la nube
         return { success: true, localOnly: true };
       }
     } else {
@@ -129,8 +141,6 @@ export const authService = {
 
   async _saveUserLocally(userData) {
     const db = await getDB();
-    // Simple ofuscación para que no se lea a simple vista en DevTools
-    // (No es encriptación real, pero evita curiosos)
     const safePassword = btoa(userData.password); 
 
     await db.put('users', {
@@ -138,6 +148,7 @@ export const authService = {
       password: safePassword, 
       name: userData.name,
       role: userData.role,
+      companyId: userData.companyId, // 🏢 Guardamos la empresa en local
       updatedAt: new Date()
     });
   },
@@ -151,20 +162,20 @@ export const authService = {
     const localUser = await this._getLocalUser(email);
     
     if (!localUser) {
-        throw new Error("Usuario no encontrado en caché local. Se requiere conexión para el primer acceso.");
+        throw new Error("Usuario no encontrado en caché local.");
     }
 
-    // Decodificar y comparar
     const storedPassword = atob(localUser.password);
 
     if (storedPassword === password) {
-       console.log("✅ Acceso Local Concedido:", localUser.name);
+       console.log("✅ Acceso Local Concedido:", localUser.name, "| Empresa:", localUser.companyId);
        return {
-          uid: 'local_' + Date.now(),
-          email: localUser.email,
-          name: localUser.name,
-          role: localUser.role,
-          mode: 'OFFLINE'
+         uid: 'local_' + Date.now(),
+         email: localUser.email,
+         name: localUser.name,
+         role: localUser.role,
+         companyId: localUser.companyId, // 🏢 Retornamos la empresa offline
+         mode: 'OFFLINE'
        };
     }
     throw new Error("Contraseña incorrecta (Verificación Local).");

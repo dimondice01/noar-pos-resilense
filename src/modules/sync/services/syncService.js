@@ -4,41 +4,51 @@ import {
   doc, 
   getDocs, 
   onSnapshot, 
-  setDoc 
+  setDoc,
+  query
 } from 'firebase/firestore'; 
 import { db } from '../../../database/firebase'; 
 import { salesRepository } from '../../sales/repositories/salesRepository';
 import { productRepository } from '../../inventory/repositories/productRepository';
 import { getDB } from '../../../database/db'; 
+import { useAuthStore } from '../../auth/store/useAuthStore'; // 🔑 IMPORTANTE: Para saber quién está logueado
 
 export const syncService = {
   
+  // Array para guardar las suscripciones y poder cancelarlas al salir
+  _unsubscribes: [],
+
   // =================================================================
-  // 🛠️ HELPER: SANITIZACIÓN PROFUNDA (EL FIX CLAVE)
+  // 🛠️ HELPER: SANITIZACIÓN PROFUNDA
   // =================================================================
-  // Recorre recursivamente el objeto y convierte undefined en null
   _deepSanitize(obj) {
     if (obj === undefined) return null;
     if (obj === null) return null;
     
     if (typeof obj === 'object') {
-      // Si es fecha, la pasamos a ISO String para evitar problemas
       if (obj instanceof Date) return obj.toISOString();
-      
-      // Si es array, limpiamos cada elemento
       if (Array.isArray(obj)) {
         return obj.map(v => this._deepSanitize(v));
       }
-      
-      // Si es objeto, limpiamos cada propiedad
       const res = {};
       for (const key in obj) {
         res[key] = this._deepSanitize(obj[key]);
       }
       return res;
     }
-    
     return obj;
+  },
+
+  // =================================================================
+  // 🛠️ HELPER: OBTENER ID EMPRESA
+  // =================================================================
+  _getCompanyId() {
+    const { user } = useAuthStore.getState();
+    if (!user || !user.companyId) {
+        console.warn("⛔ SyncService: No hay empresa asignada. Abortando operación en nube.");
+        return null;
+    }
+    return user.companyId;
   },
 
   // =================================================================
@@ -46,10 +56,19 @@ export const syncService = {
   // =================================================================
   
   startRealTimeListeners() {
-    console.log("📡 Conectando antena de sincronización en tiempo real...");
+    // 1. Limpiar listeners anteriores para evitar duplicados
+    this.stopListeners();
 
-    // A. LISTENER DE CONFIGURACIÓN
-    onSnapshot(collection(db, 'config'), async (snapshot) => {
+    const companyId = this._getCompanyId();
+    if (!companyId) return;
+
+    console.log(`📡 Conectando antena de sincronización para: ${companyId}`);
+
+    // A. LISTENER DE CONFIGURACIÓN (Aislado por empresa)
+    // Ruta: companies/{id}/config
+    const configQuery = query(collection(db, 'companies', companyId, 'config'));
+    
+    const unsubConfig = onSnapshot(configQuery, async (snapshot) => {
       const localDb = await getDB();
       const tx = localDb.transaction('config', 'readwrite');
       
@@ -66,10 +85,15 @@ export const syncService = {
       });
       await tx.done;
       if(changes > 0) console.log(`⚙️ Configuración sincronizada (${changes} cambios).`);
-    });
+    }, (error) => console.error("Error listener config:", error));
 
-    // B. LISTENER DE PRODUCTOS
-    onSnapshot(collection(db, 'products'), async (snapshot) => {
+    this._unsubscribes.push(unsubConfig);
+
+    // B. LISTENER DE PRODUCTOS (Aislado por empresa)
+    // Ruta: companies/{id}/products
+    const productsQuery = query(collection(db, 'companies', companyId, 'products'));
+
+    const unsubProducts = onSnapshot(productsQuery, async (snapshot) => {
       const localDb = await getDB();
       const tx = localDb.transaction('products', 'readwrite');
       
@@ -91,7 +115,17 @@ export const syncService = {
       });
       await tx.done;
       if(pChanges > 0) console.log(`📦 Inventario actualizado en vivo (${pChanges} productos).`);
-    });
+    }, (error) => console.error("Error listener productos:", error));
+
+    this._unsubscribes.push(unsubProducts);
+  },
+
+  stopListeners() {
+      if (this._unsubscribes.length > 0) {
+          this._unsubscribes.forEach(unsub => unsub());
+          this._unsubscribes = [];
+          console.log("🔌 Listeners desconectados.");
+      }
   },
 
   // =================================================================
@@ -99,8 +133,12 @@ export const syncService = {
   // =================================================================
 
   async pushGlobalConfig(key, value) {
+    const companyId = this._getCompanyId();
+    if (!companyId) return false;
+
     try {
-      await setDoc(doc(db, 'config', key), { 
+      // Ruta: companies/{id}/config/{key}
+      await setDoc(doc(db, 'companies', companyId, 'config', key), { 
         value, 
         updatedAt: new Date().toISOString() 
       });
@@ -111,6 +149,7 @@ export const syncService = {
       return true;
     } catch (error) {
       console.error("Error subiendo configuración:", error);
+      // Fallback local
       const localDb = await getDB();
       await localDb.put('config', { key, value });
       return false;
@@ -126,38 +165,36 @@ export const syncService = {
   },
 
   async syncAll() { 
-    if (!navigator.onLine) return { sales: 0, products: 0, downloaded: 0 };
+    if (!navigator.onLine) return { sales: 0, products: 0 };
+
+    // Verificamos empresa antes de intentar subir nada
+    const companyId = this._getCompanyId();
+    if (!companyId) return { sales: 0, products: 0 };
 
     console.log("🔄 SYNC: Ejecutando ciclo de subida...");
     
     try {
-        // 1. Subir Ventas
-        const salesResult = await this.syncPendingSales();
-        
-        // 2. Subir Productos
-        const productsResult = await this.syncPendingProducts();
+        const salesResult = await this.syncPendingSales(companyId);
+        const productsResult = await this.syncPendingProducts(companyId);
 
-        let downloadResult = 0;
-        
         if (salesResult.synced > 0 || productsResult.synced > 0) {
             console.log(`✅ SYNC EXITOSO: 📤 ${salesResult.synced} Ventas | 📤 ${productsResult.synced} Productos`);
         }
         
         return { 
           sales: salesResult.synced, 
-          products: productsResult.synced,
-          downloaded: downloadResult
+          products: productsResult.synced
         };
     } catch (error) {
         console.error("❌ SYNC ERROR CRÍTICO:", error);
-        return { sales: 0, products: 0, downloaded: 0 };
+        return { sales: 0, products: 0 };
     }
   },
 
   /**
-   * 📤 SYNC VENTAS (Con Deep Sanitize)
+   * 📤 SYNC VENTAS
    */
-  async syncPendingSales() {
+  async syncPendingSales(companyId) {
     const localDb = await getDB();
     const allSales = await salesRepository.getTodaySales(); 
     
@@ -167,22 +204,20 @@ export const syncService = {
 
     if (pendingSales.length === 0) return { synced: 0 };
 
-    console.log(`📤 Subiendo ${pendingSales.length} ventas...`);
+    console.log(`📤 Subiendo ${pendingSales.length} ventas a ${companyId}...`);
     
     const chunks = this.chunkArray(pendingSales, 450);
     let totalSynced = 0;
 
     for (const batchSales of chunks) {
         const batch = writeBatch(db);
-        const salesCollection = collection(db, 'sales');
+        // Ruta: companies/{id}/sales
+        const salesCollection = collection(db, 'companies', companyId, 'sales');
         const syncedIds = [];
 
         for (const sale of batchSales) {
             const docRef = doc(salesCollection); 
-            // Separamos propiedades de control local
             const { localId, syncStatus, ...cleanSale } = sale;
-            
-            // 👇 AQUI APLICAMOS LA LIMPIEZA PROFUNDA
             const finalSale = this._deepSanitize(cleanSale);
             
             batch.set(docRef, {
@@ -190,7 +225,7 @@ export const syncService = {
                 date: new Date(cleanSale.date).toISOString(), 
                 firestoreId: docRef.id,
                 syncedAt: new Date().toISOString(),
-                origin: 'POS_LOCAL_01' 
+                origin: 'POS_WEB' 
             });
             syncedIds.push(sale.localId);
         }
@@ -214,31 +249,28 @@ export const syncService = {
   },
 
   /**
-   * 📦 SYNC PRODUCTOS (Con Deep Sanitize)
+   * 📦 SYNC PRODUCTOS
    */
-  async syncPendingProducts() {
+  async syncPendingProducts(companyId) {
     const pendingProducts = await productRepository.getPendingSync();
 
     if (pendingProducts.length === 0) return { synced: 0 };
 
-    console.log(`📦 Subiendo ${pendingProducts.length} cambios de inventario...`);
+    console.log(`📦 Subiendo ${pendingProducts.length} cambios de inventario a ${companyId}...`);
     
     const chunks = this.chunkArray(pendingProducts, 450);
     let totalSynced = 0;
-    let chunkIndex = 1;
 
     for (const chunk of chunks) {
-        console.log(`   cloud_upload: Procesando lote ${chunkIndex}/${chunks.length}...`);
-        
         const batch = writeBatch(db);
-        const productsCollection = collection(db, 'products');
+        // Ruta: companies/{id}/products
+        const productsCollection = collection(db, 'companies', companyId, 'products');
         const syncedIds = [];
 
         for (const product of chunk) {
+            // Usamos el mismo ID local para el documento en Firestore
             const docRef = doc(productsCollection, product.id);
             const { syncStatus, ...dataToUpload } = product;
-
-            // 👇 AQUI TAMBIÉN APLICAMOS LA LIMPIEZA PROFUNDA
             const cleanData = this._deepSanitize(dataToUpload);
 
             const payload = product.deleted 
@@ -251,38 +283,16 @@ export const syncService = {
 
         await batch.commit();
         await productRepository.markAsSynced(syncedIds);
-
         totalSynced += chunk.length;
-        chunkIndex++;
     }
-
     
     return { synced: totalSynced };
   },
 
-  async downloadProductsFromCloud() {
-    const productsCollection = collection(db, 'products');
-    const snapshot = await getDocs(productsCollection);
-    
-    if (snapshot.empty) return 0;
-
-    const cloudProducts = snapshot.docs.map(doc => {
-        const data = doc.data();
-        return {
-            id: doc.id,
-            ...data,
-            syncStatus: 'synced',
-        };
-    });
-
-    await productRepository.saveAll(cloudProducts);
-    return cloudProducts.length;
-  },
-
-  // 🛠️ HELPER PARA DIVIDIR ARRAYS
+  // 🛠️ HELPER ARRAY
   chunkArray(myArray, chunk_size){
       var results = [];
-      const arrayCopy = [...myArray]; // Copia para no mutar el original
+      const arrayCopy = [...myArray];
       while (arrayCopy.length) {
           results.push(arrayCopy.splice(0, chunk_size));
       }

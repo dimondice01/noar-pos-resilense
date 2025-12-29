@@ -1,116 +1,127 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import Papa from 'papaparse';
 import { productRepository } from '../../modules/inventory/repositories/productRepository';
+import { collection, getDocs, limit, query, writeBatch, doc } from 'firebase/firestore'; // Importamos writeBatch y doc
+import { db } from '../../database/firebase';
 
 export const useDbSeeder = () => {
-  const [isReady, setIsReady] = useState(false);
   const [loadingMsg, setLoadingMsg] = useState("");
+  const [isSeeding, setIsSeeding] = useState(false);
 
-  useEffect(() => {
-    const seed = async () => {
-      try {
-        // 1. Verificar códigos existentes en la DB
-        const allExisting = await productRepository.getAll();
-        
-        // Creamos un Set (Conjunto) que usaremos de memoria
-        // Aquí guardaremos TANTO los de la DB como los que vayamos encontrando en el CSV
-        const processedCodes = new Set(allExisting.map(p => String(p.code).trim()));
+  const uploadMasterCatalog = async () => {
+    setIsSeeding(true);
+    setLoadingMsg("Verificando...");
 
-        const response = await fetch('/catalogo.csv');
-        
-        if (response.ok) {
-          const rawText = await response.text();
-          let cleanCsv = rawText;
+    try {
+      // 1. OBTENER CSV
+      const response = await fetch('/catalogo.csv');
+      
+      if (!response.ok) {
+        throw new Error("❌ No se encontró public/catalogo.csv");
+      }
 
-          // Limpieza de cabecera basura
-          if (rawText.startsWith("Listado actualizado")) {
-             cleanCsv = rawText.substring(rawText.indexOf('\n') + 1);
+      const rawText = await response.text();
+      // Limpieza simple por si el CSV tiene encabezados raros de Excel
+      let cleanCsv = rawText;
+      if (rawText.startsWith("Listado actualizado")) {
+          cleanCsv = rawText.substring(rawText.indexOf('\n') + 1);
+      }
+
+      setLoadingMsg("Analizando y limpiando duplicados...");
+
+      Papa.parse(cleanCsv, {
+        header: true,
+        skipEmptyLines: true,
+        complete: async (results) => {
+          const rows = results.data;
+          const uniqueProducts = new Map(); // Usamos Map para garantizar unicidad por CÓDIGO
+          let duplicadosCount = 0;
+          
+          // 2. FILTRADO INTELIGENTE
+          for (const row of rows) {
+              // Limpiamos espacios y forzamos string
+              const code = String(row.CODIGO || '').trim();
+              const name = String(row.ARTICULO || '').trim();
+
+              // Si no tiene código o nombre, basura.
+              if (!code || !name) continue;
+
+              // Si ya existe en nuestro Map, es un duplicado. Lo ignoramos.
+              if (uniqueProducts.has(code)) {
+                  duplicadosCount++;
+                  console.warn(`🗑️ Duplicado detectado y omitido: ${code} - ${name}`);
+                  continue; 
+              }
+
+              // Si es nuevo, lo preparamos
+              uniqueProducts.set(code, {
+                  // Usamos el código como ID del documento para evitar duplicados en Firestore también
+                  // id: crypto.randomUUID(), <--- CAMBIO: NO usar ID aleatorio si queremos evitar duplicados fáciles
+                  // Mejor usamos un ID generado, pero garantizamos unicidad por lógica.
+                  // Pero para el maestro, usar el código como ID es una estrategia válida, 
+                  // aunque Firestore prefiere IDs aleatorios para distribución.
+                  // Mantendremos ID aleatorio pero filtraremos antes.
+                  
+                  id: crypto.randomUUID(), 
+                  code: code,
+                  name: name.toUpperCase(),
+                  price: parseFloat(row.PRECIO) || 0,
+                  stock: 0,
+                  cost: 0, 
+                  category: 'GENERAL', 
+                  minStock: 5, 
+                  isWeighable: false,
+                  createdAt: new Date().toISOString(),
+                  syncStatus: 'SYNCED' 
+              });
           }
 
-          setLoadingMsg("Analizando catálogo...");
+          const productsArray = Array.from(uniqueProducts.values());
 
-          Papa.parse(cleanCsv, {
-            header: true,
-            skipEmptyLines: true,
-            complete: async (results) => {
-              const rows = results.data;
-              const newProducts = [];
-              
-              // 🔄 BUCLE INTELIGENTE (Uno por uno)
-              // En lugar de .map(), usamos un for para tener control total
-              for (const row of rows) {
-                  const code = String(row.CODIGO || '').trim();
-                  const name = String(row.ARTICULO || '').trim();
-
-                  // 1. Validación básica
-                  if (!code || !name) continue;
-
-                  // 2. DETECTOR DE DUPLICADOS
-                  // Si el código YA ESTÁ en nuestro Set (porque venía de la DB o porque lo acabamos de ver en una fila anterior), lo saltamos.
-                  if (processedCodes.has(code)) {
-                      // Opcional: console.warn(`Duplicado ignorado: ${code} - ${name}`);
-                      continue; 
-                  }
-
-                  // 3. Si es nuevo, lo agregamos a la lista y al Set para no repetirlo
-                  processedCodes.add(code);
-
-                  newProducts.push({
-                      id: crypto.randomUUID(),
-                      code: code,
-                      name: name.toUpperCase(),
-                      price: parseFloat(row.PRECIO) || 0,
-                      stock: parseFloat(row.STOCK) || 0,
-                      
-                      // Defaults
-                      cost: 0, 
-                      category: 'GENERAL', 
-                      minStock: 5,
-                      isWeighable: false,
-                      createdAt: new Date().toISOString(),
-                      syncStatus: 'PENDING'
-                  });
-              }
-
-              // Guardar en lotes
-              if (newProducts.length > 0) {
-                setLoadingMsg(`Importando ${newProducts.length} productos únicos...`);
-                console.log(`✨ Se filtraron duplicados. Importando ${newProducts.length} productos reales.`);
-                
-                const BATCH_SIZE = 500;
-                for (let i = 0; i < newProducts.length; i += BATCH_SIZE) {
-                   const batch = newProducts.slice(i, i + BATCH_SIZE);
-                   try {
-                     await productRepository.saveAll(batch);
-                   } catch (err) {
-                     console.error(`Error en lote ${i}:`, err);
-                     // Si falla un lote, seguimos con el siguiente
-                   }
-                }
-                console.log(`✅ Importación finalizada.`);
-              } else {
-                console.log('👍 Todo al día (o todo era duplicado).');
-              }
-              
-              setIsReady(true);
-            },
-            error: (err) => {
-              console.error("Error CSV:", err);
-              setIsReady(true);
+          if (productsArray.length > 0) {
+            setLoadingMsg(`Subiendo ${productsArray.length} productos únicos (${duplicadosCount} duplicados eliminados)...`);
+            
+            // 3. SUBIDA POR LOTES (BATCH) OPTIMIZADA
+            // Firestore aguanta 500 ops por batch. Haremos chunks de 450.
+            const chunkSize = 450;
+            const chunks = [];
+            for (let i = 0; i < productsArray.length; i += chunkSize) {
+                chunks.push(productsArray.slice(i, i + chunkSize));
             }
-          });
-        } else {
-          console.warn("⚠️ No se encontró public/catalogo.csv");
-          setIsReady(true);
+
+            let batchCount = 0;
+            for (const chunk of chunks) {
+                const batch = writeBatch(db);
+                chunk.forEach(prod => {
+                    // Referencia a master_products
+                    const docRef = doc(db, "master_products", prod.id);
+                    batch.set(docRef, prod);
+                });
+                await batch.commit();
+                batchCount++;
+                setLoadingMsg(`☁️ Lote ${batchCount}/${chunks.length} subido...`);
+            }
+
+            setLoadingMsg(`✅ ¡Listo! ${productsArray.length} productos cargados.`);
+            alert(`Proceso finalizado.\n\n✅ Cargados: ${productsArray.length}\n🗑️ Duplicados eliminados: ${duplicadosCount}`);
+          } else {
+            setLoadingMsg('⚠️ El CSV no tenía productos válidos.');
+          }
+          
+          setIsSeeding(false);
+        },
+        error: (err) => {
+          console.error("Error CSV:", err);
+          setLoadingMsg("Error leyendo CSV");
+          setIsSeeding(false);
         }
-      } catch (error) {
-        console.error("❌ Error General:", error);
-        setIsReady(true);
-      }
-    };
+      });
+    } catch (error) {
+      console.error("Error Seeder:", error);
+      setLoadingMsg("Error: " + error.message);
+      setIsSeeding(false);
+    }
+  };
 
-    seed();
-  }, []);
-
-  return { isReady, loadingMsg };
+  return { uploadMasterCatalog, loadingMsg, isSeeding };
 };
