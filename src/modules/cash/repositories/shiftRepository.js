@@ -1,16 +1,35 @@
 import { getDB } from '../../../database/db';
 import { db } from '../../../database/firebase';
-import { doc, setDoc, updateDoc } from 'firebase/firestore';
+import { doc, setDoc } from 'firebase/firestore';
+import { useAuthStore } from '../../auth/store/useAuthStore'; // 🔑 IMPORTANTE: Para el aislamiento
 
 // Helper para IDs consistentes
 const generateId = (prefix) => `${prefix}_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
 
-// Helper privado para subir a nube sin bloquear
-const syncToCloud = async (collection, data) => {
+// ==========================================
+// ☁️ HELPER: SYNC AISLADO (SaaS)
+// ==========================================
+const syncToCloud = async (collectionName, data) => {
   if (!navigator.onLine) return;
+
+  // 1. OBTENER ID EMPRESA
+  const { user } = useAuthStore.getState();
+
+  // 🛡️ SEGURIDAD: Si no hay empresa, abortamos para no ensuciar la raíz
+  if (!user || !user.companyId) {
+      console.warn(`⛔ Sync Turnos: Intento de escritura sin empresa asignada.`);
+      return;
+  }
+
   try {
     const { syncStatus, ...cloudData } = data;
-    await setDoc(doc(db, collection, data.id), {
+
+    // 2. CONSTRUIR RUTA PRIVADA
+    // companies/empresa_123/shifts
+    // companies/empresa_123/cash_movements
+    const path = `companies/${user.companyId}/${collectionName}`;
+
+    await setDoc(doc(db, path, data.id), {
       ...cloudData,
       firestoreId: data.id,
       syncedAt: new Date().toISOString()
@@ -18,9 +37,10 @@ const syncToCloud = async (collection, data) => {
     
     // Marcar local como synced
     const dbLocal = await getDB();
-    await dbLocal.put(collection, { ...data, syncStatus: 'SYNCED' });
+    await dbLocal.put(collectionName, { ...data, syncStatus: 'SYNCED' });
+
   } catch (e) {
-    console.warn(`⚠️ Error sincronizando ${collection}:`, e);
+    console.warn(`⚠️ Error sincronizando ${collectionName} (Nube):`, e);
   }
 };
 
@@ -51,7 +71,7 @@ export const shiftRepository = {
   },
 
   /**
-   * Abre un nuevo turno de caja (Sync Local + Nube)
+   * Abre un nuevo turno de caja (Sync Local + Nube Aislada)
    */
   async openShift(userId, initialAmount) {
     const dbLocal = await getDB();
@@ -92,7 +112,7 @@ export const shiftRepository = {
     await tx.objectStore('cash_movements').put(openingMovement);
     await tx.done;
 
-    // 2. Subir a Nube (Background)
+    // 2. Subir a Nube (Background - Ruta Aislada)
     syncToCloud('shifts', newShift);
     syncToCloud('cash_movements', openingMovement);
 
@@ -100,7 +120,7 @@ export const shiftRepository = {
   },
 
   /**
-   * Cierre de Caja (Sync Local + Nube)
+   * Cierre de Caja (Sync Local + Nube Aislada)
    */
   async closeShift(shiftId, declaredAmount, stats) {
     const dbLocal = await getDB();
@@ -124,7 +144,7 @@ export const shiftRepository = {
     // 1. Actualizar Local
     await dbLocal.put('shifts', closedShift);
 
-    // 2. Subir a Nube
+    // 2. Subir a Nube (Ruta Aislada)
     syncToCloud('shifts', closedShift);
 
     return closedShift;
@@ -135,7 +155,7 @@ export const shiftRepository = {
   // ==========================================
 
   /**
-   * Registra un movimiento manual (Sync Local + Nube)
+   * Registra un movimiento manual (Sync Local + Nube Aislada)
    */
   async addMovement(shiftId, type, amount, description, userId) {
     if (amount <= 0) throw new Error("El monto debe ser positivo");
@@ -157,7 +177,7 @@ export const shiftRepository = {
     // 1. Guardar Local
     await dbLocal.put('cash_movements', movement);
 
-    // 2. Subir a Nube
+    // 2. Subir a Nube (Ruta Aislada)
     syncToCloud('cash_movements', movement);
 
     return movement;
@@ -168,6 +188,7 @@ export const shiftRepository = {
    */
   async getShiftMovements(shiftId) {
     const dbLocal = await getDB();
+    // IndexedDB ya está aislada, así que leemos normal
     const movements = await dbLocal.getAllFromIndex('cash_movements', 'shiftId', shiftId);
     return movements.sort((a, b) => new Date(b.date) - new Date(a.date));
   }

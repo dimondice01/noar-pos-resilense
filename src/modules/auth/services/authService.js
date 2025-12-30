@@ -1,16 +1,20 @@
-import { signInWithEmailAndPassword, signOut } from 'firebase/auth';
+import { 
+    signInWithEmailAndPassword, 
+    signOut, 
+    onAuthStateChanged, // Importamos esto de firebase/auth
+    createUserWithEmailAndPassword
+} from 'firebase/auth';
 import { doc, getDoc } from 'firebase/firestore';
 import { auth, db } from '../../../database/firebase';
-import { getDB } from '../../../database/db'; // Conexión a IndexedDB
+import { getDB } from '../../../database/db'; 
 
 // 🌍 URL de Producción (Cloud Functions)
-const API_URL = 'https://us-central1-salvadorpos1.cloudfunctions.net/api';
+const API_URL = import.meta.env.VITE_API_URL || import.meta.env.VITE_API_URL;
 
 export const authService = {
   
   /**
    * 🔐 LOGIN BLINDADO (NUBE -> LOCAL)
-   * Ahora soporta Multi-Tenant (SaaS)
    */
   async login(email, password) {
     
@@ -34,7 +38,7 @@ export const authService = {
         email: userCredential.user.email,
         name: userCredential.user.displayName || 'Usuario',
         role: 'CAJERO', 
-        companyId: null, // 🏢 NUEVO: ID de la empresa
+        companyId: null, 
         mode: 'ONLINE'
       };
 
@@ -45,32 +49,29 @@ export const authService = {
           const data = userDoc.data();
           userData.role = data.role || 'CAJERO';
           userData.name = data.name || userData.name;
-          
-          // 🏢 ASIGNACIÓN DE EMPRESA (CRÍTICO PARA SAAS)
           userData.companyId = data.companyId; 
 
         } else if (email.toLowerCase().includes('admin')) {
-          // Backdoor temporal para admin global (si fuera necesario)
+          // Backdoor temporal para admin global
           userData.role = 'ADMIN';
-          userData.companyId = 'master_admin'; // Ojo con esto en prod
+          userData.companyId = 'master_admin'; 
         }
 
         if (!userData.companyId) {
-             console.warn("⚠️ Usuario sin empresa asignada. Posible error de migración.");
+             console.warn("⚠️ Usuario sin empresa asignada. Funcionalidad limitada.");
         }
 
       } catch (firestoreError) {
         console.warn("⚠️ Firestore no respondió (Offline parcial), usando datos locales.");
-        // Intentamos enriquecer con datos locales si existen
         const localData = await this._getLocalUser(email);
         if (localData) {
             userData.role = localData.role;
             userData.name = localData.name;
-            userData.companyId = localData.companyId; // Recuperamos la empresa del caché
+            userData.companyId = localData.companyId; 
         }
       }
 
-      // 🔥 AUTO-BACKUP: Guardamos TODO, incluido el companyId
+      // 🔥 AUTO-BACKUP
       await this._saveUserLocally({ ...userData, password }); 
 
       return userData;
@@ -80,11 +81,8 @@ export const authService = {
 
       // 3. FALLBACK INTELIGENTE
       const invalidCredsErrors = [
-        'auth/wrong-password', 
-        'auth/user-not-found', 
-        'auth/invalid-email',
-        'auth/invalid-credential',
-        'auth/too-many-requests'
+        'auth/wrong-password', 'auth/user-not-found', 'auth/invalid-email',
+        'auth/invalid-credential', 'auth/too-many-requests'
       ];
       
       if (!invalidCredsErrors.includes(error.code)) {
@@ -98,13 +96,68 @@ export const authService = {
 
   async logout() {
     await signOut(auth);
-    // IMPORTANTE: En SaaS, al hacer logout, podrías querer limpiar
-    // la base de datos local para que otro usuario no vea datos de la empresa anterior.
-    // await this._clearLocalData(); // (Implementar si se desea seguridad estricta)
+  },
+
+  // 🕵️‍♂️ EL MÉTODO QUE FALTABA: Escucha cambios de sesión (F5)
+  onAuthStateChanged(callback) {
+    return onAuthStateChanged(auth, async (firebaseUser) => {
+      if (firebaseUser) {
+        try {
+          // 1. Intentamos leer perfil actualizado de Firestore
+          const userDoc = await getDoc(doc(db, 'users', firebaseUser.uid));
+          
+          let userProfile = {
+              uid: firebaseUser.uid,
+              email: firebaseUser.email,
+              name: firebaseUser.displayName || 'Usuario',
+              role: 'CAJERO',
+              companyId: null,
+              mode: 'ONLINE'
+          };
+
+          if (userDoc.exists()) {
+            const data = userDoc.data();
+            userProfile.role = data.role || 'CAJERO';
+            userProfile.name = data.name || userProfile.name;
+            userProfile.companyId = data.companyId;
+          } else {
+             // Caso especial: Master Admin manual
+             if(firebaseUser.email?.includes('admin')) {
+                 userProfile.role = 'ADMIN';
+                 userProfile.companyId = 'master_admin';
+             }
+          }
+
+          // Guardamos en local para futuras sesiones offline (Password dummy porque ya está authed)
+          await this._saveUserLocally({ ...userProfile, password: '***' }); 
+
+          callback(userProfile);
+
+        } catch (e) {
+          console.warn("⚠️ Error Firestore al recargar (Offline mode?). Buscando local...", e);
+          
+          // 2. Fallback Offline
+          const localUser = await this._getLocalUser(firebaseUser.email);
+          if (localUser) {
+              console.log("✅ Restaurado desde Local DB");
+              callback({
+                  uid: firebaseUser.uid,
+                  email: firebaseUser.email,
+                  ...localUser,
+                  mode: 'OFFLINE'
+              });
+          } else {
+              // Si no hay nada, no podemos restaurar sesión
+              callback(null);
+          }
+        }
+      } else {
+        callback(null);
+      }
+    });
   },
 
   async createUser(newUser) {
-    // Guardar local primero
     await this._saveUserLocally(newUser);
     
     if (navigator.onLine) {
@@ -112,23 +165,27 @@ export const authService = {
         const token = await auth.currentUser?.getIdToken();
         if (!token) throw new Error("No hay sesión admin activa");
 
+        if (!newUser.companyId) {
+            console.warn("⚠️ Creando usuario sin companyId explícito.");
+        }
+
         const response = await fetch(`${API_URL}/create-user`, {
           method: 'POST',
           headers: { 
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${token}` 
           },
-          // Enviamos companyId al backend para que lo vincule
-          body: JSON.stringify(newUser)
+          body: JSON.stringify(newUser) 
         });
 
         if (!response.ok) {
-            return { success: true, localOnly: true, warning: "Guardado solo local (Error API)" };
+            const errData = await response.json();
+            throw new Error(errData.error || "Error creando usuario en Nube");
         }
         return await response.json();
       } catch (error) {
         console.error("API Error:", error);
-        return { success: true, localOnly: true };
+        return { success: true, localOnly: true, error: error.message };
       }
     } else {
       return { success: true, localOnly: true };
@@ -141,14 +198,22 @@ export const authService = {
 
   async _saveUserLocally(userData) {
     const db = await getDB();
-    const safePassword = btoa(userData.password); 
+    // Si la pass es dummy (***), no sobrescribimos la real si ya existe
+    if (userData.password === '***') {
+        const existing = await db.get('users', userData.email);
+        if (existing && existing.password) {
+            userData.password = existing.password;
+        }
+    } else {
+        userData.password = btoa(userData.password); 
+    }
 
     await db.put('users', {
       email: userData.email,
-      password: safePassword, 
+      password: userData.password, 
       name: userData.name,
       role: userData.role,
-      companyId: userData.companyId, // 🏢 Guardamos la empresa en local
+      companyId: userData.companyId, 
       updatedAt: new Date()
     });
   },
@@ -168,16 +233,16 @@ export const authService = {
     const storedPassword = atob(localUser.password);
 
     if (storedPassword === password) {
-       console.log("✅ Acceso Local Concedido:", localUser.name, "| Empresa:", localUser.companyId);
+       console.log("✅ Acceso Local Concedido:", localUser.name);
        return {
          uid: 'local_' + Date.now(),
          email: localUser.email,
          name: localUser.name,
          role: localUser.role,
-         companyId: localUser.companyId, // 🏢 Retornamos la empresa offline
+         companyId: localUser.companyId,
          mode: 'OFFLINE'
        };
     }
-    throw new Error("Contraseña incorrecta (Verificación Local).");
+    throw new Error("Contraseña incorrecta.");
   }
 };

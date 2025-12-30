@@ -1,55 +1,63 @@
 import { useEffect, useState, useRef } from 'react';
-import { syncService } from '../../modules/sync/services/syncService';
+// ⚠️ Verifica que esta ruta apunte a tu syncService corregido
+import { syncService } from '../../modules/sync/services/syncService'; 
+import { useAuthStore } from '../../modules/auth/store/useAuthStore';
 
 export const useAutoSync = (intervalMs = 30000) => { // Default: 30 segundos
   const [isSyncing, setIsSyncing] = useState(false);
   const [lastSync, setLastSync] = useState(null);
   
-  // Usamos ref para "semáforo" (evitar que se solapen dos sincronizaciones)
+  // Semáforo para evitar colisiones
   const syncingRef = useRef(false);
 
+  // 👇 Obtenemos el usuario para saber si estamos listos
+  const { user, isAuthenticated } = useAuthStore();
+
   useEffect(() => {
-    // Función ejecutora
+    // Si no está autenticado o no tiene empresa, NO arrancamos el cronómetro
+    if (!isAuthenticated || !user?.companyId) return;
+
     const runSync = async () => {
       // 1. Chequeos de seguridad:
-      // - Si no hay internet: abortar.
-      // - Si ya se está sincronizando: abortar.
       if (!navigator.onLine || syncingRef.current) return;
       
+      // Doble chequeo de usuario (por si se deslogueó durante el intervalo)
+      const currentUser = useAuthStore.getState().user;
+      if (!currentUser?.companyId) return;
+
       syncingRef.current = true;
       setIsSyncing(true);
 
       try {
-        console.log("☁️ AutoSync: Buscando cambios pendientes...");
+        // No logueamos "Buscando cambios" cada 30s para no ensuciar la consola,
+        // solo si realmente hay acción.
+        // console.log("☁️ AutoSync: Heartbeat..."); 
 
-        // 🔥 CRÍTICO: Llamamos a 'syncAll' que orquesta Ventas + Productos
-        // (Asegúrate de que en syncService.js la función se llame syncAll)
         const result = await syncService.syncAll();
         
-        // Si hubo movimiento real (subida), actualizamos la fecha
+        // Solo actualizamos estado si hubo movimiento real
         if (result.sales > 0 || result.products > 0) {
-           console.log(`✅ Sincronización Exitosa: ${result.sales} ventas, ${result.products} productos.`);
+           console.log(`✅ AutoSync: Subidos ${result.sales} ventas y ${result.products} productos.`);
            setLastSync(new Date());
         }
 
       } catch (error) {
-        // Error silencioso para no interrumpir al cajero
-        console.error("⚠️ Sync falló (silencioso):", error);
+        console.error("⚠️ AutoSync falló:", error);
       } finally {
         setIsSyncing(false);
         syncingRef.current = false;
       }
     };
 
-    // 1. Correr al montar (para subir pendientes apenas abre la app)
+    // 1. Correr al montar (o al loguearse)
     runSync();
 
-    // 2. Correr cada X tiempo (Heartbeat)
+    // 2. Correr cada X tiempo
     const intervalId = setInterval(runSync, intervalMs);
 
-    // 3. Escuchar evento de "Volvió internet" (Reacción inmediata)
+    // 3. Reacción a "Volvió internet"
     const handleOnline = () => {
-        console.log("🌐 Conexión detectada: Forzando sincronización...");
+        console.log("🌐 Conexión recuperada. Sincronizando...");
         runSync();
     };
     
@@ -59,7 +67,7 @@ export const useAutoSync = (intervalMs = 30000) => { // Default: 30 segundos
       clearInterval(intervalId);
       window.removeEventListener('online', handleOnline);
     };
-  }, [intervalMs]);
+  }, [intervalMs, isAuthenticated, user?.companyId]); // 👈 CLAVE: Se reinicia si cambia el usuario
 
   return { isSyncing, lastSync };
 };

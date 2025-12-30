@@ -1,8 +1,12 @@
 /**
  * MÓDULO AFIP - NOAR POS (SaaS FINAL)
- * Versión: "Super Limpiador Agresivo" 🧼
- * Repara claves privadas rotas, elimina espacios y reconstruye el formato PEM.
+ * Versión: Multi-Tenant & "Super Limpiador" 🧼
+ * * Cambios SaaS:
+ * 1. No lee DB globalmente. Recibe la config desde index.js.
+ * 2. Guarda el Token de Auth basado en el CUIT (Aislamiento de Sesión).
+ * 3. Repara claves privadas rotas o mal copiadas.
  */
+
 const admin = require("firebase-admin");
 const soap = require("soap");
 const xmlbuilder = require("xmlbuilder");
@@ -10,17 +14,13 @@ const forge = require("node-forge");
 const https = require("https"); 
 const axios = require("axios");
 
-// Inicialización de Firebase
+// Inicialización de Firebase (si no está ya init)
 if (!admin.apps.length) {
   admin.initializeApp();
 }
 const db = admin.firestore();
 
-// Referencias
-const TA_REF = db.doc("secrets/afip_token"); 
-const CONFIG_REF = db.doc("secrets/afip");   
-
-// 🛡️ FIX SSL: AFIP usa cifrados viejos
+// 🛡️ FIX SSL: AFIP usa cifrados antiguos que Node nuevo rechaza
 const legacyAgent = new https.Agent({
   ciphers: 'DEFAULT@SECLEVEL=1',
   keepAlive: true,
@@ -46,18 +46,17 @@ const CONDICION_IVA = {
 };
 
 // ==================================================================
-// 🧼 SUPER LIMPIADOR: El corazón de la reparación
+// 🧼 SUPER LIMPIADOR DE CLAVES (CRÍTICO)
 // ==================================================================
 function cleanAndFormatKey(rawString, type) {
     if (!rawString) return "";
 
-    // 1. Quitar cualquier cabecera existente para tener solo el contenido
+    // 1. Quitar cualquier cabecera existente
     let body = rawString
         .replace(/-----BEGIN.*?-----/g, '')
         .replace(/-----END.*?-----/g, '');
 
-    // 2. ELIMINACIÓN TOTAL DE ESPACIOS (Aquí estaba tu error principal)
-    // Borra espacios en blanco, tabulaciones y saltos de línea basura
+    // 2. ELIMINACIÓN TOTAL DE ESPACIOS
     body = body.replace(/\s+/g, '');
 
     // 3. Reconstruir en bloques de 64 caracteres (Estándar PEM)
@@ -66,7 +65,7 @@ function cleanAndFormatKey(rawString, type) {
     
     const cleanBody = chunks.join('\n');
 
-    // 4. Poner las cabeceras correctas y limpias
+    // 4. Poner las cabeceras correctas
     if (type === 'KEY') {
         return `-----BEGIN RSA PRIVATE KEY-----\n${cleanBody}\n-----END RSA PRIVATE KEY-----`;
     } else {
@@ -75,59 +74,44 @@ function cleanAndFormatKey(rawString, type) {
 }
 
 // ==================================================================
-// 🛠️ CONFIGURACIÓN (Aquí aplicamos la limpieza)
-// ==================================================================
-async function getConfig() {
-    const doc = await CONFIG_REF.get();
-    if (!doc.exists) throw new Error("No hay configuración AFIP en la base de datos.");
-    
-    const data = doc.data();
-    if (!data.isActive) throw new Error("AFIP está desactivado.");
-    if (!data.cert || !data.key || !data.cuit) throw new Error("Faltan certificados o CUIT.");
-
-    // 👇 AQUÍ OCURRE LA MAGIA: Limpiamos antes de usar 👇
-    return {
-        cuit: data.cuit.replace(/[^0-9]/g, ''), 
-        ptoVta: parseInt(data.ptoVta) || 1,
-        // Guardamos las versiones ya reparadas
-        certPem: cleanAndFormatKey(data.cert, 'CERT'),
-        keyPem: cleanAndFormatKey(data.key, 'KEY')
-    };
-}
-
-// ==================================================================
-// 🔐 AUTENTICACIÓN (WSAA)
+// 🔐 AUTENTICACIÓN (WSAA) - ISOLATED BY CUIT
 // ==================================================================
 async function getValidToken(config) {
+  // 🔑 ESTRATEGIA SAAS: Guardamos el token usando el CUIT como ID.
+  // Así el token del Kiosco Pepe (CUIT A) no se mezcla con el de Farmacia Lola (CUIT B).
+  const tokenRef = db.collection('afip_tokens').doc(config.cuit);
+
   try {
-    const doc = await TA_REF.get();
+    const doc = await tokenRef.get();
+    
     if (doc.exists) {
       const data = doc.data();
       const expires = new Date(data.expirationTime);
-      // Margen de seguridad de 5 mins
-      if (expires > new Date(Date.now() + 5 * 60000)) {
+      // Margen de seguridad de 10 mins
+      if (expires > new Date(Date.now() + 10 * 60000)) {
         return data;
       }
     }
-    return generateNewToken(config);
+    // Si no existe o venció, generamos uno nuevo
+    return generateNewToken(config, tokenRef);
+
   } catch (error) {
-    console.error("⚠️ Token cacheado inválido, generando nuevo...");
-    return generateNewToken(config);
+    console.error("⚠️ Error leyendo caché de token, generando nuevo...", error);
+    return generateNewToken(config, tokenRef);
   }
 }
 
-async function generateNewToken(config) {
-  console.log(`🔐 AFIP: Intentando autenticar CUIT ${config.cuit}...`);
+async function generateNewToken(config, tokenRef) {
+  console.log(`🔐 AFIP: Autenticando CUIT ${config.cuit}...`);
 
   try {
-      // Usamos las claves ya limpias y formateadas
       const privateKey = forge.pki.privateKeyFromPem(config.keyPem);
       const cert = forge.pki.certificateFromPem(config.certPem);
 
-      // FIX HORA: Ajuste a UTC-3 aproximado
+      // FIX HORA: Ajuste a UTC-3 aproximado para evitar error "Computer time is too far"
       const now = new Date();
-      const genTime = new Date(now.getTime() - 600000).toISOString(); 
-      const expTime = new Date(now.getTime() + 12 * 60 * 60 * 1000).toISOString();
+      const genTime = new Date(now.getTime() - 600000).toISOString(); // -10 min
+      const expTime = new Date(now.getTime() + 12 * 60 * 60 * 1000).toISOString(); // +12 hs
       const uniqueId = Math.floor(now.getTime() / 1000);
 
       const TRA = xmlbuilder.create("loginTicketRequest", { encoding: "UTF-8" })
@@ -154,15 +138,18 @@ async function generateNewToken(config) {
       const sign = result.loginCmsReturn.match(/<sign>(.*?)<\/sign>/)[1];
       
       const authData = { token, sign, expirationTime: expTime };
-      await TA_REF.set(authData);
+      
+      // Guardamos el token en Firestore separado por CUIT
+      await tokenRef.set(authData);
+      
       return authData;
 
   } catch (error) {
       const msg = error.root?.Envelope?.Body?.Fault?.faultstring || error.message;
       console.error("❌ Fallo Auth AFIP:", msg);
       
-      if(msg.includes("CMS")) throw new Error("AFIP rechazó la firma: Verifica que subiste el Certificado (.crt) que corresponde a esa Clave Privada (.key).");
-      throw new Error(`Error de conexión con AFIP: ${msg}`);
+      if(msg.includes("CMS")) throw new Error("AFIP rechazó la firma: Verifica que subiste el Certificado (.crt) correcto.");
+      throw new Error(`Error AFIP Auth: ${msg}`);
   }
 }
 
@@ -174,40 +161,77 @@ async function getUltimoComprobante(clientSoap, auth, tipoCbte, ptoVta, cuit) {
     Auth: { Token: auth.token, Sign: auth.sign, Cuit: cuit },
     PtoVta: ptoVta, CbteTipo: tipoCbte
   });
+  
+  if (res.FECompUltimoAutorizadoResult.Errors) {
+      throw new Error("Error consultando último comprobante");
+  }
+  
   return res.FECompUltimoAutorizadoResult.CbteNro || 0;
 }
 
-async function emitirFactura(total, cliente = {}, esNotaCredito = false, comprobanteAsociado = null) {
-  const config = await getConfig();
+/**
+ * Función principal exportada.
+ * Ahora recibe 'config' como 5to argumento (Inyección de Dependencias).
+ */
+async function emitirFactura(total, cliente = {}, esNotaCredito = false, comprobanteAsociado = null, rawConfig) {
+  
+  // 1. Preparar Configuración (Limpieza y Validación)
+  if (!rawConfig) throw new Error("Error Interno: No se recibió configuración de AFIP.");
+  
+  // Limpiamos las claves al vuelo antes de usarlas
+  const config = {
+      cuit: rawConfig.cuit.replace(/[^0-9]/g, ''), 
+      ptoVta: parseInt(rawConfig.ptoVta) || 1,
+      certPem: cleanAndFormatKey(rawConfig.cert, 'CERT'),
+      keyPem: cleanAndFormatKey(rawConfig.key, 'KEY')
+  };
+
+  // 2. Obtener Token (Usando el CUIT de la config)
   const auth = await getValidToken(config);
   const clientSoap = await soap.createClientAsync(WSFE_URL, SOAP_OPTIONS);
 
+  // 3. Preparar Datos Factura
   const docNro = cliente.docNumber || "0";
   const condFiscal = cliente.fiscalCondition || 'CONSUMIDOR_FINAL';
   const condIvaId = CONDICION_IVA[condFiscal] || 5;
-  const docTipo = (docNro !== "0") ? (docNro.length === 11 ? 80 : 96) : 99;
-  const CBTE_TIPO = esNotaCredito ? 13 : 11;
+  
+  // Lógica inteligente de tipo de documento
+  let docTipo = 99; // Por defecto: Sin identificar
+  if (docNro !== "0") {
+      docTipo = docNro.length === 11 ? 80 : 96; // 80=CUIT, 96=DNI
+  }
 
+  const CBTE_TIPO = esNotaCredito ? 13 : 11; // 11=Factura C, 13=Nota Credito C
+
+  // 4. Obtener numeración
   const ultimo = await getUltimoComprobante(clientSoap, auth, CBTE_TIPO, config.ptoVta, config.cuit);
   const proximo = ultimo + 1;
 
-  console.log(`📠 Emitiendo FC #${proximo} ($${total})`);
+  console.log(`📠 Emitiendo Cbte. Tipo ${CBTE_TIPO} #${proximo} ($${total}) para CUIT ${config.cuit}`);
 
-  // Fecha compatible
   const fecha = new Date(Date.now() - 10800000).toISOString().slice(0,10).replace(/-/g,"");
 
   const FeDetReq = {
-    Concepto: 1, DocTipo: docTipo, DocNro: docNro,
+    Concepto: 1, // Productos
+    DocTipo: docTipo, DocNro: docNro,
     CbteDesde: proximo, CbteHasta: proximo, CbteFch: fecha,
     ImpTotal: total.toFixed(2), ImpTotConc: 0, ImpNeto: total.toFixed(2),
     ImpOpEx: 0, ImpTrib: 0, ImpIVA: 0, MonId: "PES", MonCotiz: 1,
     CondicionIVAReceptorId: condIvaId
   };
 
+  // Si es Nota de Crédito, vinculamos la factura original
   if (esNotaCredito && comprobanteAsociado) {
-    FeDetReq.CbtesAsoc = { CbteAsoc: { Tipo: 11, PtoVta: comprobanteAsociado.ptoVta, Nro: comprobanteAsociado.nro }};
+    FeDetReq.CbtesAsoc = { 
+        CbteAsoc: { 
+            Tipo: 11, // Asumimos que anulamos Factura C
+            PtoVta: comprobanteAsociado.ptoVta, 
+            Nro: comprobanteAsociado.nro 
+        }
+    };
   }
 
+  // 5. Solicitar CAE a AFIP
   try {
       const [res] = await clientSoap.FECAESolicitarAsync({
         Auth: { Token: auth.token, Sign: auth.sign, Cuit: config.cuit },
@@ -215,13 +239,17 @@ async function emitirFactura(total, cliente = {}, esNotaCredito = false, comprob
       });
 
       const resultado = res.FECAESolicitarResult;
+      
+      // Validar Aprobación
       if (resultado.FeCabResp.Resultado !== "A") {
           const errs = resultado.Errors?.Err;
-          throw new Error(Array.isArray(errs) ? errs[0].Msg : errs?.Msg || "Rechazo desconocido");
+          const msgError = Array.isArray(errs) ? errs[0].Msg : (errs?.Msg || "Rechazo desconocido de AFIP");
+          throw new Error(`AFIP Rechazó: ${msgError}`);
       }
 
       const detalle = resultado.FeDetResp.FECAEDetResponse[0] || resultado.FeDetResp.FECAEDetResponse;
       
+      // Generar data para QR
       const qrJson = JSON.stringify({
           ver: 1, fecha: fecha, cuit: parseInt(config.cuit), ptoVta: config.ptoVta, tipoCmp: CBTE_TIPO, nroCmp: proximo,
           importe: parseFloat(total.toFixed(2)), moneda: "PES", ctz: 1, tipoDocRec: docTipo, nroDocRec: parseInt(docNro),
@@ -229,13 +257,18 @@ async function emitirFactura(total, cliente = {}, esNotaCredito = false, comprob
       });
 
       return {
-        success: true, cae: detalle.CAE, vencimiento: detalle.CAEFchVto, numero: proximo, ptoVta: config.ptoVta, tipo: CBTE_TIPO,
+        success: true, 
+        cae: detalle.CAE, 
+        vencimiento: detalle.CAEFchVto, 
+        numero: proximo, 
+        ptoVta: config.ptoVta, 
+        tipo: CBTE_TIPO,
         qr_data: `https://www.afip.gob.ar/fe/qr/?p=${Buffer.from(qrJson).toString('base64')}`
       };
 
   } catch (error) {
-      console.error("❌ Error Facturación:", error);
-      throw new Error(error.message);
+      console.error("❌ Error AFIP (Catch Final):", error);
+      throw new Error(error.message || "Error de comunicación con AFIP");
   }
 }
 

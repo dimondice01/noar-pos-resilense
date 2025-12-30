@@ -1,25 +1,46 @@
 import { getDB } from '../../../database/db';
 import { db } from '../../../database/firebase';
-import { doc, setDoc, updateDoc, writeBatch } from 'firebase/firestore'; // ⚠️ Agregado writeBatch
+import { doc, setDoc, updateDoc, writeBatch } from 'firebase/firestore'; 
+import { useAuthStore } from '../../auth/store/useAuthStore'; // 🔑 NUEVO: Importamos el Store
 
-// Helper para subir sin bloquear (PARA CLIENTES)
-const syncToCloud = async (collection, data) => {
+// ==========================================
+// ☁️ HELPER: SYNC AISLADO (SaaS)
+// ==========================================
+const syncToCloud = async (collectionName, data) => {
   if (!navigator.onLine) return;
+
+  // 1. OBTENER ID EMPRESA
+  const { user } = useAuthStore.getState();
+  
+  // 🛡️ SEGURIDAD: Si no hay empresa, no guardamos nada en la nube
+  // para evitar ensuciar la raíz de la base de datos.
+  if (!user || !user.companyId) {
+      console.warn(`⛔ Sync: Intento de escritura sin empresa asignada en ${collectionName}`);
+      return;
+  }
+
   try {
     const { syncStatus, ...cloudData } = data;
-    // TODO: En Fase 2, esto apuntará a `companies/{companyId}/{collection}`
-    await setDoc(doc(db, collection, data.id), {
+    
+    // 2. CONSTRUIR RUTA PRIVADA
+    // Antes: db.collection(collectionName)
+    // Ahora: db.collection('companies', companyId, collectionName)
+    const path = `companies/${user.companyId}/${collectionName}`;
+
+    await setDoc(doc(db, path, data.id), {
       ...cloudData,
       firestoreId: data.id,
       syncedAt: new Date().toISOString()
     }, { merge: true });
     
-    // Marcar como synced localmente
+    // 3. ACTUALIZAR ESTADO LOCAL
     const dbLocal = await getDB();
-    const storeName = collection === 'movements' ? 'movements' : 'products'; 
+    // Mapeo simple: si entra 'movements' va a store 'movements', si no 'products'
+    const storeName = collectionName === 'movements' ? 'movements' : 'products'; 
     await dbLocal.put(storeName, { ...data, syncStatus: 'SYNCED' });
+
   } catch (e) {
-    console.warn(`⚠️ Error sync ${collection}:`, e);
+    console.warn(`⚠️ Error sync ${collectionName} (Nube):`, e);
   }
 };
 
@@ -27,6 +48,8 @@ export const productRepository = {
   // ==========================================
   // 📖 MÉTODOS DE LECTURA (Local First)
   // ==========================================
+  // Estos no cambian porque leen de IndexedDB, 
+  // y IndexedDB ya está filtrada por el SyncService.
 
   async getAll() {
     const db = await getDB();
@@ -77,16 +100,15 @@ export const productRepository = {
   },
 
   // ==========================================
-  // 👑 MÉTODO SAAS: CATALOGO MAESTRO
+  // 👑 MÉTODO SUPER ADMIN: CATALOGO MAESTRO
   // ==========================================
   
-  // Este método guarda DIRECTO en Firestore 'master_products' usando lotes.
-  // No toca la base de datos local (IndexedDB) del usuario actual.
+  // ⚠️ ESTE SE QUEDA GLOBAL.
+  // Es la única función que escribe en la raíz 'master_products'.
   async saveToMasterCatalog(products) {
-    const BATCH_SIZE = 500; // Límite de Firestore
+    const BATCH_SIZE = 500; 
     const chunks = [];
 
-    // Dividimos en trozos de 500
     for (let i = 0; i < products.length; i += BATCH_SIZE) {
         chunks.push(products.slice(i, i + BATCH_SIZE));
     }
@@ -96,22 +118,19 @@ export const productRepository = {
         const batch = writeBatch(db);
         
         chunk.forEach(product => {
-            // Referencia a la colección GLOBAL oculta
             const docRef = doc(db, "master_products", product.id);
-            
-            // Limpiamos datos locales antes de subir
             const { syncStatus, ...cleanProduct } = product;
             
             batch.set(docRef, {
                 ...cleanProduct,
-                isMaster: true, // Marca de agua
+                isMaster: true,
                 updatedAt: new Date().toISOString()
             });
         });
 
         await batch.commit();
         batchCount++;
-        console.log(`☁️ [SaaS] Lote Maestro ${batchCount}/${chunks.length} subido a Firestore.`);
+        console.log(`☁️ [SaaS] Lote Maestro ${batchCount}/${chunks.length} subido.`);
     }
     return true;
   },
@@ -133,14 +152,14 @@ export const productRepository = {
     return tx.done;
   },
 
-  // 🔥 EL MÉTODO "ESPÍA" (Local + Nube)
+  // 🔥 EL MÉTODO "ESPÍA" (Local + Nube Aislada)
   async save(product) {
     const dbLocal = await getDB();
     
     // 1. Preparar ID
     const productId = product.id || crypto.randomUUID();
     
-    // 2. Obtener estado previo (para movimientos)
+    // 2. Obtener estado previo
     let oldProduct = null;
     try { oldProduct = await dbLocal.get('products', productId); } catch (e) {}
 
@@ -155,7 +174,7 @@ export const productRepository = {
         }];
     }
 
-    // 4. Objeto Producto Final
+    // 4. Objeto Final
     const productToSave = {
       ...product,
       id: productId,
@@ -165,12 +184,12 @@ export const productRepository = {
       deleted: false
     };
 
-    // 5. Detectar Cambios y Generar Movimientos
+    // 5. Detectar Cambios (Movimientos)
     const movementsToSave = [];
     const timestamp = new Date().toISOString();
     
+    // (Lógica de movimientos igual a la original...)
     if (!oldProduct) {
-        // Creación
         movementsToSave.push({
             id: `mov_${Date.now()}_create`,
             productId,
@@ -191,7 +210,6 @@ export const productRepository = {
             });
         }
     } else {
-        // Edición
         if (parseFloat(oldProduct.price) !== parseFloat(productToSave.price)) {
             movementsToSave.push({
                 id: `mov_${Date.now()}_price`,
@@ -224,24 +242,22 @@ export const productRepository = {
     }
     await tx.done;
 
-    // 7. Sincronizar Nube (Background)
+    // 7. Sincronizar Nube (Usando el helper actualizado SaaS)
     syncToCloud('products', productToSave);
     movementsToSave.forEach(mov => syncToCloud('movements', mov)); 
 
     return productToSave;
   },
 
-  // 🔥 INGRESO RÁPIDO DE STOCK (Cloud Enabled)
+  // 🔥 INGRESO RÁPIDO (Cloud Enabled)
   async addStock(productId, quantity, expiryDate) {
     const dbLocal = await getDB();
-    
     const product = await dbLocal.get('products', productId);
     if (!product) throw new Error("Producto no encontrado");
 
     const qty = parseFloat(quantity);
     const newStock = (parseFloat(product.stock) || 0) + qty;
 
-    // Lotes
     let batches = product.batches || [];
     if (qty > 0) {
         batches.push({
@@ -252,7 +268,6 @@ export const productRepository = {
         });
     }
 
-    // Recalcular Vencimiento Visible
     const activeBatchesWithDate = batches
         .filter(b => b.quantity > 0 && b.expiryDate)
         .sort((a, b) => new Date(a.expiryDate) - new Date(b.expiryDate));
@@ -289,7 +304,7 @@ export const productRepository = {
     syncToCloud('movements', movement);
   },
 
-  // 🗑️ SOFT DELETE (Cloud Enabled)
+  // 🗑️ SOFT DELETE
   async delete(id) {
     const dbLocal = await getDB();
     const product = await dbLocal.get('products', id);
@@ -302,10 +317,8 @@ export const productRepository = {
             updatedAt: new Date().toISOString()
         };
 
-        // Local
         await dbLocal.put('products', deletedProduct);
 
-        // Nube (Se actualiza como deleted=true, no se borra físico aún)
         syncToCloud('products', deletedProduct);
     }
   }

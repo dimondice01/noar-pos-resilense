@@ -1,28 +1,41 @@
 import React, { useState, useEffect } from 'react';
-import { Users, UserPlus, Shield, ShieldCheck, Mail, Lock } from 'lucide-react';
+import { Users, UserPlus, Shield, ShieldCheck, Mail, Lock, Info } from 'lucide-react';
 import { Card } from '../../../core/ui/Card';
 import { Button } from '../../../core/ui/Button';
 import { authService } from '../../auth/services/authService';
-import { collection, getDocs } from 'firebase/firestore';
+import { collection, getDocs, query, where } from 'firebase/firestore'; // ⚠️ Importamos query y where
 import { db } from '../../../database/firebase';
 import { cn } from '../../../core/utils/cn';
+import { useAuthStore } from '../../auth/store/useAuthStore'; // 🔑 IMPORTANTE
 
 export const TeamPage = () => {
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
   
+  // 🔑 HOOK SAAS: Obtener al Admin actual
+  const currentUser = useAuthStore(state => state.user);
+
   // Formulario Nuevo Usuario
   const [isCreating, setIsCreating] = useState(false);
   const [formData, setFormData] = useState({ name: '', email: '', password: '', role: 'CAJERO' });
 
-  // Cargar Usuarios
+  // Cargar Usuarios (Solo los de MI empresa)
   useEffect(() => {
-    loadUsers();
-  }, []);
+    if (currentUser?.companyId) {
+        loadUsers();
+    }
+  }, [currentUser]);
 
   const loadUsers = async () => {
     try {
-      const querySnapshot = await getDocs(collection(db, 'users'));
+      setLoading(true);
+      // 🔒 FILTRO DE SEGURIDAD: Solo traer usuarios con mi mismo companyId
+      const q = query(
+          collection(db, 'users'), 
+          where('companyId', '==', currentUser.companyId)
+      );
+      
+      const querySnapshot = await getDocs(q);
       const usersList = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       setUsers(usersList);
     } catch (error) {
@@ -35,11 +48,21 @@ export const TeamPage = () => {
   const handleCreate = async (e) => {
     e.preventDefault();
     if (formData.password.length < 6) return alert("La contraseña debe tener 6 caracteres mínimo.");
-    
+    if (!currentUser?.companyId) return alert("Error crítico: No tienes empresa asignada.");
+
     setIsCreating(true);
     try {
-      await authService.createUser(formData);
-      alert("✅ Usuario creado exitosamente");
+      // 👇 INYECTAMOS EL ID DE EMPRESA AL NUEVO EMPLEADO
+      const newEmployeeData = {
+          ...formData,
+          companyId: currentUser.companyId, // 🔑 Herencia de Empresa
+          status: 'ACTIVE',
+          createdAt: new Date().toISOString()
+      };
+
+      await authService.createUser(newEmployeeData);
+      
+      alert(`✅ Usuario ${formData.name} creado y asignado a tu equipo.`);
       setFormData({ name: '', email: '', password: '', role: 'CAJERO' }); // Reset
       loadUsers(); // Recargar lista
     } catch (error) {
@@ -50,13 +73,18 @@ export const TeamPage = () => {
   };
 
   return (
-    <div className="max-w-5xl mx-auto space-y-8">
+    <div className="max-w-5xl mx-auto space-y-8 pb-20">
       
-      <header>
-        <h2 className="text-2xl font-bold text-sys-900 flex items-center gap-2">
-          <Users className="text-brand" /> Gestión de Equipo
-        </h2>
-        <p className="text-sys-500">Administra el acceso y roles de tus colaboradores.</p>
+      <header className="flex justify-between items-center">
+        <div>
+            <h2 className="text-2xl font-bold text-sys-900 flex items-center gap-2">
+            <Users className="text-brand" /> Gestión de Equipo
+            </h2>
+            <p className="text-sys-500">Administra el acceso de tu personal.</p>
+        </div>
+        <div className="bg-sys-100 text-sys-600 px-3 py-1 rounded-full text-xs font-mono border border-sys-200">
+            Empresa ID: {currentUser?.companyId}
+        </div>
       </header>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
@@ -126,6 +154,13 @@ export const TeamPage = () => {
                 </div>
               </div>
 
+              <div className="bg-blue-50 p-3 rounded-lg flex gap-2 items-start">
+                  <Info size={16} className="text-blue-600 mt-0.5 shrink-0"/>
+                  <p className="text-[11px] text-blue-700 leading-tight">
+                      El nuevo usuario tendrá acceso inmediato a <strong>esta empresa</strong> únicamente.
+                  </p>
+              </div>
+
               <Button type="submit" className="w-full mt-2" disabled={isCreating}>
                 {isCreating ? 'Creando...' : 'Dar de Alta'}
               </Button>
@@ -144,7 +179,7 @@ export const TeamPage = () => {
               {loading ? (
                 <div className="p-8 text-center text-sys-400">Cargando equipo...</div>
               ) : users.length === 0 ? (
-                <div className="p-8 text-center text-sys-400">No hay usuarios registrados en la base de datos.</div>
+                <div className="p-8 text-center text-sys-400">No hay usuarios registrados en tu equipo.</div>
               ) : (
                 users.map((u) => (
                   <div key={u.id} className="p-4 flex items-center justify-between group hover:bg-sys-50 transition-colors">

@@ -1,5 +1,8 @@
 // URL de tu Backend (Nube de Producción)
-const API_URL = 'https://us-central1-salvadorpos1.cloudfunctions.net/api';
+const API_URL = import.meta.env.VITE_API_URL;
+
+// 👇 1. IMPORTAR STORE (Vital para saber de quién es la cuenta de MP/Clover)
+import { useAuthStore } from '../../auth/store/useAuthStore';
 
 export const paymentService = {
   
@@ -9,16 +12,27 @@ export const paymentService = {
    * Soporta: MercadoPago QR, MP Point (Físico) y Clover.
    */
   async initTransaction(provider, amount, deviceId = null) {
-    console.log(`💳 Iniciando orden ${provider} por $${amount}`);
-
     try {
+      // 👇 2. OBTENER ID DE EMPRESA
+      const { user } = useAuthStore.getState();
+      if (!user || !user.companyId) {
+          throw new Error("Error: No hay empresa asignada para procesar el pago.");
+      }
+
+      console.log(`💳 Iniciando orden ${provider} por $${amount} (Empresa: ${user.companyId})`);
+
       let endpoint = '';
-      let bodyData = { total: amount };
+      
+      // 👇 3. INYECTAR COMPANY ID EN EL BODY
+      let bodyData = { 
+          companyId: user.companyId, // 🔑 CLAVE PARA OBTENER CREDENCIALES MP
+          total: amount 
+      };
 
       // Configurar según proveedor
       if (provider === 'mercadopago') {
         // Opción 1: QR en Pantalla
-        endpoint = '/create-order';
+        endpoint = '/create-order'; // El backend usará el AccessToken de esta empresa
         bodyData.title = "Consumo Noar POS";
       } 
       else if (provider === 'point') {
@@ -27,7 +41,7 @@ export const paymentService = {
         bodyData.deviceId = deviceId; // ID del aparato (ej: PAX_...)
       }
       else if (provider === 'clover') {
-        // Opción 3: Clover (Simulado o Real)
+        // Opción 3: Clover
         endpoint = '/create-clover-order';
         bodyData.reference = `CLV-${Date.now()}`;
       } 
@@ -44,15 +58,13 @@ export const paymentService = {
 
       if (!response.ok) {
         const err = await response.json();
-        // Propagamos el mensaje de error del backend (ej: "Dispositivo no encontrado")
+        // Propagamos el mensaje de error del backend (ej: "Token de MP inválido")
         throw new Error(err.details || err.error || `Falló inicio de ${provider}`);
       }
       
       const data = await response.json();
       
       // Retornamos la REFERENCIA CLAVE para el polling
-      // MP QR/Point devuelve: data.reference
-      // Clover devuelve: data.reference (o paymentId)
       const trackingRef = data.reference || data.paymentId;
       
       if (!trackingRef) throw new Error("El proveedor no devolvió referencia de rastreo");
@@ -75,10 +87,18 @@ export const paymentService = {
    */
   async checkStatus(reference, provider) {
     try {
+      // 👇 4. TAMBIÉN NECESITAMOS COMPANY ID AQUÍ
+      const { user } = useAuthStore.getState();
+      if (!user || !user.companyId) return { status: 'error' };
+
       const response = await fetch(`${API_URL}/check-payment-status`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ reference, provider }),
+        body: JSON.stringify({ 
+            companyId: user.companyId, // 🔑 Para saber qué cuenta consultar
+            reference, 
+            provider 
+        }),
       });
 
       if (!response.ok) return { status: 'error' };

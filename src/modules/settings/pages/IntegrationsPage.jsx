@@ -7,13 +7,14 @@ import {
 import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { db } from '../../../database/firebase';
 import forge from 'node-forge'; // ⚠️ Asegúrate de haber ejecutado: npm install node-forge
+import { useAuthStore } from '../../auth/store/useAuthStore'; // 🔑 IMPORTANTE: Store de Autenticación
 
 import { Card } from '../../../core/ui/Card';
 import { Button } from '../../../core/ui/Button';
 import { cn } from '../../../core/utils/cn';
 
 // URL del Backend (En producción usa la relativa, en local la completa si es necesario)
-const API_URL = import.meta.env.VITE_API_URL || "https://us-central1-salvadorpos1.cloudfunctions.net/api"; 
+const API_URL = import.meta.env.VITE_API_URL || import.meta.env.VITE_API_URL; 
 
 // ==================================================================================
 // 🎓 MODAL TUTORIAL (SÚPER EXPLICADO)
@@ -146,7 +147,7 @@ const CertInput = ({ label, value, onChange, placeholder }) => (
 );
 
 // ==================================================================================
-// 🚀 PÁGINA PRINCIPAL
+// 🚀 PÁGINA PRINCIPAL (SAAS ENABLED)
 // ==================================================================================
 export const IntegrationsPage = () => {
   const [loading, setLoading] = useState(true);
@@ -163,20 +164,27 @@ export const IntegrationsPage = () => {
   const [mpConfig, setMpConfig] = useState({ accessToken: '', userId: '', externalPosId: '', isActive: false });
   const [afipConfig, setAfipConfig] = useState({ cuit: '', ptoVta: 1, razonSocial: '', cert: '', key: '', condicion: 'MONOTRIBUTO', isActive: false });
 
-  useEffect(() => { loadConfig(); }, []);
+  // 🔑 HOOK SAAS: Obtener Usuario y Empresa
+  const user = useAuthStore(state => state.user);
+
+  useEffect(() => { 
+      if (user?.companyId) {
+          loadConfig(); 
+      }
+  }, [user]);
 
   const loadConfig = async () => {
     try {
-      // 🔒 Leemos de 'secrets' (Plural)
-      const mpDoc = await getDoc(doc(db, 'secrets', 'mercadopago')); 
+      // 🔒 Leemos de la ruta PRIVADA de la empresa
+      const mpDoc = await getDoc(doc(db, 'companies', user.companyId, 'config', 'mercadopago')); 
       if (mpDoc.exists()) setMpConfig(mpDoc.data());
 
-      const afipDoc = await getDoc(doc(db, 'secrets', 'afip')); 
+      const afipDoc = await getDoc(doc(db, 'companies', user.companyId, 'config', 'afip')); 
       if (afipDoc.exists()) setAfipConfig(prev => ({...prev, ...afipDoc.data()}));
     } catch (error) { console.error(error); } finally { setLoading(false); }
   };
 
-  // --- 🪄 1. MAGIA MP: BUSCAR CAJAS (Adiós Scripts manuales) ---
+  // --- 🪄 1. MAGIA MP: BUSCAR CAJAS ---
   const handleSearchPos = async () => {
       if (!mpConfig.accessToken || mpConfig.accessToken.length < 20) {
           return alert("⚠️ Primero pega el 'Access Token' de MercadoPago.");
@@ -186,11 +194,14 @@ export const IntegrationsPage = () => {
       setPosList([]);
 
       try {
-          // Llamamos a nuestro Backend
+          // Llamamos a nuestro Backend enviando companyId
           const response = await fetch(`${API_URL}/get-mp-stores`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ accessToken: mpConfig.accessToken })
+              body: JSON.stringify({ 
+                  accessToken: mpConfig.accessToken,
+                  companyId: user.companyId // Contexto opcional para logs del backend
+              })
           });
 
           const data = await response.json();
@@ -247,12 +258,14 @@ export const IntegrationsPage = () => {
         csr.sign(keypair.privateKey);
         const csrPem = forge.pki.certificationRequestToPem(csr);
 
-        // Guardamos la key en 'secrets' AUTOMÁTICAMENTE
+        // Guardamos la key AUTOMÁTICAMENTE en la EMPRESA
         const newConfig = { ...afipConfig, key: privateKeyPem };
         setAfipConfig(newConfig);
         
-        // Guardado inmediato en Firestore
-        await setDoc(doc(db, 'secrets', 'afip'), { ...newConfig, updatedAt: new Date().toISOString() }, { merge: true });
+        // Guardado inmediato en Firestore (Ruta SaaS)
+        if (user?.companyId) {
+            await setDoc(doc(db, 'companies', user.companyId, 'config', 'afip'), { ...newConfig, updatedAt: new Date().toISOString() }, { merge: true });
+        }
 
         // Descarga del archivo .csr
         const blob = new Blob([csrPem], { type: "text/plain;charset=utf-8" });
@@ -262,7 +275,7 @@ export const IntegrationsPage = () => {
         link.download = `pedido_afip_${afipConfig.cuit}.csr`;
         link.click();
 
-        alert("✅ ¡LISTO!\n\n1. La Clave Privada se guardó sola en el sistema.\n2. Se descargó el archivo .CSR.\n3. Sube ese archivo a la web de AFIP para obtener tu certificado.\n4. ¡NO OLVIDES VINCULAR EL SERVICIO EN AFIP!");
+        alert("✅ ¡LISTO!\n\n1. La Clave Privada se guardó sola en tu empresa.\n2. Se descargó el archivo .CSR.\n3. Sube ese archivo a la web de AFIP para obtener tu certificado.\n4. ¡NO OLVIDES VINCULAR EL SERVICIO EN AFIP!");
     } catch (error) { 
         console.error(error);
         alert("Error generando claves: " + error.message); 
@@ -275,14 +288,17 @@ export const IntegrationsPage = () => {
     e.preventDefault();
     setSaving(true);
     try {
+      if (!user?.companyId) throw new Error("No tienes empresa asignada. Contacta soporte.");
+      
       if (mpConfig.isActive && !mpConfig.accessToken) throw new Error("Falta el Token de MP.");
       if (mpConfig.isActive && !mpConfig.externalPosId) throw new Error("Falta seleccionar la Caja de MP.");
       if (afipConfig.isActive && !afipConfig.key) throw new Error("Falta generar la clave de AFIP (Usa el botón Generar Pedido).");
 
-      // Guardado seguro en 'secrets'
-      await setDoc(doc(db, 'secrets', 'mercadopago'), { ...mpConfig, updatedAt: new Date().toISOString() });
+      // Guardado seguro en RUTA PRIVADA DE LA EMPRESA
+      await setDoc(doc(db, 'companies', user.companyId, 'config', 'mercadopago'), { ...mpConfig, updatedAt: new Date().toISOString() });
+      
       // Usamos merge para no sobrescribir la clave privada si ya estaba
-      await setDoc(doc(db, 'secrets', 'afip'), { ...afipConfig, updatedAt: new Date().toISOString() }, { merge: true });
+      await setDoc(doc(db, 'companies', user.companyId, 'config', 'afip'), { ...afipConfig, updatedAt: new Date().toISOString() }, { merge: true });
 
       setStatus('success');
       setTimeout(() => setStatus('idle'), 3000);
@@ -298,7 +314,7 @@ export const IntegrationsPage = () => {
       <header className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
             <h2 className="text-2xl font-bold text-sys-900 flex items-center gap-2"><Plug className="text-brand" /> Configuración de Pagos</h2>
-            <p className="text-sys-500 text-sm">Conecta MercadoPago y AFIP fácilmente.</p>
+            <p className="text-sys-500 text-sm">Empresa ID: <span className="font-mono bg-sys-100 px-2 py-0.5 rounded">{user?.companyId}</span></p>
         </div>
         <div className="bg-blue-50 text-blue-700 px-4 py-2 rounded-lg text-xs font-bold flex items-center gap-2 border border-blue-100 shadow-sm">
             <Info size={16}/> Tip: Abre las webs de AFIP y MercadoPago en otra pestaña.
@@ -430,7 +446,7 @@ export const IntegrationsPage = () => {
         {/* Footer */}
         <div className="lg:col-span-2 sticky bottom-6 z-20 flex justify-end">
             <Card className="p-2 pl-6 pr-2 flex items-center gap-6 shadow-2xl border-sys-900/10 bg-sys-900 text-white rounded-full">
-                <span className="text-xs">{status === 'success' ? '✅ Guardado' : 'No olvides guardar'}</span>
+                <span className="text-xs">{status === 'success' ? '✅ Guardado en tu Empresa' : 'No olvides guardar'}</span>
                 <Button type="submit" disabled={saving} className="bg-white text-sys-900 hover:bg-sys-100 font-black shadow-none border-none rounded-full px-6 h-10">
                     {saving ? 'Guardando...' : 'Guardar'}
                 </Button>

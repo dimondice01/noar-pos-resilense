@@ -2,10 +2,11 @@ import React, { useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { MainLayout } from './layout/MainLayout';
 
-// ✅ IMPORTANTE: Verifica que esta ruta coincida con tu carpeta real ('store' o 'hooks')
+// ✅ Store de Autenticación
 import { useAuthStore } from './modules/auth/store/useAuthStore'; 
 
 // 🔥 SERVICIO DE SINCRONIZACIÓN
+// (Asegúrate que la ruta sea correcta, a veces está en inventory/services o sync/services)
 import { syncService } from './modules/sync/services/syncService';
 
 // Componentes Auth
@@ -26,16 +27,26 @@ import { CashPage } from './modules/cash/pages/CashPage';
 import { ClientsPage } from './modules/clients/pages/ClientsPage';
 
 function App() {
-    // 👇 Solo inicializamos el listener de Auth
-    const initAuthListener = useAuthStore(state => state.initAuthListener);
+    // 👇 Obtenemos el usuario y el inicializador
+    const { user, initAuthListener } = useAuthStore();
 
+    // 1. EFECTO DE ARRANQUE (Solo una vez)
     useEffect(() => {
-        // 1. Iniciar escucha de usuario (Firebase Auth)
         initAuthListener();
-        
-        // 2. Iniciar sincronización en segundo plano (Stock, Config)
-        syncService.startRealTimeListeners();
     }, []);
+
+    // 2. EFECTO DE SINCRONIZACIÓN (Reactivo al Usuario)
+    // 
+    useEffect(() => {
+        // Solo arrancamos el Sync si el usuario ya cargó Y tiene empresa asignada
+        if (user && user.companyId) {
+            console.log(`🏢 [SaaS] Empresa detectada: ${user.companyId}. Iniciando motores de sincronización...`);
+            syncService.startRealTimeListeners();
+        } else {
+            // Si no hay usuario (logout) o no tiene empresa, apagamos listeners para no generar errores
+            syncService.stopListeners();
+        }
+    }, [user]); // 👈 CLAVE: Este efecto se dispara cada vez que 'user' cambia
 
     // 🚀 SIN BLOQUEOS: Renderizamos directo el Router
     return (
@@ -67,7 +78,7 @@ function App() {
                         <Route path="settings" element={<TeamPage />} />
                         <Route path="settings/integrations" element={<IntegrationsPage />} />
                         
-                        {/* 🕵️‍♂️ RUTA SECRETA: Panel de Super Admin (Crear Empresas / Cargar Catálogo) */}
+                        {/* 🕵️‍♂️ RUTA SECRETA: Panel de Super Admin */}
                         <Route path="/master-admin" element={<SuperAdminPage />} />
                     </Route>
                 </Route>

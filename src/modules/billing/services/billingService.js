@@ -1,5 +1,8 @@
 // ✅ URL DE PRODUCCIÓN (salvadorpos1)
-const API_URL = 'https://us-central1-salvadorpos1.cloudfunctions.net/api'; 
+const API_URL = import.meta.env.VITE_API_URL; 
+
+// 👇 1. IMPORTANTE: Necesitamos el Store para saber qué empresa está facturando
+import { useAuthStore } from '../../auth/store/useAuthStore'; 
 
 export const billingService = {
   /**
@@ -8,10 +11,17 @@ export const billingService = {
    */
   async emitirFactura(sale) {
     try {
+      // 👇 2. OBTENER ID DE EMPRESA
+      const { user } = useAuthStore.getState();
+      if (!user || !user.companyId) {
+          throw new Error("Error: No se identificó la empresa para facturar.");
+      }
+
       const payload = {
+        companyId: user.companyId, // 🔑 LA CLAVE DEL ÉXITO
         total: sale.total,
-        // 👇 Corregido: Enviamos el objeto 'client' completo
-        client: sale.client || { docNumber: "0" } 
+        // Enviamos el objeto 'client' completo o un consumidor final por defecto
+        client: sale.client || { docNumber: "0", name: "Consumidor Final" } 
       };
 
       const response = await fetch(`${API_URL}/create-invoice`, {
@@ -39,24 +49,30 @@ export const billingService = {
    */
   async emitirNotaCredito(sale) {
     try {
-      // 1. VALIDACIÓN: No podemos anular si no hay factura previa
+      // 👇 3. OBTENER ID DE EMPRESA TAMBIÉN AQUÍ
+      const { user } = useAuthStore.getState();
+      if (!user || !user.companyId) {
+          throw new Error("Error: No se identificó la empresa para anular.");
+      }
+
+      // VALIDACIÓN: No podemos anular si no hay factura previa
       if (!sale.afip || !sale.afip.cbteNumero) {
         throw new Error("No se puede anular una venta que no tiene factura aprobada.");
       }
 
       const payload = {
+        companyId: user.companyId, // 🔑 CLAVE SaaS
         total: sale.total,
         client: sale.client || { docNumber: "0" },
         
-        // 👇 ESTO ES LO QUE FALTABA: Datos de la factura original
+        // Datos de la factura original para vincular
         associatedDocument: {
             tipo: sale.afip.cbteLetra === 'A' ? 1 : 11, // 11 es Factura C
-            ptoVta: 5, // El punto de venta fijo que usamos
-            nro: sale.afip.cbteNumero // El número de la factura a anular
+            ptoVta: sale.afip.ptoVta || 5, // Usamos el mismo pto de venta que la original
+            nro: sale.afip.cbteNumero 
         }
       };
 
-      // 👇 Llamamos al nuevo endpoint de anulación
       const response = await fetch(`${API_URL}/create-credit-note`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

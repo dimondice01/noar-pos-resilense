@@ -1,6 +1,7 @@
 import { getDB } from '../../../database/db';
 import { db } from '../../../database/firebase';
 import { doc, setDoc, updateDoc } from 'firebase/firestore';
+import { useAuthStore } from '../../auth/store/useAuthStore'; // 🔑 IMPORTANTE
 
 // Helper para IDs únicos consistentes (Local + Nube)
 const generateId = (prefix) => `${prefix}_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
@@ -118,14 +119,30 @@ export const cashRepository = {
         return newMov;
     },
 
-    // Helper privado para subir sin bloquear la UI
+    // =========================================
+    // ☁️ HELPER PRIVADO (MODIFICADO PARA SAAS)
+    // =========================================
     async _syncToCloud(collectionName, data) {
         if (!navigator.onLine) return; // Si offline, lo agarra el syncService después
         
+        // 1. OBTENER ID EMPRESA
+        const { user } = useAuthStore.getState();
+        
+        if (!user || !user.companyId) {
+            console.warn(`⛔ Sync Caja: No se pudo subir ${collectionName} (Sin empresa).`);
+            return;
+        }
+
         try {
             const { syncStatus, ...cloudData } = data;
+            
+            // 2. CONSTRUIR RUTA PRIVADA
+            // companies/empresa_123/shifts
+            // companies/empresa_123/cash_movements
+            const path = `companies/${user.companyId}/${collectionName}`;
+
             // Usamos setDoc con el mismo ID para mantener consistencia
-            await setDoc(doc(db, collectionName, data.id), {
+            await setDoc(doc(db, path, data.id), {
                 ...cloudData,
                 firestoreId: data.id,
                 syncedAt: new Date().toISOString()
@@ -184,14 +201,10 @@ export const cashRepository = {
     },
 
     // =========================================
-    // 🧹 LIMPIEZA DE CÓDIGO (PIN OBSOLETO)
-    // =========================================
-    // Eliminamos setAdminCashPin y getAdminCashPin 
-    // porque ahora usamos securityService para todo.
-
-    // =========================================
     // ⚖️ BALANCE EN TIEMPO REAL (Para el Cajero)
     // =========================================
+    // ⚠️ NOTA: Esto lee de Local (IndexedDB). Como el SyncService ya bajó
+    // solo los datos de la empresa, no hace falta filtrar por companyId aquí.
     async getShiftBalance(shiftId) {
         const dbLocal = await getDB();
         const tx = dbLocal.transaction(['cash_movements', 'shifts'], 'readonly');

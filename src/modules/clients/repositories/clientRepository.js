@@ -1,15 +1,33 @@
 import { getDB } from '../../../database/db';
 import { db } from '../../../database/firebase';
 import { doc, setDoc, deleteDoc } from 'firebase/firestore';
+import { useAuthStore } from '../../auth/store/useAuthStore'; // 🔑 IMPORTANTE: Para el aislamiento
 
-// Helper para subir a la nube sin bloquear la UI
+// ==========================================
+// ☁️ HELPER: SYNC AISLADO (SaaS)
+// ==========================================
 const syncToCloud = async (collectionName, data) => {
   if (!navigator.onLine) return; // Si offline, lo agarra el syncService después
   
+  // 1. OBTENER ID EMPRESA
+  const { user } = useAuthStore.getState();
+
+  // 🛡️ SEGURIDAD: Abortar si no hay empresa para no ensuciar la raíz
+  if (!user || !user.companyId) {
+      console.warn(`⛔ Sync Clientes: Intento de escritura sin empresa.`);
+      return;
+  }
+
   try {
     const { syncStatus, ...cloudData } = data;
+    
+    // 2. CONSTRUIR RUTA PRIVADA
+    // companies/empresa_123/clients
+    // companies/empresa_123/customer_ledger
+    const path = `companies/${user.companyId}/${collectionName}`;
+
     // Usamos el mismo ID para mantener consistencia Local <-> Nube
-    await setDoc(doc(db, collectionName, data.id), {
+    await setDoc(doc(db, path, data.id), {
       ...cloudData,
       firestoreId: data.id,
       syncedAt: new Date().toISOString()
@@ -19,7 +37,7 @@ const syncToCloud = async (collectionName, data) => {
     const dbLocal = await getDB();
     await dbLocal.put(collectionName, { ...data, syncStatus: 'SYNCED' });
   } catch (e) {
-    console.warn(`⚠️ Error sincronizando ${collectionName}:`, e);
+    console.warn(`⚠️ Error sincronizando ${collectionName} (Nube):`, e);
   }
 };
 
@@ -127,7 +145,7 @@ export const clientRepository = {
 
     await tx.done;
 
-    // 2. Sincronizar Nube (Background)
+    // 2. Sincronizar Nube (Ruta Aislada)
     // Disparamos ambas subidas en paralelo
     syncToCloud('clients', updatedClient);
     syncToCloud('customer_ledger', movement);
@@ -155,7 +173,7 @@ export const clientRepository = {
     // 1. Local
     await dbLocal.put('clients', clientToSave);
 
-    // 2. Nube
+    // 2. Nube (Ruta Aislada)
     syncToCloud('clients', clientToSave);
 
     return clientToSave;
@@ -169,8 +187,13 @@ export const clientRepository = {
 
     // 2. Nube (Si hay red)
     if (navigator.onLine) {
+        // Obtenemos empresa para construir ruta de borrado
+        const { user } = useAuthStore.getState();
+        if (!user || !user.companyId) return;
+
         try {
-            await deleteDoc(doc(db, 'clients', id));
+            const path = `companies/${user.companyId}/clients`;
+            await deleteDoc(doc(db, path, id));
         } catch (e) {
             console.error("Error borrando cliente nube:", e);
         }

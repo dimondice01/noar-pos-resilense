@@ -1,13 +1,31 @@
 import { getDB } from '../../../database/db';
 import { db } from '../../../database/firebase';
 import { doc, setDoc } from 'firebase/firestore';
+import { useAuthStore } from '../../auth/store/useAuthStore'; // 🔑 IMPORTANTE
 
-// Helper para subir a la nube sin bloquear la UI
+// ==========================================
+// ☁️ HELPER: SYNC AISLADO (SaaS)
+// ==========================================
 const syncToCloud = async (collectionName, data) => {
   if (!navigator.onLine) return; 
+
+  // 1. OBTENER ID EMPRESA
+  const { user } = useAuthStore.getState();
+  
+  if (!user || !user.companyId) {
+      console.warn(`⛔ Sync: Venta no subida (Sin empresa asignada). Se guardó local.`);
+      return;
+  }
+
   try {
     const { syncStatus, ...cloudData } = data;
-    await setDoc(doc(db, collectionName, data.id || data.localId), {
+    
+    // 2. CONSTRUIR RUTA PRIVADA
+    // companies/empresa_123/sales
+    // companies/empresa_123/movements
+    const path = `companies/${user.companyId}/${collectionName}`;
+
+    await setDoc(doc(db, path, data.id || data.localId), {
       ...cloudData,
       firestoreId: data.id || data.localId,
       syncedAt: new Date().toISOString(),
@@ -20,7 +38,7 @@ const syncToCloud = async (collectionName, data) => {
         await dbLocal.put('sales', { ...data, syncStatus: 'SYNCED' });
     }
   } catch (e) {
-    console.warn(`⚠️ Error sincronizando ${collectionName}:`, e);
+    console.warn(`⚠️ Error sincronizando ${collectionName} (Nube):`, e);
   }
 };
 
@@ -32,7 +50,7 @@ export const salesRepository = {
   async createSale(saleData) {
     const dbLocal = await getDB();
     
-    // 🔥 INICIO DE TRANSACCIÓN MULTI-STORE
+    // 🔥 INICIO DE TRANSACCIÓN MULTI-STORE LOCAL
     const tx = dbLocal.transaction(['sales', 'products', 'movements'], 'readwrite');
     
     const salesStore = tx.objectStore('sales');
@@ -45,7 +63,7 @@ export const salesRepository = {
 
     const sale = {
       ...saleData,
-      localId: saleId, // Usamos esto como ID en Firestore
+      localId: saleId, // Usamos esto como ID
       date: saleData.date ? new Date(saleData.date).toISOString() : timestamp, 
       createdAt: timestamp,
       status: 'COMPLETED', 
@@ -113,8 +131,6 @@ export const salesRepository = {
         }
 
         // D) Actualizar Producto Localmente (Marcado para Sync)
-        // Nota: No subimos el producto aquí para no saturar la red con N peticiones.
-        // El syncService se encargará de subir los productos 'pending' en lote.
         await productsStore.put({
             ...product,
             stock: newStock,
@@ -125,7 +141,6 @@ export const salesRepository = {
         });
 
         // E) Registrar en KARDEX (Auditoría)
-        // Generamos ID explícito para poder sincronizarlo
         const movementId = `mov_sale_${saleId}_${item.id}`;
         const movement = {
             id: movementId,
@@ -150,7 +165,7 @@ export const salesRepository = {
     await tx.done;
     
     // 5. 🚀 SINCRONIZACIÓN CLOUD (Fire & Forget)
-    // No esperamos a que termine para devolver la respuesta a la UI
+    // El helper actualizado ya sabe usar la ruta aislada de la empresa
     syncToCloud('sales', sale);
     movementsToSync.forEach(m => syncToCloud('movements', m));
 
