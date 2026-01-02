@@ -2,10 +2,11 @@ import React from 'react';
 import QRCode from "react-qr-code";
 import { X, Printer } from 'lucide-react';
 
-// 👇 IMPORTAMOS EL LOGO
-import logoEmpresa from '../../../assets/logo.png'; 
+// 👇 IMPORTAMOS EL LOGO POR DEFECTO (FALLBACK)
+// Usamos este si no hay uno configurado en la base de datos
+import defaultLogo from '../../../assets/logo.png'; 
 
-export const TicketModal = ({ isOpen, onClose, sale, receipt }) => {
+export const TicketModal = ({ isOpen, onClose, sale, receipt, companyConfig }) => {
   const data = sale || receipt;
   
   if (!isOpen || !data) return null;
@@ -13,14 +14,25 @@ export const TicketModal = ({ isOpen, onClose, sale, receipt }) => {
   const isSale = !!sale;
   const isFiscal = isSale && sale.afip?.status === 'APPROVED';
   
-  // ⚙️ CONFIGURACIÓN DE TU NEGOCIO
-  const EMPRESA = {
-    nombre: "MAXI KIOSCO LA ESQUINA",
+  // ⚙️ CONFIGURACIÓN DE TU NEGOCIO (Lógica de Fusión)
+  // 1. DEFAULT_EMPRESA: Valores base por si todo falla.
+  // 2. companyConfig: La configuración actual que viene del Store/DB.
+  // 3. sale.companySnapshot: Si la venta es vieja, respetamos los datos que tenía la empresa en ese momento.
+  
+  const DEFAULT_EMPRESA = {
+    nombre: "MAXI KIOSCO",
     razonSocial: "Maxi Kiosco La Esquina", 
-   // cuit: "20-00000000-0", // TODO: Completar con el CUIT real
-    direccion: "Proyectada 2, Pio Cabral", // TODO: Completar
-    //condicionIva: "RESPONSABLE MONOTRIBUTO", 
-    //inicio: "01/01/2024"
+    cuit: "00-00000000-0", 
+    direccion: "Dirección no configurada",
+    condicionIva: "CONSUMIDOR FINAL", 
+    logoUrl: defaultLogo // Por defecto usamos el importado
+  };
+
+  // Fusionamos los objetos de configuración
+  const EMPRESA = {
+    ...DEFAULT_EMPRESA,
+    ...(companyConfig || {}),        // Sobrescribe con la config actual del sistema
+    ...(sale?.companySnapshot || {}) // Sobrescribe si la venta tiene "memoria" histórica
   };
 
   const handlePrint = () => {
@@ -59,6 +71,9 @@ export const TicketModal = ({ isOpen, onClose, sale, receipt }) => {
       letra = "X";
   }
 
+  // Determinamos qué imagen mostrar (la URL dinámica o el default)
+  const logoSrc = EMPRESA.logoUrl || defaultLogo;
+
   return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center bg-sys-900/80 backdrop-blur-sm p-4 animate-in fade-in duration-200 print:p-0 print:bg-white print:static print:inset-0">
       
@@ -76,7 +91,7 @@ export const TicketModal = ({ isOpen, onClose, sale, receipt }) => {
         <div className="bg-white mx-auto shadow-sm w-[300px] min-h-[400px] text-sys-900 font-mono text-[11px] leading-tight relative overflow-hidden pointer-events-none">
              <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-sys-200 to-sys-50 bg-[length:10px_100%]"></div>
              <TicketContent 
-                logo={logoEmpresa} // Pasamos el logo
+                logo={logoSrc} 
                 EMPRESA={EMPRESA} 
                 tipoComprobante={tipoComprobante} 
                 letra={letra} 
@@ -97,7 +112,7 @@ export const TicketModal = ({ isOpen, onClose, sale, receipt }) => {
       {/* ÁREA DE IMPRESIÓN REAL (Solo visible al imprimir) */}
       <div className="hidden print:block print:w-[80mm] print:overflow-hidden">
           <TicketContent 
-                logo={logoEmpresa} // Pasamos el logo
+                logo={logoSrc} 
                 EMPRESA={EMPRESA} 
                 tipoComprobante={tipoComprobante} 
                 letra={letra} 
@@ -163,8 +178,14 @@ const TicketContent = ({ logo, EMPRESA, tipoComprobante, letra, isFiscal, sale, 
                 className="w-32 h-auto object-contain mb-2"
                 style={{ maxWidth: '100%', maxHeight: '80px' }}
                 onError={(e) => {
-                    e.target.style.display = 'none';
-                    e.target.nextSibling.style.display = 'block';
+                    // Si falla la carga de la imagen dinámica, intentamos fallback al default
+                    if (e.target.src !== defaultLogo) {
+                         e.target.src = defaultLogo;
+                    } else {
+                         // Si ya falló el default, mostramos texto
+                         e.target.style.display = 'none';
+                         e.target.nextSibling.style.display = 'block';
+                    }
                 }}
             />
             {/* Título Fallback (oculto si hay logo) */}

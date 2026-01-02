@@ -1,20 +1,21 @@
 import React, { useState } from 'react';
-import { Shield, Briefcase, Mail, Lock, CheckCircle, AlertTriangle, Database, UploadCloud, FileText } from 'lucide-react'; 
+import { Shield, Briefcase, Lock, CheckCircle, AlertTriangle, UploadCloud, FileText, Image as ImageIcon } from 'lucide-react'; 
 import { useAuthStore } from '../../auth/store/useAuthStore'; 
 import { useDbSeeder } from '../../../core/hooks/useDbSeeder'; 
 import { Card } from '../../../core/ui/Card';
 import { Button } from '../../../core/ui/Button';
-import { auth } from '../../../database/firebase'; 
+
+// 👇 IMPORTS NECESARIOS PARA STORAGE Y FIRESTORE
+import { auth, storage, db } from '../../../database/firebase'; 
+import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { doc, updateDoc } from 'firebase/firestore';
 
 const SUPER_ADMIN_EMAIL = "admin@admin.com"; 
 
-// ✅ URL DE TU CLOUD FUNCTION GEN 2 (Asegúrate de que sea la correcta que te dio la terminal)
 const API_URL = import.meta.env.VITE_API_URL || "https://api-ps25yq7qaq-uc.a.run.app";
 
 export const SuperAdminPage = () => {
     const { user, isLoading } = useAuthStore();
-    
-    // Hook del Seeder
     const { uploadCatalog, loadingMsg: seedMsg, isSeeding } = useDbSeeder();
 
     const [formData, setFormData] = useState({
@@ -24,13 +25,13 @@ export const SuperAdminPage = () => {
         password: ''
     });
 
-    // 📂 ESTADO PARA EL ARCHIVO CSV
-    const [selectedFile, setSelectedFile] = useState(null);
+    // 📂 ESTADOS PARA ARCHIVOS
+    const [selectedFile, setSelectedFile] = useState(null); // Catálogo CSV
+    const [logoFile, setLogoFile] = useState(null);         // Logo Imagen (Nuevo)
     
     const [processStatus, setProcessStatus] = useState('idle'); 
     const [msg, setMsg] = useState('');
 
-    // 🛡️ SEGURIDAD
     if (isLoading) return <div className="min-h-screen bg-slate-900 flex items-center justify-center text-slate-200">Verificando...</div>;
     
     if (!user || user.email !== SUPER_ADMIN_EMAIL) {
@@ -43,11 +44,10 @@ export const SuperAdminPage = () => {
         );
     }
 
-    // 🚀 PROCESO DE CREACIÓN
     const handleSubmit = async (e) => {
         e.preventDefault();
 
-        // 1. VALIDAR QUE HAYA ARCHIVO SELECCIONADO
+        // 1. VALIDAR CSV (Obligatorio)
         if (!selectedFile) {
             setProcessStatus('error');
             setMsg("⚠️ Por favor selecciona el archivo 'catalogo.csv' antes de continuar.");
@@ -55,10 +55,10 @@ export const SuperAdminPage = () => {
         }
 
         setProcessStatus('creating_tenant');
-        setMsg('🏗️ Contactando Backend para crear empresa...');
+        setMsg('🏗️ 1/3 Contactando Backend para crear estructura...');
 
         try {
-            // 2. LLAMADA AL BACKEND (Crea usuario y doc vacío)
+            // 2. CREAR TENANT (Backend)
             const token = await auth.currentUser?.getIdToken();
             const response = await fetch(`${API_URL}/create-tenant`, {
                 method: 'POST',
@@ -73,21 +73,49 @@ export const SuperAdminPage = () => {
 
             if (!response.ok) throw new Error(data.error || 'Error creando inquilino');
 
-            // 3. INYECCIÓN MANUAL DESDE EL NAVEGADOR
-            if (data.companyId) {
+            const newCompanyId = data.companyId;
+
+            if (newCompanyId) {
+                // 3. SUBIR LOGO A STORAGE (Si se seleccionó uno)
+                if (logoFile) {
+                    setMsg('🖼️ 2/3 Subiendo logo y configurando marca...');
+                    try {
+                        // Referencia: logos/companyId/logo_timestamp
+                        const storageRef = ref(storage, `logos/${newCompanyId}/logo_${Date.now()}`);
+                        
+                        // Subida
+                        await uploadBytes(storageRef, logoFile);
+                        const downloadUrl = await getDownloadURL(storageRef);
+
+                        // Actualizar documento de la empresa con la URL del logo
+                        const companyRef = doc(db, 'companies', newCompanyId);
+                        await updateDoc(companyRef, {
+                            logoUrl: downloadUrl
+                        });
+                        
+                    } catch (logoError) {
+                        console.error("Error subiendo logo:", logoError);
+                        // No bloqueamos el proceso, solo avisamos
+                        setMsg('⚠️ Empresa creada, pero hubo un error subiendo el logo. Continuando con catálogo...');
+                    }
+                }
+
+                // 4. INYECCIÓN DEL CATÁLOGO
                 setProcessStatus('seeding_db');
-                setMsg(`✅ Estructura creada. Inyectando catálogo...`);
+                setMsg(`📦 3/3 Inyectando catálogo maestro en ${newCompanyId}...`);
                 
-                // 🔥 AQUÍ PASAMOS EL ID DE LA EMPRESA Y EL ARCHIVO
-                await uploadCatalog(data.companyId, selectedFile);
+                await uploadCatalog(newCompanyId, selectedFile);
                 
                 setProcessStatus('success');
-                setMsg(`✅ ¡ÉXITO TOTAL!\nEmpresa: ${data.companyId}\nCatálogo cargado correctamente.`);
+                setMsg(`✅ ¡ÉXITO TOTAL!
+Empresa: ${newCompanyId}
+🔗 LINK EXCLUSIVO: noarpos.com/login/${newCompanyId}
+(Comparte este link para que accedan a su ruta inteligente)`);
                 
                 // Limpiar formulario
                 setFormData({ businessName: '', ownerName: '', email: '', password: '' });
                 setSelectedFile(null); 
-                // Resetear el input file visualmente es difícil en React sin refs, pero esto limpia el estado.
+                setLogoFile(null);
             } else {
                 throw new Error("El backend no devolvió el ID de la empresa.");
             }
@@ -107,8 +135,8 @@ export const SuperAdminPage = () => {
                 <div className="fixed inset-0 bg-black/90 z-50 flex flex-col items-center justify-center p-4 backdrop-blur-sm">
                     <div className="bg-slate-800 p-8 rounded-2xl border border-slate-600 shadow-2xl max-w-md w-full text-center">
                         <UploadCloud className="mx-auto text-blue-400 mb-4 animate-bounce" size={48} />
-                        <h2 className="text-2xl font-bold text-white mb-2">Procesando...</h2>
-                        <p className="text-slate-400 text-sm mb-6 font-mono">{seedMsg || msg}</p>
+                        <h2 className="text-2xl font-bold text-white mb-2">Procesando Alta</h2>
+                        <p className="text-slate-400 text-sm mb-6 font-mono whitespace-pre-line">{seedMsg || msg}</p>
                         <div className="w-full bg-slate-700 rounded-full h-2.5 overflow-hidden relative">
                             <div className="bg-blue-600 h-2.5 rounded-full w-full absolute animate-progress-indeterminate"></div>
                         </div>
@@ -117,47 +145,71 @@ export const SuperAdminPage = () => {
                 </div>
             )}
 
-            <div className="max-w-2xl mx-auto relative z-10">
+            <div className="max-w-3xl mx-auto relative z-10">
                 <header className="mb-8 flex items-center gap-3 border-b border-slate-700 pb-4">
                     <div className="bg-blue-600 p-2 rounded-lg text-white shadow-lg">
                         <Shield size={32} />
                     </div>
                     <div>
                         <h1 className="text-2xl font-bold text-white">Panel Maestro</h1>
-                        <p className="text-slate-400 text-sm">Alta de Clientes</p>
+                        <p className="text-slate-400 text-sm">Alta de Clientes & Configuración de Rutas</p>
                     </div>
                 </header>
 
                 <Card className="bg-slate-800 border-slate-700 text-white shadow-2xl">
-                    <form onSubmit={handleSubmit} className="space-y-6 p-4">
+                    <form onSubmit={handleSubmit} className="p-6 space-y-6">
                         
-                        {/* 📂 SELECCIÓN DE ARCHIVO (NUEVO) */}
-                        <div className="bg-slate-900/50 p-4 rounded-lg border border-slate-600 border-dashed hover:border-blue-500 transition-colors">
-                            <label className="block text-sm font-bold text-blue-400 mb-2 flex items-center gap-2">
-                                <FileText size={16}/> 1. Seleccionar Catálogo Maestro (CSV)
-                            </label>
-                            <input 
-                                type="file" 
-                                accept=".csv"
-                                onChange={(e) => setSelectedFile(e.target.files[0])}
-                                className="block w-full text-sm text-slate-400
-                                  file:mr-4 file:py-2 file:px-4
-                                  file:rounded-full file:border-0
-                                  file:text-sm file:font-semibold
-                                  file:bg-blue-600 file:text-white
-                                  hover:file:bg-blue-700 cursor-pointer"
-                            />
-                            {selectedFile && (
-                                <p className="text-xs text-green-400 mt-2 font-mono">
-                                    ✅ Archivo listo: {selectedFile.name} ({(selectedFile.size / 1024).toFixed(1)} KB)
-                                </p>
-                            )}
+                        {/* SECCIÓN 1: ARCHIVOS */}
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            {/* Input CSV */}
+                            <div className="bg-slate-900/50 p-4 rounded-xl border border-slate-600 border-dashed hover:border-blue-500 transition-colors">
+                                <label className="block text-sm font-bold text-blue-400 mb-2 flex items-center gap-2">
+                                    <FileText size={16}/> 1. Catálogo (CSV) <span className="text-red-500">*</span>
+                                </label>
+                                <input 
+                                    type="file" 
+                                    accept=".csv"
+                                    onChange={(e) => setSelectedFile(e.target.files[0])}
+                                    className="block w-full text-xs text-slate-400
+                                      file:mr-2 file:py-1 file:px-2
+                                      file:rounded-lg file:border-0
+                                      file:bg-blue-600 file:text-white
+                                      hover:file:bg-blue-700 cursor-pointer"
+                                />
+                                {selectedFile && (
+                                    <p className="text-xs text-green-400 mt-2 font-mono truncate">
+                                        ✅ {selectedFile.name}
+                                    </p>
+                                )}
+                            </div>
+
+                            {/* Input Logo (Opcional) */}
+                            <div className="bg-slate-900/50 p-4 rounded-xl border border-slate-600 border-dashed hover:border-purple-500 transition-colors">
+                                <label className="block text-sm font-bold text-purple-400 mb-2 flex items-center gap-2">
+                                    <ImageIcon size={16}/> 2. Logo Inicial (Opcional)
+                                </label>
+                                <input 
+                                    type="file" 
+                                    accept="image/*"
+                                    onChange={(e) => setLogoFile(e.target.files[0])}
+                                    className="block w-full text-xs text-slate-400
+                                      file:mr-2 file:py-1 file:px-2
+                                      file:rounded-lg file:border-0
+                                      file:bg-purple-600 file:text-white
+                                      hover:file:bg-purple-700 cursor-pointer"
+                                />
+                                {logoFile && (
+                                    <p className="text-xs text-green-400 mt-2 font-mono truncate">
+                                        ✅ {logoFile.name}
+                                    </p>
+                                )}
+                            </div>
                         </div>
 
-                        {/* DATOS DE LA EMPRESA */}
-                        <div className="space-y-4">
-                            <h3 className="text-slate-400 font-bold uppercase text-xs tracking-wider flex items-center gap-2">
-                                <Briefcase size={14}/> 2. Datos del Negocio
+                        {/* SECCIÓN 2: DATOS DEL NEGOCIO */}
+                        <div className="space-y-4 pt-2">
+                            <h3 className="text-slate-400 font-bold uppercase text-xs tracking-wider flex items-center gap-2 border-b border-slate-700 pb-2">
+                                <Briefcase size={14}/> 3. Datos del Negocio
                             </h3>
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                 <div>
@@ -185,10 +237,10 @@ export const SuperAdminPage = () => {
                             </div>
                         </div>
 
-                        {/* CREDENCIALES */}
-                        <div className="space-y-4 pt-4 border-t border-slate-700">
-                            <h3 className="text-slate-400 font-bold uppercase text-xs tracking-wider flex items-center gap-2">
-                                <Lock size={14}/> 3. Credenciales
+                        {/* SECCIÓN 3: CREDENCIALES */}
+                        <div className="space-y-4 pt-2">
+                            <h3 className="text-slate-400 font-bold uppercase text-xs tracking-wider flex items-center gap-2 border-b border-slate-700 pb-2">
+                                <Lock size={14}/> 4. Credenciales Admin
                             </h3>
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                 <div>
@@ -230,7 +282,7 @@ export const SuperAdminPage = () => {
                                 disabled={processStatus === 'creating_tenant' || isSeeding}
                                 className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 shadow-lg shadow-blue-900/50"
                             >
-                                {processStatus === 'creating_tenant' ? '🚀 PROCESANDO...' : '⚡ EJECUTAR ALTA'}
+                                {processStatus === 'creating_tenant' ? '🚀 PROCESANDO ALTA...' : '⚡ EJECUTAR ALTA'}
                             </Button>
                         </div>
                     </form>

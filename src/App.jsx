@@ -6,7 +6,6 @@ import { MainLayout } from './layout/MainLayout';
 import { useAuthStore } from './modules/auth/store/useAuthStore'; 
 
 // 🔥 SERVICIO DE SINCRONIZACIÓN
-// (Asegúrate que la ruta sea correcta, a veces está en inventory/services o sync/services)
 import { syncService } from './modules/sync/services/syncService';
 
 // Componentes Auth
@@ -25,43 +24,47 @@ import { IntegrationsPage } from './modules/settings/pages/IntegrationsPage';
 import { SuperAdminPage } from './modules/admin/pages/SuperAdminPage'; 
 import { CashPage } from './modules/cash/pages/CashPage'; 
 import { ClientsPage } from './modules/clients/pages/ClientsPage';
+import { CompanySettingsPage } from './modules/admin/pages/CompanySettingsPage';
 
 function App() {
-    // 👇 Obtenemos el usuario y el inicializador
     const { user, initAuthListener } = useAuthStore();
 
-    // 1. EFECTO DE ARRANQUE (Solo una vez)
+    // 1. EFECTO DE ARRANQUE
     useEffect(() => {
         initAuthListener();
     }, []);
 
-    // 2. EFECTO DE SINCRONIZACIÓN (Reactivo al Usuario)
-    // 
+    // 2. EFECTO DE SINCRONIZACIÓN
     useEffect(() => {
-        // Solo arrancamos el Sync si el usuario ya cargó Y tiene empresa asignada
         if (user && user.companyId) {
-            console.log(`🏢 [SaaS] Empresa detectada: ${user.companyId}. Iniciando motores de sincronización...`);
+            console.log(`🏢 [SaaS] Empresa detectada: ${user.companyId}. Sync activo.`);
             syncService.startRealTimeListeners();
         } else {
-            // Si no hay usuario (logout) o no tiene empresa, apagamos listeners para no generar errores
             syncService.stopListeners();
         }
-    }, [user]); // 👈 CLAVE: Este efecto se dispara cada vez que 'user' cambia
+    }, [user]); 
 
-    // 🚀 SIN BLOQUEOS: Renderizamos directo el Router
     return (
         <BrowserRouter>
             <Routes>
-                {/* Ruta Pública: Login */}
+                {/* === ZONA PÚBLICA === */}
+                
+                {/* Login Genérico */}
                 <Route path="/login" element={<LoginPage />} />
+                
+                {/* Login Personalizado (ej: /login/kiosco-pepe) */}
+                <Route path="/login/:companySlug" element={<LoginPage />} />
 
-                {/* Rutas Protegidas (Requieren Login) */}
+                {/* === ZONA PRIVADA (Protegida) === */}
                 <Route element={<ProtectedRoute />}>
-                    <Route path="/" element={<MainLayout />}>
-                        {/* Dashboard Principal */}
+                    
+                    {/* 🔥 CAMBIO MAESTRO: Todas las rutas cuelgan del ID de la empresa */}
+                    <Route path="/:companySlug" element={<MainLayout />}>
+                        
+                        {/* Dashboard: /kiosco-pepe/ */}
                         <Route index element={<DashboardPage />} />
                         
-                        {/* Punto de Venta */}
+                        {/* Módulos Operativos */}
                         <Route path="pos" element={<PosPage />} />
                         <Route path="sales" element={<SalesPage />} />
                         <Route path="cash" element={<CashPage />} />
@@ -71,20 +74,21 @@ function App() {
                         <Route path="inventory/print" element={<PrintLabelsPage />} />
                         <Route path="inventory/movements" element={<MovementsPage />} /> 
 
-                        {/* Gestión de Clientes */}
+                        {/* Clientes */}
                         <Route path="clients" element={<ClientsPage />} />
                         
                         {/* Configuración */}
                         <Route path="settings" element={<TeamPage />} />
                         <Route path="settings/integrations" element={<IntegrationsPage />} />
+                        <Route path="settings/company" element={<CompanySettingsPage />} />
                         
-                        {/* 🕵️‍♂️ RUTA SECRETA: Panel de Super Admin */}
-                        <Route path="/master-admin" element={<SuperAdminPage />} />
+                        {/* Super Admin */}
+                        <Route path="master-admin" element={<SuperAdminPage />} />
                     </Route>
                 </Route>
                 
-                {/* Cualquier ruta desconocida redirige al inicio */}
-                <Route path="*" element={<Navigate to="/" replace />} />
+                {/* Redirección por defecto: Al login genérico */}
+                <Route path="*" element={<Navigate to="/login" replace />} />
             </Routes>
         </BrowserRouter>
     );

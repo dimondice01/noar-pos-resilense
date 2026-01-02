@@ -1,28 +1,32 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { NavLink, useNavigate, useLocation } from 'react-router-dom';
+import { NavLink, useNavigate, useLocation, useParams } from 'react-router-dom'; // 1. AGREGADO useParams
 import { 
   LayoutDashboard, ShoppingCart, Package, Settings, 
   FileText, Cloud, RefreshCw, LogOut, User, ShieldCheck, Wallet,
-  Users, Lock, ArrowRight, X, Loader2, Plug // 🆕 Importamos Plug
+  Users, Lock, ArrowRight, X, Loader2, Plug, 
+  Building 
 } from 'lucide-react';
+import { doc, onSnapshot } from 'firebase/firestore'; 
 
 import { cn } from '../core/utils/cn';
 import { useAutoSync } from '../core/hooks/useAutoSync';
 import { useAuthStore } from '../modules/auth/store/useAuthStore';
 import { securityService } from '../modules/security/services/securityService';
+import { db } from '../database/firebase'; 
 
 // Imports del Módulo de Caja
 import { CashClosingModal } from '../modules/cash/components/CashClosingModal'; 
 import { cashRepository } from '../modules/cash/repositories/cashRepository';
 
-// Importamos el logo
-import logoEmpresa from '../assets/logo.png'; 
+import defaultLogo from '../assets/logo.png'; 
 
 // ============================================================================
-// 1. COMPONENTE HELPER: ENLACE DE MENÚ (Híbrido Link/Botón)
+// 1. COMPONENTE HELPER: ENLACE DE MENÚ
 // ============================================================================
 const MenuLink = ({ to, icon: Icon, label, onClick, isRestricted }) => {
   const location = useLocation();
+  // Comparación exacta para evitar que Dashboard se marque activo en subrutas
+  // OJO: Con rutas anidadas, a veces conviene 'startsWith', pero para exactitud usamos esto:
   const isActiveRoute = location.pathname === to;
 
   const baseClasses = cn(
@@ -45,7 +49,6 @@ const MenuLink = ({ to, icon: Icon, label, onClick, isRestricted }) => {
     </>
   );
 
-  // Si hay onClick, actuamos como botón (interceptor)
   if (onClick) {
     return (
       <button onClick={onClick} className={baseClasses}>
@@ -54,7 +57,6 @@ const MenuLink = ({ to, icon: Icon, label, onClick, isRestricted }) => {
     );
   }
 
-  // Si no, enlace normal
   return (
     <NavLink to={to} className={({ isActive }) => cn(baseClasses, isActive ? "" : "")}>
       {content}
@@ -63,15 +65,14 @@ const MenuLink = ({ to, icon: Icon, label, onClick, isRestricted }) => {
 };
 
 // ============================================================================
-// 2. COMPONENTE: MODAL PIN ELEGANTE (CORREGIDO)
+// 2. COMPONENTE: MODAL PIN
 // ============================================================================
 const PinRequestModal = ({ isOpen, onClose, onSuccess }) => {
     const [pin, setPin] = useState('');
     const [error, setError] = useState(false);
-    const [verifying, setVerifying] = useState(false); // Estado de carga
+    const [verifying, setVerifying] = useState(false); 
     const inputRef = useRef(null);
 
-    // Auto-focus y limpieza al abrir
     useEffect(() => {
         if (isOpen) {
             setPin('');
@@ -83,21 +84,16 @@ const PinRequestModal = ({ isOpen, onClose, onSuccess }) => {
 
     const handleSubmit = async (e) => {
         e.preventDefault();
-        if (verifying) return; // Evitar doble submit
+        if (verifying) return; 
 
         setVerifying(true);
         setError(false);
 
         try {
-            // 🔥 Verificación robusta (espera a la promesa)
             const isValid = await securityService.verifyMasterPin(pin);
-            
             if (isValid === true) {
-                // Si es correcto, ejecutamos éxito
                 onSuccess();
-                // Nota: El cierre lo maneja el padre tras onSuccess
             } else {
-                // Si es incorrecto
                 setError(true);
                 setPin('');
                 setTimeout(() => inputRef.current?.focus(), 50);
@@ -121,10 +117,8 @@ const PinRequestModal = ({ isOpen, onClose, onSuccess }) => {
                     </h3>
                     <button onClick={onClose} className="text-sys-400 hover:text-sys-600"><X size={18}/></button>
                 </div>
-                
                 <form onSubmit={handleSubmit} className="p-6">
                     <p className="text-xs text-sys-500 mb-4">Esta sección requiere autorización. Ingrese el PIN Maestro.</p>
-                    
                     <div className="relative mb-4">
                         <input 
                             ref={inputRef}
@@ -142,7 +136,6 @@ const PinRequestModal = ({ isOpen, onClose, onSuccess }) => {
                             onChange={(e) => { setError(false); setPin(e.target.value.replace(/\D/g, '')); }}
                         />
                     </div>
-
                     <button 
                         type="submit" 
                         disabled={pin.length < 4 || verifying}
@@ -151,11 +144,7 @@ const PinRequestModal = ({ isOpen, onClose, onSuccess }) => {
                             verifying ? "bg-sys-600" : "bg-sys-900 hover:bg-black shadow-sys-900/20"
                         )}
                     >
-                        {verifying ? (
-                            <>Verificando <Loader2 size={16} className="animate-spin"/></>
-                        ) : (
-                            <>Autorizar <ArrowRight size={16}/></>
-                        )}
+                        {verifying ? (<>Verificando <Loader2 size={16} className="animate-spin"/></>) : (<>Autorizar <ArrowRight size={16}/></>)}
                     </button>
                 </form>
             </div>
@@ -164,7 +153,7 @@ const PinRequestModal = ({ isOpen, onClose, onSuccess }) => {
 };
 
 // ============================================================================
-// 3. COMPONENTE WRAPPER: LÓGICA DE CIERRE DE CAJA
+// 3. COMPONENTE WRAPPER: CIERRE DE CAJA
 // ============================================================================
 const CloseShiftModalWrapper = ({ isOpen, onClose }) => {
     const [balance, setBalance] = useState(null);
@@ -176,11 +165,7 @@ const CloseShiftModalWrapper = ({ isOpen, onClose }) => {
             const fetchShiftData = async () => {
                 setLoading(true);
                 try {
-                    if (!cashRepository) {
-                        onClose();
-                        return;
-                    }
-
+                    if (!cashRepository) { onClose(); return; }
                     const currentShift = await cashRepository.getCurrentShift();
                     if (currentShift) {
                         setShift(currentShift);
@@ -204,14 +189,12 @@ const CloseShiftModalWrapper = ({ isOpen, onClose }) => {
 
     const handleConfirm = async (data) => {
         if (!shift || !balance) return;
-        
         try {
             await cashRepository.closeShift(shift.id, {
                 ...data,
                 expectedCash: balance.totalCash,
                 expectedDigital: balance.totalDigital 
             });
-            
             alert("✅ Turno Cerrado Correctamente.");
             onClose();
             window.location.reload(); 
@@ -228,33 +211,62 @@ const CloseShiftModalWrapper = ({ isOpen, onClose }) => {
         <CashClosingModal 
             isOpen={isOpen} 
             onClose={onClose} 
-            systemTotals={{ 
-                totalCash: balance.totalCash, 
-                totalDigital: balance.totalDigital 
-            }}
+            systemTotals={{ totalCash: balance.totalCash, totalDigital: balance.totalDigital }}
             onConfirm={handleConfirm}
         />
     );
 };
 
 // ============================================================================
-// 4. COMPONENTE PRINCIPAL: SIDEBAR
+// 4. COMPONENTE PRINCIPAL: SIDEBAR (DINÁMICO + URL PERSISTENTE)
 // ============================================================================
 export const Sidebar = () => {
   const { isSyncing } = useAutoSync(15000);
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   
-  // Modales
   const [isCloseModalOpen, setIsCloseModalOpen] = useState(false);
   const [isPinModalOpen, setIsPinModalOpen] = useState(false);
-  
-  // Ruta pendiente de autorización
   const [pendingRoute, setPendingRoute] = useState(null);
 
   const { user, logout } = useAuthStore();
   const navigate = useNavigate();
+  const { companySlug } = useParams(); // 2. CAPTURAMOS EL SLUG
   
   const isAdmin = user?.role?.toUpperCase() === 'ADMIN';
+
+  // Branding
+  const [companyInfo, setCompanyInfo] = useState({ name: 'MAXI KIOSCO', logo: defaultLogo });
+
+  // 3. HELPER PARA LINKS DINÁMICOS
+  // Transforma 'pos' en '/kiosco-pepe/pos'
+  const getLink = (path) => {
+      const root = companySlug || user?.companyId; // Usamos el slug de la URL o el del usuario
+      if (!path) return `/${root}`; // Dashboard
+      return `/${root}/${path}`;
+  };
+
+  // 4. LOGOUT INTELIGENTE
+  const handleLogout = async () => {
+      const redirectSlug = companySlug || user?.companyId;
+      await logout();
+      // Redirigir al login específico de esta empresa
+      navigate(`/login/${redirectSlug}`);
+  };
+
+  useEffect(() => {
+      if (user?.companyId) {
+          const unsub = onSnapshot(doc(db, 'companies', user.companyId), (docSnap) => {
+              if (docSnap.exists()) {
+                  const data = docSnap.data();
+                  setCompanyInfo({
+                      name: data.name || 'MI NEGOCIO',
+                      logo: data.logoUrl || defaultLogo
+                  });
+              }
+          });
+          return () => unsub();
+      }
+  }, [user]);
 
   useEffect(() => {
     const handleStatus = () => setIsOnline(navigator.onLine);
@@ -266,24 +278,17 @@ export const Sidebar = () => {
     };
   }, []);
 
-  // 🔥 LÓGICA DE NAVEGACIÓN PROTEGIDA
   const handleRestrictedNavigation = (route) => {
       if (isAdmin) {
-          // Si es admin, pase usted
           navigate(route);
       } else {
-          // Si es cajero, guardamos la ruta y abrimos modal
           setPendingRoute(route);
           setIsPinModalOpen(true);
       }
   };
 
-  // Callback de éxito
   const handlePinSuccess = () => {
-      // 1. Cerramos el modal primero
       setIsPinModalOpen(false);
-      
-      // 2. Si hay ruta pendiente, navegamos
       if (pendingRoute) {
           navigate(pendingRoute);
           setPendingRoute(null);
@@ -294,21 +299,24 @@ export const Sidebar = () => {
     <>
       <aside className="w-64 h-screen bg-white border-r border-sys-200 flex flex-col fixed left-0 top-0 z-20 hidden md:flex shadow-[4px_0_24px_rgba(0,0,0,0.02)]">
         
-        {/* Header */}
+        {/* Header con Branding Dinámico */}
         <div className="p-6 border-b border-sys-100 flex flex-col items-center text-center">
-          <div className="w-20 h-20 mb-3 bg-white rounded-full flex items-center justify-center overflow-hidden border border-sys-100 shadow-sm p-2">
+          <div className="w-20 h-20 mb-3 bg-white rounded-full flex items-center justify-center overflow-hidden border border-sys-100 shadow-sm p-2 relative">
               <img 
-                 src={logoEmpresa} 
+                 src={companyInfo.logo} 
                  alt="Logo" 
                  className="w-full h-full object-contain"
-                 onError={(e) => { e.target.style.display = 'none'; }}
+                 onError={(e) => { e.target.src = defaultLogo; }} 
               />
-              <span className="text-xs font-bold text-sys-300 absolute -z-10">Logo</span>
           </div>
 
-          <div className="flex flex-col gap-0.5">
-            <h1 className="text-lg font-black text-sys-900 tracking-tight leading-none">MAXI KIOSCO</h1>
-            <p className="text-sm font-bold text-blue-600 font-serif italic tracking-wide">La Esquina</p>
+          <div className="flex flex-col gap-0.5 w-full">
+            <h1 className="text-lg font-black text-sys-900 tracking-tight leading-none uppercase truncate px-2">
+                {companyInfo.name}
+            </h1>
+            <p className="text-xs font-bold text-blue-600 font-serif italic tracking-wide">
+                Sistema POS
+            </p>
           </div>
 
           {/* Tarjeta Usuario */}
@@ -320,7 +328,7 @@ export const Sidebar = () => {
                   <p className="text-[11px] font-bold text-sys-800 truncate leading-tight">{user?.name || user?.email}</p>
                   <p className="text-[9px] text-sys-500 truncate font-mono uppercase leading-tight">{user?.role || 'Cajero'}</p>
               </div>
-              <button onClick={logout} className="text-sys-400 hover:text-red-500 transition-colors p-1 rounded-lg hover:bg-sys-200" title="Cerrar Sesión">
+              <button onClick={handleLogout} className="text-sys-400 hover:text-red-500 transition-colors p-1 rounded-lg hover:bg-sys-200" title="Cerrar Sesión">
                   <LogOut size={14} />
               </button>
           </div>
@@ -331,33 +339,32 @@ export const Sidebar = () => {
           
           <div className="px-4 py-2 text-xs font-semibold text-sys-400 uppercase tracking-wider mb-1">Operación</div>
           
-          <MenuLink to="/" icon={LayoutDashboard} label="Dashboard" />
-          <MenuLink to="/pos" icon={ShoppingCart} label="Punto de Venta" />
-          <MenuLink to="/sales" icon={FileText} label="Ventas" />
-          <MenuLink to="/clients" icon={Users} label="Clientes" />
+          {/* 5. LINKS DINÁMICOS CON getLink() */}
+          <MenuLink to={getLink('')} icon={LayoutDashboard} label="Dashboard" />
+          <MenuLink to={getLink('pos')} icon={ShoppingCart} label="Punto de Venta" />
+          <MenuLink to={getLink('sales')} icon={FileText} label="Ventas" />
+          <MenuLink to={getLink('clients')} icon={Users} label="Clientes" />
 
           {/* SECCIÓN GESTIÓN */}
           <div className="mt-6 mb-1">
              <div className="px-4 py-2 text-xs font-semibold text-sys-400 uppercase tracking-wider">
-                Gestión
+               Gestión
              </div>
              
-             {/* 1. INVENTARIO (Visible Todos - Protegido PIN) */}
              <MenuLink 
-                to="/inventory" // Para que se marque activo si ya estamos ahí
+                to={getLink('inventory')}
                 label="Inventario" 
                 icon={Package} 
-                onClick={() => handleRestrictedNavigation('/inventory')}
+                onClick={() => handleRestrictedNavigation(getLink('inventory'))}
                 isRestricted={!isAdmin} 
              />
 
-             {/* 2. CAJA Y CONFIG (Solo Admin - Ocultos para Cajero) */}
              {isAdmin && (
                 <div className="animate-in slide-in-from-left-4 fade-in duration-300 space-y-1 mt-1">
-                    <MenuLink to="/cash" icon={Wallet} label="Control de Caja" />
-                    {/* 🆕 NUEVO ENLACE: INTEGRACIONES (SaaS) */}
-                    <MenuLink to="/settings/integrations" icon={Plug} label="Integraciones" />
-                    <MenuLink to="/settings" icon={Settings} label="Configuración" />
+                    <MenuLink to={getLink('cash')} icon={Wallet} label="Control de Caja" />
+                    <MenuLink to={getLink('settings/integrations')} icon={Plug} label="Integraciones" />
+                    <MenuLink to={getLink('settings/company')} icon={Building} label="Mi Empresa" />
+                    <MenuLink to={getLink('settings')} icon={Settings} label="Configuración" />
                 </div>
              )}
           </div>
@@ -382,14 +389,12 @@ export const Sidebar = () => {
         </div>
       </aside>
 
-      {/* Modal PIN Elegante */}
       <PinRequestModal 
         isOpen={isPinModalOpen} 
         onClose={() => { setIsPinModalOpen(false); setPendingRoute(null); }}
         onSuccess={handlePinSuccess}
       />
 
-      {/* Modal Cierre de Caja */}
       <CloseShiftModalWrapper 
         isOpen={isCloseModalOpen} 
         onClose={() => setIsCloseModalOpen(false)} 
