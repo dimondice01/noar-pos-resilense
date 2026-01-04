@@ -228,5 +228,54 @@ export const salesRepository = {
     
     await tx.done;
     return allSales.length;
+  },
+
+  // 🔥 NUEVO MÉTODO: Estadísticas Fiscales para ARCA (Monitor Fiscal)
+  async getFiscalStats() {
+    const dbLocal = await getDB();
+    const allSales = await dbLocal.getAll('sales');
+    
+    const now = new Date();
+    
+    // 1. Definir Rangos de Fecha
+    const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    
+    // Inicio de Semana (Lunes)
+    const dayOfWeek = now.getDay() || 7; // 1 (Lunes) a 7 (Domingo)
+    const startOfWeek = new Date(startOfDay);
+    startOfWeek.setDate(startOfDay.getDate() - dayOfWeek + 1);
+    
+    // Inicio de Mes
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+
+    // 2. Contadores
+    let daily = 0;
+    let weekly = 0;
+    let monthly = 0;
+    let lastFiscalTime = null;
+
+    // 3. Filtrar y contar
+    for (const sale of allSales) {
+        // Solo contamos Facturas Aprobadas (status APPROVED por ARCA)
+        if (sale.afip?.status === 'APPROVED') {
+            const saleDate = new Date(sale.date);
+            
+            if (saleDate >= startOfDay) daily++;
+            if (saleDate >= startOfWeek) weekly++;
+            if (saleDate >= startOfMonth) monthly++;
+
+            // Guardamos la última hora de fiscalización
+            if (!lastFiscalTime || saleDate > lastFiscalTime) {
+                lastFiscalTime = saleDate;
+            }
+        }
+    }
+
+    return {
+        daily,
+        weekly,
+        monthly,
+        lastTime: lastFiscalTime
+    };
   }
 };

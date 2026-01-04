@@ -384,21 +384,24 @@ export const InventoryPage = () => {
         </div>
         
         <div className="flex flex-wrap gap-2 justify-end">
-            <Button variant="secondary" className="border-purple-200 text-purple-700 bg-purple-50 hover:bg-purple-100 px-3" onClick={() => navigate('/inventory/print')}>
+            <Button variant="secondary" className="border-purple-200 text-purple-700 bg-purple-50 hover:bg-purple-100 px-3" onClick={() => navigate('print')}>
                 <Printer size={18} className="mr-2" /> Etiquetas
             </Button>
-            <Button variant="secondary" className="border-blue-200 text-blue-700 bg-blue-50 hover:bg-blue-100 px-3" onClick={() => navigate('/inventory/movements')}>
+            
+            {/* 🔥 CORRECCIÓN: Uso de ruta relativa 'movements' */}
+            <Button variant="secondary" className="border-blue-200 text-blue-700 bg-blue-50 hover:bg-blue-100 px-3" onClick={() => navigate('movements')}>
                 <ArrowRightLeft size={18} className="mr-2" /> Movimientos
             </Button>
+            
             <div className="w-[1px] h-8 bg-sys-200 mx-1 hidden md:block"></div>
             <Button variant="secondary" className="border-brand/20 text-brand bg-brand/5 hover:bg-brand/10" onClick={() => setIsBulkUpdateOpen(true)}>
-               <ArrowUpRight size={18} className="mr-2" /> Aumento Masivo
+                <ArrowUpRight size={18} className="mr-2" /> Aumento Masivo
             </Button>
             <Button variant="secondary" onClick={() => setIsMastersModalOpen(true)}>
-               <Filter size={18} className="mr-2" /> Maestros
+                <Filter size={18} className="mr-2" /> Maestros
             </Button>
             <Button onClick={() => { setEditingProduct(null); setIsProductModalOpen(true); }} className="shadow-lg shadow-brand/20">
-               <Plus size={20} className="mr-2" /> Nuevo
+                <Plus size={20} className="mr-2" /> Nuevo
             </Button>
         </div>
       </div>

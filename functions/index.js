@@ -63,6 +63,12 @@ async function getCompanyConfig(companyId, type) {
         if (!data.isActive) throw new Error(`AFIP está desactivado en la empresa ${companyId}.`);
         if (!data.cert || !data.key) throw new Error("Falta Certificado o Clave Privada de AFIP.");
     }
+
+    // 👇 AGREGA ESTE BLOQUE PARA CLOVER
+    if (type === 'clover') {
+        if (!data.isActive) throw new Error(`Clover está desactivado en la empresa ${companyId}.`);
+        if (!data.merchantId || !data.apiToken) throw new Error("Falta Merchant ID o Token de Clover.");
+    }
     
     return data;
 }
@@ -110,6 +116,61 @@ app.post("/create-user", async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
+
+// ==================================================================
+// 🍀 ENDPOINT 4: CLOVER (REAL INTEGRATION)
+// ==================================================================
+app.post("/create-clover-order", async (req, res) => {
+    try {
+      const { total, companyId, externalId } = req.body; 
+      const amount = Number(Number(total).toFixed(2));
+      
+      // 1. Obtener Credenciales de la Empresa
+      const cloverConfig = await getCompanyConfig(companyId, 'clover');
+      
+      logger.info(`☘️ Clover (${companyId}): Iniciando cobro por $${amount}`);
+  
+      // 2. Determinar entorno (Sandbox vs Prod)
+      // NOTA: Para producción real, cambiar a TRUE
+      const isProduction = false; 
+      const baseUrl = isProduction 
+          ? "https://api.clover.com" 
+          : "https://sandbox.clover.com";
+          
+      // 3. Enviar orden a la nube de Clover
+      // Se requiere el Merchant ID en la URL para la API v1
+      const url = `https://sandbox.clover.com/v1/merchants/${cloverConfig.merchantId}/payments`;
+      
+      const response = await axios.post(url, {
+          amount: Math.round(amount * 100), // Clover usa centavos
+          currency: "ARS",
+          externalPaymentId: externalId || `noar-${Date.now()}`,
+          capture: true
+      }, {
+          headers: {
+              'Authorization': `Bearer ${cloverConfig.apiToken}`,
+              'Content-Type': 'application/json'
+          }
+      });
+  
+      // 4. Responder al Frontend
+      res.status(200).json({
+        success: true,
+        status: "APPROVED",
+        paymentId: response.data.id,
+        raw: response.data
+      });
+  
+    } catch (error) {
+      logger.error("❌ Error Clover:", error.response?.data || error.message);
+      res.status(500).json({ 
+          error: "Error procesando pago con Clover",
+          details: error.response?.data?.message || error.message
+      });
+    }
+});
+
 
 // ==================================================================
 // 🚀 ENDPOINT 1: MERCADOPAGO (QR DINÁMICO SAAS)
@@ -273,26 +334,6 @@ app.post("/check-payment-status", async (req, res) => {
 // ==================================================================
 // 🚀 ENDPOINT 4: CLOVER (SIMULADO)
 // ==================================================================
-app.post("/create-clover-order", async (req, res) => {
-    try {
-      const { total, reference } = req.body; 
-      const amount = Number(Number(total).toFixed(2));
-      const finalRef = reference || `CLV-${Date.now()}`;
-      
-      logger.info(`☘️ (Clover) Iniciando cobro por $${amount} (Ref: ${finalRef})`);
-  
-      res.status(200).json({
-        success: true,
-        status: "PENDING",
-        reference: finalRef,
-        message: "Esperando pago en terminal Clover..."
-      });
-  
-    } catch (error) {
-      logger.error("Error Clover:", error);
-      res.status(500).json({ error: "Error Clover" });
-    }
-});
 
 // ==================================================================
 // 📠 ENDPOINT 5: FACTURACIÓN AFIP (SAAS)
@@ -537,6 +578,9 @@ app.post("/create-tenant", async (req, res) => {
     
     const afipConfigRef = db.collection('companies').doc(companyId).collection('config').doc('afip');
     initBatch.set(afipConfigRef, { isActive: false, createdAt: new Date().toISOString() });
+
+    const cloverConfigRef = db.collection('companies').doc(companyId).collection('config').doc('clover');
+    initBatch.set(cloverConfigRef, { isActive: false, createdAt: new Date().toISOString() });
 
     await initBatch.commit();
     

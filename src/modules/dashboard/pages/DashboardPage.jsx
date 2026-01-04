@@ -4,7 +4,7 @@ import {
     Wallet, ArrowRight, RefreshCw, DollarSign,
     Lock, Unlock, Monitor, FileText, CheckCircle2, History, X, 
     ShoppingBag, Banknote, Shield, Key, BarChart3, TrendingDown,
-    Activity, Signal
+    Activity, Signal, Settings // 👈 Agregamos Settings para el botón de config
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
@@ -14,10 +14,8 @@ import { productRepository } from '../../inventory/repositories/productRepositor
 import { cashRepository } from '../../cash/repositories/cashRepository';
 import { salesRepository } from '../../sales/repositories/salesRepository';
 
-// 🔥 IMPORTAMOS EL SERVICIO DE SEGURIDAD CENTRALIZADO
+// Servicios
 import { securityService } from '../../security/services/securityService';
-
-// 🔥 HOOK REAL-TIME
 import { useCloudDashboard } from '../hooks/useCloudDashboard';
 
 // UI
@@ -49,7 +47,7 @@ const StatCard = ({ title, value, subtext, icon: Icon, colorClass, borderClass, 
 );
 
 // =================================================================
-// COMPONENTE: TARJETA DE CAJA PROPIA (REDISEÑADA COMPACTA ✨)
+// COMPONENTE: TARJETA DE CAJA PROPIA
 // =================================================================
 const MyShiftCard = ({ metrics, money, handleOpenShift }) => {
     const isCajeroActive = !!metrics.activeShift;
@@ -99,6 +97,69 @@ const MyShiftCard = ({ metrics, money, handleOpenShift }) => {
                     </div>
                  </div>
             )}
+        </Card>
+    );
+};
+
+// =================================================================
+// 🔥 COMPONENTE: MONITOR FISCAL ARCA (Con botón de Gestión)
+// =================================================================
+const ArcaMonitorCard = ({ stats, onManageClick }) => {
+    const DAILY_TARGET = 50; 
+    
+    return (
+        <Card className="p-0 overflow-hidden border border-blue-200 shadow-md">
+            {/* Cabecera Interactiva */}
+            <div className="bg-blue-600 p-3 flex justify-between items-center text-white">
+                <div className="flex items-center gap-2">
+                    <div className="p-1.5 bg-white/20 rounded-lg backdrop-blur-sm">
+                        <Shield size={16} /> 
+                    </div>
+                    <div>
+                        <p className="text-[10px] font-bold uppercase opacity-80 tracking-wider">Monitor Fiscal</p>
+                        <h3 className="font-bold text-sm leading-none">Control ARCA</h3>
+                    </div>
+                </div>
+                
+                {/* 🔥 BOTÓN DE GESTIÓN FISCAL */}
+                <button 
+                    onClick={onManageClick}
+                    className="flex items-center gap-1.5 bg-white/10 hover:bg-white/20 px-2 py-1 rounded text-[10px] font-bold uppercase transition-colors"
+                >
+                    <Settings size={12} /> Gestión
+                </button>
+            </div>
+
+            {/* Cuerpo */}
+            <div className="p-4 grid grid-cols-3 gap-4 text-center divide-x divide-sys-100">
+                <div>
+                    <p className="text-[10px] uppercase font-bold text-sys-500 mb-1">Hoy</p>
+                    <p className="text-2xl font-black text-blue-600">{stats.daily}</p>
+                </div>
+                <div>
+                    <p className="text-[10px] uppercase font-bold text-sys-500 mb-1">Semana</p>
+                    <p className="text-xl font-bold text-sys-700">{stats.weekly}</p>
+                </div>
+                <div>
+                    <p className="text-[10px] uppercase font-bold text-sys-500 mb-1">Mes</p>
+                    <p className="text-xl font-bold text-sys-700">{stats.monthly}</p>
+                </div>
+            </div>
+
+            {/* Pie de alerta */}
+            <div className="bg-sys-50 p-2 flex justify-between items-center px-4 border-t border-sys-100">
+                <div className="flex-1 text-center">
+                    {stats.daily === 0 ? (
+                        <p className="text-[10px] font-bold text-red-500 flex items-center justify-center gap-1">
+                            <AlertTriangle size={10}/> Sin fiscalizar hoy
+                        </p>
+                    ) : (
+                        <p className="text-[10px] font-medium text-sys-500">
+                            Última: <span className="font-mono font-bold text-sys-700">{stats.lastTime ? new Date(stats.lastTime).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : '-'}</span>
+                        </p>
+                    )}
+                </div>
+            </div>
         </Card>
     );
 };
@@ -168,11 +229,12 @@ const AdminCashAuditPanel = ({ allShifts, loadIntelligence, navigate }) => {
     
     return (
         <Card className="lg:col-span-3">
-            <div className="flex justify-between items-center mb-4">
+             <div className="flex justify-between items-center mb-4">
                 <h3 className="font-bold text-lg text-sys-900 flex items-center gap-2">
                     <FileText size={20} className="text-brand"/> Auditoría de Cajas
                 </h3>
-                <Button variant="ghost" size="sm" onClick={() => navigate('/cash')} className="text-brand hover:bg-brand-light font-medium text-xs">
+                {/* 🔥 RUTA RELATIVA: 'cash' en vez de '/cash' */}
+                <Button variant="ghost" size="sm" onClick={() => navigate('cash')} className="text-brand hover:bg-brand-light font-medium text-xs">
                     Ver Historial Completo
                 </Button>
             </div>
@@ -318,7 +380,8 @@ const SharedKPICard = ({ metrics, isAdmin, money, navigate, handleCloseShift, is
                 
                 <div className="ml-auto flex gap-2">
                     {isAdmin && (
-                        <Button onClick={() => navigate('/sales')} variant="secondary" size="sm" className="bg-white text-brand hover:bg-sys-100 shadow-sm border-none h-8 text-xs">
+                        /* 🔥 RUTA RELATIVA: 'sales' en vez de '/sales' */
+                        <Button onClick={() => navigate('sales')} variant="secondary" size="sm" className="bg-white text-brand hover:bg-sys-100 shadow-sm border-none h-8 text-xs">
                             <FileText size={14} className="mr-2" /> Historial
                         </Button>
                     )}
@@ -329,7 +392,6 @@ const SharedKPICard = ({ metrics, isAdmin, money, navigate, handleCloseShift, is
                         </Button>
                     )}
                     
-                    {/* Botón Admin cerrar caja propia */}
                     {isAdmin && isCajeroActive && (
                         <Button size="sm" variant="secondary" className="bg-white text-red-600 hover:bg-red-50 shadow-sm border-none h-8 text-xs font-bold" onClick={handleCloseShift}>
                             <Lock size={14} className="mr-2"/> Cerrar Mí Caja
@@ -346,7 +408,8 @@ const SharedKPICard = ({ metrics, isAdmin, money, navigate, handleCloseShift, is
 // =================================================================
 const QuickActionsPanel = ({ navigate, onExpenseClick, onWithdrawalClick, isAdmin }) => (
     <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <button onClick={() => navigate('/pos')} className="p-4 bg-white border border-sys-200 rounded-xl shadow-sm hover:shadow-md hover:border-brand/30 transition-all flex flex-col items-center gap-2 group">
+        {/* 🔥 RUTA RELATIVA: 'pos' */}
+        <button onClick={() => navigate('pos')} className="p-4 bg-white border border-sys-200 rounded-xl shadow-sm hover:shadow-md hover:border-brand/30 transition-all flex flex-col items-center gap-2 group">
             <ShoppingBag className="text-brand group-hover:scale-110 transition-transform" size={24} />
             <span className="font-bold text-sys-700 text-xs">Ir a Vender</span>
         </button>
@@ -365,7 +428,8 @@ const QuickActionsPanel = ({ navigate, onExpenseClick, onWithdrawalClick, isAdmi
             <span className="font-bold text-sys-700 text-xs">Retiro Efectivo</span>
         </button>
 
-        <button onClick={() => navigate('/sales')} className="p-4 bg-white border border-sys-200 rounded-xl shadow-sm hover:shadow-md hover:hover:border-brand/30 transition-all flex flex-col items-center gap-2 group">
+        {/* 🔥 RUTA RELATIVA: 'sales' */}
+        <button onClick={() => navigate('sales')} className="p-4 bg-white border border-sys-200 rounded-xl shadow-sm hover:shadow-md hover:hover:border-brand/30 transition-all flex flex-col items-center gap-2 group">
             <FileText className="text-sys-500 group-hover:text-brand group-hover:scale-110 transition-transform" size={24} />
             <span className="font-bold text-sys-700 text-xs">Ver Ventas</span>
         </button>
@@ -384,7 +448,6 @@ const CajeroDashboardView = ({ metrics, money, handleOpenShift, handleCloseShift
                     handleCloseShift={handleCloseShift} isCajeroActive={!!metrics.activeShift}
                 />
                 <div className="space-y-4">
-                    {/* USAMOS EL MISMO COMPONENTE COMPACTO */}
                     <MyShiftCard metrics={metrics} money={money} handleOpenShift={handleOpenShift} />
                 </div>
             </div>
@@ -480,6 +543,13 @@ const AdminDashboardView = ({
         {/* PANEL AUDITORÍA + MI CAJA */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="lg:col-span-2 space-y-4">
+                 
+                 {/* 🔥 INTEGRACIÓN DEL MONITOR ARCA CON BOTÓN GESTIÓN */}
+                 <ArcaMonitorCard 
+                    stats={metrics.fiscalStats || { daily:0, weekly:0, monthly:0, lastTime: null }} 
+                    onManageClick={() => navigate('fiscal')} 
+                 />
+                 
                  <AdminCashAuditPanel allShifts={allShifts} loadIntelligence={loadIntelligence} navigate={navigate} />
                  
                  {/* FEED DE VENTAS */}
@@ -512,12 +582,12 @@ const AdminDashboardView = ({
             </div>
 
             <div className="space-y-4">
-                {/* 🔥 TARJETA OPERATIVA DEL ADMIN */}
                 <MyShiftCard metrics={metrics} money={money} handleOpenShift={handleOpenShift} />
 
                 {/* Accesos Rápidos Verticales (Compactos) */}
                 <div className="grid grid-cols-2 gap-3">
-                    <Card className="p-3 border-l-4 border-l-orange-500 cursor-pointer hover:shadow-md transition-all flex flex-col justify-between" onClick={() => navigate('/clients')}>
+                    {/* 🔥 RUTA RELATIVA: 'clients' */}
+                    <Card className="p-3 border-l-4 border-l-orange-500 cursor-pointer hover:shadow-md transition-all flex flex-col justify-between" onClick={() => navigate('clients')}>
                         <p className="text-[10px] text-sys-500 uppercase font-bold mb-1">Créditos</p>
                         <div className="flex justify-between items-end">
                              <p className="text-sm font-black text-sys-900">$ {money(metrics.totalDebt)}</p>
@@ -525,7 +595,8 @@ const AdminDashboardView = ({
                         </div>
                     </Card>
 
-                    <Card className="p-3 border-l-4 border-l-purple-500 cursor-pointer hover:shadow-md transition-all flex flex-col justify-between" onClick={() => navigate('/inventory')}>
+                    {/* 🔥 RUTA RELATIVA: 'inventory' */}
+                    <Card className="p-3 border-l-4 border-l-purple-500 cursor-pointer hover:shadow-md transition-all flex flex-col justify-between" onClick={() => navigate('inventory')}>
                          <p className="text-[10px] text-sys-500 uppercase font-bold mb-1">Stock Bajo</p>
                          <div className="flex justify-between items-end">
                              <p className="text-sm font-black text-sys-900">{metrics.lowStockCount}</p>
@@ -534,7 +605,6 @@ const AdminDashboardView = ({
                     </Card>
                 </div>
                 
-                {/* 🔥 PANEL SEGURIDAD CONECTADO A SECURITY SERVICE */}
                 <AdminSecurityPanel onUpdatePin={handleUpdatePin} />
             </div>
         </div>
@@ -555,15 +625,14 @@ export const DashboardPage = () => {
         todaySales: 0, cashInHand: 0, digitalSales: 0, totalExpenses: 0, 
         fiscalCount: 0, salesByMethod: { cash: 0, digital: 0 },
         activeShiftsCount: 0, activeShift: null, allShifts: [], totalDebt: 0, lowStockCount: 0,
-        recentSales: [], averageTicket: 0, topProducts: []
+        recentSales: [], averageTicket: 0, topProducts: [],
+        fiscalStats: { daily: 0, weekly: 0, monthly: 0, lastTime: null } 
     });
 
     const [isExpenseModalOpen, setIsExpenseModalOpen] = useState(false);
     const [isWithdrawalModalOpen, setIsWithdrawalModalOpen] = useState(false); 
     
     const isAdmin = user?.role?.toUpperCase() === 'ADMIN';
-
-    // 🔥 HOOK DE NUBE
     const cloudStats = useCloudDashboard();
 
     if (!user) return <div className="p-10 text-center text-red-500">Error: Usuario no autenticado.</div>;
@@ -587,6 +656,7 @@ export const DashboardPage = () => {
         let todaySales = 0, salesCash = 0, salesDigital = 0, fiscalCount = 0;
         let totalExpensesToday = 0, totalCashInHand = 0;
         let myActiveShift = null, globalActiveShifts = [];
+        let fiscalStats = { daily: 0, weekly: 0, monthly: 0, lastTime: null };
 
         try {
             myActiveShift = allShifts.find(s => s.status === 'OPEN' && s.userId === user.name);
@@ -597,7 +667,6 @@ export const DashboardPage = () => {
                     const total = parseFloat(s.total) || 0;
                     acc.total += total;
                     const method = s.payment?.method || 'unknown';
-                    // Lógica local es minúscula
                     if (method === 'cash') acc.cash += total; else acc.digital += total;
                     if (s.afip?.status === 'APPROVED') acc.fiscalCount++;
                     return acc;
@@ -607,6 +676,10 @@ export const DashboardPage = () => {
                 salesCash = mSales.cash;
                 salesDigital = mSales.digital;
                 fiscalCount = mSales.fiscalCount;
+            } else {
+                try {
+                    fiscalStats = await salesRepository.getFiscalStats();
+                } catch (e) { console.error("Error fiscal stats", e); }
             }
 
             const startOfToday = new Date().setHours(0,0,0,0);
@@ -635,14 +708,14 @@ export const DashboardPage = () => {
                 activeShiftsCount: globalActiveShifts.length,
                 allShifts: allShifts, 
                 lowStockCount,
-                totalDebt: 0 
+                totalDebt: 0,
+                fiscalStats 
             }));
 
         } catch (error) { console.error("Error Dashboard:", error); }
         setLoading(false);
     };
 
-    // --- FUSIÓN FINAL ---
     const finalMetrics = isAdmin ? {
         ...metrics,
         todaySales: cloudStats.totalSales, 
@@ -653,7 +726,8 @@ export const DashboardPage = () => {
         fiscalCount: cloudStats.fiscalCount || 0,
         recentSales: cloudStats.recentSales,
         averageTicket: cloudStats.averageTicket || 0,
-        topProducts: cloudStats.topProducts || []
+        topProducts: cloudStats.topProducts || [],
+        fiscalStats: metrics.fiscalStats 
     } : metrics;
 
     const handleOpenShift = async () => {
@@ -684,23 +758,19 @@ export const DashboardPage = () => {
         try { await cashRepository.registerExpense(amount, description, '', user?.name); await loadIntelligence(); alert(`✅ Gasto registrado.`); } catch (e) { alert(e.message); }
     };
 
-    // 🔥 RETIRO DE EFECTIVO VALIDADO CON SECURITY SERVICE
     const handleRegisterWithdrawal = async ({ amount, description, adminPin }) => {
         try {
-            // VERIFICACIÓN CENTRALIZADA
             const isValid = await securityService.verifyMasterPin(adminPin);
             if (!isValid) return alert("⛔ PIN INCORRECTO.");
-            
             await cashRepository.registerWithdrawal(amount, description, 'Autorizado por PIN', user?.name);
             await loadIntelligence();
             alert(`✅ Retiro autorizado.`);
         } catch (e) { alert(e.message); }
     };
 
-    // 🔥 ACTUALIZACIÓN DE PIN MEDIANTE SECURITY SERVICE
     const handleUpdatePin = async (newPin) => {
         if (!newPin || newPin.length < 4) return alert("Mínimo 4 dígitos.");
-        await securityService.setMasterPin(newPin); // Usamos el servicio central
+        await securityService.setMasterPin(newPin); 
         alert("✅ PIN Maestro actualizado correctamente.");
     };
     

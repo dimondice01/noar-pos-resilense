@@ -1,19 +1,19 @@
 import React, { useState, useEffect } from 'react';
 import { 
-  CreditCard, Save, HelpCircle, CheckCircle2, 
-  AlertCircle, ExternalLink, Eye, EyeOff, Plug, FileText, ScrollText, Download, Key,
-  Search, X, Loader2, Info, Link as LinkIcon
+    CreditCard, Save, HelpCircle, CheckCircle2, 
+    AlertCircle, ExternalLink, Eye, EyeOff, Plug, FileText, ScrollText, Download, Key,
+    Search, X, Loader2, Info, Link as LinkIcon, Terminal // 🔥 Agregamos Terminal para icono Clover
 } from 'lucide-react';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { db } from '../../../database/firebase';
-import forge from 'node-forge'; // ⚠️ Asegúrate de haber ejecutado: npm install node-forge
-import { useAuthStore } from '../../auth/store/useAuthStore'; // 🔑 IMPORTANTE: Store de Autenticación
+import forge from 'node-forge'; 
+import { useAuthStore } from '../../auth/store/useAuthStore'; 
 
 import { Card } from '../../../core/ui/Card';
 import { Button } from '../../../core/ui/Button';
 import { cn } from '../../../core/utils/cn';
 
-// URL del Backend (En producción usa la relativa, en local la completa si es necesario)
+// URL del Backend
 const API_URL = import.meta.env.VITE_API_URL || import.meta.env.VITE_API_URL; 
 
 // ==================================================================================
@@ -22,7 +22,7 @@ const API_URL = import.meta.env.VITE_API_URL || import.meta.env.VITE_API_URL;
 const TutorialModal = ({ isOpen, onClose, type }) => {
     if (!isOpen) return null;
 
-    const steps = type === 'MP' ? [
+    const stepsMP = [
         { 
             title: "1. MercadoPago Developers", 
             desc: "Entra al panel de desarrolladores con la cuenta del negocio.",
@@ -44,7 +44,9 @@ const TutorialModal = ({ isOpen, onClose, type }) => {
             desc: "¡Listo! Pega ese Token en esta pantalla y usa el botón de la LUPA para encontrar tus cajas automáticamente.",
             icon: Search
         }
-    ] : [
+    ];
+
+    const stepsAFIP = [
         {
             title: "1. Generar Pedido", 
             desc: "Completa CUIT y Razón Social abajo. Toca 'Generar Pedido .CSR' y guarda el archivo en tu PC.",
@@ -68,12 +70,40 @@ const TutorialModal = ({ isOpen, onClose, type }) => {
         }
     ];
 
+    // 🔥 NUEVO: Tutorial Clover
+    const stepsClover = [
+        {
+            title: "1. Clover Dashboard",
+            desc: "Ingresa a tu panel de control de Clover (Web).",
+            link: "https://www.clover.com/dashboard/login",
+            icon: ExternalLink
+        },
+        {
+            title: "2. Obtener Merchant ID",
+            desc: "Tu Merchant ID (MID) está en la URL del navegador o en Configuración > Comerciante. Es un código tipo 'ABC123DEF456'.",
+            icon: Search
+        },
+        {
+            title: "3. Crear Token API",
+            desc: "Ve a Configuración (Setup) > API Tokens. Crea uno nuevo con permisos de 'Merchant R/W' y 'Payments R/W'.",
+            icon: Key
+        },
+        {
+            title: "4. Remote App ID (Opcional)",
+            desc: "Si desarrollaste una App específica en Clover, usa su ID. Si no, déjalo en blanco o usa el ID de nuestra App (consúltanos).",
+            icon: Plug
+        }
+    ];
+
+    const steps = type === 'MP' ? stepsMP : type === 'AFIP' ? stepsAFIP : stepsClover;
+    const colorClass = type === 'MP' ? "bg-[#009EE3]" : type === 'CLOVER' ? "bg-[#28a745]" : "bg-[#2C3E50]"; // Verde Clover
+
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-sys-900/60 backdrop-blur-sm p-4 animate-in fade-in">
             <div className="bg-white w-full max-w-lg rounded-2xl shadow-2xl overflow-hidden relative border border-sys-200">
-                <div className={cn("p-5 text-white flex justify-between items-center shadow-md", type === 'MP' ? "bg-[#009EE3]" : "bg-[#2C3E50]")}>
+                <div className={cn("p-5 text-white flex justify-between items-center shadow-md", colorClass)}>
                     <h3 className="font-bold text-lg flex items-center gap-2">
-                        <HelpCircle size={22}/> Guía Rápida: {type === 'MP' ? 'Mercado Pago' : 'AFIP'}
+                        <HelpCircle size={22}/> Guía Rápida: {type === 'MP' ? 'Mercado Pago' : type === 'CLOVER' ? 'Clover' : 'AFIP'}
                     </h3>
                     <button onClick={onClose} className="hover:bg-white/20 p-1.5 rounded-full transition-colors"><X size={20}/></button>
                 </div>
@@ -83,7 +113,7 @@ const TutorialModal = ({ isOpen, onClose, type }) => {
                         <div className="absolute left-[19px] top-4 bottom-4 w-0.5 bg-sys-200 -z-10"></div>
                         {steps.map((step, i) => (
                             <div key={i} className="flex gap-4 group">
-                                <div className={cn("w-10 h-10 rounded-full flex items-center justify-center shrink-0 font-bold shadow-sm transition-transform group-hover:scale-110 z-10", type === 'MP' ? "bg-blue-50 text-blue-600 border-2 border-blue-100" : "bg-white text-sys-700 border-2 border-sys-200")}>
+                                <div className={cn("w-10 h-10 rounded-full flex items-center justify-center shrink-0 font-bold shadow-sm transition-transform group-hover:scale-110 z-10", type === 'MP' ? "bg-blue-50 text-blue-600 border-2 border-blue-100" : type === 'CLOVER' ? "bg-green-50 text-green-600 border-2 border-green-100" : "bg-white text-sys-700 border-2 border-sys-200")}>
                                     <step.icon size={18}/>
                                 </div>
                                 <div className="bg-white p-4 rounded-xl border border-sys-100 shadow-sm flex-1 hover:border-sys-300 transition-colors group-hover:shadow-md">
@@ -111,7 +141,7 @@ const TutorialModal = ({ isOpen, onClose, type }) => {
 };
 
 // ==================================================================================
-// 🧩 COMPONENTES UI (Inputs Bonitos)
+// 🧩 COMPONENTES UI
 // ==================================================================================
 const SecretInput = ({ label, value, onChange, placeholder }) => {
   const [show, setShow] = useState(false);
@@ -123,7 +153,7 @@ const SecretInput = ({ label, value, onChange, placeholder }) => {
           type={show ? "text" : "password"} 
           className="w-full bg-sys-50 border border-sys-200 rounded-xl pl-3 pr-10 py-2.5 text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/10 transition-all font-mono text-sys-800 placeholder:text-sys-300"
           placeholder={placeholder}
-          value={value}
+          value={value || ''}
           onChange={(e) => onChange(e.target.value)}
         />
         <button type="button" onClick={() => setShow(!show)} className="absolute right-3 top-2.5 text-sys-400 hover:text-sys-600 transition-colors">
@@ -140,14 +170,14 @@ const CertInput = ({ label, value, onChange, placeholder }) => (
         <textarea 
             className="w-full bg-sys-50 border border-sys-200 rounded-xl px-3 py-2.5 text-[10px] outline-none focus:border-brand transition-all font-mono text-sys-600 h-28 resize-y leading-tight placeholder:text-sys-300"
             placeholder={placeholder}
-            value={value}
+            value={value || ''}
             onChange={(e) => onChange(e.target.value)}
         />
     </div>
 );
 
 // ==================================================================================
-// 🚀 PÁGINA PRINCIPAL (SAAS ENABLED)
+// 🚀 PÁGINA PRINCIPAL
 // ==================================================================================
 export const IntegrationsPage = () => {
   const [loading, setLoading] = useState(true);
@@ -158,13 +188,15 @@ export const IntegrationsPage = () => {
   // Estados de Procesos
   const [generatingCsr, setGeneratingCsr] = useState(false);
   const [searchingPos, setSearchingPos] = useState(false);
-  const [posList, setPosList] = useState([]); // Lista de cajas encontradas
+  const [posList, setPosList] = useState([]); 
 
   // Configs
   const [mpConfig, setMpConfig] = useState({ accessToken: '', userId: '', externalPosId: '', isActive: false });
   const [afipConfig, setAfipConfig] = useState({ cuit: '', ptoVta: 1, razonSocial: '', cert: '', key: '', condicion: 'MONOTRIBUTO', isActive: false });
+  // 🔥 Nuevo Estado: Clover
+  const [cloverConfig, setCloverConfig] = useState({ merchantId: '', apiToken: '', remoteAppId: '', deviceId: '', isActive: false });
 
-  // 🔑 HOOK SAAS: Obtener Usuario y Empresa
+  // 🔑 HOOK SAAS
   const user = useAuthStore(state => state.user);
 
   useEffect(() => { 
@@ -175,48 +207,40 @@ export const IntegrationsPage = () => {
 
   const loadConfig = async () => {
     try {
-      // 🔒 Leemos de la ruta PRIVADA de la empresa
+      // Leemos directamente de la colección 'config' de la empresa
       const mpDoc = await getDoc(doc(db, 'companies', user.companyId, 'config', 'mercadopago')); 
       if (mpDoc.exists()) setMpConfig(mpDoc.data());
 
       const afipDoc = await getDoc(doc(db, 'companies', user.companyId, 'config', 'afip')); 
       if (afipDoc.exists()) setAfipConfig(prev => ({...prev, ...afipDoc.data()}));
+
+      // 🔥 Cargamos Clover
+      const cloverDoc = await getDoc(doc(db, 'companies', user.companyId, 'config', 'clover'));
+      if (cloverDoc.exists()) setCloverConfig(cloverDoc.data());
+
     } catch (error) { console.error(error); } finally { setLoading(false); }
   };
 
-  // --- 🪄 1. MAGIA MP: BUSCAR CAJAS ---
+  // --- 1. MP: BUSCAR CAJAS ---
   const handleSearchPos = async () => {
       if (!mpConfig.accessToken || mpConfig.accessToken.length < 20) {
           return alert("⚠️ Primero pega el 'Access Token' de MercadoPago.");
       }
-
       setSearchingPos(true);
       setPosList([]);
-
       try {
-          // Llamamos a nuestro Backend enviando companyId
           const response = await fetch(`${API_URL}/get-mp-stores`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ 
-                  accessToken: mpConfig.accessToken,
-                  companyId: user.companyId // Contexto opcional para logs del backend
-              })
+              body: JSON.stringify({ accessToken: mpConfig.accessToken, companyId: user.companyId })
           });
-
           const data = await response.json();
-
           if (!response.ok) throw new Error(data.error || "Error al buscar cajas");
 
-          // 1. Autocompletar UserID
-          if (data.userId) {
-              setMpConfig(prev => ({ ...prev, userId: data.userId.toString() }));
-          }
+          if (data.userId) setMpConfig(prev => ({ ...prev, userId: data.userId.toString() }));
 
-          // 2. Mostrar lista de cajas
           if (data.cajas && data.cajas.length > 0) {
               setPosList(data.cajas);
-              // Si solo hay una, la elegimos automáticamente
               if (data.cajas.length === 1) {
                   setMpConfig(prev => ({ ...prev, externalPosId: data.cajas[0].external_id }));
                   alert(`✅ ¡Caja encontrada y seleccionada!\nNombre: ${data.cajas[0].name}`);
@@ -224,9 +248,8 @@ export const IntegrationsPage = () => {
                   alert(`✅ Encontramos ${data.cajas.length} cajas. Por favor selecciona una de la lista.`);
               }
           } else {
-              alert("⚠️ Tu cuenta funciona, pero NO tiene Cajas (Sucursales) creadas.\nVe al panel de MP -> Tu Negocio -> Sucursales y crea una.");
+              alert("⚠️ Tu cuenta funciona, pero NO tiene Cajas (Sucursales) creadas.");
           }
-
       } catch (error) {
           console.error(error);
           alert("❌ Error buscando cajas: " + error.message);
@@ -235,18 +258,15 @@ export const IntegrationsPage = () => {
       }
   };
 
-  // --- 🪄 2. MAGIA AFIP: GENERAR CLAVES ---
+  // --- 2. AFIP: GENERAR CLAVES ---
   const handleGenerateCSR = async () => {
     if (!afipConfig.cuit || !afipConfig.razonSocial) return alert("⚠️ Escribe tu CUIT y Nombre arriba primero.");
     setGeneratingCsr(true);
     try {
-        // Generación asíncrona para no congelar la UI
         const keypair = await new Promise((resolve, reject) => {
             forge.pki.rsa.generateKeyPair({ bits: 2048, workers: 2 }, (err, k) => err ? reject(err) : resolve(k));
         });
-        
         const privateKeyPem = forge.pki.privateKeyToPem(keypair.privateKey);
-        
         const csr = forge.pki.createCertificationRequest();
         csr.publicKey = keypair.publicKey;
         csr.setSubject([
@@ -258,16 +278,13 @@ export const IntegrationsPage = () => {
         csr.sign(keypair.privateKey);
         const csrPem = forge.pki.certificationRequestToPem(csr);
 
-        // Guardamos la key AUTOMÁTICAMENTE en la EMPRESA
         const newConfig = { ...afipConfig, key: privateKeyPem };
         setAfipConfig(newConfig);
         
-        // Guardado inmediato en Firestore (Ruta SaaS)
         if (user?.companyId) {
             await setDoc(doc(db, 'companies', user.companyId, 'config', 'afip'), { ...newConfig, updatedAt: new Date().toISOString() }, { merge: true });
         }
 
-        // Descarga del archivo .csr
         const blob = new Blob([csrPem], { type: "text/plain;charset=utf-8" });
         const url = URL.createObjectURL(blob);
         const link = document.createElement('a');
@@ -275,7 +292,7 @@ export const IntegrationsPage = () => {
         link.download = `pedido_afip_${afipConfig.cuit}.csr`;
         link.click();
 
-        alert("✅ ¡LISTO!\n\n1. La Clave Privada se guardó sola en tu empresa.\n2. Se descargó el archivo .CSR.\n3. Sube ese archivo a la web de AFIP para obtener tu certificado.\n4. ¡NO OLVIDES VINCULAR EL SERVICIO EN AFIP!");
+        alert("✅ ¡LISTO!\n\n1. La Clave Privada se guardó sola.\n2. Se descargó el archivo .CSR.\n3. Sube ese archivo a la web de AFIP para obtener tu certificado.\n4. ¡NO OLVIDES VINCULAR EL SERVICIO!");
     } catch (error) { 
         console.error(error);
         alert("Error generando claves: " + error.message); 
@@ -290,15 +307,12 @@ export const IntegrationsPage = () => {
     try {
       if (!user?.companyId) throw new Error("No tienes empresa asignada. Contacta soporte.");
       
-      if (mpConfig.isActive && !mpConfig.accessToken) throw new Error("Falta el Token de MP.");
-      if (mpConfig.isActive && !mpConfig.externalPosId) throw new Error("Falta seleccionar la Caja de MP.");
-      if (afipConfig.isActive && !afipConfig.key) throw new Error("Falta generar la clave de AFIP (Usa el botón Generar Pedido).");
-
       // Guardado seguro en RUTA PRIVADA DE LA EMPRESA
       await setDoc(doc(db, 'companies', user.companyId, 'config', 'mercadopago'), { ...mpConfig, updatedAt: new Date().toISOString() });
-      
-      // Usamos merge para no sobrescribir la clave privada si ya estaba
       await setDoc(doc(db, 'companies', user.companyId, 'config', 'afip'), { ...afipConfig, updatedAt: new Date().toISOString() }, { merge: true });
+      
+      // 🔥 Guardar Clover
+      await setDoc(doc(db, 'companies', user.companyId, 'config', 'clover'), { ...cloverConfig, updatedAt: new Date().toISOString() }, { merge: true });
 
       setStatus('success');
       setTimeout(() => setStatus('idle'), 3000);
@@ -317,7 +331,7 @@ export const IntegrationsPage = () => {
             <p className="text-sys-500 text-sm">Empresa ID: <span className="font-mono bg-sys-100 px-2 py-0.5 rounded">{user?.companyId}</span></p>
         </div>
         <div className="bg-blue-50 text-blue-700 px-4 py-2 rounded-lg text-xs font-bold flex items-center gap-2 border border-blue-100 shadow-sm">
-            <Info size={16}/> Tip: Abre las webs de AFIP y MercadoPago en otra pestaña.
+            <Info size={16}/> Tip: Abre las webs de los proveedores en otra pestaña.
         </div>
       </header>
 
@@ -343,8 +357,6 @@ export const IntegrationsPage = () => {
 
              {mpConfig.isActive && (
                  <div className="space-y-4 animate-in slide-in-from-top-2 fade-in duration-300">
-                    
-                    {/* PASO 1: TOKEN */}
                     <div className="flex gap-2 items-end">
                         <div className="flex-1">
                              <SecretInput label="1. Pega tu Access Token" placeholder="APP_USR-..." value={mpConfig.accessToken} onChange={(val) => setMpConfig({...mpConfig, accessToken: val})} />
@@ -353,14 +365,11 @@ export const IntegrationsPage = () => {
                             {searchingPos ? <Loader2 className="animate-spin"/> : <Search size={20} />}
                         </Button>
                     </div>
-
-                    {/* PASO 2: SELECCIONAR CAJA */}
                     <div className="grid grid-cols-2 gap-4">
                         <div>
                             <label className="text-[11px] font-bold text-sys-500 uppercase tracking-wider ml-1 mb-1.5 block">User ID (Automático)</label>
-                            <input type="text" className="input-std bg-sys-50" readOnly placeholder="..." value={mpConfig.userId} />
+                            <input type="text" className="input-std bg-sys-50" readOnly placeholder="..." value={mpConfig.userId || ''} />
                         </div>
-                        
                         <div>
                             <label className="text-[11px] font-bold text-sys-500 uppercase tracking-wider ml-1 mb-1.5 block">2. Elige tu Caja</label>
                             {posList.length > 0 ? (
@@ -371,9 +380,7 @@ export const IntegrationsPage = () => {
                                 >
                                     <option value="">-- Seleccionar --</option>
                                     {posList.map(pos => (
-                                        <option key={pos.id} value={pos.external_id}>
-                                            {pos.name}
-                                        </option>
+                                        <option key={pos.id} value={pos.external_id}>{pos.name}</option>
                                     ))}
                                 </select>
                             ) : (
@@ -391,8 +398,43 @@ export const IntegrationsPage = () => {
              )}
         </Card>
 
+        {/* === CLOVER (FISERV) 🔥 NUEVO === */}
+        <Card className={cn("border-t-4 border-t-[#28a745] relative overflow-hidden transition-all duration-300", cloverConfig.isActive ? "shadow-lg" : "opacity-80 grayscale-[0.5]")}>
+             <div className="flex justify-between items-start mb-6">
+                <div className="flex items-center gap-3">
+                    <div className="w-12 h-12 bg-[#28a745]/10 rounded-xl flex items-center justify-center text-[#28a745]"><Terminal size={24} /></div>
+                    <div><h3 className="font-bold text-lg text-sys-900">Clover / Fiserv</h3><p className="text-xs text-sys-500">Terminales Inteligentes</p></div>
+                </div>
+                <div className="flex items-center gap-2">
+                    <button type="button" onClick={() => setTutorialOpen('CLOVER')} className="text-[#28a745] hover:bg-[#28a745]/10 px-3 py-1.5 rounded-full text-xs font-bold flex items-center gap-1 transition-colors border border-transparent hover:border-[#28a745]/20">
+                        <HelpCircle size={14}/> Ayuda
+                    </button>
+                    <div className="flex bg-sys-100 p-1 rounded-lg">
+                        <button type="button" onClick={() => setCloverConfig({...cloverConfig, isActive: false})} className={cn("px-3 py-1 rounded text-xs font-bold", !cloverConfig.isActive ? "bg-white shadow text-sys-800" : "text-sys-400")}>OFF</button>
+                        <button type="button" onClick={() => setCloverConfig({...cloverConfig, isActive: true})} className={cn("px-3 py-1 rounded text-xs font-bold", cloverConfig.isActive ? "bg-[#28a745] text-white shadow" : "text-sys-400")}>ON</button>
+                    </div>
+                </div>
+             </div>
+
+             {cloverConfig.isActive && (
+                 <div className="space-y-4 animate-in slide-in-from-top-2 fade-in duration-300">
+                    <div>
+                        <label className="text-[11px] font-bold text-sys-500 uppercase tracking-wider ml-1 mb-1.5 block">Merchant ID (MID)</label>
+                        <input type="text" className="input-std font-mono" placeholder="ABC123DEF456" value={cloverConfig.merchantId} onChange={(e) => setCloverConfig({...cloverConfig, merchantId: e.target.value})} />
+                    </div>
+                    <div>
+                        <SecretInput label="API Token" placeholder="Token de acceso (Access Token)..." value={cloverConfig.apiToken} onChange={(val) => setCloverConfig({...cloverConfig, apiToken: val})} />
+                    </div>
+                    <div>
+                        <label className="text-[11px] font-bold text-sys-500 uppercase tracking-wider ml-1 mb-1.5 block">Remote App ID (Opcional)</label>
+                        <input type="text" className="input-std" placeholder="ID de tu App Clover" value={cloverConfig.remoteAppId} onChange={(e) => setCloverConfig({...cloverConfig, remoteAppId: e.target.value})} />
+                    </div>
+                 </div>
+             )}
+        </Card>
+
         {/* === AFIP ARCA === */}
-        <Card className={cn("border-t-4 border-t-[#2C3E50] relative overflow-hidden transition-all duration-300", afipConfig.isActive ? "shadow-lg" : "opacity-80 grayscale-[0.5]")}>
+        <Card className={cn("border-t-4 border-t-[#2C3E50] relative overflow-hidden transition-all duration-300 lg:col-span-2", afipConfig.isActive ? "shadow-lg" : "opacity-80 grayscale-[0.5]")}>
              <div className="flex justify-between items-start mb-6">
                 <div className="flex items-center gap-3">
                     <div className="w-12 h-12 bg-[#2C3E50]/10 rounded-xl flex items-center justify-center text-[#2C3E50]"><ScrollText size={24} /></div>
@@ -411,8 +453,8 @@ export const IntegrationsPage = () => {
 
              {afipConfig.isActive && (
                  <div className="space-y-6 animate-in slide-in-from-top-2 fade-in duration-300">
-                    <div className="grid grid-cols-2 gap-4">
-                        <div className="col-span-2">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div className="col-span-1 md:col-span-2">
                             <label className="text-[11px] font-bold text-sys-500 uppercase tracking-wider ml-1 mb-1.5 block">Nombre del Titular</label>
                             <input type="text" className="input-std" placeholder="Ej: Juan Perez" value={afipConfig.razonSocial} onChange={(e) => setAfipConfig({...afipConfig, razonSocial: e.target.value})} />
                         </div>

@@ -4,9 +4,9 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { Lock, ArrowRight, AlertCircle, Loader2 } from 'lucide-react';
 import { Button } from '../../../core/ui/Button';
 
-// IMPORTS DE FIREBASE PARA BRANDING
-import { collection, query, where, getDocs } from 'firebase/firestore'; 
-import { db } from '../../../database/firebase';
+// 👇 1. IMPORTAMOS 'doc', 'getDoc' Y 'auth'
+import { collection, query, where, getDocs, doc, getDoc } from 'firebase/firestore'; 
+import { db, auth } from '../../../database/firebase';
 
 export const LoginPage = () => {
   const [email, setEmail] = useState('');
@@ -14,10 +14,8 @@ export const LoginPage = () => {
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   
-  // Capturamos el slug de la URL
   const { companySlug } = useParams(); 
-
-  // Estado para el Branding
+  
   const [branding, setBranding] = useState({
       name: 'NOAR',
       suffix: 'POS',
@@ -28,7 +26,7 @@ export const LoginPage = () => {
   const login = useAuthStore(state => state.login);
   const navigate = useNavigate();
 
-  // EFECTO: BUSCAR BRANDING
+  // EFECTO: BUSCAR BRANDING (Sin cambios)
   useEffect(() => {
       if (companySlug) {
           const fetchBranding = async () => {
@@ -59,17 +57,39 @@ export const LoginPage = () => {
     setError('');
 
     try {
-      // 1. Ejecutar Login en Firebase
+      // 1. Login en Firebase Auth
       await login(email, password);
       
-      // 2. 🚀 REDIRECCIÓN INTELIGENTE POST-LOGIN
+      // 2. 🚀 REDIRECCIÓN INTELIGENTE
       if (branding.isCustom && companySlug) {
-          // A. Si entró por link personalizado (ej: /login/pepe), lo mandamos ahí directo
+          // CASO A: Entró por link personalizado (/login/kiosco-pepe) -> Se queda ahí
           navigate(`/${companySlug}`);
       } else {
-          // B. Si entró por login genérico, lo mandamos a la raíz.
-          // El componente <ProtectedRoute /> en App.jsx detectará su ID de empresa
-          // y lo redirigirá automáticamente a /su-empresa
+          // CASO B: Entró por login genérico (/login) -> Redirigimos a su Empresa
+          // Hacemos una búsqueda rápida del perfil para no esperar al Store
+          const currentUser = auth.currentUser;
+
+          if (currentUser) {
+             const userDocRef = doc(db, "users", currentUser.uid);
+             const userSnap = await getDoc(userDocRef);
+
+             if (userSnap.exists()) {
+                 const userData = userSnap.data();
+                 
+                 // ✅ SI TIENE EMPRESA, LO MANDAMOS A SU DASHBOARD
+                 if (userData.companyId) {
+                     navigate(`/${userData.companyId}`);
+                     return;
+                 }
+                 // Si es Super Admin (sin empresa), podría ir a /master-admin
+                 if (userData.role === 'ADMIN' && !userData.companyId) {
+                    navigate('/master-admin');
+                    return;
+                 }
+             }
+          }
+          
+          // Fallback final (si algo falla, va a la raíz y ProtectedRoute se encarga)
           navigate('/'); 
       }
 
@@ -91,7 +111,6 @@ export const LoginPage = () => {
 
       {/* Branding Section */}
       <div className="mb-8 flex flex-col items-center gap-2 animate-in fade-in zoom-in duration-500">
-         
          <div className="w-20 h-20 bg-sys-900 rounded-2xl flex items-center justify-center shadow-xl shadow-sys-200 overflow-hidden relative">
             {branding.logo ? (
                 <img 
@@ -125,7 +144,6 @@ export const LoginPage = () => {
         )}
 
         <form onSubmit={handleSubmit} className="space-y-5">
-          
           <div>
             <label className="block text-xs font-bold text-sys-500 uppercase mb-2 ml-1">Usuario</label>
             <input 
@@ -169,7 +187,6 @@ export const LoginPage = () => {
                 )}
             </div>
           </Button>
-
         </form>
       </div>
 

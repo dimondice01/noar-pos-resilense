@@ -12,8 +12,12 @@ import { syncService } from './modules/sync/services/syncService';
 import { LoginPage } from './modules/auth/pages/LoginPage';
 import { ProtectedRoute } from './core/components/ProtectedRoute';
 
-// Páginas
+// ✅ LANDING PAGE (NUEVA PORTADA DE VENTAS)
+import { LandingPage } from './modules/landing/pages/LandingPage';
+
+// Páginas del Sistema
 import { DashboardPage } from './modules/dashboard/pages/DashboardPage';
+import { FiscalDashboardPage } from './modules/sales/pages/FiscalDashboardPage'; // 🔥 NUEVA PÁGINA FISCAL
 import { PosPage } from './modules/pos/pages/PosPage';
 import { InventoryPage } from './modules/inventory/pages/InventoryPage';
 import { PrintLabelsPage } from './modules/inventory/pages/PrintLabelsPage';
@@ -49,21 +53,27 @@ function App() {
             <Routes>
                 {/* === ZONA PÚBLICA === */}
                 
-                {/* Login Genérico */}
+                {/* 🚀 LANDING PAGE: Lo primero que ven los clientes */}
+                <Route path="/" element={<LandingPage />} />
+                
+                {/* Login Genérico (noarpos.com/login) */}
                 <Route path="/login" element={<LoginPage />} />
                 
-                {/* Login Personalizado (ej: /login/kiosco-pepe) */}
+                {/* Login Personalizado (ej: noarpos.com/login/kiosco-pepe) */}
                 <Route path="/login/:companySlug" element={<LoginPage />} />
 
                 {/* === ZONA PRIVADA (Protegida) === */}
                 <Route element={<ProtectedRoute />}>
                     
-                    {/* 🔥 CAMBIO MAESTRO: Todas las rutas cuelgan del ID de la empresa */}
+                    {/* 🔥 RUTAS MULTI-TENANT: Todo cuelga del ID de la empresa */}
                     <Route path="/:companySlug" element={<MainLayout />}>
                         
                         {/* Dashboard: /kiosco-pepe/ */}
                         <Route index element={<DashboardPage />} />
                         
+                        {/* 🔥 Módulo Fiscal (Nuevo) */}
+                        <Route path="fiscal" element={<FiscalDashboardPage />} />
+
                         {/* Módulos Operativos */}
                         <Route path="pos" element={<PosPage />} />
                         <Route path="sales" element={<SalesPage />} />
@@ -87,8 +97,8 @@ function App() {
                     </Route>
                 </Route>
                 
-                {/* Redirección por defecto: Al login genérico */}
-                <Route path="*" element={<Navigate to="/login" replace />} />
+                {/* Fallback Inteligente: Si entran mal, los llevamos a la Landing */}
+                <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
         </BrowserRouter>
     );
