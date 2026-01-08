@@ -83,6 +83,7 @@ export const PosPage = () => {
   // ==========================================
   const checkShiftStatus = useCallback(async () => {
       try {
+          // El repositorio ya se encarga de filtrar por usuario (verificar cashRepository)
           const shift = await cashRepository.getCurrentShift();
           
           if (shift) {
@@ -94,7 +95,8 @@ export const PosPage = () => {
           }
       } catch (error) {
           console.error("Error verificando caja:", error);
-          alert("Error crítico verificando el estado de la caja. Por favor recargue.");
+          // Si falla (ej: offline), asumimos cerrado por seguridad
+          setHasOpenShift(false);
       } finally {
           setIsShiftChecking(false);
       }
@@ -111,8 +113,10 @@ export const PosPage = () => {
       
       setIsOpening(true);
       try {
-          // Abrimos turno con el usuario actual
-          await cashRepository.openShift(user.uid || 'unknown', parseFloat(openingAmount));
+          // Abrimos turno pasando monto inicial y nombre
+          // El repo interno ya inyecta el ID de usuario desde el Store
+          await cashRepository.openShift(parseFloat(openingAmount), user.name);
+          
           setHasOpenShift(true); // Desbloqueamos la pantalla
           setOpeningAmount('');
           // Cargar productos inmediatamente después de abrir
@@ -331,6 +335,7 @@ export const PosPage = () => {
         }
       }
 
+      // 🔥 CORRECCIÓN CLAVE: Inyectamos datos del usuario para el historial
       const saleData = {
         items: cart,
         total: paymentData.totalSale,
@@ -343,7 +348,13 @@ export const PosPage = () => {
             total: paymentData.totalSale        
         },
         client: saleClient,
-        sellerName: user?.name || 'Cajero', 
+        
+        // 👇 DATOS DEL VENDEDOR (Fundamental para SalesPage)
+        userId: user.uid,          // ID del usuario
+        createdBy: user.email,     // Email para matcheo
+        sellerName: user.name || 'Cajero', // Nombre visual
+        companyId: user.companyId, // Tenant ID
+        
         itemCount: cart.length,
         date: new Date(),
         afip: afipData || { status: 'SKIPPED' } 

@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import { 
     ArrowLeft, User, CreditCard, Calendar, 
-    TrendingUp, TrendingDown, DollarSign, FileText, Plus 
+    TrendingDown, DollarSign, FileText, Printer, Search
 } from 'lucide-react';
 import { clientRepository } from '../repositories/clientRepository';
-import { cashRepository } from '../../cash/repositories/cashRepository'; // ✅ Importar Caja
+import { cashRepository } from '../../cash/repositories/cashRepository'; 
+import { salesRepository } from '../../sales/repositories/salesRepository'; // Importamos Repo de Ventas
 import { Card } from '../../../core/ui/Card';
 import { Button } from '../../../core/ui/Button';
 import { cn } from '../../../core/utils/cn';
@@ -18,9 +19,9 @@ export const ClientDashboard = ({ clientId, onBack }) => {
   const [ledger, setLedger] = useState([]);
   const [loading, setLoading] = useState(true);
   
-  // Estados para Cobranza
+  // Estados UI
   const [isPaymentOpen, setIsPaymentOpen] = useState(false);
-  const [lastReceipt, setLastReceipt] = useState(null); // Para mostrar el ticket recién generado
+  const [ticketData, setTicketData] = useState(null); // Estado unificado para tickets (Venta o Recibo)
 
   const loadData = async () => {
     setLoading(true);
@@ -30,7 +31,8 @@ export const ClientDashboard = ({ clientId, onBack }) => {
             clientRepository.getLedger(clientId)
         ]);
         setClient(c);
-        setLedger(l);
+        // Ordenar ledger: más reciente primero
+        setLedger(l.sort((a, b) => new Date(b.date) - new Date(a.date)));
     } catch (error) {
         console.error(error);
     } finally {
@@ -44,30 +46,24 @@ export const ClientDashboard = ({ clientId, onBack }) => {
 
   // ✅ PROCESAMIENTO DEL COBRO DE DEUDA
   const handlePaymentConfirm = async (paymentData) => {
-      // paymentData: { method, totalSale, amountPaid, amountDebt, withAfip }
-      // Nota: En este contexto, 'amountPaid' es lo que el usuario decidió pagar.
-      
-      const amount = paymentData.amountPaid; // Lo que realmente entra
+      const amount = paymentData.amountPaid; 
       if (amount <= 0) return;
 
       try {
-          // 1. Validar Caja Abierta
           const shift = await cashRepository.getCurrentShift();
           if (!shift) {
               alert("⛔ Debe abrir la caja antes de recibir un pago.");
               return;
           }
 
-          // 2. Registrar Ingreso en Caja
-          await cashRepository.registerIncome({
-              amount: amount,
-              description: `Cobro Cta Cte: ${client.name}`,
-              referenceId: `pay_${Date.now()}`,
-              method: paymentData.method
-          });
+          // 1. Registrar Ingreso en Caja
+          await cashRepository.registerIncome(
+              amount,
+              paymentData.method, // method
+              `Cobro Cta Cte: ${client.name}` // description
+          );
 
-          // 3. Registrar Baja en Ledger (Deuda)
-          // Usamos 'PAYMENT' para que reste del saldo
+          // 2. Registrar Baja en Ledger
           const newBalance = await clientRepository.registerMovement(
               client.id,
               'PAYMENT',
@@ -76,7 +72,7 @@ export const ClientDashboard = ({ clientId, onBack }) => {
               `rec_${Date.now()}`
           );
 
-          // 4. Generar Objeto Recibo para el Ticket
+          // 3. Generar Objeto Recibo
           const receiptObj = {
               localId: `rec_${Date.now()}`,
               date: new Date(),
@@ -84,17 +80,48 @@ export const ClientDashboard = ({ clientId, onBack }) => {
               amount: amount,
               newBalance: newBalance,
               method: paymentData.method,
-              type: 'RECEIPT' // Flag para el ticket modal
+              type: 'RECEIPT' 
           };
 
-          // 5. Finalizar
-          setLastReceipt(receiptObj);
+          // 4. Finalizar
+          setTicketData({ receipt: receiptObj }); // Mostrar Ticket
           setIsPaymentOpen(false);
-          loadData(); // Refrescar dashboard
+          loadData(); 
           
       } catch (error) {
           console.error(error);
           alert("Error al procesar el pago: " + error.message);
+      }
+  };
+
+  // 🖨️ LÓGICA DE REIMPRESIÓN INTELIGENTE
+  const handleReprint = async (mov) => {
+      try {
+          if (mov.type === 'SALE_DEBT' && mov.referenceId) {
+              // Si es una venta, buscamos la venta completa en salesRepository
+              // (Asumiendo que referenceId es el ID de la venta o ticket)
+              const sale = await salesRepository.getSaleById(mov.referenceId);
+              if (sale) {
+                  setTicketData({ sale: sale });
+              } else {
+                  alert("⚠️ No se encontró el detalle de la venta original.");
+              }
+          } else {
+              // Si es un pago, reconstruimos el recibo con los datos del movimiento
+              const receipt = {
+                  localId: mov.referenceId || `mov_${mov.id}`,
+                  date: mov.date,
+                  client: client,
+                  amount: mov.amount,
+                  newBalance: mov.newBalance,
+                  method: 'CTA CTE', // Histórico genérico
+                  type: 'RECEIPT'
+              };
+              setTicketData({ receipt: receipt });
+          }
+      } catch (error) {
+          console.error("Error al reimprimir:", error);
+          alert("Error cargando el comprobante.");
       }
   };
 
@@ -116,7 +143,7 @@ export const ClientDashboard = ({ clientId, onBack }) => {
             <div className="flex items-center gap-2 text-xs text-sys-500">
                 <span className="font-mono bg-sys-100 px-1.5 rounded">{client.docNumber}</span>
                 <span>•</span>
-                <span className="uppercase">{client.fiscalCondition.replace(/_/g, ' ')}</span>
+                <span className="uppercase">{client.fiscalCondition?.replace(/_/g, ' ')}</span>
             </div>
         </div>
       </div>
@@ -124,7 +151,7 @@ export const ClientDashboard = ({ clientId, onBack }) => {
       {/* Tarjetas de Estado */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
           
-          {/* TARJETA DE SALDO (Destacada) */}
+          {/* TARJETA DE SALDO */}
           <Card className={cn("border-l-4 flex flex-col justify-between relative overflow-hidden", debt > 0 ? "border-l-red-500" : "border-l-green-500")}>
               <div className="z-10">
                   <p className="text-sm font-bold text-sys-500 uppercase tracking-wider mb-1">Saldo Actual (Deuda)</p>
@@ -142,7 +169,6 @@ export const ClientDashboard = ({ clientId, onBack }) => {
                       <DollarSign size={16} className="mr-2 text-green-600"/> Registrar Pago
                   </Button>
               </div>
-              {/* Background Decorativo */}
               <div className={cn("absolute -right-4 -bottom-4 opacity-10 transform rotate-12", debt > 0 ? "text-red-500" : "text-green-500")}>
                   <TrendingDown size={120} />
               </div>
@@ -181,17 +207,18 @@ export const ClientDashboard = ({ clientId, onBack }) => {
                               <th className="p-4">Fecha</th>
                               <th className="p-4">Descripción</th>
                               <th className="p-4 text-right">Monto</th>
-                              <th className="p-4 text-right">Saldo Parcial</th>
+                              <th className="p-4 text-right">Saldo</th>
+                              <th className="p-4 text-center">Acción</th>
                           </tr>
                       </thead>
                       <tbody className="divide-y divide-sys-100">
                           {ledger.length === 0 ? (
                               <tr>
-                                  <td colSpan="4" className="p-8 text-center text-sys-400 italic">Sin movimientos registrados</td>
+                                  <td colSpan="5" className="p-8 text-center text-sys-400 italic">Sin movimientos registrados</td>
                               </tr>
                           ) : (
                               ledger.map((mov, idx) => (
-                                  <tr key={idx} className="hover:bg-sys-50/50 transition-colors">
+                                  <tr key={idx} className="hover:bg-sys-50/50 transition-colors group">
                                       <td className="p-4 font-mono text-sys-600 whitespace-nowrap">
                                           {new Date(mov.date).toLocaleDateString()} <span className="text-[10px] opacity-60">{new Date(mov.date).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</span>
                                       </td>
@@ -208,6 +235,15 @@ export const ClientDashboard = ({ clientId, onBack }) => {
                                       <td className="p-4 text-right font-mono text-sys-600">
                                           $ {mov.newBalance.toLocaleString()}
                                       </td>
+                                      <td className="p-4 text-center">
+                                          <button 
+                                            onClick={() => handleReprint(mov)}
+                                            className="p-1.5 rounded-lg text-sys-400 hover:text-sys-800 hover:bg-sys-200 transition-all opacity-0 group-hover:opacity-100"
+                                            title="Ver Comprobante"
+                                          >
+                                              <Printer size={16} />
+                                          </button>
+                                      </td>
                                   </tr>
                               ))
                           )}
@@ -219,21 +255,21 @@ export const ClientDashboard = ({ clientId, onBack }) => {
 
       {/* 🟢 MODALES 🟢 */}
       
-      {/* Usamos el mismo PaymentModal pero pre-cargado */}
       <PaymentModal 
         isOpen={isPaymentOpen}
         onClose={() => setIsPaymentOpen(false)}
-        total={debt} // Le pasamos la deuda total como sugerencia
-        client={client} // Pasamos el cliente para validaciones
+        total={debt} 
+        client={client} 
         onConfirm={handlePaymentConfirm}
-        disableAfip={true} // 🔥 ESTA LÍNEA ES LA CLAVE: Modo "Recibo X"
+        disableAfip={true} // Siempre Recibo X para pagos de cuenta corriente
       />
 
-      {/* Modal de Ticket (Recibo) */}
+      {/* Modal de Ticket (Venta o Recibo) */}
       <TicketModal 
-        isOpen={!!lastReceipt}
-        receipt={lastReceipt} // Pasamos como prop 'receipt'
-        onClose={() => setLastReceipt(null)}
+        isOpen={!!ticketData}
+        sale={ticketData?.sale}
+        receipt={ticketData?.receipt}
+        onClose={() => setTicketData(null)}
       />
 
     </div>

@@ -1,7 +1,7 @@
 import { getDB } from '../../../database/db';
 import { db } from '../../../database/firebase';
-import { doc, setDoc } from 'firebase/firestore';
-import { useAuthStore } from '../../auth/store/useAuthStore'; // 🔑 IMPORTANTE
+import { doc, setDoc, getDoc } from 'firebase/firestore'; // Agregamos getDoc
+import { useAuthStore } from '../../auth/store/useAuthStore'; 
 
 // ==========================================
 // ☁️ HELPER: SYNC AISLADO (SaaS)
@@ -9,7 +9,6 @@ import { useAuthStore } from '../../auth/store/useAuthStore'; // 🔑 IMPORTANTE
 const syncToCloud = async (collectionName, data) => {
   if (!navigator.onLine) return; 
 
-  // 1. OBTENER ID EMPRESA
   const { user } = useAuthStore.getState();
   
   if (!user || !user.companyId) {
@@ -20,9 +19,7 @@ const syncToCloud = async (collectionName, data) => {
   try {
     const { syncStatus, ...cloudData } = data;
     
-    // 2. CONSTRUIR RUTA PRIVADA
-    // companies/empresa_123/sales
-    // companies/empresa_123/movements
+    // Ruta aislada: companies/empresa_123/sales
     const path = `companies/${user.companyId}/${collectionName}`;
 
     await setDoc(doc(db, path, data.id || data.localId), {
@@ -32,7 +29,6 @@ const syncToCloud = async (collectionName, data) => {
       origin: 'POS_TABLET'
     }, { merge: true });
     
-    // Si es una venta, actualizamos su estado local a SYNCED
     if (collectionName === 'sales') {
         const dbLocal = await getDB();
         await dbLocal.put('sales', { ...data, syncStatus: 'SYNCED' });
@@ -43,14 +39,47 @@ const syncToCloud = async (collectionName, data) => {
 };
 
 export const salesRepository = {
+  
+  // ==========================================
+  // 🔥 NUEVO: BUSCAR VENTA POR ID (Local o Nube)
+  // ==========================================
+  async getSaleById(saleId) {
+    if (!saleId) return null;
+
+    // 1. Intentar buscar en Local (IndexedDB)
+    const dbLocal = await getDB();
+    let sale = await dbLocal.get('sales', saleId);
+
+    if (sale) return sale;
+
+    // 2. Si no está local, buscar en Nube (Cloud Firestore)
+    if (navigator.onLine) {
+        try {
+            const { user } = useAuthStore.getState();
+            if (user?.companyId) {
+                // Buscamos en la ruta de la empresa
+                const docRef = doc(db, `companies/${user.companyId}/sales`, saleId);
+                const docSnap = await getDoc(docRef);
+
+                if (docSnap.exists()) {
+                    sale = docSnap.data();
+                    // Opcional: Cachearla en local para la próxima
+                    await dbLocal.put('sales', sale);
+                    return sale;
+                }
+            }
+        } catch (error) {
+            console.warn("Error buscando venta en nube:", error);
+        }
+    }
+    return null;
+  },
+
   /**
-   * Crea una venta y descuenta stock atómicamente (Local + Cloud).
-   * Maneja la transacción ACID: Venta + Stock (Lotes FIFO) + Kardex.
+   * Crea una venta y descuenta stock atómicamente.
    */
   async createSale(saleData) {
     const dbLocal = await getDB();
-    
-    // 🔥 INICIO DE TRANSACCIÓN MULTI-STORE LOCAL
     const tx = dbLocal.transaction(['sales', 'products', 'movements'], 'readwrite');
     
     const salesStore = tx.objectStore('sales');
@@ -63,47 +92,32 @@ export const salesRepository = {
 
     const sale = {
       ...saleData,
-      localId: saleId, // Usamos esto como ID
+      localId: saleId, 
       date: saleData.date ? new Date(saleData.date).toISOString() : timestamp, 
       createdAt: timestamp,
       status: 'COMPLETED', 
-      syncStatus: 'pending', // Se marcará SYNCED si sube bien
+      syncStatus: 'pending', 
     };
 
-    // Array para recolectar movimientos y subirlos luego
     const movementsToSync = [];
 
-    // 2. Procesar cada ítem del carrito (Descuento de Stock)
+    // 2. Procesar ítems (Descuento Stock)
     for (const item of saleData.items) {
         const product = await productsStore.get(item.id);
         
-        if (!product) {
-            console.warn(`Producto ID ${item.id} no encontrado en DB, saltando stock...`);
-            continue;
-        }
+        if (!product) continue;
 
         const quantityToDeduct = item.isWeighable ? parseFloat(item.quantity) : parseInt(item.quantity);
-        
-        // A) Descuento del Stock Total
         const newStock = (parseFloat(product.stock || 0) - quantityToDeduct);
 
-        // B) LÓGICA DE LOTES (FIFO STRICTO)
+        // Lógica Lotes FIFO
         let batches = product.batches || [];
-        
         if (batches.length > 0) {
-            batches.sort((a, b) => {
-                 const dateA = a.dateAdded ? new Date(a.dateAdded) : new Date(0);
-                 const dateB = b.dateAdded ? new Date(b.dateAdded) : new Date(0);
-                 return dateA - dateB;
-            });
-
+            batches.sort((a, b) => new Date(a.dateAdded || 0) - new Date(b.dateAdded || 0));
             let remaining = quantityToDeduct;
-            
             batches = batches.map(batch => {
                 if (remaining <= 0) return batch;
-
                 const currentQty = parseFloat(batch.quantity);
-                
                 if (currentQty >= remaining) {
                     batch.quantity = currentQty - remaining;
                     remaining = 0;
@@ -116,34 +130,18 @@ export const salesRepository = {
             });
         }
 
-        // C) Recalcular Próximo Vencimiento
-        let nextExpiry = product.expiryDate;
-        if (batches.length > 0) {
-             const activeBatches = batches.filter(b => parseFloat(b.quantity) > 0);
-             activeBatches.sort((a, b) => {
-                 const dateA = a.dateAdded ? new Date(a.dateAdded) : new Date(0);
-                 const dateB = b.dateAdded ? new Date(b.dateAdded) : new Date(0);
-                 return dateA - dateB;
-            });
-            if (activeBatches.length > 0) {
-                nextExpiry = activeBatches[0].expiryDate;
-            }
-        }
-
-        // D) Actualizar Producto Localmente (Marcado para Sync)
+        // Actualizar Producto Local
         await productsStore.put({
             ...product,
             stock: newStock,
             batches: batches,
-            expiryDate: nextExpiry,
             updatedAt: timestamp,
             syncStatus: 'pending' 
         });
 
-        // E) Registrar en KARDEX (Auditoría)
-        const movementId = `mov_sale_${saleId}_${item.id}`;
+        // Registrar Kardex
         const movement = {
-            id: movementId,
+            id: `mov_sale_${saleId}_${item.id}`,
             productId: product.id,
             type: 'STOCK_OUT', 
             description: `Venta POS #${saleId.slice(-4)}`,
@@ -158,14 +156,10 @@ export const salesRepository = {
         movementsToSync.push(movement);
     }
 
-    // 3. Guardar la Venta
     await salesStore.put(sale);
-
-    // 4. Confirmar Transacción Local
     await tx.done;
     
-    // 5. 🚀 SINCRONIZACIÓN CLOUD (Fire & Forget)
-    // El helper actualizado ya sabe usar la ruta aislada de la empresa
+    // 3. Sync Cloud
     syncToCloud('sales', sale);
     movementsToSync.forEach(m => syncToCloud('movements', m));
 
@@ -173,18 +167,16 @@ export const salesRepository = {
   },
 
   /**
-   * Obtiene Ventas del día + Cobros de Deuda del día.
+   * Obtiene Ventas del día + Cobros de Deuda.
    */
   async getTodayOperations() {
     const dbLocal = await getDB();
     const today = new Date();
     today.setHours(0,0,0,0);
 
-    // 1. Obtener Ventas
     const allSales = await dbLocal.getAll('sales');
     const todaySales = allSales.filter(s => new Date(s.date) >= today);
 
-    // 2. Obtener Cobros de Deuda
     const allMovements = await dbLocal.getAll('cash_movements');
     const todayReceipts = allMovements.filter(m => 
         new Date(m.date) >= today && 
@@ -192,7 +184,6 @@ export const salesRepository = {
         (m.description || '').includes('Cobro Cta Cte') 
     );
 
-    // 3. Normalizar
     const normalizedReceipts = todayReceipts.map(r => ({
         localId: r.referenceId || `rec_${r.id}`,
         date: r.date, 
@@ -202,10 +193,13 @@ export const salesRepository = {
         payment: { method: r.method || 'cash' },
         itemCount: 0, 
         items: [],
-        afip: { status: 'SKIPPED' } 
+        afip: { status: 'SKIPPED' },
+        // 🔥 Agregamos datos de usuario también aquí para que SalesPage filtre bien
+        userId: r.userId,
+        createdBy: r.userEmail || r.userId, 
+        companyId: r.companyId
     }));
 
-    // 4. Unir y Ordenar
     const combined = [...todaySales, ...normalizedReceipts];
     return combined.sort((a, b) => new Date(b.date) - new Date(a.date));
   },
@@ -218,64 +212,43 @@ export const salesRepository = {
     const dbLocal = await getDB();
     const tx = dbLocal.transaction('sales', 'readwrite');
     const store = tx.store;
-    
     const allSales = await store.getAll();
-    
     for (const sale of allSales) {
         sale.syncStatus = 'pending'; 
         store.put(sale);
     }
-    
     await tx.done;
     return allSales.length;
   },
 
-  // 🔥 NUEVO MÉTODO: Estadísticas Fiscales para ARCA (Monitor Fiscal)
+  // Monitor Fiscal
   async getFiscalStats() {
     const dbLocal = await getDB();
     const allSales = await dbLocal.getAll('sales');
-    
     const now = new Date();
-    
-    // 1. Definir Rangos de Fecha
     const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    
-    // Inicio de Semana (Lunes)
-    const dayOfWeek = now.getDay() || 7; // 1 (Lunes) a 7 (Domingo)
+    const dayOfWeek = now.getDay() || 7; 
     const startOfWeek = new Date(startOfDay);
     startOfWeek.setDate(startOfDay.getDate() - dayOfWeek + 1);
-    
-    // Inicio de Mes
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
 
-    // 2. Contadores
     let daily = 0;
     let weekly = 0;
     let monthly = 0;
     let lastFiscalTime = null;
 
-    // 3. Filtrar y contar
     for (const sale of allSales) {
-        // Solo contamos Facturas Aprobadas (status APPROVED por ARCA)
         if (sale.afip?.status === 'APPROVED') {
             const saleDate = new Date(sale.date);
-            
             if (saleDate >= startOfDay) daily++;
             if (saleDate >= startOfWeek) weekly++;
             if (saleDate >= startOfMonth) monthly++;
-
-            // Guardamos la última hora de fiscalización
             if (!lastFiscalTime || saleDate > lastFiscalTime) {
                 lastFiscalTime = saleDate;
             }
         }
     }
 
-    return {
-        daily,
-        weekly,
-        monthly,
-        lastTime: lastFiscalTime
-    };
+    return { daily, weekly, monthly, lastTime: lastFiscalTime };
   }
 };

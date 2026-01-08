@@ -12,7 +12,8 @@ import { Button } from '../../../core/ui/Button';
 
 // --- CONFIGURACIÓN DE CONTACTO ---
 const WHATSAPP_NUMBER = "5493804373795"; 
-const WHATSAPP_MESSAGE = "Hola, me interesa el sistema Noar POS. Quisiera más información sobre el plan de $300.000.";
+// Mensaje ajustado para consulta de precio
+const WHATSAPP_MESSAGE = "Hola, me interesa el sistema Noar POS. Quisiera consultar el precio y conocer las promociones vigentes.";
 const WHATSAPP_LINK = `https://wa.me/${WHATSAPP_NUMBER}?text=${encodeURIComponent(WHATSAPP_MESSAGE)}`;
 
 // --- COMPONENTES UI ---
@@ -153,7 +154,7 @@ const Hero = () => {
                                 className="h-12 px-8 text-base bg-white border border-sys-200 text-sys-700 hover:bg-sys-50"
                                 onClick={() => document.getElementById('pricing').scrollIntoView({ behavior: 'smooth' })}
                             >
-                                Ver Precios
+                                Ver Planes
                             </Button>
                         </div>
                         
@@ -441,9 +442,10 @@ const PricingSection = () => (
                     Olvidate de las suscripciones mensuales. Pagás una vez y el sistema es tuyo para siempre.
                 </p>
                 
-                <div className="flex items-center justify-center gap-2 mb-8">
-                    <span className="text-5xl font-black text-brand">$ 300.000</span>
-                    <span className="text-sm font-bold text-sys-400 uppercase">ARS</span>
+                {/* 🔥 CAMBIO: PRECIO OCULTO -> CONSULTAR PRECIO */}
+                <div className="flex flex-col items-center justify-center gap-2 mb-8">
+                    <span className="text-4xl sm:text-5xl font-black text-brand tracking-tight">CONSULTAR PRECIO</span>
+                    <span className="text-sm font-bold text-sys-400 uppercase mt-2">Promociones Disponibles</span>
                 </div>
 
                 <div className="grid grid-cols-2 gap-4 text-left max-w-sm mx-auto mb-10">
@@ -465,11 +467,11 @@ const PricingSection = () => (
                     className="mx-auto h-14 px-12 text-lg bg-sys-900 hover:bg-black text-white shadow-xl w-full sm:w-auto flex items-center justify-center gap-2 transition-transform hover:-translate-y-1"
                     onClick={() => window.open(WHATSAPP_LINK, '_blank')}
                 >
-                    <MessageCircle size={20} /> Solicitar Implementación
+                    <MessageCircle size={20} /> Hablar con un Asesor
                 </Button>
                 
                 <p className="mt-6 text-xs text-sys-400">
-                    *Precio final. Factura A o B disponible.
+                    *Consultá por planes para vendedores y distribuidores.
                 </p>
             </div>
         </div>

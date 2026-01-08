@@ -1,7 +1,7 @@
 import { getDB } from '../../../database/db';
 import { db } from '../../../database/firebase';
-import { doc, setDoc, deleteDoc } from 'firebase/firestore';
-import { useAuthStore } from '../../auth/store/useAuthStore'; // 🔑 Clave para el aislamiento
+import { doc, setDoc, deleteDoc, collection, getDocs, query } from 'firebase/firestore'; // 🔥 Agregamos imports de lectura
+import { useAuthStore } from '../../auth/store/useAuthStore'; 
 
 export const masterRepository = {
 
@@ -11,7 +11,7 @@ export const masterRepository = {
   _getCollectionPath(storeName) {
     const { user } = useAuthStore.getState();
     
-    // Si no hay usuario o empresa, no podemos escribir en la nube
+    // Si no hay usuario o empresa, no podemos acceder a la ruta privada
     if (!user || !user.companyId) {
         throw new Error(`⛔ Error de seguridad: Intento de acceso a ${storeName} sin empresa asignada.`);
     }
@@ -21,13 +21,46 @@ export const masterRepository = {
   },
 
   // ==========================================
-  // 📖 LECTURA (Local First)
+  // 📖 LECTURA (Local First + Sync Cloud)
   // ==========================================
   async getAll(storeName) {
     const dbLocal = await getDB();
-    // storeName puede ser: 'categories', 'brands', 'suppliers'
-    // IndexedDB ya está aislada porque SyncService solo baja lo correcto.
-    return dbLocal.getAll(storeName);
+    
+    // 1. Cargar Local (Respuesta Instantánea)
+    let items = await dbLocal.getAll(storeName); 
+
+    // 2. Sync desde Nube (Si hay internet)
+    // Esto es vital para que las categorías creadas en la PC 1 aparezcan en la PC 2
+    if (navigator.onLine) {
+      try {
+        const path = this._getCollectionPath(storeName);
+        const q = query(collection(db, path));
+        const snapshot = await getDocs(q);
+        
+        const cloudItems = snapshot.docs.map(doc => doc.data());
+        
+        if (cloudItems.length > 0) {
+            // Actualizar Local con lo nuevo de la Nube
+            const tx = dbLocal.transaction(storeName, 'readwrite');
+            
+            // Borramos todo lo local viejo o hacemos merge? 
+            // Merge es más seguro para no perder datos pendientes de subir
+            for (const item of cloudItems) {
+                await tx.store.put({ ...item, syncStatus: 'SYNCED' });
+            }
+            await tx.done;
+            
+            // Volver a leer la lista actualizada
+            items = await dbLocal.getAll(storeName);
+        }
+      } catch (error) {
+        // Si falla por permisos o red, solo mostramos warning y devolvemos lo local
+        console.warn(`⚠️ Sync ${storeName} falló (usando local):`, error);
+      }
+    }
+    
+    // Ordenar alfabéticamente
+    return items.sort((a, b) => a.name.localeCompare(b.name));
   },
 
   // ==========================================
@@ -49,12 +82,9 @@ export const masterRepository = {
     // 2. Intentar subir a Nube (Si hay red)
     if (navigator.onLine) {
       try {
-        // Obtenemos la ruta privada de la empresa
         const path = this._getCollectionPath(storeName);
-        
         const { syncStatus, ...cloudData } = newItem;
         
-        // Guardamos en la sub-colección de la empresa
         await setDoc(doc(db, path, newItem.id), cloudData, { merge: true });
         
         // Si subió bien, marcamos como SYNCED en local
@@ -79,10 +109,7 @@ export const masterRepository = {
     // 2. Borrar de Nube (Si hay red)
     if (navigator.onLine) {
       try {
-        // Obtenemos la ruta privada
         const path = this._getCollectionPath(storeName);
-        
-        // Borramos de la sub-colección
         await deleteDoc(doc(db, path, id));
       } catch (e) {
         console.error(`Error eliminando de ${storeName} en nube:`, e);

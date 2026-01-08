@@ -12,12 +12,12 @@ import { syncService } from './modules/sync/services/syncService';
 import { LoginPage } from './modules/auth/pages/LoginPage';
 import { ProtectedRoute } from './core/components/ProtectedRoute';
 
-// ✅ LANDING PAGE (NUEVA PORTADA DE VENTAS)
+// ✅ LANDING PAGE
 import { LandingPage } from './modules/landing/pages/LandingPage';
 
 // Páginas del Sistema
 import { DashboardPage } from './modules/dashboard/pages/DashboardPage';
-import { FiscalDashboardPage } from './modules/sales/pages/FiscalDashboardPage'; // 🔥 NUEVA PÁGINA FISCAL
+import { FiscalDashboardPage } from './modules/sales/pages/FiscalDashboardPage'; 
 import { PosPage } from './modules/pos/pages/PosPage';
 import { InventoryPage } from './modules/inventory/pages/InventoryPage';
 import { PrintLabelsPage } from './modules/inventory/pages/PrintLabelsPage';
@@ -28,6 +28,7 @@ import { IntegrationsPage } from './modules/settings/pages/IntegrationsPage';
 import { SuperAdminPage } from './modules/admin/pages/SuperAdminPage'; 
 import { CashPage } from './modules/cash/pages/CashPage'; 
 import { ClientsPage } from './modules/clients/pages/ClientsPage';
+import { SuppliersPage } from './modules/suppliers/pages/SuppliersPage'; 
 import { CompanySettingsPage } from './modules/admin/pages/CompanySettingsPage';
 
 function App() {
@@ -65,13 +66,18 @@ function App() {
                 {/* === ZONA PRIVADA (Protegida) === */}
                 <Route element={<ProtectedRoute />}>
                     
-                    {/* 🔥 RUTAS MULTI-TENANT: Todo cuelga del ID de la empresa */}
+                    {/* 👑 RUTA SUPER ADMIN (GLOBAL - SIN EMPRESA) */}
+                    {/* Esta ruta va ANTES y FUERA del layout de empresa */}
+                    <Route path="/master-admin" element={<SuperAdminPage />} />
+
+                    {/* 🔥 RUTAS DE EMPRESA (Multi-Tenant) */}
+                    {/* Todo lo que requiera un companySlug va aquí dentro */}
                     <Route path="/:companySlug" element={<MainLayout />}>
                         
                         {/* Dashboard: /kiosco-pepe/ */}
                         <Route index element={<DashboardPage />} />
                         
-                        {/* 🔥 Módulo Fiscal (Nuevo) */}
+                        {/* 🔥 Módulo Fiscal */}
                         <Route path="fiscal" element={<FiscalDashboardPage />} />
 
                         {/* Módulos Operativos */}
@@ -84,20 +90,19 @@ function App() {
                         <Route path="inventory/print" element={<PrintLabelsPage />} />
                         <Route path="inventory/movements" element={<MovementsPage />} /> 
 
-                        {/* Clientes */}
+                        {/* Clientes y Proveedores */}
                         <Route path="clients" element={<ClientsPage />} />
+                        <Route path="suppliers" element={<SuppliersPage />} /> {/* 🔥 RUTA NUEVA */}
                         
                         {/* Configuración */}
                         <Route path="settings" element={<TeamPage />} />
                         <Route path="settings/integrations" element={<IntegrationsPage />} />
                         <Route path="settings/company" element={<CompanySettingsPage />} />
                         
-                        {/* Super Admin */}
-                        <Route path="master-admin" element={<SuperAdminPage />} />
                     </Route>
                 </Route>
                 
-                {/* Fallback Inteligente: Si entran mal, los llevamos a la Landing */}
+                {/* Fallback Inteligente */}
                 <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
         </BrowserRouter>

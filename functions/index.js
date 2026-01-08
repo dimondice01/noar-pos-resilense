@@ -34,7 +34,131 @@ app.use((req, res, next) => {
   }
   next();
 });
+// ==================================================================
+// 1. ENDPOINT: OBTENER TERMINALES (USANDO LA API QUE SÍ TE FUNCIONA)
+// ==================================================================
+app.post('/get-mp-terminals', async (req, res) => {
+    try {
+        const { accessToken } = req.body;
 
+        if (!accessToken) {
+            return res.status(400).json({ error: "Falta el Access Token" });
+        }
+
+        console.log("🔍 Buscando en API Legacy (la que funciona)...");
+
+        // 1. Usamos la API Legacy que confirmaste que SÍ trae datos
+        const response = await fetch('https://api.mercadopago.com/point/integration-api/devices', {
+            method: 'GET',
+            headers: { 
+                'Authorization': `Bearer ${accessToken}`,
+                'Content-Type': 'application/json'
+            }
+        });
+        
+        const data = await response.json();
+        
+        if (!response.ok) {
+            console.error("Error MP Devices:", data);
+            return res.status(400).json({ error: "Error obteniendo terminales", details: data });
+        }
+
+        // 2. PROCESAMIENTO INTELIGENTE (Para evitar Error 400 al configurar)
+        const validDevices = (data.devices || []).map(d => {
+            // A veces device_id viene nulo, usamos el serial como respaldo
+            const rawId = d.device_id || d.serial_number;
+            
+            // Si no hay ningún identificador, saltamos (esto evita el crash)
+            if (!rawId) return null; 
+
+            // Convertimos a string para asegurar
+            let finalId = String(rawId);
+            
+            // 🔥 ARREGLO DE ID: Si es corto, le agregamos el prefijo 'NEWLAND_N950__'
+            // Esto es lo que faltaba en el código anterior para que funcionara la vinculación
+            if (!finalId.includes('__')) {
+                const model = (d.model || "").toUpperCase();
+                let prefix = "NEWLAND_N950"; // Default más común
+                
+                if (model.includes("A910")) prefix = "PAX_A910";
+                
+                // Usamos el serial number preferentemente para el ID
+                const suffix = d.serial_number || finalId;
+                finalId = `${prefix}__${suffix}`;
+            }
+
+            return {
+                id: finalId, // Este ID ya va arreglado (NEWLAND_N950__xxxx)
+                name: d.name || `Point ${d.model || ''}`,
+                model: d.model
+            };
+        }).filter(item => item !== null); // Eliminamos los nulos
+
+        console.log(`✅ Encontradas: ${validDevices.length}`);
+        return res.json({ devices: validDevices });
+
+    } catch (error) {
+        console.error("Server Error:", error);
+        return res.status(500).json({ error: "Error interno del servidor" });
+    }
+});
+
+// ==================================================================
+// 2. ENDPOINT: CONFIGURAR (CON REFUDERZO MANUAL)
+// ==================================================================
+app.post('/configure-mp-point', async (req, res) => {
+    try {
+        const { accessToken, terminalId, mode } = req.body;
+
+        if (!accessToken || !terminalId) {
+            return res.status(400).json({ error: "Faltan datos (Token o ID)" });
+        }
+
+        // 🔥 DOBLE SEGURIDAD: Si el usuario mandó un ID manual corto, lo arreglamos aquí también
+        let cleanId = terminalId.trim();
+        if (!cleanId.includes('__')) {
+            console.log(`⚠️ ID corto recibido: ${cleanId}. Agregando prefijo N950...`);
+            cleanId = `NEWLAND_N950__${cleanId}`;
+        }
+
+        const targetMode = mode === 'PDV' ? "PDV | STANDALONE" : "STANDALONE";
+
+        console.log(`⚙️ Enviando a MP: ${cleanId} -> ${targetMode}`);
+
+        const response = await fetch('https://api.mercadopago.com/terminals/v1/setup', {
+            method: 'PATCH',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${accessToken}`
+            },
+            body: JSON.stringify({
+                terminals: [
+                    {
+                        id: cleanId,
+                        operating_mode: targetMode
+                    }
+                ]
+            })
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+            console.error("Error MP Setup:", JSON.stringify(data));
+            return res.status(400).json({ 
+                error: "Fallo al configurar", 
+                details: data,
+                sent_id: cleanId
+            });
+        }
+
+        return res.json({ success: true, data });
+
+    } catch (error) {
+        console.error("Server Error:", error);
+        return res.status(500).json({ error: "Error interno del servidor" });
+    }
+});
 // ==================================================================
 // 🛠️ HELPER CORE: OBTENER CONFIGURACIÓN SAAS
 // ==================================================================

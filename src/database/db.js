@@ -1,8 +1,7 @@
-// src/database/db.js
 import { openDB } from 'idb';
 
 const DB_NAME = 'NoarPosDB';
-const DB_VERSION = 7; // ⚠️ SUBIMOS A v7 PARA CREAR LA TABLA 'config'
+const DB_VERSION = 8; // 🔥 SUBIMOS A v8 PARA CREAR 'supplier_ledger'
 
 export const initDB = async () => {
   return openDB(DB_NAME, DB_VERSION, {
@@ -31,6 +30,7 @@ export const initDB = async () => {
       if (oldVersion < 2) {
         if (!db.objectStoreNames.contains('categories')) db.createObjectStore('categories', { keyPath: 'id', autoIncrement: true });
         if (!db.objectStoreNames.contains('brands')) db.createObjectStore('brands', { keyPath: 'id', autoIncrement: true });
+        // Aseguramos que suppliers exista desde versiones viejas
         if (!db.objectStoreNames.contains('suppliers')) db.createObjectStore('suppliers', { keyPath: 'id', autoIncrement: true });
       }
 
@@ -81,7 +81,7 @@ export const initDB = async () => {
             }
         }
 
-        // E. Ledger (Cuenta Corriente)
+        // E. Ledger (Cuenta Corriente Clientes)
         if (!db.objectStoreNames.contains('customer_ledger')) {
           const ledgerStore = db.createObjectStore('customer_ledger', { keyPath: 'id', autoIncrement: true });
           ledgerStore.createIndex('clientId', 'clientId', { unique: false });
@@ -91,15 +91,33 @@ export const initDB = async () => {
       }
 
       // -----------------------------------------------------------------------
-      // BLOQUE 3: CONFIGURACIÓN LOCAL (EL FIX PARA EL PIN)
+      // BLOQUE 3: CONFIGURACIÓN LOCAL
       // -----------------------------------------------------------------------
-      // 🔥 ESTO SOLUCIONA EL ERROR "Object store not found"
       if (oldVersion < 7) {
          if (!db.objectStoreNames.contains('config')) {
-            // Creamos la tabla 'config' para guardar el PIN y preferencias
             db.createObjectStore('config', { keyPath: 'key' });
             console.log("✅ Tabla 'config' creada correctamente.");
          }
+      }
+
+      // -----------------------------------------------------------------------
+      // BLOQUE 4: GESTIÓN DE PROVEEDORES (FIX ACTUAL)
+      // -----------------------------------------------------------------------
+      if (oldVersion < 8) {
+          console.log("🛠️ Aplicando parche v8: Tablas de Proveedores...");
+          
+          // 1. Asegurar tabla de Proveedores (si se borró o no existía)
+          if (!db.objectStoreNames.contains('suppliers')) {
+              db.createObjectStore('suppliers', { keyPath: 'id' });
+          }
+
+          // 2. Crear tabla de Cuenta Corriente de Proveedores (Ledger)
+          if (!db.objectStoreNames.contains('supplier_ledger')) {
+              const supplierLedger = db.createObjectStore('supplier_ledger', { keyPath: 'id' });
+              supplierLedger.createIndex('supplierId', 'supplierId', { unique: false });
+              supplierLedger.createIndex('date', 'date', { unique: false });
+              console.log("✅ Tabla 'supplier_ledger' creada exitosamente.");
+          }
       }
       
       console.log(`✅ Base de datos actualizada y verificada a v${newVersion}`);

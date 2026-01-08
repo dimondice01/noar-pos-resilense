@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { NavLink, useNavigate, useLocation, useParams } from 'react-router-dom'; // 1. AGREGADO useParams
+import { NavLink, useNavigate, useLocation, useParams } from 'react-router-dom'; 
 import { 
   LayoutDashboard, ShoppingCart, Package, Settings, 
   FileText, Cloud, RefreshCw, LogOut, User, ShieldCheck, Wallet,
   Users, Lock, ArrowRight, X, Loader2, Plug, 
-  Building 
+  Building, Truck 
 } from 'lucide-react';
 import { doc, onSnapshot } from 'firebase/firestore'; 
 
@@ -25,8 +25,6 @@ import defaultLogo from '../assets/logo.png';
 // ============================================================================
 const MenuLink = ({ to, icon: Icon, label, onClick, isRestricted }) => {
   const location = useLocation();
-  // Comparación exacta para evitar que Dashboard se marque activo en subrutas
-  // OJO: Con rutas anidadas, a veces conviene 'startsWith', pero para exactitud usamos esto:
   const isActiveRoute = location.pathname === to;
 
   const baseClasses = cn(
@@ -218,7 +216,7 @@ const CloseShiftModalWrapper = ({ isOpen, onClose }) => {
 };
 
 // ============================================================================
-// 4. COMPONENTE PRINCIPAL: SIDEBAR (DINÁMICO + URL PERSISTENTE)
+// 4. COMPONENTE PRINCIPAL: SIDEBAR
 // ============================================================================
 export const Sidebar = () => {
   const { isSyncing } = useAutoSync(15000);
@@ -230,26 +228,23 @@ export const Sidebar = () => {
 
   const { user, logout } = useAuthStore();
   const navigate = useNavigate();
-  const { companySlug } = useParams(); // 2. CAPTURAMOS EL SLUG
+  const { companySlug } = useParams(); 
   
   const isAdmin = user?.role?.toUpperCase() === 'ADMIN';
 
   // Branding
   const [companyInfo, setCompanyInfo] = useState({ name: 'MAXI KIOSCO', logo: defaultLogo });
 
-  // 3. HELPER PARA LINKS DINÁMICOS
-  // Transforma 'pos' en '/kiosco-pepe/pos'
+  // Helper Links
   const getLink = (path) => {
-      const root = companySlug || user?.companyId; // Usamos el slug de la URL o el del usuario
-      if (!path) return `/${root}`; // Dashboard
+      const root = companySlug || user?.companyId; 
+      if (!path) return `/${root}`; 
       return `/${root}/${path}`;
   };
 
-  // 4. LOGOUT INTELIGENTE
   const handleLogout = async () => {
       const redirectSlug = companySlug || user?.companyId;
       await logout();
-      // Redirigir al login específico de esta empresa
       navigate(`/login/${redirectSlug}`);
   };
 
@@ -299,14 +294,14 @@ export const Sidebar = () => {
     <>
       <aside className="w-64 h-screen bg-white border-r border-sys-200 flex flex-col fixed left-0 top-0 z-20 hidden md:flex shadow-[4px_0_24px_rgba(0,0,0,0.02)]">
         
-        {/* Header con Branding Dinámico */}
+        {/* Header con Branding */}
         <div className="p-6 border-b border-sys-100 flex flex-col items-center text-center">
           <div className="w-20 h-20 mb-3 bg-white rounded-full flex items-center justify-center overflow-hidden border border-sys-100 shadow-sm p-2 relative">
               <img 
-                 src={companyInfo.logo} 
-                 alt="Logo" 
-                 className="w-full h-full object-contain"
-                 onError={(e) => { e.target.src = defaultLogo; }} 
+                  src={companyInfo.logo} 
+                  alt="Logo" 
+                  className="w-full h-full object-contain"
+                  onError={(e) => { e.target.src = defaultLogo; }} 
               />
           </div>
 
@@ -339,11 +334,12 @@ export const Sidebar = () => {
           
           <div className="px-4 py-2 text-xs font-semibold text-sys-400 uppercase tracking-wider mb-1">Operación</div>
           
-          {/* 5. LINKS DINÁMICOS CON getLink() */}
           <MenuLink to={getLink('')} icon={LayoutDashboard} label="Dashboard" />
           <MenuLink to={getLink('pos')} icon={ShoppingCart} label="Punto de Venta" />
           <MenuLink to={getLink('sales')} icon={FileText} label="Ventas" />
           <MenuLink to={getLink('clients')} icon={Users} label="Clientes" />
+          {/* 🔥 NUEVO ENLACE: PROVEEDORES */}
+          <MenuLink to={getLink('suppliers')} icon={Truck} label="Proveedores" />
 
           {/* SECCIÓN GESTIÓN */}
           <div className="mt-6 mb-1">

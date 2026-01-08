@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { useAuthStore } from '../store/useAuthStore';
 import { useNavigate, useParams } from 'react-router-dom'; 
-import { Lock, ArrowRight, AlertCircle, Loader2 } from 'lucide-react';
+import { ArrowRight, AlertCircle, Loader2 } from 'lucide-react';
 import { Button } from '../../../core/ui/Button';
 
-// 👇 1. IMPORTAMOS 'doc', 'getDoc' Y 'auth'
+// Firebase
 import { collection, query, where, getDocs, doc, getDoc } from 'firebase/firestore'; 
 import { db, auth } from '../../../database/firebase';
 
@@ -26,7 +26,7 @@ export const LoginPage = () => {
   const login = useAuthStore(state => state.login);
   const navigate = useNavigate();
 
-  // EFECTO: BUSCAR BRANDING (Sin cambios)
+  // 1. CARGAR BRANDING SI HAY SLUG
   useEffect(() => {
       if (companySlug) {
           const fetchBranding = async () => {
@@ -57,41 +57,59 @@ export const LoginPage = () => {
     setError('');
 
     try {
-      // 1. Login en Firebase Auth
+      // ---------------------------------------------------------
+      // PASO 1: AUTENTICACIÓN (Firebase Auth)
+      // ---------------------------------------------------------
+      // Si la contraseña está mal, esto lanza error y va al catch.
       await login(email, password);
       
-      // 2. 🚀 REDIRECCIÓN INTELIGENTE
-      if (branding.isCustom && companySlug) {
-          // CASO A: Entró por link personalizado (/login/kiosco-pepe) -> Se queda ahí
-          navigate(`/${companySlug}`);
-      } else {
-          // CASO B: Entró por login genérico (/login) -> Redirigimos a su Empresa
-          // Hacemos una búsqueda rápida del perfil para no esperar al Store
-          const currentUser = auth.currentUser;
+      // ---------------------------------------------------------
+      // PASO 2: REDIRECCIÓN "VIP" (SUPER ADMIN)
+      // ---------------------------------------------------------
+      // 🔥 FIX: Si es el email maestro, pasamos directo sin leer Firestore.
+      // Esto evita que datos corruptos o faltantes en la DB bloqueen al dueño.
+      if (email.trim().toLowerCase() === 'admin@admin.com') {
+          console.log("👑 Super Admin detectado. Redirigiendo...");
+          navigate('/master-admin');
+          return; // Stop aquí.
+      }
 
-          if (currentUser) {
-             const userDocRef = doc(db, "users", currentUser.uid);
-             const userSnap = await getDoc(userDocRef);
+      // ---------------------------------------------------------
+      // PASO 3: REDIRECCIÓN USUARIOS NORMALES (Empresas)
+      // ---------------------------------------------------------
+      const currentUser = auth.currentUser;
+      
+      if (!currentUser) throw new Error("No se pudo obtener la sesión.");
 
-             if (userSnap.exists()) {
-                 const userData = userSnap.data();
-                 
-                 // ✅ SI TIENE EMPRESA, LO MANDAMOS A SU DASHBOARD
-                 if (userData.companyId) {
-                     navigate(`/${userData.companyId}`);
-                     return;
-                 }
-                 // Si es Super Admin (sin empresa), podría ir a /master-admin
-                 if (userData.role === 'ADMIN' && !userData.companyId) {
-                    navigate('/master-admin');
-                    return;
-                 }
-             }
+      const userDocRef = doc(db, "users", currentUser.uid);
+      const userSnap = await getDoc(userDocRef);
+
+      if (userSnap.exists()) {
+          const userData = userSnap.data();
+          
+          // A. Si tiene empresa asignada (Cajero / Dueño)
+          if (userData.companyId) {
+              // Si entró por link personalizado correcto, se queda ahí
+              if (branding.isCustom && companySlug === userData.companyId) {
+                  navigate(`/${companySlug}`);
+              } else {
+                  // Si no, lo mandamos a SU dashboard
+                  navigate(`/${userData.companyId}`);
+              }
+              return;
           }
           
-          // Fallback final (si algo falla, va a la raíz y ProtectedRoute se encarga)
-          navigate('/'); 
+          // B. Caso raro: Admin sin email "admin@admin.com" (Backup)
+          if (userData.role === 'ADMIN' || userData.role === 'SUPER_ADMIN') {
+             navigate('/master-admin');
+             return;
+          }
       }
+      
+      // Fallback: Si no tiene empresa ni es admin, algo está mal.
+      // Lo mandamos al home o mostramos error.
+      console.warn("⚠️ Usuario sin rol ni empresa detectado.");
+      navigate('/');
 
     } catch (err) {
       console.error(err);

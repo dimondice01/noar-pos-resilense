@@ -5,7 +5,7 @@ import { useDbSeeder } from '../../../core/hooks/useDbSeeder';
 import { Card } from '../../../core/ui/Card';
 import { Button } from '../../../core/ui/Button';
 
-// 👇 IMPORTS NECESARIOS PARA STORAGE Y FIRESTORE
+// 👇 IMPORTS NECESARIOS
 import { auth, storage, db } from '../../../database/firebase'; 
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { doc, updateDoc } from 'firebase/firestore';
@@ -15,7 +15,7 @@ const SUPER_ADMIN_EMAIL = "admin@admin.com";
 const API_URL = import.meta.env.VITE_API_URL || "https://api-ps25yq7qaq-uc.a.run.app";
 
 export const SuperAdminPage = () => {
-    const { user, isLoading } = useAuthStore();
+    const { user, loading } = useAuthStore(); // Asegúrate de usar 'loading' o 'isLoading' según tu store
     const { uploadCatalog, loadingMsg: seedMsg, isSeeding } = useDbSeeder();
 
     const [formData, setFormData] = useState({
@@ -25,21 +25,28 @@ export const SuperAdminPage = () => {
         password: ''
     });
 
-    // 📂 ESTADOS PARA ARCHIVOS
-    const [selectedFile, setSelectedFile] = useState(null); // Catálogo CSV
-    const [logoFile, setLogoFile] = useState(null);         // Logo Imagen (Nuevo)
-    
+    const [selectedFile, setSelectedFile] = useState(null); 
+    const [logoFile, setLogoFile] = useState(null);       
     const [processStatus, setProcessStatus] = useState('idle'); 
     const [msg, setMsg] = useState('');
 
-    if (isLoading) return <div className="min-h-screen bg-slate-900 flex items-center justify-center text-slate-200">Verificando...</div>;
+    // 1. LOADING STATE
+    if (loading) {
+        return <div className="min-h-screen bg-slate-900 flex items-center justify-center text-slate-200">Verificando credenciales...</div>;
+    }
     
-    if (!user || user.email !== SUPER_ADMIN_EMAIL) {
+    // 2. VALIDACIÓN ROBUSTA (Email o Rol)
+    const isSuperAdmin = user?.email?.toLowerCase() === SUPER_ADMIN_EMAIL.toLowerCase();
+    const hasAdminRole = user?.role === 'SUPER_ADMIN' || user?.role === 'ADMIN';
+
+    // Si no es admin por email Y no tiene rol de admin, bloqueo.
+    if (!user || (!isSuperAdmin && !hasAdminRole)) {
         return (
-            <div className="flex flex-col items-center justify-center h-screen bg-slate-950 text-red-500 p-4 font-mono">
+            <div className="flex flex-col items-center justify-center h-screen bg-slate-950 text-red-500 p-4 font-mono text-center">
                 <Shield size={64} className="mb-4 animate-bounce" />
                 <h1 className="text-3xl font-bold mb-2">ACCESO DENEGADO</h1>
-                <Button onClick={() => window.location.href = '/'} className="mt-6 bg-red-900 text-white">Volver</Button>
+                <p className="text-slate-400 mb-6">Tu usuario {user?.email} no tiene permisos de Super Admin.</p>
+                <Button onClick={() => window.location.href = '/'} className="bg-red-900 text-white">Volver al Inicio</Button>
             </div>
         );
     }
@@ -47,7 +54,7 @@ export const SuperAdminPage = () => {
     const handleSubmit = async (e) => {
         e.preventDefault();
 
-        // 1. VALIDAR CSV (Obligatorio)
+        // 1. VALIDAR CSV
         if (!selectedFile) {
             setProcessStatus('error');
             setMsg("⚠️ Por favor selecciona el archivo 'catalogo.csv' antes de continuar.");
@@ -58,7 +65,6 @@ export const SuperAdminPage = () => {
         setMsg('🏗️ 1/3 Contactando Backend para crear estructura...');
 
         try {
-            // 2. CREAR TENANT (Backend)
             const token = await auth.currentUser?.getIdToken();
             const response = await fetch(`${API_URL}/create-tenant`, {
                 method: 'POST',
@@ -76,26 +82,19 @@ export const SuperAdminPage = () => {
             const newCompanyId = data.companyId;
 
             if (newCompanyId) {
-                // 3. SUBIR LOGO A STORAGE (Si se seleccionó uno)
+                // 3. SUBIR LOGO
                 if (logoFile) {
                     setMsg('🖼️ 2/3 Subiendo logo y configurando marca...');
                     try {
-                        // Referencia: logos/companyId/logo_timestamp
                         const storageRef = ref(storage, `logos/${newCompanyId}/logo_${Date.now()}`);
-                        
-                        // Subida
                         await uploadBytes(storageRef, logoFile);
                         const downloadUrl = await getDownloadURL(storageRef);
 
-                        // Actualizar documento de la empresa con la URL del logo
                         const companyRef = doc(db, 'companies', newCompanyId);
-                        await updateDoc(companyRef, {
-                            logoUrl: downloadUrl
-                        });
+                        await updateDoc(companyRef, { logoUrl: downloadUrl });
                         
                     } catch (logoError) {
                         console.error("Error subiendo logo:", logoError);
-                        // No bloqueamos el proceso, solo avisamos
                         setMsg('⚠️ Empresa creada, pero hubo un error subiendo el logo. Continuando con catálogo...');
                     }
                 }
@@ -109,10 +108,9 @@ export const SuperAdminPage = () => {
                 setProcessStatus('success');
                 setMsg(`✅ ¡ÉXITO TOTAL!
 Empresa: ${newCompanyId}
-🔗 LINK EXCLUSIVO: noarpos.com/login/${newCompanyId}
+🔗 LINK EXCLUSIVO: noarpos.site/login/${newCompanyId}
 (Comparte este link para que accedan a su ruta inteligente)`);
                 
-                // Limpiar formulario
                 setFormData({ businessName: '', ownerName: '', email: '', password: '' });
                 setSelectedFile(null); 
                 setLogoFile(null);
@@ -130,7 +128,6 @@ Empresa: ${newCompanyId}
     return (
         <div className="min-h-screen bg-slate-900 text-slate-200 p-4 md:p-8 font-sans">
             
-            {/* OVERLAY DE CARGA */}
             {(isSeeding || processStatus === 'creating_tenant') && (
                 <div className="fixed inset-0 bg-black/90 z-50 flex flex-col items-center justify-center p-4 backdrop-blur-sm">
                     <div className="bg-slate-800 p-8 rounded-2xl border border-slate-600 shadow-2xl max-w-md w-full text-center">
@@ -159,9 +156,7 @@ Empresa: ${newCompanyId}
                 <Card className="bg-slate-800 border-slate-700 text-white shadow-2xl">
                     <form onSubmit={handleSubmit} className="p-6 space-y-6">
                         
-                        {/* SECCIÓN 1: ARCHIVOS */}
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                            {/* Input CSV */}
                             <div className="bg-slate-900/50 p-4 rounded-xl border border-slate-600 border-dashed hover:border-blue-500 transition-colors">
                                 <label className="block text-sm font-bold text-blue-400 mb-2 flex items-center gap-2">
                                     <FileText size={16}/> 1. Catálogo (CSV) <span className="text-red-500">*</span>
@@ -170,20 +165,11 @@ Empresa: ${newCompanyId}
                                     type="file" 
                                     accept=".csv"
                                     onChange={(e) => setSelectedFile(e.target.files[0])}
-                                    className="block w-full text-xs text-slate-400
-                                      file:mr-2 file:py-1 file:px-2
-                                      file:rounded-lg file:border-0
-                                      file:bg-blue-600 file:text-white
-                                      hover:file:bg-blue-700 cursor-pointer"
+                                    className="block w-full text-xs text-slate-400 file:mr-2 file:py-1 file:px-2 file:rounded-lg file:border-0 file:bg-blue-600 file:text-white hover:file:bg-blue-700 cursor-pointer"
                                 />
-                                {selectedFile && (
-                                    <p className="text-xs text-green-400 mt-2 font-mono truncate">
-                                        ✅ {selectedFile.name}
-                                    </p>
-                                )}
+                                {selectedFile && <p className="text-xs text-green-400 mt-2 font-mono truncate">✅ {selectedFile.name}</p>}
                             </div>
 
-                            {/* Input Logo (Opcional) */}
                             <div className="bg-slate-900/50 p-4 rounded-xl border border-slate-600 border-dashed hover:border-purple-500 transition-colors">
                                 <label className="block text-sm font-bold text-purple-400 mb-2 flex items-center gap-2">
                                     <ImageIcon size={16}/> 2. Logo Inicial (Opcional)
@@ -192,21 +178,12 @@ Empresa: ${newCompanyId}
                                     type="file" 
                                     accept="image/*"
                                     onChange={(e) => setLogoFile(e.target.files[0])}
-                                    className="block w-full text-xs text-slate-400
-                                      file:mr-2 file:py-1 file:px-2
-                                      file:rounded-lg file:border-0
-                                      file:bg-purple-600 file:text-white
-                                      hover:file:bg-purple-700 cursor-pointer"
+                                    className="block w-full text-xs text-slate-400 file:mr-2 file:py-1 file:px-2 file:rounded-lg file:border-0 file:bg-purple-600 file:text-white hover:file:bg-purple-700 cursor-pointer"
                                 />
-                                {logoFile && (
-                                    <p className="text-xs text-green-400 mt-2 font-mono truncate">
-                                        ✅ {logoFile.name}
-                                    </p>
-                                )}
+                                {logoFile && <p className="text-xs text-green-400 mt-2 font-mono truncate">✅ {logoFile.name}</p>}
                             </div>
                         </div>
 
-                        {/* SECCIÓN 2: DATOS DEL NEGOCIO */}
                         <div className="space-y-4 pt-2">
                             <h3 className="text-slate-400 font-bold uppercase text-xs tracking-wider flex items-center gap-2 border-b border-slate-700 pb-2">
                                 <Briefcase size={14}/> 3. Datos del Negocio
@@ -237,7 +214,6 @@ Empresa: ${newCompanyId}
                             </div>
                         </div>
 
-                        {/* SECCIÓN 3: CREDENCIALES */}
                         <div className="space-y-4 pt-2">
                             <h3 className="text-slate-400 font-bold uppercase text-xs tracking-wider flex items-center gap-2 border-b border-slate-700 pb-2">
                                 <Lock size={14}/> 4. Credenciales Admin

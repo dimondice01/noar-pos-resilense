@@ -1,32 +1,26 @@
 import { getDB } from '../../../database/db';
 import { db } from '../../../database/firebase';
 import { doc, setDoc } from 'firebase/firestore';
-import { useAuthStore } from '../../auth/store/useAuthStore'; // 🔑 IMPORTANTE: Para el aislamiento
+import { useAuthStore } from '../../auth/store/useAuthStore'; // 🔑 CLAVE
 
-// Helper para IDs consistentes
+// Helper IDs
 const generateId = (prefix) => `${prefix}_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
 
 // ==========================================
-// ☁️ HELPER: SYNC AISLADO (SaaS)
+// ☁️ HELPER: SYNC PRIVADO (Blindado por CompanyID)
 // ==========================================
 const syncToCloud = async (collectionName, data) => {
   if (!navigator.onLine) return;
 
-  // 1. OBTENER ID EMPRESA
   const { user } = useAuthStore.getState();
-
-  // 🛡️ SEGURIDAD: Si no hay empresa, abortamos para no ensuciar la raíz
   if (!user || !user.companyId) {
-      console.warn(`⛔ Sync Turnos: Intento de escritura sin empresa asignada.`);
+      console.warn(`⛔ Sync Abortado: Falta usuario o empresa.`);
       return;
   }
 
   try {
     const { syncStatus, ...cloudData } = data;
-
-    // 2. CONSTRUIR RUTA PRIVADA
-    // companies/empresa_123/shifts
-    // companies/empresa_123/cash_movements
+    // Ruta aislada: companies/{id}/shifts/{shiftId}
     const path = `companies/${user.companyId}/${collectionName}`;
 
     await setDoc(doc(db, path, data.id), {
@@ -35,49 +29,67 @@ const syncToCloud = async (collectionName, data) => {
       syncedAt: new Date().toISOString()
     }, { merge: true });
     
-    // Marcar local como synced
     const dbLocal = await getDB();
     await dbLocal.put(collectionName, { ...data, syncStatus: 'SYNCED' });
 
   } catch (e) {
-    console.warn(`⚠️ Error sincronizando ${collectionName} (Nube):`, e);
+    console.warn(`⚠️ Error sync ${collectionName}:`, e);
   }
 };
 
 export const shiftRepository = {
   
   // ==========================================
-  // 🕒 GESTIÓN DE TURNOS (Apertura/Cierre)
+  // 🕒 GESTIÓN DE TURNOS (Blindado por Usuario)
   // ==========================================
 
   /**
-   * Busca si hay un turno abierto actualmente
+   * Busca si ESTE usuario tiene turno abierto
    */
   async getCurrentShift() {
+    const { user } = useAuthStore.getState();
+    if (!user) return null;
+
     const dbLocal = await getDB();
-    const tx = dbLocal.transaction('shifts', 'readonly');
-    const index = tx.store.index('status');
-    const openShift = await index.get('OPEN');
-    return openShift;
+    const all = await dbLocal.getAll('shifts');
+    
+    // 🔥 FILTRO EN MEMORIA: Solo turnos ABIERTOS de ESTE USUARIO
+    return all.find(s => s.status === 'OPEN' && s.userId === user.uid);
   },
 
   /**
-   * Obtener historial completo de turnos
+   * Historial (Admin ve todo, Cajero solo suyo)
    */
   async getAllShifts() {
+    const { user } = useAuthStore.getState();
+    if (!user) return [];
+
     const dbLocal = await getDB();
-    const shifts = await dbLocal.getAll('shifts');
-    return shifts.sort((a, b) => new Date(b.openedAt) - new Date(a.openedAt));
+    const all = await dbLocal.getAll('shifts');
+    
+    let filtered = [];
+    if (user.role === 'ADMIN') {
+        // Admin ve todos los turnos de SU empresa
+        filtered = all.filter(s => s.companyId === user.companyId);
+    } else {
+        // Cajero solo ve SUS turnos
+        filtered = all.filter(s => s.userId === user.uid);
+    }
+
+    return filtered.sort((a, b) => new Date(b.openedAt) - new Date(a.openedAt));
   },
 
   /**
-   * Abre un nuevo turno de caja (Sync Local + Nube Aislada)
+   * Abre turno (Blindado)
    */
   async openShift(userId, initialAmount) {
+    const { user } = useAuthStore.getState();
+    if (!user) throw new Error("No autenticado");
+
     const dbLocal = await getDB();
     
     const current = await this.getCurrentShift();
-    if (current) throw new Error("Ya existe una caja abierta. Debe cerrarla primero.");
+    if (current) throw new Error("Ya tienes una caja abierta.");
 
     const shiftId = generateId('shift');
     const timestamp = new Date().toISOString();
@@ -85,7 +97,10 @@ export const shiftRepository = {
     const newShift = {
       id: shiftId,
       status: 'OPEN',
-      userId: userId,
+      userId: user.uid,        // 🔥 ID Real
+      userEmail: user.email,   // Trazabilidad
+      userName: user.name || 'Cajero',
+      companyId: user.companyId, // Aislamiento
       openedAt: timestamp,
       initialAmount: parseFloat(initialAmount),
       finalAmount: 0,
@@ -94,25 +109,26 @@ export const shiftRepository = {
       syncStatus: 'PENDING'
     };
 
-    // Movimiento de apertura
+    // Movimiento Inicial
     const openingMovement = {
       id: generateId('mov'),
       shiftId: shiftId,
-      type: 'DEPOSIT', // Estandarizado con cashRepository
+      type: 'DEPOSIT', 
       amount: parseFloat(initialAmount),
-      description: 'Apertura de Caja',
-      userId: userId,
+      description: 'Fondo Inicial de Caja',
+      userId: user.uid,
+      companyId: user.companyId,
       date: timestamp,
       syncStatus: 'PENDING'
     };
 
-    // 1. Guardar Local (Transacción)
+    // 1. Guardar Local
     const tx = dbLocal.transaction(['shifts', 'cash_movements'], 'readwrite');
     await tx.objectStore('shifts').put(newShift);
     await tx.objectStore('cash_movements').put(openingMovement);
     await tx.done;
 
-    // 2. Subir a Nube (Background - Ruta Aislada)
+    // 2. Sync Nube
     syncToCloud('shifts', newShift);
     syncToCloud('cash_movements', openingMovement);
 
@@ -120,12 +136,19 @@ export const shiftRepository = {
   },
 
   /**
-   * Cierre de Caja (Sync Local + Nube Aislada)
+   * Cierre de Caja (Validación de Propiedad)
    */
   async closeShift(shiftId, declaredAmount, stats) {
     const dbLocal = await getDB();
     const shift = await dbLocal.get('shifts', shiftId);
+    
     if (!shift) throw new Error("Turno no encontrado");
+
+    // 🔥 SEGURIDAD: Solo dueño o Admin cierra
+    const { user } = useAuthStore.getState();
+    if (shift.userId !== user?.uid && user?.role !== 'ADMIN') {
+        throw new Error("No tienes permiso para cerrar esta caja.");
+    }
 
     const expectedAmount = stats.expectedTotal; 
     const difference = declaredAmount - expectedAmount;
@@ -134,33 +157,27 @@ export const shiftRepository = {
       ...shift,
       status: 'CLOSED',
       finalAmount: parseFloat(declaredAmount),
-      systemAmount: parseFloat(expectedAmount),
+      systemAmount: parseFloat(expectedAmount), // Guardamos lo que decía el sistema
       difference: difference,
       closedAt: new Date().toISOString(),
-      stats: stats,
+      stats: stats, // Guardamos resumen completo
       syncStatus: 'PENDING'
     };
 
-    // 1. Actualizar Local
     await dbLocal.put('shifts', closedShift);
-
-    // 2. Subir a Nube (Ruta Aislada)
     syncToCloud('shifts', closedShift);
 
     return closedShift;
   },
 
   // ==========================================
-  // 💸 MOVIMIENTOS (Retiros / Ingresos)
+  // 💸 MOVIMIENTOS EXTRA
   // ==========================================
+  async addMovement(shiftId, type, amount, description) {
+    if (amount <= 0) throw new Error("Monto debe ser positivo");
+    if (!['WITHDRAWAL', 'DEPOSIT'].includes(type)) throw new Error("Tipo inválido");
 
-  /**
-   * Registra un movimiento manual (Sync Local + Nube Aislada)
-   */
-  async addMovement(shiftId, type, amount, description, userId) {
-    if (amount <= 0) throw new Error("El monto debe ser positivo");
-    if (!['WITHDRAWAL', 'DEPOSIT'].includes(type)) throw new Error("Tipo de movimiento inválido");
-
+    const { user } = useAuthStore.getState();
     const dbLocal = await getDB();
     
     const movement = {
@@ -169,26 +186,23 @@ export const shiftRepository = {
       type,
       amount: parseFloat(amount),
       description,
-      userId,
+      userId: user.uid,
+      companyId: user.companyId,
       date: new Date().toISOString(),
       syncStatus: 'PENDING'
     };
 
-    // 1. Guardar Local
     await dbLocal.put('cash_movements', movement);
-
-    // 2. Subir a Nube (Ruta Aislada)
     syncToCloud('cash_movements', movement);
 
     return movement;
   },
 
   /**
-   * Obtener movimientos de un turno
+   * Obtener movimientos (Filtrado implícito por shiftId, que ya es único)
    */
   async getShiftMovements(shiftId) {
     const dbLocal = await getDB();
-    // IndexedDB ya está aislada, así que leemos normal
     const movements = await dbLocal.getAllFromIndex('cash_movements', 'shiftId', shiftId);
     return movements.sort((a, b) => new Date(b.date) - new Date(a.date));
   }
