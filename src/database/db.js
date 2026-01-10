@@ -2,12 +2,16 @@
 import { openDB } from 'idb';
 
 const DB_NAME = 'NoarPosDB';
-const DB_VERSION = 7; // ⚠️ SUBIMOS A v7 PARA CREAR LA TABLA 'config'
+
+// 🚨 CAMBIO CRÍTICO: SUBIMOS A v9
+// Esto arregla el error "VersionError: requested version (7) is less than (8)"
+// Al poner 9, el navegador lo toma como una actualización válida y recupera los datos.
+const DB_VERSION = 9; 
 
 export const initDB = async () => {
   return openDB(DB_NAME, DB_VERSION, {
     async upgrade(db, oldVersion, newVersion, transaction) {
-      console.log(`🔄 Migrando base de datos de v${oldVersion} a v${newVersion}...`);
+      console.log(`🔄 Recuperando acceso a DB (Migrando de v${oldVersion} a v${newVersion})...`);
 
       // -----------------------------------------------------------------------
       // BLOQUE 1: ESTRUCTURA BASE (LEGACY)
@@ -91,18 +95,18 @@ export const initDB = async () => {
       }
 
       // -----------------------------------------------------------------------
-      // BLOQUE 3: CONFIGURACIÓN LOCAL (EL FIX PARA EL PIN)
+      // BLOQUE 3: CONFIGURACIÓN LOCAL
       // -----------------------------------------------------------------------
-      // 🔥 ESTO SOLUCIONA EL ERROR "Object store not found"
-      if (oldVersion < 7) {
+      // Nota: Mantenemos la lógica de la v7 original, pero ahora se ejecuta
+      // al saltar a la v9. No hay problema porque verifica "contains".
+      if (oldVersion < 9) { 
          if (!db.objectStoreNames.contains('config')) {
-            // Creamos la tabla 'config' para guardar el PIN y preferencias
             db.createObjectStore('config', { keyPath: 'key' });
-            console.log("✅ Tabla 'config' creada correctamente.");
+            console.log("✅ Tabla 'config' creada/verificada.");
          }
       }
       
-      console.log(`✅ Base de datos actualizada y verificada a v${newVersion}`);
+      console.log(`✅ Base de datos restaurada correctamente a v${newVersion}`);
     },
   });
 };

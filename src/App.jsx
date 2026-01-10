@@ -14,7 +14,8 @@ import { ProtectedRoute } from './core/components/ProtectedRoute';
 import { DashboardPage } from './modules/dashboard/pages/DashboardPage';
 import { PosPage } from './modules/pos/pages/PosPage';
 import { InventoryPage } from './modules/inventory/pages/InventoryPage';
-import { PrintLabelsPage } from './modules/inventory/pages/PrintLabelsPage'; // 👈 IMPORT NUEVO
+import { PrintLabelsPage } from './modules/inventory/pages/PrintLabelsPage'; 
+import { MovementsPage } from './modules/inventory/pages/MovementsPage'; // 👈 IMPORT NUEVO
 import { SalesPage } from './modules/sales/pages/SalesPage';
 import { TeamPage } from './modules/settings/pages/TeamPage'; 
 import { CashPage } from './modules/cash/pages/CashPage'; 
@@ -54,7 +55,8 @@ function App() {
                         
                         {/* Rutas de Inventario */}
                         <Route path="inventory" element={<InventoryPage />} />
-                        <Route path="inventory/print" element={<PrintLabelsPage />} /> {/* 👈 RUTA NUEVA */}
+                        <Route path="inventory/print" element={<PrintLabelsPage />} />
+                        <Route path="inventory/movements" element={<MovementsPage />} /> {/* 👈 RUTA NUEVA */}
 
                         <Route path="cash" element={<CashPage />} />
                         <Route path="settings" element={<TeamPage />} />

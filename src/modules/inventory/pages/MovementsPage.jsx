@@ -1,44 +1,15 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { 
-  Search, Filter, Calendar, ArrowDownLeft, ArrowUpRight, 
-  History, DollarSign, Tag, AlertCircle, CheckCircle2, Package 
+  Search, Filter, History, AlertCircle, CheckCircle2, 
+  Package, DollarSign, Tag, ArrowDownLeft, ArrowUpRight, 
+  Cloud, Wifi, WifiOff, Calendar 
 } from 'lucide-react';
-import { getDB } from '../../../database/db';
 import { Card } from '../../../core/ui/Card';
 import { cn } from '../../../core/utils/cn';
+import { movementsRepository } from '../repositories/movementsRepository';
+import { getDB } from '../../../database/db'; // Para cargar categorías en modo local
 
-// ====================================================================
-// 🧠 REPOSITORIO LOCAL (Internalizado para este módulo)
-// ====================================================================
-const movementsService = {
-  async getAllFullData() {
-    const db = await getDB();
-    // 1. Obtenemos Movimientos y Productos en paralelo
-    const [movements, products] = await Promise.all([
-      db.getAll('movements'),
-      db.getAll('products')
-    ]);
-
-    // 2. Creamos un mapa de productos para acceso O(1)
-    const productMap = new Map(products.map(p => [p.id, p]));
-
-    // 3. Enriquecemos el movimiento con datos del producto
-    return movements.map(mov => {
-      const product = productMap.get(mov.productId);
-      return {
-        ...mov,
-        productName: product ? product.name : 'Producto Eliminado',
-        productCode: product ? product.code : '---',
-        // Normalizamos fecha
-        dateObj: new Date(mov.date)
-      };
-    }).sort((a, b) => b.dateObj - a.dateObj); // Orden descendente (más nuevo arriba)
-  }
-};
-
-// ====================================================================
-// 🎨 UI HELPERS & CONFIG
-// ====================================================================
+// Configuración visual de tipos
 const TYPE_CONFIG = {
   'PRICE_CHANGE': { label: 'Cambio Precio', icon: DollarSign, color: 'text-blue-600', bg: 'bg-blue-50', border: 'border-blue-200' },
   'COST_CHANGE': { label: 'Cambio Costo', icon: Tag, color: 'text-orange-600', bg: 'bg-orange-50', border: 'border-orange-200' },
@@ -52,194 +23,260 @@ const TYPE_CONFIG = {
 export const MovementsPage = () => {
   // ===================== ESTADOS =====================
   const [data, setData] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   
+  // Modo
+  const [isCloudMode, setIsCloudMode] = useState(false);
+  const [isOnline] = useState(navigator.onLine);
+
   // Filtros
   const [search, setSearch] = useState('');
   const [filterType, setFilterType] = useState('ALL');
-  const [dateRange, setDateRange] = useState('ALL'); // 'ALL' | 'TODAY' | 'WEEK'
+  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]); // Fecha YYYY-MM-DD
+  
+  // Categorías
+  const [categories, setCategories] = useState([]);
+  const [selectedCategory, setSelectedCategory] = useState('ALL');
 
   // ===================== CARGA DE DATOS =====================
   useEffect(() => {
-    movementsService.getAllFullData()
-      .then(setData)
-      .catch(console.error)
-      .finally(() => setLoading(false));
-  }, []);
+    loadData();
+  }, [isCloudMode, selectedDate]); // Recargar si cambia modo o fecha
 
-  // ===================== FILTROS =====================
+  const loadData = async () => {
+    setLoading(true);
+    setData([]); // Limpiar tabla mientras carga
+    try {
+        if (isCloudMode && navigator.onLine) {
+            // ☁️ MODO ONLINE: Trae movimientos + categorías de la nube
+            console.log("☁️ Consultando nube...");
+            const result = await movementsRepository.getCloudByDate(selectedDate);
+            setData(result.data);
+            setCategories(result.categories); // Llenamos el select con lo que vino de nube
+        } else {
+            // 🏠 MODO LOCAL: Lee de DB local
+            console.log("🏠 Consultando local...");
+            const result = await movementsRepository.getAllLocal();
+            // Filtramos por fecha manualmente en local
+            const localFiltered = result.filter(m => 
+                m.dateObj.toISOString().split('T')[0] === selectedDate
+            );
+            setData(localFiltered);
+            
+            // Cargar categorías locales
+            const db = await getDB();
+            const cats = await db.getAll('categories');
+            setCategories(cats);
+        }
+    } catch (error) {
+        console.error("Error cargando movimientos:", error);
+        alert("Error al consultar datos. Revisa tu conexión.");
+    } finally {
+        setLoading(false);
+    }
+  };
+
+  // ===================== FILTROS EN MEMORIA =====================
   const filteredData = useMemo(() => {
     return data.filter(item => {
-      // 1. Texto
+      // 1. Texto (Producto, Usuario, Descripción)
       const matchText = item.productName.toLowerCase().includes(search.toLowerCase()) || 
-                        item.description.toLowerCase().includes(search.toLowerCase());
+                        (item.description && item.description.toLowerCase().includes(search.toLowerCase())) ||
+                        (item.user && item.user.toLowerCase().includes(search.toLowerCase()));
       if (!matchText) return false;
 
-      // 2. Tipo
+      // 2. Tipo de Movimiento
       if (filterType !== 'ALL' && item.type !== filterType) return false;
 
-      // 3. Fecha
-      if (dateRange === 'TODAY') {
-        const today = new Date();
-        return item.dateObj.toDateString() === today.toDateString();
-      }
-      // (Aquí se pueden agregar más lógicas de fecha)
+      // 3. Categoría (NUEVO)
+      if (selectedCategory !== 'ALL' && item.categoryId !== Number(selectedCategory) && item.categoryId !== selectedCategory) return false;
 
       return true;
     });
-  }, [data, search, filterType, dateRange]);
+  }, [data, search, filterType, selectedCategory]);
 
-  // Stats Rápidos (KPIs)
-  const stats = useMemo(() => {
-    return {
-      total: filteredData.length,
-      stockIn: filteredData.filter(i => i.type.includes('_IN')).length,
-      stockOut: filteredData.filter(i => i.type.includes('_OUT')).length,
-      priceChanges: filteredData.filter(i => i.type === 'PRICE_CHANGE').length
-    };
+  // Totales dinámicos según filtro
+  const totalAmount = useMemo(() => {
+      // Si son ventas, sumamos plata (aproximado). Si es stock, sumamos unidades.
+      return filteredData.length;
   }, [filteredData]);
 
   // ===================== RENDER =====================
   return (
     <div className="space-y-6 pb-20 animate-in fade-in duration-500">
       
-      {/* HEADER & STATS */}
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-6">
+      {/* HEADER */}
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
           <h2 className="text-2xl font-bold text-sys-900 tracking-tight flex items-center gap-2">
-            <History className="text-brand" /> Monitor de Movimientos
+            <History className="text-brand" /> Movimientos de Stock
           </h2>
-          <p className="text-sys-500 text-sm mt-1">Auditoría completa de cambios en inventario y precios.</p>
+          <div className="flex items-center gap-2 mt-1">
+             <span className={`text-xs px-2 py-0.5 rounded border font-bold ${isCloudMode ? 'bg-blue-100 text-blue-700 border-blue-200' : 'bg-sys-100 text-sys-600 border-sys-200'}`}>
+                 {isCloudMode ? 'MODO NUBE (Dueño)' : 'MODO LOCAL (Caja)'}
+             </span>
+             <span className="text-xs text-sys-500">
+                 {isCloudMode ? 'Consultando datos en tiempo real de Firebase' : 'Consultando base de datos de este equipo'}
+             </span>
+          </div>
         </div>
-        
-        {/* KPI Cards Mini */}
-        <div className="flex gap-3 overflow-x-auto pb-1 w-full md:w-auto">
-           <div className="bg-white px-4 py-2 rounded-xl border border-sys-200 shadow-sm flex flex-col items-center min-w-[100px]">
-              <span className="text-[10px] text-sys-400 font-bold uppercase tracking-wider">Movimientos</span>
-              <span className="text-xl font-bold text-sys-900">{stats.total}</span>
-           </div>
-           <div className="bg-green-50 px-4 py-2 rounded-xl border border-green-100 shadow-sm flex flex-col items-center min-w-[100px]">
-              <span className="text-[10px] text-green-600 font-bold uppercase tracking-wider">Entradas</span>
-              <span className="text-xl font-bold text-green-700">{stats.stockIn}</span>
-           </div>
-           <div className="bg-blue-50 px-4 py-2 rounded-xl border border-blue-100 shadow-sm flex flex-col items-center min-w-[100px]">
-              <span className="text-[10px] text-blue-600 font-bold uppercase tracking-wider">Precios</span>
-              <span className="text-xl font-bold text-blue-700">{stats.priceChanges}</span>
-           </div>
-        </div>
+
+        {/* Switch Local / Nube */}
+        <button 
+            onClick={() => setIsCloudMode(!isCloudMode)}
+            disabled={!isOnline}
+            className={`
+                flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold border transition-all shadow-sm
+                ${isCloudMode 
+                    ? 'bg-blue-600 text-white border-blue-700 shadow-blue-200 hover:bg-blue-700' 
+                    : 'bg-white text-sys-600 border-sys-200 hover:bg-gray-50'}
+                ${!isOnline && 'opacity-50 cursor-not-allowed'}
+            `}
+        >
+            {isCloudMode ? <Cloud size={16} /> : <WifiOff size={16} />}
+            {isCloudMode ? 'Cambiar a Local' : 'Consultar Nube'}
+        </button>
       </div>
 
-      {/* TOOLBAR FILTROS */}
-      <Card className="p-1 flex flex-col md:flex-row gap-2 bg-sys-100/50 backdrop-blur-md border-sys-200">
-        
-        {/* Buscador */}
-        <div className="relative flex-1">
-          <Search className="absolute left-3 top-2.5 text-sys-400 w-4 h-4" />
-          <input 
-            type="text" 
-            placeholder="Buscar por producto, usuario o detalle..." 
-            className="w-full pl-9 pr-4 py-2 bg-white rounded-lg border border-sys-200 text-sm focus:border-brand focus:ring-2 focus:ring-brand/10 outline-none transition-all"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
-        </div>
+      {/* TOOLBAR DE FILTROS */}
+      <Card className="p-3 bg-white border-sys-200 shadow-sm rounded-xl">
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+            
+            {/* 1. Selección de Fecha (CRÍTICO) */}
+            <div className="md:col-span-1">
+                <label className="text-[10px] font-bold text-sys-500 uppercase tracking-wider mb-1 block">Fecha Consulta</label>
+                <div className="relative">
+                    <Calendar className="absolute left-3 top-2.5 text-sys-400 w-4 h-4" />
+                    <input 
+                        type="date" 
+                        className="w-full pl-9 pr-3 py-2 bg-sys-50 rounded-lg border border-sys-200 text-sm font-bold text-sys-800 outline-none focus:ring-2 focus:ring-brand"
+                        value={selectedDate}
+                        onChange={(e) => setSelectedDate(e.target.value)}
+                    />
+                </div>
+            </div>
 
-        {/* Selector Tipo */}
-        <div className="relative w-full md:w-48">
-           <Filter className="absolute left-3 top-2.5 text-sys-400 w-4 h-4" />
-           <select 
-             className="w-full pl-9 pr-8 py-2 bg-white rounded-lg border border-sys-200 text-sm outline-none focus:border-brand appearance-none cursor-pointer"
-             value={filterType}
-             onChange={(e) => setFilterType(e.target.value)}
-           >
-             <option value="ALL">Todos los Tipos</option>
-             {Object.keys(TYPE_CONFIG).map(key => (
-               <option key={key} value={key}>{TYPE_CONFIG[key].label}</option>
-             ))}
-           </select>
-        </div>
+            {/* 2. Filtro de Categoría (NUEVO) */}
+            <div className="md:col-span-1">
+                <label className="text-[10px] font-bold text-sys-500 uppercase tracking-wider mb-1 block">Filtrar Rubro</label>
+                <select 
+                    className="w-full px-3 py-2 bg-white rounded-lg border border-sys-200 text-sm outline-none focus:border-brand"
+                    value={selectedCategory}
+                    onChange={(e) => setSelectedCategory(e.target.value)}
+                >
+                    <option value="ALL">📦 Todos los Rubros</option>
+                    {categories.map(c => (
+                        <option key={c.id} value={c.id}>{c.name}</option>
+                    ))}
+                </select>
+            </div>
 
-        {/* Selector Fecha */}
-        <div className="flex bg-white rounded-lg border border-sys-200 p-1">
-           <button 
-             onClick={() => setDateRange('TODAY')}
-             className={cn("px-3 py-1 text-xs font-medium rounded-md transition-all", dateRange === 'TODAY' ? "bg-sys-100 text-sys-900 font-bold" : "text-sys-500 hover:text-sys-700")}
-           >
-             Hoy
-           </button>
-           <button 
-             onClick={() => setDateRange('ALL')}
-             className={cn("px-3 py-1 text-xs font-medium rounded-md transition-all", dateRange === 'ALL' ? "bg-sys-100 text-sys-900 font-bold" : "text-sys-500 hover:text-sys-700")}
-           >
-             Histórico
-           </button>
+            {/* 3. Filtro de Tipo */}
+            <div className="md:col-span-1">
+                <label className="text-[10px] font-bold text-sys-500 uppercase tracking-wider mb-1 block">Tipo Movimiento</label>
+                <select 
+                    className="w-full px-3 py-2 bg-white rounded-lg border border-sys-200 text-sm outline-none focus:border-brand"
+                    value={filterType}
+                    onChange={(e) => setFilterType(e.target.value)}
+                >
+                    <option value="ALL">⚡ Todos los Tipos</option>
+                    {Object.keys(TYPE_CONFIG).map(key => (
+                        <option key={key} value={key}>{TYPE_CONFIG[key].label}</option>
+                    ))}
+                </select>
+            </div>
+
+            {/* 4. Buscador Texto */}
+            <div className="md:col-span-1">
+                <label className="text-[10px] font-bold text-sys-500 uppercase tracking-wider mb-1 block">Buscador</label>
+                <div className="relative">
+                    <Search className="absolute left-3 top-2.5 text-sys-400 w-4 h-4" />
+                    <input 
+                        type="text" 
+                        placeholder="Producto / Usuario..." 
+                        className="w-full pl-9 pr-4 py-2 bg-white rounded-lg border border-sys-200 text-sm outline-none focus:border-brand"
+                        value={search}
+                        onChange={(e) => setSearch(e.target.value)}
+                    />
+                </div>
+            </div>
         </div>
       </Card>
 
-      {/* LISTA DE MOVIMIENTOS */}
+      {/* RESULTADOS */}
       <div className="space-y-3">
         {loading ? (
-           <div className="text-center py-20 text-sys-400">
+           <div className="text-center py-20 text-sys-400 bg-white rounded-2xl border border-sys-100">
              <div className="animate-spin rounded-full h-8 w-8 border-4 border-sys-200 border-t-brand mx-auto mb-3"></div>
-             <p className="text-xs">Consultando bitácora segura...</p>
+             <p className="text-sm font-medium text-sys-600">
+                 {isCloudMode ? 'Descargando datos de la Nube...' : 'Leyendo datos Locales...'}
+             </p>
+             <p className="text-xs mt-1">Esto puede tardar unos segundos si hay muchos datos.</p>
            </div>
         ) : filteredData.length === 0 ? (
            <div className="text-center py-20 bg-white rounded-2xl border border-dashed border-sys-200">
              <div className="w-16 h-16 bg-sys-50 rounded-full flex items-center justify-center mx-auto mb-3 text-sys-300">
                <History size={32} />
              </div>
-             <p className="text-sys-500 font-medium">No se encontraron movimientos</p>
-             <p className="text-xs text-sys-400 mt-1">Prueba cambiando los filtros de búsqueda.</p>
+             <p className="text-sys-500 font-medium">No hay movimientos en esta fecha</p>
+             <p className="text-xs text-sys-400 mt-1">Prueba cambiando la fecha o los filtros.</p>
            </div>
         ) : (
-           filteredData.map((mov) => {
-             const style = TYPE_CONFIG[mov.type] || { label: mov.type, icon: AlertCircle, color: 'text-gray-500', bg: 'bg-gray-100', border: 'border-gray-200' };
-             const Icon = style.icon;
+           <>
+              <div className="text-xs font-bold text-sys-400 uppercase tracking-widest text-right">
+                  Mostrando {filteredData.length} movimientos
+              </div>
+              
+              {filteredData.map((mov) => {
+                 const style = TYPE_CONFIG[mov.type] || { label: mov.type, icon: AlertCircle, color: 'text-gray-500', bg: 'bg-gray-100', border: 'border-gray-200' };
+                 const Icon = style.icon;
 
-             return (
-               <div key={mov.id} className="group bg-white rounded-xl p-4 border border-sys-100 hover:border-brand/20 hover:shadow-md transition-all duration-200 flex flex-col md:flex-row gap-4 items-start md:items-center">
-                 
-                 {/* Icono + Fecha */}
-                 <div className="flex items-center gap-4 min-w-[180px]">
-                    <div className={cn("w-10 h-10 rounded-full flex items-center justify-center border shrink-0", style.bg, style.color, style.border)}>
-                       <Icon size={18} />
-                    </div>
-                    <div>
-                       <p className="text-xs font-bold text-sys-900">
-                         {mov.dateObj.toLocaleDateString()}
-                       </p>
-                       <p className="text-[10px] text-sys-400 font-mono">
-                         {mov.dateObj.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
-                       </p>
-                    </div>
-                 </div>
+                 return (
+                   <div key={mov.id || mov.localId || Math.random()} className="group bg-white rounded-xl p-3 border border-sys-100 hover:border-brand/30 hover:shadow-md transition-all duration-200 flex flex-col md:flex-row gap-3 items-start md:items-center">
+                     
+                     {/* Hora */}
+                     <div className="min-w-[60px] text-center md:text-left">
+                        <span className="text-xs font-bold text-sys-800">
+                            {mov.dateObj.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                        </span>
+                     </div>
 
-                 {/* Detalle Producto */}
-                 <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-1">
-                       <span className={cn("text-[10px] font-bold uppercase px-2 py-0.5 rounded border tracking-wider", style.bg, style.color, style.border)}>
-                         {style.label}
-                       </span>
-                       <span className="text-xs text-sys-400">
-                         por <span className="font-semibold text-sys-600">{mov.user || 'Sistema'}</span>
-                       </span>
-                    </div>
-                    <h4 className="text-sm font-bold text-sys-800 truncate">{mov.productName}</h4>
-                    <p className="text-xs text-sys-500 mt-0.5">{mov.description}</p>
-                 </div>
+                     {/* Icono */}
+                     <div className={cn("w-8 h-8 rounded-full flex items-center justify-center border shrink-0", style.bg, style.color, style.border)}>
+                        <Icon size={14} />
+                     </div>
 
-                 {/* Valor Numérico (Si aplica) */}
-                 {mov.amount && (
-                   <div className="text-right pl-4 border-l border-sys-100 min-w-[100px]">
-                      <span className="text-[10px] text-sys-400 uppercase font-bold tracking-wider block mb-0.5">Cantidad</span>
-                      <span className={cn("text-lg font-black tracking-tight", mov.type.includes('OUT') ? "text-red-600" : "text-green-600")}>
-                        {mov.type.includes('OUT') ? '-' : '+'}{mov.amount}
-                      </span>
+                     {/* Detalle */}
+                     <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-0.5">
+                           <span className={cn("text-[9px] font-bold uppercase px-1.5 py-0.5 rounded border tracking-wider", style.bg, style.color, style.border)}>
+                             {style.label}
+                           </span>
+                           {/* Nombre Categoría */}
+                           {mov.categoryName && (
+                               <span className="text-[9px] bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded border border-gray-200 font-medium">
+                                   {mov.categoryName}
+                               </span>
+                           )}
+                        </div>
+                        <h4 className="text-sm font-bold text-sys-800 truncate">{mov.productName}</h4>
+                        <div className="flex gap-2 text-xs text-sys-500">
+                            <span>Usuario: <b>{mov.user || 'Sistema'}</b></span>
+                        </div>
+                     </div>
+
+                     {/* Cantidad */}
+                     {mov.amount && (
+                       <div className="text-right min-w-[80px]">
+                          <span className={cn("text-lg font-black tracking-tight", (mov.type && mov.type.includes('OUT')) ? "text-red-600" : "text-green-600")}>
+                            {(mov.type && mov.type.includes('OUT')) ? '-' : '+'}{mov.amount}
+                          </span>
+                       </div>
+                     )}
                    </div>
-                 )}
-               </div>
-             );
-           })
+                 );
+               })}
+           </>
         )}
       </div>
     </div>

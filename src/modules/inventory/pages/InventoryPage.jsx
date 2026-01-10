@@ -4,7 +4,7 @@ import React, { useEffect, useState, useRef } from 'react';
 import { 
     Plus, Search, Edit2, Trash2, Package, Scale, AlertTriangle, 
     ArrowUpRight, Filter, CheckSquare, Square, X, History,
-    Printer, ChevronLeft, ChevronRight // 👈 Iconos para paginación
+    Printer, ChevronLeft, ChevronRight, ArrowRightLeft // 👈 Agregado icono para movimientos
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
@@ -313,6 +313,15 @@ export const InventoryPage = () => {
         
         <div className="flex flex-wrap gap-2 justify-end">
             
+            {/* 🔥 NUEVO BOTÓN MOVIMIENTOS */}
+            <Button 
+                variant="secondary" 
+                className="border-blue-200 text-blue-700 bg-blue-50 hover:bg-blue-100 px-3"
+                onClick={() => navigate('/inventory/movements')}
+            >
+                <ArrowRightLeft size={18} className="mr-2" /> Movimientos
+            </Button>
+
             <Button 
                 variant="secondary" 
                 className="border-purple-200 text-purple-700 bg-purple-50 hover:bg-purple-100 px-3"
