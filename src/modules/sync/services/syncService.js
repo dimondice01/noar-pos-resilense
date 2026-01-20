@@ -42,16 +42,53 @@ export const syncService = {
   },
 
   // =================================================================
+  // 🧹 LIMPIEZA DE SEGURIDAD MULTI-TENANT
+  // =================================================================
+  async checkTenantIntegrity(currentCompanyId) {
+      if (!currentCompanyId) return;
+
+      const lastCompanyId = localStorage.getItem('NOAR_LAST_COMPANY_ID');
+
+      if (lastCompanyId && lastCompanyId !== currentCompanyId) {
+          console.warn(`🚨 Cambio de Empresa detectado (${lastCompanyId} -> ${currentCompanyId}). Purgando datos locales...`);
+          
+          try {
+              const localDb = await getDB();
+              // Limpiamos todas las tiendas locales para evitar cruce de datos
+              await localDb.clear('products');
+              await localDb.clear('clients');
+              await localDb.clear('sales'); 
+              await localDb.clear('categories');
+              await localDb.clear('config'); 
+              
+              console.log("✨ Base de datos local purgada con éxito.");
+          } catch (error) {
+              console.error("Error purgando DB:", error);
+          }
+      }
+
+      // Actualizamos el registro del último tenant usado
+      localStorage.setItem('NOAR_LAST_COMPANY_ID', currentCompanyId);
+  },
+
+  // =================================================================
   // 📡 ESCUCHA ACTIVA (NUBE -> LOCAL) - CON FILTRO ANTI-DUPLICADOS
   // =================================================================
   
-  startRealTimeListeners() {
+  async startRealTimeListeners(companyIdArg = null) {
     this.stopListeners();
 
-    const companyId = this._getCompanyId();
-    if (!companyId) return;
+    // Priorizamos el argumento, si no, intentamos obtenerlo del store
+    const companyId = companyIdArg || this._getCompanyId();
+    if (!companyId) {
+        console.warn("⚠️ SyncService: No se pudo iniciar listeners (Falta CompanyID)");
+        return;
+    }
 
     console.log(`📡 Sincronizando datos de: ${companyId}`);
+
+    // 1. VERIFICAR INTEGRIDAD (Limpiar si cambió de usuario)
+    await this.checkTenantIntegrity(companyId);
 
     // A. CONFIGURACIÓN
     const configQuery = query(collection(db, 'companies', companyId, 'config'));
@@ -88,7 +125,6 @@ export const syncService = {
 
       // 🛑 PASO CRÍTICO: DEDUPLICACIÓN EN MEMORIA
       // Si la nube manda 2 productos con el mismo 'code', nos quedamos con el último.
-      // Esto evita el ConstraintError antes de tocar la base de datos.
       const uniqueMap = new Map();
       
       rawToPut.forEach(item => {

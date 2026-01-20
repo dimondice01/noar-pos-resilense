@@ -115,6 +115,7 @@ const Navbar = () => {
 };
 
 const Hero = () => {
+    const navigate = useNavigate();
     return (
         <header className="relative pt-32 pb-20 lg:pt-40 lg:pb-24 overflow-hidden bg-white">
             <div className="absolute top-0 right-0 w-[800px] h-[800px] bg-gradient-to-bl from-blue-50/50 to-transparent rounded-full blur-3xl -translate-y-1/2 translate-x-1/3 pointer-events-none"></div>
@@ -143,11 +144,12 @@ const Hero = () => {
                         </p>
 
                         <div className="flex flex-col sm:flex-row gap-4 justify-center lg:justify-start">
+                            {/* 🔥 BOTÓN PRUEBA GRATIS */}
                             <Button 
                                 className="h-12 px-8 text-base bg-sys-900 hover:bg-black text-white shadow-xl hover:-translate-y-1 transition-transform flex items-center justify-center gap-2"
-                                onClick={() => window.open(WHATSAPP_LINK, '_blank')}
+                                onClick={() => navigate('/register')}
                             >
-                                <MessageCircle size={20} /> Solicitar Demo
+                                <Zap size={20} className="fill-yellow-400 text-yellow-400" /> Prueba Gratis 3 Días
                             </Button>
                             <Button 
                                 variant="secondary"
@@ -159,11 +161,11 @@ const Hero = () => {
                         </div>
                         
                         <div className="mt-8 flex flex-wrap items-center justify-center lg:justify-start gap-4 text-xs text-sys-400 font-medium">
-                            <span className="flex items-center gap-1"><CheckCircle2 size={14} className="text-green-500"/> Alta inmediata</span>
+                            <span className="flex items-center gap-1"><CheckCircle2 size={14} className="text-green-500"/> Sin Tarjeta de Crédito</span>
                             <span className="hidden sm:inline">•</span>
-                            <span className="flex items-center gap-1"><CheckCircle2 size={14} className="text-green-500"/> Instalación remota</span>
+                            <span className="flex items-center gap-1"><CheckCircle2 size={14} className="text-green-500"/> Instalación inmediata</span>
                             <span className="hidden sm:inline">•</span>
-                            <span className="flex items-center gap-1"><CheckCircle2 size={14} className="text-green-500"/> Soporte personalizado</span>
+                            <span className="flex items-center gap-1"><CheckCircle2 size={14} className="text-green-500"/> Soporte incluído</span>
                         </div>
                     </div>
 
@@ -209,7 +211,6 @@ const Hero = () => {
                             </div>
                         </div>
                     </div>
-
                 </div>
             </div>
         </header>
@@ -428,55 +429,69 @@ const HardwareSection = () => (
     </section>
 );
 
-const PricingSection = () => (
-    <section id="pricing" className="py-24 bg-sys-50">
-        <div className="container mx-auto px-6 text-center">
-            <h2 className="text-3xl md:text-4xl font-black text-sys-900 mb-12">Planes y Precios</h2>
-            <div className="max-w-2xl mx-auto bg-white rounded-3xl p-12 shadow-xl border border-sys-200 relative overflow-hidden">
-                <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-brand to-purple-600"></div>
-                
-                <Badge icon={Store} text="Licencia de por vida" color="purple" />
-                
-                <h3 className="text-3xl font-black mt-6 mb-2 text-sys-900">Pago Único</h3>
-                <p className="text-sys-500 mb-8 max-w-md mx-auto">
-                    Olvidate de las suscripciones mensuales. Pagás una vez y el sistema es tuyo para siempre.
-                </p>
-                
-                {/* 🔥 CAMBIO: PRECIO OCULTO -> CONSULTAR PRECIO */}
-                <div className="flex flex-col items-center justify-center gap-2 mb-8">
-                    <span className="text-4xl sm:text-5xl font-black text-brand tracking-tight">CONSULTAR PRECIO</span>
-                    <span className="text-sm font-bold text-sys-400 uppercase mt-2">Promociones Disponibles</span>
-                </div>
+const PricingSection = () => {
+    const navigate = useNavigate();
+    return (
+        <section id="pricing" className="py-24 bg-sys-50">
+            <div className="container mx-auto px-6 text-center">
+                <h2 className="text-3xl md:text-4xl font-black text-sys-900 mb-12">Planes y Precios</h2>
+                <div className="max-w-2xl mx-auto bg-white rounded-3xl p-12 shadow-xl border border-sys-200 relative overflow-hidden">
+                    <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-brand to-purple-600"></div>
+                    
+                    <Badge icon={Store} text="Licencia de por vida" color="purple" />
+                    
+                    <h3 className="text-3xl font-black mt-6 mb-2 text-sys-900">Pago Único</h3>
+                    <p className="text-sys-500 mb-8 max-w-md mx-auto">
+                        Olvidate de las suscripciones mensuales. Pagás una vez y el sistema es tuyo para siempre.
+                    </p>
+                    
+                    <div className="flex flex-col items-center justify-center gap-2 mb-8">
+                        <span className="text-4xl sm:text-5xl font-black text-brand tracking-tight">CONSULTAR PRECIO</span>
+                        <span className="text-sm font-bold text-sys-400 uppercase mt-2">Promociones Disponibles</span>
+                    </div>
 
-                <div className="grid grid-cols-2 gap-4 text-left max-w-sm mx-auto mb-10">
-                    <div className="flex items-center gap-2 text-sm text-sys-600 font-medium">
-                        <CheckCircle2 size={16} className="text-green-500"/> Instalación Remota
+                    <div className="grid grid-cols-2 gap-4 text-left max-w-sm mx-auto mb-10">
+                        <div className="flex items-center gap-2 text-sm text-sys-600 font-medium">
+                            <CheckCircle2 size={16} className="text-green-500"/> Instalación Remota
+                        </div>
+                        <div className="flex items-center gap-2 text-sm text-sys-600 font-medium">
+                            <CheckCircle2 size={16} className="text-green-500"/> Capacitación
+                        </div>
+                        <div className="flex items-center gap-2 text-sm text-sys-600 font-medium">
+                            <CheckCircle2 size={16} className="text-green-500"/> Módulos Full
+                        </div>
+                        <div className="flex items-center gap-2 text-sm text-sys-600 font-medium">
+                            <CheckCircle2 size={16} className="text-green-500"/> Soporte x 1 año
+                        </div>
                     </div>
-                    <div className="flex items-center gap-2 text-sm text-sys-600 font-medium">
-                        <CheckCircle2 size={16} className="text-green-500"/> Capacitación
-                    </div>
-                    <div className="flex items-center gap-2 text-sm text-sys-600 font-medium">
-                        <CheckCircle2 size={16} className="text-green-500"/> Módulos Full
-                    </div>
-                    <div className="flex items-center gap-2 text-sm text-sys-600 font-medium">
-                        <CheckCircle2 size={16} className="text-green-500"/> Soporte x 1 año
-                    </div>
-                </div>
 
-                <Button 
-                    className="mx-auto h-14 px-12 text-lg bg-sys-900 hover:bg-black text-white shadow-xl w-full sm:w-auto flex items-center justify-center gap-2 transition-transform hover:-translate-y-1"
-                    onClick={() => window.open(WHATSAPP_LINK, '_blank')}
-                >
-                    <MessageCircle size={20} /> Hablar con un Asesor
-                </Button>
-                
-                <p className="mt-6 text-xs text-sys-400">
-                    *Consultá por planes para vendedores y distribuidores.
-                </p>
+                    <div className="flex flex-col gap-4 max-w-sm mx-auto">
+                        {/* 🔥 BOTÓN PRUEBA GRATIS 3 DÍAS */}
+                        <Button 
+                            className="h-14 px-12 text-lg bg-brand hover:bg-brand-hover text-white shadow-xl w-full flex items-center justify-center gap-2 transition-transform hover:-translate-y-1"
+                            onClick={() => navigate('/register')}
+                        >
+                            <Zap size={20} className="fill-yellow-300 text-yellow-300" /> Probar 3 Días GRATIS
+                        </Button>
+                        <p className="text-xs text-sys-400 font-bold">Sin Tarjeta de Crédito • Sin Compromiso</p>
+
+                        <Button 
+                            variant="ghost"
+                            className="h-12 w-full text-sys-600 hover:bg-sys-50 flex items-center justify-center gap-2"
+                            onClick={() => window.open(WHATSAPP_LINK, '_blank')}
+                        >
+                            <MessageCircle size={18} /> Hablar con un Asesor
+                        </Button>
+                    </div>
+                    
+                    <p className="mt-6 text-xs text-sys-400">
+                        *Consultá por planes para vendedores y distribuidores.
+                    </p>
+                </div>
             </div>
-        </div>
-    </section>
-);
+        </section>
+    );
+};
 
 const FAQ = () => (
     <section className="py-20 bg-white">
@@ -509,6 +524,7 @@ const FAQ = () => (
 );
 
 const CTA = () => {
+    const navigate = useNavigate();
     return (
         <section className="py-24 bg-sys-900 text-white relative overflow-hidden">
             <div className="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/cubes.png')] opacity-10"></div>
@@ -524,11 +540,12 @@ const CTA = () => {
                     Pasate a la tecnología que usan los negocios que crecen.
                 </p>
                 <div className="flex flex-col sm:flex-row gap-4 justify-center">
+                    {/* 🔥 BOTÓN CTA FINAL A REGISTRO */}
                     <Button 
                         className="h-16 px-12 text-xl bg-brand hover:bg-brand-hover text-white shadow-2xl transition-all hover:scale-105 border-none flex items-center justify-center gap-2"
-                        onClick={() => window.open(WHATSAPP_LINK, '_blank')}
+                        onClick={() => navigate('/register')}
                     >
-                        <MessageCircle size={24} /> Contactar Asesor
+                        <Zap size={24} className="fill-yellow-300 text-yellow-300" /> Empezar Prueba Gratis
                     </Button>
                 </div>
                 <p className="mt-8 text-sm text-white/40">

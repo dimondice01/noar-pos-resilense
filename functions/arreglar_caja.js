@@ -1,42 +1,34 @@
-const https = require('https');
+const ACCESS_TOKEN = "APP_USR-8932702393988485-011415-de68562ce58fcf5b11928416b85716cc-356944829"; // Tu token real
 
-// 👇 DATOS NUEVOS
-const CAJA_ID = "123176324"; 
-const NUEVO_EXTERNAL_ID = "NOARPOS2"; // ✨ Nuevo y brillante
-const TOKEN = "APP_USR-613005236982546-120215-3a81b19fe8fa9372f1c0161bef4676ac-2126819795";
+async function reparar() {
+    console.log("🔧 Intentando reparación manual para ver el error...");
+    // Usamos el ID de la caja "Noar" que salió en tu lista
+    const cajaId = 124314102; 
+    const newId = "POS" + cajaId;
 
-const data = JSON.stringify({
-  "external_id": NUEVO_EXTERNAL_ID, 
-  "name": "Caja Noar (V2)"
-});
+    try {
+        const response = await fetch(`https://api.mercadopago.com/pos/${cajaId}`, {
+            method: 'PUT',
+            headers: {
+                'Authorization': `Bearer ${ACCESS_TOKEN}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                name: "Noar",
+                external_id: newId, // Intentamos forzar esto
+                fixed_amount: true
+            })
+        });
 
-const options = {
-  hostname: 'api.mercadopago.com',
-  path: `/pos/${CAJA_ID}`,
-  method: 'PUT',
-  headers: {
-    'Authorization': `Bearer ${TOKEN}`,
-    'Content-Type': 'application/json',
-    'Content-Length': data.length
-  }
-};
+        const result = await response.json();
 
-console.log(`🔧 Asignando ID '${NUEVO_EXTERNAL_ID}' a la caja...`);
+        if (response.ok) {
+            console.log("✅ ¡EXTRAÑO! Se reparó manualmente correctamente.");
+        } else {
+            console.log("❌ ERROR AL REPARAR (Esta es la razón):");
+            console.log(JSON.stringify(result, null, 2));
+        }
+    } catch (e) { console.error(e); }
+}
 
-const req = https.request(options, (res) => {
-  let responseData = '';
-  res.on('data', (chunk) => { responseData += chunk; });
-  
-  res.on('end', () => {
-    const json = JSON.parse(responseData);
-    if (res.statusCode === 200) {
-        console.log("🎉 ¡LISTO! Caja actualizada.");
-        console.log(`👉 Ahora tu ID Externo es: ${json.external_id}`);
-    } else {
-        console.log("❌ Error:", json);
-    }
-  });
-});
-
-req.write(data);
-req.end();
+reparar();

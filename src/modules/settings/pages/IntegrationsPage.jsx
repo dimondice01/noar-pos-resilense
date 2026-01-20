@@ -2,7 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { 
     CreditCard, Save, HelpCircle, CheckCircle2, 
     AlertCircle, ExternalLink, Eye, EyeOff, Plug, FileText, ScrollText, Download, Key,
-    Search, X, Loader2, Info, Link as LinkIcon, Terminal, Smartphone // 🔥 Agregamos Smartphone
+    Search, X, Loader2, Info, Link as LinkIcon, Terminal, Smartphone, MonitorSmartphone,
+    HardDrive // Icono para guardar local
 } from 'lucide-react';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { db } from '../../../database/firebase';
@@ -70,7 +71,6 @@ const TutorialModal = ({ isOpen, onClose, type }) => {
         }
     ];
 
-    // 🔥 NUEVO: Tutorial Clover
     const stepsClover = [
         {
             title: "1. Clover Dashboard",
@@ -96,7 +96,7 @@ const TutorialModal = ({ isOpen, onClose, type }) => {
     ];
 
     const steps = type === 'MP' ? stepsMP : type === 'AFIP' ? stepsAFIP : stepsClover;
-    const colorClass = type === 'MP' ? "bg-[#009EE3]" : type === 'CLOVER' ? "bg-[#28a745]" : "bg-[#2C3E50]"; // Verde Clover
+    const colorClass = type === 'MP' ? "bg-[#009EE3]" : type === 'CLOVER' ? "bg-[#28a745]" : "bg-[#2C3E50]";
 
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-sys-900/60 backdrop-blur-sm p-4 animate-in fade-in">
@@ -188,18 +188,20 @@ export const IntegrationsPage = () => {
   // Estados de Procesos
   const [generatingCsr, setGeneratingCsr] = useState(false);
   const [searchingPos, setSearchingPos] = useState(false);
-  const [posList, setPosList] = useState([]); 
-
-  // 🔥 Estados Point Smart
-  const [pointList, setPointList] = useState([]); 
+  
+  // Listas de Opciones (Traídas del Backend)
+  const [posList, setPosList] = useState([]);      // Cajas QR (Stores)
+  const [pointList, setPointList] = useState([]);  // Terminales Físicas (Devices)
   const [loadingPoints, setLoadingPoints] = useState(false);
   const [configuringPoint, setConfiguringPoint] = useState(false);
 
-  // Configs
-  const [mpConfig, setMpConfig] = useState({ accessToken: '', userId: '', externalPosId: '', terminalId: '', isActive: false });
+  // 🌍 CONFIGURACIÓN GLOBAL (Firestore - Credenciales)
+  const [mpConfig, setMpConfig] = useState({ accessToken: '', userId: '', isActive: false });
   const [afipConfig, setAfipConfig] = useState({ cuit: '', ptoVta: 1, razonSocial: '', cert: '', key: '', condicion: 'MONOTRIBUTO', isActive: false });
-  // 🔥 Nuevo Estado: Clover
-  const [cloverConfig, setCloverConfig] = useState({ merchantId: '', apiToken: '', remoteAppId: '', deviceId: '', isActive: false });
+  const [cloverConfig, setCloverConfig] = useState({ merchantId: '', apiToken: '', remoteAppId: '', isActive: false });
+
+  // 💻 CONFIGURACIÓN LOCAL (LocalStorage - Qué aparato usa ESTA PC)
+  const [localConfig, setLocalConfig] = useState({ qrId: '', pointId: '' });
 
   // 🔑 HOOK SAAS
   const user = useAuthStore(state => state.user);
@@ -207,32 +209,51 @@ export const IntegrationsPage = () => {
   useEffect(() => { 
       if (user?.companyId) {
           loadConfig(); 
+          loadLocalConfig();
       }
   }, [user]);
 
+  // 🔥 1. Cargar desde LocalStorage (¡El secreto de la persistencia!)
+  const loadLocalConfig = () => {
+      try {
+          const saved = localStorage.getItem('NOAR_TERMINAL_CONFIG');
+          if (saved) {
+              const parsed = JSON.parse(saved);
+              setLocalConfig(parsed);
+              console.log("📂 Configuración Local Cargada:", parsed);
+          }
+      } catch (e) { console.error("Error leyendo LocalStorage", e); }
+  };
+
+  // 🔥 2. Actualizar Estado Local (Solo React State, no guarda aún)
+  const updateLocalState = (key, value) => {
+      setLocalConfig(prev => ({ ...prev, [key]: value }));
+  };
+
+  // 🔥 3. BOTÓN GUARDAR LOCAL (Acción explícita del usuario)
+  const handleSaveLocal = () => {
+      localStorage.setItem('NOAR_TERMINAL_CONFIG', JSON.stringify(localConfig));
+      alert(`✅ ¡Configuración guardada en ESTE equipo!\n\nCaja QR: ${localConfig.qrId || 'Ninguna'}\nPoint: ${localConfig.pointId || 'Ninguno'}`);
+  };
+
   const loadConfig = async () => {
     try {
-      // Leemos directamente de la colección 'config' de la empresa
       const mpDoc = await getDoc(doc(db, 'companies', user.companyId, 'config', 'mercadopago')); 
       if (mpDoc.exists()) setMpConfig(prev => ({...prev, ...mpDoc.data()}));
 
       const afipDoc = await getDoc(doc(db, 'companies', user.companyId, 'config', 'afip')); 
       if (afipDoc.exists()) setAfipConfig(prev => ({...prev, ...afipDoc.data()}));
 
-      // 🔥 Cargamos Clover
       const cloverDoc = await getDoc(doc(db, 'companies', user.companyId, 'config', 'clover'));
       if (cloverDoc.exists()) setCloverConfig(cloverDoc.data());
 
     } catch (error) { console.error(error); } finally { setLoading(false); }
   };
 
-  // --- 1. MP: BUSCAR CAJAS ---
+  // --- 1. MP: BUSCAR CAJAS QR (Stores) ---
   const handleSearchPos = async () => {
-      if (!mpConfig.accessToken || mpConfig.accessToken.length < 20) {
-          return alert("⚠️ Primero pega el 'Access Token' de MercadoPago.");
-      }
+      if (!mpConfig.accessToken) return alert("⚠️ Primero guarda tu Access Token");
       setSearchingPos(true);
-      setPosList([]);
       try {
           const response = await fetch(`${API_URL}/get-mp-stores`, {
               method: 'POST',
@@ -240,30 +261,30 @@ export const IntegrationsPage = () => {
               body: JSON.stringify({ accessToken: mpConfig.accessToken, companyId: user.companyId })
           });
           const data = await response.json();
+          
           if (!response.ok) throw new Error(data.error || "Error al buscar cajas");
 
           if (data.userId) setMpConfig(prev => ({ ...prev, userId: data.userId.toString() }));
 
           if (data.cajas && data.cajas.length > 0) {
               setPosList(data.cajas);
-              if (data.cajas.length === 1) {
-                  setMpConfig(prev => ({ ...prev, externalPosId: data.cajas[0].external_id }));
-                  alert(`✅ ¡Caja encontrada y seleccionada!\nNombre: ${data.cajas[0].name}`);
-              } else {
-                  alert(`✅ Encontramos ${data.cajas.length} cajas. Por favor selecciona una de la lista.`);
+              // Si solo hay una y no tengo local configurado, la selecciono por defecto en el estado
+              if (data.cajas.length === 1 && !localConfig.qrId) {
+                  updateLocalState('qrId', data.cajas[0].external_id);
               }
+              alert(`✅ Encontradas ${data.cajas.length} Cajas QR.`);
           } else {
-              alert("⚠️ Tu cuenta funciona, pero NO tiene Cajas (Sucursales) creadas.");
+              alert("⚠️ No se encontraron Sucursales/Cajas en tu cuenta de MP.");
           }
       } catch (error) {
           console.error(error);
-          alert("❌ Error buscando cajas: " + error.message);
+          alert("Error buscando cajas: " + error.message);
       } finally {
           setSearchingPos(false);
       }
   };
 
-  // --- 1.5. MP: BUSCAR TERMINALES POINT (NUEVO) ---
+  // --- 2. MP: BUSCAR TERMINALES POINT ---
   const handleFetchPoints = async () => {
     if (!mpConfig.accessToken) return alert("⚠️ Primero guarda tu Access Token");
     setLoadingPoints(true);
@@ -277,9 +298,13 @@ export const IntegrationsPage = () => {
         
         if (data.devices && data.devices.length > 0) {
             setPointList(data.devices);
-            alert(`✅ Se encontraron ${data.devices.length} terminales Point.`);
+            // Si solo hay una y no tengo local, auto-seleccionar
+            if (data.devices.length === 1 && !localConfig.pointId) {
+                updateLocalState('pointId', data.devices[0].id);
+            }
+            alert(`✅ Encontradas ${data.devices.length} Terminales Point.`);
         } else {
-            alert("⚠️ No se encontraron terminales Point vinculados a esta cuenta.");
+            alert("⚠️ No se encontraron terminales Point vinculados.");
         }
     } catch (e) {
         console.error(e);
@@ -289,9 +314,9 @@ export const IntegrationsPage = () => {
     }
   };
 
-  // --- 1.6. MP: CAMBIAR MODO POINT (NUEVO) ---
+  // --- 3. MP: CAMBIAR MODO POINT (OPERACIÓN REMOTA) ---
   const handleChangePointMode = async (targetMode) => {
-    if (!mpConfig.terminalId) return alert("⚠️ Selecciona una terminal de la lista primero.");
+    if (!localConfig.pointId) return alert("⚠️ Selecciona una terminal en 'Configuración de ESTE EQUIPO' primero.");
     
     setConfiguringPoint(true);
     try {
@@ -300,7 +325,7 @@ export const IntegrationsPage = () => {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ 
                 accessToken: mpConfig.accessToken,
-                terminalId: mpConfig.terminalId,
+                terminalId: localConfig.pointId, // Usamos la ID Local seleccionada
                 mode: targetMode // 'PDV' o 'STANDALONE'
             })
         });
@@ -308,7 +333,7 @@ export const IntegrationsPage = () => {
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || "Falló la configuración");
 
-        alert(`✅ ¡Éxito! La terminal ha cambiado a modo ${targetMode}. Reinicia el aparato para ver los cambios.`);
+        alert(`✅ ¡Éxito! La terminal ${localConfig.pointId} ha cambiado a modo ${targetMode}.`);
     } catch (e) {
         alert("❌ Error: " + e.message);
     } finally {
@@ -316,8 +341,9 @@ export const IntegrationsPage = () => {
     }
   };
 
-  // --- 2. AFIP: GENERAR CLAVES ---
+  // --- 4. AFIP: GENERAR CLAVES ---
   const handleGenerateCSR = async () => {
+    // ... (Lógica AFIP existente se mantiene igual)
     if (!afipConfig.cuit || !afipConfig.razonSocial) return alert("⚠️ Escribe tu CUIT y Nombre arriba primero.");
     setGeneratingCsr(true);
     try {
@@ -359,22 +385,37 @@ export const IntegrationsPage = () => {
     }
   };
 
-  const handleSave = async (e) => {
+  // ==============================================================================
+  // 🛑 GUARDADO GLOBAL (Limpia IDs para no afectar a otras cajas)
+  // ==============================================================================
+  const handleSaveGlobal = async (e) => {
     e.preventDefault();
     setSaving(true);
     try {
-      if (!user?.companyId) throw new Error("No tienes empresa asignada. Contacta soporte.");
+      if (!user?.companyId) throw new Error("No tienes empresa asignada.");
       
-      // Guardado seguro en RUTA PRIVADA DE LA EMPRESA
-      await setDoc(doc(db, 'companies', user.companyId, 'config', 'mercadopago'), { ...mpConfig, updatedAt: new Date().toISOString() });
+      // 1. CLONAMOS la configuración global
+      const cleanMpConfig = { ...mpConfig, updatedAt: new Date().toISOString() };
+      
+      // 2. 🗑️ LIMPIEZA PROFUNDA: Borramos cualquier rastro de ID de caja
+      delete cleanMpConfig.externalPosId; 
+      delete cleanMpConfig.terminalId;
+      delete cleanMpConfig.deviceId; 
+
+      // 3. Guardar en Firestore (Tokens y estado activo)
+      await setDoc(doc(db, 'companies', user.companyId, 'config', 'mercadopago'), cleanMpConfig);
+      
       await setDoc(doc(db, 'companies', user.companyId, 'config', 'afip'), { ...afipConfig, updatedAt: new Date().toISOString() }, { merge: true });
-      
-      // 🔥 Guardar Clover
       await setDoc(doc(db, 'companies', user.companyId, 'config', 'clover'), { ...cloverConfig, updatedAt: new Date().toISOString() }, { merge: true });
 
       setStatus('success');
       setTimeout(() => setStatus('idle'), 3000);
-    } catch (error) { alert("❌ " + error.message); setStatus('error'); } finally { setSaving(false); }
+    } catch (error) { 
+        alert("❌ " + error.message); 
+        setStatus('error'); 
+    } finally { 
+        setSaving(false); 
+    }
   };
 
   if (loading) return <div className="p-10 text-center animate-pulse text-sys-400">Cargando...</div>;
@@ -393,14 +434,15 @@ export const IntegrationsPage = () => {
         </div>
       </header>
 
-      <form onSubmit={handleSave} className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+      {/* FORMULARIO GLOBAL */}
+      <form onSubmit={handleSaveGlobal} className="grid grid-cols-1 lg:grid-cols-2 gap-8">
         
         {/* === MERCADO PAGO === */}
         <Card className={cn("border-t-4 border-t-[#009EE3] relative overflow-hidden transition-all duration-300", mpConfig.isActive ? "shadow-lg" : "opacity-80 grayscale-[0.5]")}>
              <div className="flex justify-between items-start mb-6">
                 <div className="flex items-center gap-3">
                     <div className="w-12 h-12 bg-[#009EE3]/10 rounded-xl flex items-center justify-center text-[#009EE3]"><CreditCard size={24} /></div>
-                    <div><h3 className="font-bold text-lg text-sys-900">Mercado Pago</h3><p className="text-xs text-sys-500">Cobros QR y Point</p></div>
+                    <div><h3 className="font-bold text-lg text-sys-900">Mercado Pago</h3><p className="text-xs text-sys-500">Credenciales Globales</p></div>
                 </div>
                 <div className="flex items-center gap-2">
                     <button type="button" onClick={() => setTutorialOpen('MP')} className="text-[#009EE3] hover:bg-[#009EE3]/10 px-3 py-1.5 rounded-full text-xs font-bold flex items-center gap-1 transition-colors border border-transparent hover:border-[#009EE3]/20">
@@ -415,152 +457,120 @@ export const IntegrationsPage = () => {
 
              {mpConfig.isActive && (
                  <div className="space-y-4 animate-in slide-in-from-top-2 fade-in duration-300">
-                    <div className="flex gap-2 items-end">
-                        <div className="flex-1">
-                             <SecretInput label="1. Pega tu Access Token" placeholder="APP_USR-..." value={mpConfig.accessToken} onChange={(val) => setMpConfig({...mpConfig, accessToken: val})} />
+                    {/* CREDENCIALES GLOBALES */}
+                    <div className="p-4 bg-blue-50/50 rounded-xl border border-blue-100 mb-6">
+                        <SecretInput label="Access Token (Producción)" placeholder="APP_USR-..." value={mpConfig.accessToken} onChange={(val) => setMpConfig({...mpConfig, accessToken: val})} />
+                        <div className="flex justify-between items-center mt-2">
+                             <span className="text-[10px] text-sys-400 font-mono">User ID: {mpConfig.userId || 'Pendiente...'}</span>
                         </div>
-                        <Button type="button" onClick={handleSearchPos} disabled={searchingPos} className="mb-4 h-[42px] bg-[#009EE3] hover:bg-[#007eb5] text-white px-3 shadow-md" title="Buscar Cajas Automáticamente">
-                            {searchingPos ? <Loader2 className="animate-spin"/> : <Search size={20} />}
+                    </div>
+
+                    {/* ======================================================= */}
+                    {/* 🖥️ VINCULACIÓN LOCAL DE EQUIPO (LOCALSTORAGE)           */}
+                    {/* ======================================================= */}
+                    <div className="border-t border-dashed border-sys-200 pt-4 bg-gray-50/50 -mx-6 px-6 pb-4">
+                        <div className="flex items-center justify-between mb-3">
+                            <div className="flex items-center gap-2">
+                                <MonitorSmartphone className="text-sys-600" size={18} />
+                                <h4 className="font-bold text-sys-800 text-sm">Configuración Local</h4>
+                            </div>
+                            <span className="text-[10px] bg-white border border-sys-200 px-2 py-1 rounded text-sys-500 font-mono">Este Navegador</span>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                            
+                            {/* CAJA QR LOCAL */}
+                            <div>
+                                <label className="text-[10px] font-bold text-sys-500 uppercase block mb-1">Caja QR (Pantalla)</label>
+                                <div className="flex gap-1">
+                                    <select 
+                                        className="w-full input-std text-xs h-[38px]"
+                                        value={localConfig.qrId || ''}
+                                        onChange={(e) => updateLocalState('qrId', e.target.value)}
+                                    >
+                                        <option value="">-- Sin asignar --</option>
+                                        {posList.map(pos => {
+                                            const validValue = pos.external_id || pos.id.toString();
+                                            return (
+                                                <option key={pos.id} value={validValue}>
+                                                    {pos.name} ({validValue})
+                                                </option>
+                                            );
+                                        })}
+                                    </select>
+                                    <Button type="button" onClick={handleSearchPos} disabled={searchingPos} className="h-[38px] w-[38px] p-0 flex items-center justify-center bg-white border border-sys-200 text-sys-600 hover:text-[#009EE3]">
+                                        {searchingPos ? <Loader2 className="animate-spin" size={14}/> : <Search size={14}/>}
+                                    </Button>
+                                </div>
+                            </div>
+
+                            {/* TERMINAL POINT LOCAL */}
+                            <div>
+                                <label className="text-[10px] font-bold text-sys-500 uppercase block mb-1">Terminal Point</label>
+                                <div className="flex gap-1">
+                                    <select 
+                                        className="w-full input-std text-xs h-[38px]"
+                                        value={localConfig.pointId || ''}
+                                        onChange={(e) => updateLocalState('pointId', e.target.value)}
+                                    >
+                                        <option value="">-- Sin asignar --</option>
+                                        {pointList.map(dev => (
+                                            <option key={dev.id} value={dev.id}>{dev.name}</option>
+                                        ))}
+                                    </select>
+                                    <Button type="button" onClick={handleFetchPoints} disabled={loadingPoints} className="h-[38px] w-[38px] p-0 flex items-center justify-center bg-white border border-sys-200 text-sys-600 hover:text-[#009EE3]">
+                                        {loadingPoints ? <Loader2 className="animate-spin" size={14}/> : <Search size={14}/>}
+                                    </Button>
+                                </div>
+                            </div>
+
+                        </div>
+
+                        {/* 🔥 BOTÓN PARA GUARDAR LOCALMENTE 🔥 */}
+                        <Button 
+                            type="button" 
+                            onClick={handleSaveLocal} 
+                            className="w-full bg-sys-800 hover:bg-black text-white text-xs h-9 shadow-sm flex items-center justify-center gap-2 transition-all active:scale-[0.98]"
+                        >
+                            <HardDrive size={14} /> Guardar Configuración de ESTE EQUIPO
                         </Button>
                     </div>
-                    <div className="grid grid-cols-2 gap-4 border-b border-sys-100 pb-4 mb-4">
-                        <div>
-                            <label className="text-[11px] font-bold text-sys-500 uppercase tracking-wider ml-1 mb-1.5 block">User ID (Automático)</label>
-                            <input type="text" className="input-std bg-sys-50" readOnly placeholder="..." value={mpConfig.userId || ''} />
-                        </div>
-                        <div>
-                            <label className="text-[11px] font-bold text-sys-500 uppercase tracking-wider ml-1 mb-1.5 block">2. Elige tu Caja</label>
-                            {posList.length > 0 ? (
-                                <select 
-                                    className="w-full p-2 bg-white border-2 border-[#009EE3] rounded-lg text-sm font-bold text-sys-800 outline-none h-[42px]"
-                                    value={mpConfig.externalPosId}
-                                    onChange={(e) => setMpConfig({...mpConfig, externalPosId: e.target.value})}
+
+                    {/* ======================================================= */}
+                    {/* 📱 ACCIONES DE POINT (VINCULACIÓN REMOTA)               */}
+                    {/* ======================================================= */}
+                    {localConfig.pointId && (
+                        <div className="mt-4 pt-4 border-t border-dashed border-sys-200">
+                             <div className="flex items-center gap-2 mb-2">
+                                <Smartphone size={16} className="text-[#009EE3]"/>
+                                <span className="text-xs font-bold text-sys-700">Acciones sobre Point: {localConfig.pointId}</span>
+                             </div>
+                             <div className="flex gap-2">
+                                <Button 
+                                    type="button" 
+                                    onClick={() => handleChangePointMode('PDV')}
+                                    disabled={configuringPoint}
+                                    className="flex-1 h-[36px] bg-sys-900 hover:bg-black text-white text-[10px] font-bold shadow-md"
                                 >
-                                    <option value="">-- Seleccionar --</option>
-                                    {posList.map(pos => (
-                                        <option key={pos.id} value={pos.external_id}>{pos.name}</option>
-                                    ))}
-                                </select>
-                            ) : (
-                                <input 
-                                    type="text" 
-                                    className="input-std font-mono uppercase" 
-                                    placeholder="SUC001 (O usa la lupa)" 
-                                    value={mpConfig.externalPosId} 
-                                    onChange={(e) => setMpConfig({...mpConfig, externalPosId: e.target.value})} 
-                                />
-                            )}
+                                    {configuringPoint ? <Loader2 className="animate-spin" size={14}/> : <><Plug size={14} className="mr-1.5"/> ACTIVAR INTEGRACIÓN</>}
+                                </Button>
+                                <Button 
+                                    type="button" 
+                                    onClick={() => handleChangePointMode('STANDALONE')}
+                                    disabled={configuringPoint}
+                                    className="flex-1 h-[36px] bg-white text-sys-600 border border-sys-200 hover:bg-red-50 hover:text-red-600 text-[10px] font-bold"
+                                >
+                                    DESVINCULAR
+                                </Button>
+                             </div>
                         </div>
-                    </div>
+                    )}
 
-                    {/* ======================================================= */}
-                    {/* 📱 GESTIÓN DE POINT SMART (NUEVA SECCIÓN)               */}
-                    {/* ======================================================= */}
-                    <div className="mt-2 bg-sys-50 border border-sys-200 rounded-xl p-4 relative overflow-hidden">
-                        {/* Decoración de fondo */}
-                        <div className="absolute top-0 right-0 w-24 h-24 bg-[#009EE3]/5 rounded-bl-full -z-0 pointer-events-none"></div>
-
-                        <div className="flex items-center gap-2 mb-4 z-10 relative">
-                            <div className="p-2 bg-white rounded-lg shadow-sm text-[#009EE3]">
-                                <Smartphone size={20} />
-                            </div>
-                            <div>
-                                <h4 className="font-bold text-sys-900 text-sm">Integración Point Smart</h4>
-                                <p className="text-[10px] text-sys-500">Configura tu N950 / A910 para cobrar desde el sistema</p>
-                            </div>
-                        </div>
-
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 z-10 relative">
-                            
-                            {/* COLUMNA 1: BUSCAR Y SELECCIONAR */}
-                            <div className="space-y-3">
-                                <label className="text-[11px] font-bold text-sys-500 uppercase tracking-wider ml-1 block">
-                                    1. Seleccionar Terminal
-                                </label>
-                                
-                                <div className="flex gap-2">
-                                    {pointList.length > 0 ? (
-                                        <select 
-                                            className="w-full input-std h-[42px] text-xs"
-                                            value={mpConfig.terminalId || ''}
-                                            onChange={(e) => setMpConfig({...mpConfig, terminalId: e.target.value})}
-                                        >
-                                            <option value="">-- Elige tu Point --</option>
-                                            {pointList.map((dev) => (
-                                                <option key={dev.id} value={dev.id}>
-                                                    {dev.name ? dev.name : `Point ${dev.model || ''} (${dev.id})`}
-                                                </option>
-                                            ))}
-                                        </select>
-                                    ) : (
-                                        <div className="w-full text-xs text-sys-400 italic flex items-center px-3 border border-sys-200 rounded-xl bg-gray-50 h-[42px]">
-                                            Lista vacía...
-                                        </div>
-                                    )}
-
-                                    <Button 
-                                        type="button" 
-                                        onClick={handleFetchPoints} 
-                                        disabled={loadingPoints}
-                                        className="h-[42px] px-3 bg-white border border-sys-200 text-sys-700 hover:bg-sys-50 hover:text-[#009EE3] shadow-sm whitespace-nowrap"
-                                        title="Buscar mis dispositivos"
-                                    >
-                                        {loadingPoints ? <Loader2 className="animate-spin" size={16}/> : <Search size={16}/>}
-                                    </Button>
-                                </div>
-                                
-                                {/* Fallback manual por si la API falla */}
-                                {pointList.length === 0 && (
-                                    <input 
-                                        type="text" 
-                                        placeholder="O pega el ID manual (Ej: NEWLAND_...)" 
-                                        className="input-std text-xs font-mono mt-1"
-                                        value={mpConfig.terminalId || ''}
-                                        onChange={(e) => setMpConfig({...mpConfig, terminalId: e.target.value})}
-                                    />
-                                )}
-                            </div>
-
-                            {/* COLUMNA 2: ACCIONES */}
-                            <div className="space-y-3">
-                                <label className="text-[11px] font-bold text-sys-500 uppercase tracking-wider ml-1 block">
-                                    2. Cambiar Modo de Operación
-                                </label>
-                                
-                                <div className="flex gap-2">
-                                    <Button 
-                                        type="button" 
-                                        onClick={() => handleChangePointMode('PDV')}
-                                        disabled={configuringPoint || !mpConfig.terminalId}
-                                        className="flex-1 h-[42px] bg-sys-900 hover:bg-black text-white text-[10px] md:text-xs font-bold shadow-md border-b-2 border-sys-700 active:border-b-0 active:translate-y-[2px] transition-all"
-                                    >
-                                        {configuringPoint ? <Loader2 className="animate-spin" size={14}/> : (
-                                            <>
-                                                <Plug size={14} className="mr-1.5"/> ACTIVAR INTEGRACIÓN
-                                            </>
-                                        )}
-                                    </Button>
-
-                                    <Button 
-                                        type="button" 
-                                        onClick={() => handleChangePointMode('STANDALONE')}
-                                        disabled={configuringPoint || !mpConfig.terminalId}
-                                        className="flex-1 h-[42px] bg-white text-sys-600 border border-sys-200 hover:bg-red-50 hover:text-red-600 hover:border-red-200 text-[10px] md:text-xs font-bold shadow-sm"
-                                    >
-                                        DESVINCULAR
-                                    </Button>
-                                </div>
-                                <p className="text-[10px] text-sys-400 text-center leading-tight">
-                                    Al activar, reinicia tu Point. La pantalla debería bloquearse esperando cobros.
-                                </p>
-                            </div>
-                        </div>
-                    </div>
                  </div>
              )}
         </Card>
 
-        {/* === CLOVER (FISERV) 🔥 NUEVO === */}
+        {/* === CLOVER (FISERV) === */}
         <Card className={cn("border-t-4 border-t-[#28a745] relative overflow-hidden transition-all duration-300", cloverConfig.isActive ? "shadow-lg" : "opacity-80 grayscale-[0.5]")}>
              <div className="flex justify-between items-start mb-6">
                 <div className="flex items-center gap-3">
@@ -650,9 +660,9 @@ export const IntegrationsPage = () => {
         {/* Footer */}
         <div className="lg:col-span-2 sticky bottom-6 z-20 flex justify-end">
             <Card className="p-2 pl-6 pr-2 flex items-center gap-6 shadow-2xl border-sys-900/10 bg-sys-900 text-white rounded-full">
-                <span className="text-xs">{status === 'success' ? '✅ Guardado en tu Empresa' : 'No olvides guardar'}</span>
+                <span className="text-xs">{status === 'success' ? '✅ Guardado Globalmente' : 'No olvides guardar (Global)'}</span>
                 <Button type="submit" disabled={saving} className="bg-white text-sys-900 hover:bg-sys-100 font-black shadow-none border-none rounded-full px-6 h-10">
-                    {saving ? 'Guardando...' : 'Guardar'}
+                    {saving ? 'Guardando...' : 'Guardar Global'}
                 </Button>
             </Card>
         </div>

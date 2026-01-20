@@ -3,17 +3,16 @@ import {
     X, Banknote, QrCode, LayoutGrid, Loader2, CheckCircle2, 
     AlertCircle, FileText, Wallet, ArrowRight, CreditCard, Landmark, Terminal 
 } from 'lucide-react';
+// 🗑️ ELIMINAMOS: Imports de Firestore (ya no leemos config de la nube aquí)
 import { Button } from '../../../core/ui/Button';
 import { Switch } from '../../../core/ui/Switch';
 import { cn } from '../../../core/utils/cn';
 import { paymentService } from '../../payments/services/paymentService';
-import { useAuthStore } from '../../auth/store/useAuthStore'; // 🔥 Para obtener companyId
+import { useAuthStore } from '../../auth/store/useAuthStore'; 
 
-// 🔥 URL DEL BACKEND (Apunta a la función 'api' que agrupa todo)
-// En desarrollo local puede ser diferente, en producción es la URL de Firebase Functions
+// 🔥 URL DEL BACKEND
 const API_URL = import.meta.env.VITE_API_URL || "https://us-central1-salvadorpos1.cloudfunctions.net/api";
 
-// 🔥 CONFIG: disableAfip = false (Activado por defecto, inicia en OFF)
 export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disableAfip = false }) => {
     // ==========================================
     // ESTADOS Y REFS
@@ -22,6 +21,9 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
     const [amountToPay, setAmountToPay] = useState(''); 
     const [reference, setReference] = useState(''); 
     
+    // 🟢 CAMBIO CLAVE: Configuración LOCAL (Del navegador, no de la DB)
+    const [localTerminal, setLocalTerminal] = useState({ qrId: null, pointId: null });
+
     // 🔥 ESTADOS PARA EL FLUJO DIGITAL (Polling / Clover)
     const [digitalState, setDigitalState] = useState('idle'); 
     const [paymentReference, setPaymentReference] = useState(null);
@@ -32,12 +34,9 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
     const transferRef = useRef(null);
 
     // Hooks
-    const { user } = useAuthStore(); // Obtener usuario para companyId
+    const { user } = useAuthStore(); 
 
-    // ID Terminal Point (Configuración - Idealmente vendría de DB)
-    const POINT_DEVICE_ID = "NEWLAND_N950__N950NCC904500758"; 
-
-    // Estado AFIP (Siempre inicia FALSE)
+    // Estado AFIP
     const [withAfip, setWithAfip] = useState(false);
 
     // Datos Cuenta para Transferencia
@@ -68,7 +67,25 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
         setWithAfip(checked);
     };
 
-    // 1. Inicialización y Limpieza al abrir
+    // 1. 🟢 CARGA DE CONFIGURACIÓN LOCAL AL ABRIR
+    // (Reemplaza a la carga de Firestore)
+    useEffect(() => {
+        if (isOpen) {
+            try {
+                // Leemos lo que guardó la página de Integraciones en ESTE navegador
+                const savedConfig = localStorage.getItem('NOAR_TERMINAL_CONFIG');
+                if (savedConfig) {
+                    setLocalTerminal(JSON.parse(savedConfig));
+                } else {
+                    console.warn("⚠️ No hay caja configurada en este navegador.");
+                }
+            } catch (e) {
+                console.error("Error leyendo localStorage:", e);
+            }
+        }
+    }, [isOpen]);
+
+    // 2. Inicialización y Limpieza
     useEffect(() => {
         if (isOpen) {
             setMethod('cash');
@@ -89,45 +106,55 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
                 }
             }, 50);
         } else {
-            // Limpieza de seguridad al desmontar/ocultar
             if (pollingRef.current) clearInterval(pollingRef.current);
             setDigitalState('idle'); 
         }
     }, [isOpen, total]);
 
-    // 2. INICIO DE TRANSACCIÓN DIGITAL (MP / Point / Clover)
+    // 3. INICIO DE TRANSACCIÓN DIGITAL (MP / Point / Clover)
     useEffect(() => {
         if (isOpen) {
             if (method === 'mercadopago' || method === 'point') {
                 const startTransaction = async () => {
                     setDigitalState('creating');
                     try {
-                        const deviceId = method === 'point' ? POINT_DEVICE_ID : null;
-                        const res = await paymentService.initTransaction(method, total, deviceId);
+                        // 🟢 SELECCIÓN DINÁMICA DE ID (LOCAL)
+                        // Usamos la variable 'localTerminal' en vez de 'mpConfig'
+                        const targetDeviceId = method === 'point' 
+                            ? localTerminal.pointId 
+                            : localTerminal.qrId;
+
+                        if (!targetDeviceId) {
+                            throw new Error(method === 'point' 
+                                ? "❌ Falta configurar Terminal Point en este equipo." 
+                                : "❌ Falta configurar Caja QR en este equipo.");
+                        }
+
+                        // Enviamos deviceId en AMBOS CASOS (QR y Point) para que el backend sepa cual usar
+                        const res = await paymentService.initTransaction(method, total, targetDeviceId);
+                        
                         setPaymentReference(res.reference);
                         setDigitalState('waiting'); 
                     } catch (error) {
                         console.error(`Error iniciando ${method}:`, error);
                         setDigitalState('error');
+                        // Mostramos el error en consola o un toast si fuera necesario
+                        alert(error.message || "Error iniciando pago");
+                        setMethod('cash'); // Fallback a efectivo
                     }
                 };
                 startTransaction();
             } 
             else if (method === 'clover') {
-                // 🔥 LÓGICA ESPECIAL PARA CLOVER (Llamada REST al Backend)
                 const handleCloverPayment = async () => {
                     setDigitalState('creating');
                     try {
                         const externalId = `pos-${Date.now()}`;
-
-                        // Usamos FETCH en lugar de httpsCallable para evitar problemas de CORS/Protocolo con Express
                         const response = await fetch(`${API_URL}/create-clover-order`, {
                             method: 'POST',
-                            headers: { 
-                                'Content-Type': 'application/json' 
-                            },
+                            headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({
-                                total: total, // Enviamos el total, el backend lo pasa a centavos
+                                total: total,
                                 companyId: user.companyId,
                                 externalId: externalId
                             })
@@ -137,15 +164,14 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
 
                         if (response.ok && result.success) {
                             setDigitalState('approved');
-                            // Esperamos un momento para mostrar el éxito y cerramos
                             setTimeout(() => {
                                 onConfirm({ 
-                                    method: 'card', // Registramos como tarjeta
+                                    method: 'card', 
                                     totalSale: total, 
                                     amountPaid: total, 
                                     amountDebt: 0, 
                                     withAfip,
-                                    reference: result.paymentId // Guardamos ID de Clover
+                                    reference: result.paymentId 
                                 });
                             }, 1500);
                         } else {
@@ -163,9 +189,9 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
                 if (pollingRef.current) clearInterval(pollingRef.current);
             }
         }
-    }, [isOpen, method, total, user]);
+    }, [isOpen, method, total, user, localTerminal]); // 🔥 Dependencia actualizada a localTerminal
 
-    // 3. POLLING (Solo para Mercado Pago / Point)
+    // 4. POLLING
     useEffect(() => {
         if (digitalState === 'waiting' && paymentReference && (method === 'mercadopago' || method === 'point')) {
             const checkPayment = async () => {
@@ -190,9 +216,8 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
         }
     }, [digitalState, paymentReference, method, total, withAfip, onConfirm]);
 
-    // 🔥 4. LÓGICA DE CIERRE SEGURO (Intercepción)
+    // 5. CIERRE SEGURO
     const handleCloseAttempt = () => {
-        // Si estamos en medio de una transacción digital, pedimos confirmación
         if (digitalState === 'waiting' || digitalState === 'creating') {
             const confirmCancel = window.confirm(
                 "⚠️ ¿CANCELAR PAGO EN PROCESO?\n\n" +
@@ -202,14 +227,12 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
             );
 
             if (confirmCancel) {
-                // Limpieza manual forzada antes de cerrar
                 if (pollingRef.current) clearInterval(pollingRef.current);
                 setDigitalState('idle'); 
-                setMethod('cash'); // Volver a cash por seguridad
+                setMethod('cash'); 
                 onClose();
             }
         } else {
-            // Cierre normal
             onClose();
         }
     };
@@ -231,7 +254,7 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
             e.preventDefault();
             if (canConfirm) handleManualConfirm();
         }
-        if (e.key === 'Escape') handleCloseAttempt(); // 🔥 Usamos el cierre seguro en ESC
+        if (e.key === 'Escape') handleCloseAttempt(); 
     };
 
     if (!isOpen) return null;
@@ -239,7 +262,6 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
     const PaymentOption = ({ id, label, icon: Icon, colorClass, shortcut }) => (
         <button 
             onClick={() => setMethod(id)} 
-            // Deshabilitamos botones SOLO si está cargando o esperando, PERO NO si dio error (para permitir reintentar)
             disabled={digitalState === 'creating' || digitalState === 'waiting' || digitalState === 'approved'} 
             className={cn(
                 "flex flex-col items-center justify-center p-3 rounded-xl border-2 transition-all duration-200 h-24 relative overflow-hidden active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed group", 
@@ -341,7 +363,6 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
                             </p>
                         </div>
                         
-                        {/* 🔥 BOTÓN X CON LÓGICA DE INTERCEPCIÓN */}
                         <button onClick={handleCloseAttempt} className="p-2 hover:bg-sys-100 rounded-full transition text-sys-500">
                             <X size={24} />
                         </button>
@@ -355,7 +376,6 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
                         <PaymentOption id="mercadopago" label="MP QR" icon={QrCode} colorClass="blue-500" />
                         <PaymentOption id="point" label="MP Point" icon={CreditCard} colorClass="blue-600" />
                         
-                        {/* 🔥 BOTÓN CLOVER (Funcional) */}
                         <PaymentOption id="clover" label="Clover" icon={Terminal} colorClass="green-600" /> 
                     </div>
 
@@ -392,6 +412,10 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
                                             {method === 'point' ? 'Conectando con Terminal...' : 
                                              method === 'clover' ? 'Iniciando Clover...' : 'Iniciando transacción segura...'}
                                         </p>
+                                        <p className="text-xs text-sys-400 mt-2">
+                                            {(method === 'mercadopago' && !localTerminal.qrId) && "⚠️ No hay caja QR configurada"}
+                                            {(method === 'point' && !localTerminal.pointId) && "⚠️ No hay terminal Point configurada"}
+                                        </p>
                                     </>
                                 )}
 
@@ -404,7 +428,7 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
                                             <div className="absolute inset-0 flex items-center justify-center">
                                                 {method === 'point' ? <CreditCard size={32} className="text-blue-600"/> :
                                                  method === 'mercadopago' ? <QrCode size={32} className="text-blue-500"/> : 
-                                                 <Terminal size={32} className="text-green-600"/>} {/* Icono Clover */}
+                                                 <Terminal size={32} className="text-green-600"/>} 
                                             </div>
                                         </div>
                                         <h4 className="text-xl font-bold text-sys-900">Esperando Pago...</h4>

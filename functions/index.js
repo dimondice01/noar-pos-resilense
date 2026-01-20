@@ -34,6 +34,44 @@ app.use((req, res, next) => {
   }
   next();
 });
+
+// ==================================================================
+// 🛠️ HELPER CORE: OBTENER CONFIGURACIÓN SAAS
+// ==================================================================
+async function getCompanyConfig(companyId, type) {
+    if (!companyId) {
+        throw new Error("Error Backend: Falta el ID de la empresa (companyId) en la petición.");
+    }
+
+    const docRef = db.doc(`companies/${companyId}/config/${type}`);
+    const docSnap = await docRef.get();
+    
+    if (!docSnap.exists) {
+        throw new Error(`El servicio ${type} no está configurado para la empresa ${companyId}.`);
+    }
+    
+    const data = docSnap.data();
+    
+    if (type === 'mercadopago') {
+        if (!data.isActive) throw new Error(`MercadoPago está desactivado en la empresa ${companyId}.`);
+        if (!data.accessToken || !data.userId) {
+            throw new Error("Configuración MP incompleta (Faltan Tokens).");
+        }
+    }
+
+    if (type === 'afip') {
+        if (!data.isActive) throw new Error(`AFIP está desactivado en la empresa ${companyId}.`);
+        if (!data.cert || !data.key) throw new Error("Falta Certificado o Clave Privada de AFIP.");
+    }
+
+    if (type === 'clover') {
+        if (!data.isActive) throw new Error(`Clover está desactivado en la empresa ${companyId}.`);
+        if (!data.merchantId || !data.apiToken) throw new Error("Falta Merchant ID o Token de Clover.");
+    }
+    
+    return data;
+}
+
 // ==================================================================
 // 1. ENDPOINT: OBTENER TERMINALES (USANDO LA API QUE SÍ TE FUNCIONA)
 // ==================================================================
@@ -75,7 +113,6 @@ app.post('/get-mp-terminals', async (req, res) => {
             let finalId = String(rawId);
             
             // 🔥 ARREGLO DE ID: Si es corto, le agregamos el prefijo 'NEWLAND_N950__'
-            // Esto es lo que faltaba en el código anterior para que funcionara la vinculación
             if (!finalId.includes('__')) {
                 const model = (d.model || "").toUpperCase();
                 let prefix = "NEWLAND_N950"; // Default más común
@@ -159,43 +196,6 @@ app.post('/configure-mp-point', async (req, res) => {
         return res.status(500).json({ error: "Error interno del servidor" });
     }
 });
-// ==================================================================
-// 🛠️ HELPER CORE: OBTENER CONFIGURACIÓN SAAS
-// ==================================================================
-async function getCompanyConfig(companyId, type) {
-    if (!companyId) {
-        throw new Error("Error Backend: Falta el ID de la empresa (companyId) en la petición.");
-    }
-
-    const docRef = db.doc(`companies/${companyId}/config/${type}`);
-    const docSnap = await docRef.get();
-    
-    if (!docSnap.exists) {
-        throw new Error(`El servicio ${type} no está configurado para la empresa ${companyId}.`);
-    }
-    
-    const data = docSnap.data();
-    
-    if (type === 'mercadopago') {
-        if (!data.isActive) throw new Error(`MercadoPago está desactivado en la empresa ${companyId}.`);
-        if (!data.accessToken || !data.userId || !data.externalPosId) {
-            throw new Error("Configuración MP incompleta (Faltan Tokens o IDs de Caja).");
-        }
-    }
-
-    if (type === 'afip') {
-        if (!data.isActive) throw new Error(`AFIP está desactivado en la empresa ${companyId}.`);
-        if (!data.cert || !data.key) throw new Error("Falta Certificado o Clave Privada de AFIP.");
-    }
-
-    // 👇 AGREGA ESTE BLOQUE PARA CLOVER
-    if (type === 'clover') {
-        if (!data.isActive) throw new Error(`Clover está desactivado en la empresa ${companyId}.`);
-        if (!data.merchantId || !data.apiToken) throw new Error("Falta Merchant ID o Token de Clover.");
-    }
-    
-    return data;
-}
 
 // ==================================================================
 // 🛡️ ENDPOINT: GESTIÓN DE USUARIOS (SaaS AWARE)
@@ -256,14 +256,12 @@ app.post("/create-clover-order", async (req, res) => {
       logger.info(`☘️ Clover (${companyId}): Iniciando cobro por $${amount}`);
   
       // 2. Determinar entorno (Sandbox vs Prod)
-      // NOTA: Para producción real, cambiar a TRUE
       const isProduction = false; 
       const baseUrl = isProduction 
           ? "https://api.clover.com" 
           : "https://sandbox.clover.com";
           
       // 3. Enviar orden a la nube de Clover
-      // Se requiere el Merchant ID en la URL para la API v1
       const url = `https://sandbox.clover.com/v1/merchants/${cloverConfig.merchantId}/payments`;
       
       const response = await axios.post(url, {
@@ -297,17 +295,30 @@ app.post("/create-clover-order", async (req, res) => {
 
 
 // ==================================================================
-// 🚀 ENDPOINT 1: MERCADOPAGO (QR DINÁMICO SAAS)
+// 🚀 ENDPOINT 1: MERCADOPAGO (QR DINÁMICO SAAS) - BLINDADO
 // ==================================================================
 app.post("/create-order", async (req, res) => {
   try {
-    const { total, companyId } = req.body;
+    // 🔥 AHORA RECIBIMOS 'deviceId' (OPCIONAL) DESDE EL FRONT
+    const { total, companyId, deviceId } = req.body;
     const amount = Number(Number(total).toFixed(2));
 
     if (!amount || amount <= 0) return res.status(400).json({ error: "Monto inválido" });
 
     const mpConfig = await getCompanyConfig(companyId, 'mercadopago');
     logger.info(`💳 QR solicitado por: ${companyId} | Collector: ${mpConfig.userId}`);
+
+    // 🔥 PRIORIDAD DE SELECCIÓN DE ID DE CAJA:
+    // 1. Si el frontend mandó un ID específico (deviceId), usamos ese.
+    // 2. Si no, usamos el que está guardado en la base de datos (mpConfig.externalPosId).
+    let targetPosId = deviceId || mpConfig.externalPosId;
+
+    if (!targetPosId) {
+        return res.status(400).json({ error: "No hay ID de Caja (POS) configurado. Seleccione una caja en Integraciones." });
+    }
+
+    // Limpieza básica por si acaso
+    targetPosId = String(targetPosId).trim();
 
     const externalReference = `NOAR-${companyId}-${Date.now()}`;
 
@@ -331,7 +342,10 @@ app.post("/create-order", async (req, res) => {
       cash_out: { amount: 0 }
     };
 
-    const url = `https://api.mercadopago.com/instore/orders/qr/seller/collectors/${mpConfig.userId}/pos/${encodeURIComponent(mpConfig.externalPosId)}/qrs`;
+    logger.info(`🚀 Creando QR en Caja ID: ${targetPosId}`);
+
+    // Usamos 'targetPosId' en la URL en vez del fijo mpConfig.externalPosId
+    const url = `https://api.mercadopago.com/instore/orders/qr/seller/collectors/${mpConfig.userId}/pos/${encodeURIComponent(targetPosId)}/qrs`;
     
     await axios.put(url, orderData, {
       headers: {
@@ -343,7 +357,8 @@ app.post("/create-order", async (req, res) => {
     res.status(200).json({ 
       success: true, 
       message: "Orden MP Creada",
-      reference: externalReference 
+      reference: externalReference,
+      usedPosId: targetPosId // Devuelvo el ID usado para debug en frontend
     });
 
   } catch (error) {
@@ -456,10 +471,6 @@ app.post("/check-payment-status", async (req, res) => {
 });
 
 // ==================================================================
-// 🚀 ENDPOINT 4: CLOVER (SIMULADO)
-// ==================================================================
-
-// ==================================================================
 // 📠 ENDPOINT 5: FACTURACIÓN AFIP (SAAS)
 // ==================================================================
 app.post("/create-invoice", async (req, res) => {
@@ -517,36 +528,72 @@ app.post("/create-credit-note", async (req, res) => {
 // ==================================================================
 // 🔍 ENDPOINT AUXILIAR: LISTAR CAJAS MP (TOKEN DIRECTO)
 // ==================================================================
+// ==================================================================
+// 🔍 ENDPOINT AUXILIAR: LISTAR CAJAS Y "AUTO-REPARAR" LAS VIEJAS
+// ==================================================================
+//v1
 app.post("/get-mp-stores", async (req, res) => {
   try {
     const { accessToken } = req.body; 
     
     if (!accessToken) return res.status(400).json({ error: "Falta Access Token" });
 
+    // 1. Obtener Usuario
     const meRes = await axios.get("https://api.mercadopago.com/users/me", {
         headers: { "Authorization": `Bearer ${accessToken}` }
     });
     const userId = meRes.data.id;
 
+    // 2. Obtener Cajas
     const url = "https://api.mercadopago.com/pos?limit=100"; 
-    
     const posRes = await axios.get(url, {
       headers: { "Authorization": `Bearer ${accessToken}` }
     });
 
-    const results = posRes.data.results || [];
+    let results = posRes.data.results || [];
     
-    const cajas = results.map(c => ({
-        id: c.id, 
-        name: c.name, 
-        external_id: c.external_id, 
-        store_id: c.store_id
+    // 🔥 AUTO-REPARACIÓN DE CAJAS VIEJAS
+    // Si una caja no tiene 'external_id', le asignamos uno basado en su ID numérico
+    // para que la API de QR pueda usarla sin dar error 404.
+    const repairedCajas = await Promise.all(results.map(async (c) => {
+        
+        let finalExternalId = c.external_id;
+
+        // Si la caja existe pero no tiene external_id (causa del error 404)
+        if (!finalExternalId) {
+            try {
+                const newExternalId = `POS${c.id}`; // Generamos ID estable: POS_12345
+                console.log(`🔧 Reparando caja ID ${c.id} -> Asignando ${newExternalId}...`);
+                
+                await axios.put(
+                    `https://api.mercadopago.com/pos/${c.id}`, 
+                    { 
+                        name: c.name,
+                        external_id: newExternalId,
+                        fixed_amount: true // Vital para que acepte cobros dinámicos
+                    }, 
+                    { headers: { "Authorization": `Bearer ${accessToken}` } }
+                );
+                
+                finalExternalId = newExternalId; // Actualizamos para devolver al front
+            } catch (err) {
+                console.error(`⚠️ No se pudo reparar caja ${c.id}:`, err.message);
+                // Si falla la reparación, devolvemos la original (el front usará el ID numérico como fallback)
+            }
+        }
+
+        return {
+            id: c.id, 
+            name: c.name, 
+            external_id: finalExternalId || c.id.toString(), // Siempre devolvemos algo usable
+            store_id: c.store_id
+        };
     }));
 
     res.status(200).json({ 
         success: true, 
         userId: userId, 
-        cajas: cajas 
+        cajas: repairedCajas 
     });
 
   } catch (error) {
@@ -649,7 +696,7 @@ app.post("/generate-afip-csr", async (req, res) => {
 });
 
 // ==================================================================
-// 🏭 FÁBRICA DE CLIENTES (CREATE TENANT - SÓLO ESTRUCTURA)
+// 🏭 FÁBRICA DE CLIENTES (CREATE TENANT - CON TRIAL)
 // ==================================================================
 app.post("/create-tenant", async (req, res) => {
   const { email, password, businessName, ownerName } = req.body;
@@ -659,8 +706,6 @@ app.post("/create-tenant", async (req, res) => {
   }
 
   try {
-    logger.info(`🏗️ Iniciando creación de inquilino: ${businessName}`);
-
     // 1. Crear Usuario en Firebase Auth
     const userRecord = await admin.auth().createUser({
       email,
@@ -671,61 +716,66 @@ app.post("/create-tenant", async (req, res) => {
     const uid = userRecord.uid;
     const companyId = businessName.toLowerCase().replace(/[^a-z0-9]/g, '_'); 
 
-    logger.info(`✅ Usuario creado: ${uid}. ID Empresa: ${companyId}`);
+    // 🔥 LÓGICA TRIAL: Calculamos fecha de vencimiento (Hoy + 3 días)
+    const now = new Date();
+    const trialEndDate = new Date();
+    trialEndDate.setDate(now.getDate() + 3); 
 
     // 2. Crear Estructura Base en Firestore
     const initBatch = db.batch();
 
-    // A) Documento de la Empresa
+    // A) Documento de la Empresa (CON SUSCRIPCIÓN)
     const companyRef = db.collection('companies').doc(companyId);
     initBatch.set(companyRef, {
       name: businessName,
-      createdAt: new Date().toISOString(),
+      createdAt: now.toISOString(),
       ownerUid: uid,
-      isActive: true,
-      plan: 'BASIC'
+      isActive: true, // La empresa está activa tecnicamente
+      
+      // 👇 ACÁ ESTÁ LA MAGIA DEL BLOQUEO
+      subscription: {
+          plan: 'trial',          // trial | monthly | lifetime
+          status: 'active',       // active | expired | paid
+          startDate: now.toISOString(),
+          trialEndDate: trialEndDate.toISOString(), // Fecha de muerte del trial
+          isLifetime: false
+      }
     });
 
-    // B) Perfil de Usuario vinculado a la empresa
+    // B) Perfil de Usuario
     const userRef = db.collection('users').doc(uid);
     initBatch.set(userRef, {
       email,
       name: ownerName || "Admin",
       role: 'ADMIN',
       companyId: companyId,
-      createdAt: new Date().toISOString()
+      createdAt: now.toISOString()
     });
 
     // C) Inicializar Configuración Vacía
     const mpConfigRef = db.collection('companies').doc(companyId).collection('config').doc('mercadopago');
-    initBatch.set(mpConfigRef, { isActive: false, createdAt: new Date().toISOString() });
+    initBatch.set(mpConfigRef, { isActive: false, createdAt: now.toISOString() });
     
     const afipConfigRef = db.collection('companies').doc(companyId).collection('config').doc('afip');
-    initBatch.set(afipConfigRef, { isActive: false, createdAt: new Date().toISOString() });
+    initBatch.set(afipConfigRef, { isActive: false, createdAt: now.toISOString() });
 
     const cloverConfigRef = db.collection('companies').doc(companyId).collection('config').doc('clover');
-    initBatch.set(cloverConfigRef, { isActive: false, createdAt: new Date().toISOString() });
+    initBatch.set(cloverConfigRef, { isActive: false, createdAt: now.toISOString() });
 
     await initBatch.commit();
     
-    // ⚠️ NOTA CRÍTICA: SE ELIMINÓ LA CLONACIÓN DE PRODUCTOS.
-    // Esta responsabilidad ahora recae en el Frontend (useDbSeeder) para evitar costos de Backend.
-
-    logger.info(`✅ Estructura SaaS creada (Sin productos).`);
-
     res.status(200).json({
       success: true,
-      message: `Cliente '${businessName}' creado exitosamente.`,
-      credentials: { email, password },
+      message: `Cliente creado con Trial de 3 días.`,
       companyId
     });
 
   } catch (error) {
-    logger.error("❌ Error creando tenant:", error);
+    console.error("❌ Error creando tenant:", error);
     res.status(500).json({ error: error.message });
   }
 });
 
-// Exportamos la función HTTP (SIN CONFIGURACIÓN DE MEMORIA CUSTOM)
-// Usará el default de Google (normalmente 256MB / 60s), capa gratuita.
+// Exportamos la función HTTP
+console.log("Versión con Auto-Fix Forzado v3.0");
 exports.api = onRequest({ cors: true }, app);

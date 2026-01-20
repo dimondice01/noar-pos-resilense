@@ -19,7 +19,7 @@ export const paymentService = {
           throw new Error("Error: No hay empresa asignada para procesar el pago.");
       }
 
-      console.log(`💳 Iniciando orden ${provider} por $${amount} (Empresa: ${user.companyId})`);
+      console.log(`💳 Iniciando orden ${provider} por $${amount} (Empresa: ${user.companyId}) | Device: ${deviceId || 'DB Default'}`);
 
       let endpoint = '';
       
@@ -32,8 +32,14 @@ export const paymentService = {
       // Configurar según proveedor
       if (provider === 'mercadopago') {
         // Opción 1: QR en Pantalla
-        endpoint = '/create-order'; // El backend usará el AccessToken de esta empresa
+        endpoint = '/create-order'; 
         bodyData.title = "Consumo Noar POS";
+        
+        // 🔥 CORRECCIÓN CRÍTICA:
+        // Antes esto no estaba, por eso no llegaba el ID al backend.
+        if (deviceId) {
+            bodyData.deviceId = deviceId; 
+        }
       } 
       else if (provider === 'point') {
         // Opción 2: Terminal Física (Point Smart)
@@ -44,6 +50,7 @@ export const paymentService = {
         // Opción 3: Clover
         endpoint = '/create-clover-order';
         bodyData.reference = `CLV-${Date.now()}`;
+        bodyData.externalId = deviceId; // Clover usa esto como externalId opcional
       } 
       else {
         throw new Error(`Proveedor ${provider} no soporta inicio asíncrono.`);
@@ -58,7 +65,7 @@ export const paymentService = {
 
       if (!response.ok) {
         const err = await response.json();
-        // Propagamos el mensaje de error del backend (ej: "Token de MP inválido")
+        // Propagamos el mensaje de error del backend
         throw new Error(err.details || err.error || `Falló inicio de ${provider}`);
       }
       

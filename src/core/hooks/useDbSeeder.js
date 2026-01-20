@@ -8,148 +8,138 @@ export const useDbSeeder = () => {
   const [isSeeding, setIsSeeding] = useState(false);
   const delay = ms => new Promise(res => setTimeout(res, ms));
 
+  // ========================================================================
+  // ⚙️ NÚCLEO DE PROCESAMIENTO (Compartido por Archivo y URL)
+  // ========================================================================
+  const processAndUpload = async (targetCompanyId, rows) => {
+      try {
+          if (rows.length === 0) throw new Error("El archivo está vacío.");
+
+          setLoadingMsg("Analizando datos...");
+          const csvMap = new Map();
+          let processedCount = 0;
+
+          // 1. LIMPIEZA Y NORMALIZACIÓN (Formato Kiosco/Despensa)
+          rows.forEach((row) => {
+              // Indices según tu CSV: [0]=Nombre, [1]=Código, [3]=Precio
+              const nameRaw = row[0]; 
+              const codeRaw = row[1]; 
+              const priceRaw = row[3]; 
+
+              const code = String(codeRaw || '').trim();
+              const name = String(nameRaw || '').trim().toUpperCase(); // Todo mayúsculas para Kiosco
+              
+              // Limpieza de precio (quita $, comas, espacios)
+              const priceStr = String(priceRaw || '0').replace(/[^0-9.,]/g, '').replace(',', '.');
+              const price = parseFloat(priceStr) || 0;
+
+              if (!code || !name) return; // Saltar filas inválidas
+
+              processedCount++;
+
+              // Mapa para deduplicar dentro del mismo archivo
+              csvMap.set(code, {
+                  id: code, 
+                  code: code,
+                  name: name,
+                  price: price,
+                  stock: 0, // 🔥 REGLA DE ORO: Stock inicial siempre 0 para obligar auditoría o compra
+                  cost: 0, 
+                  category: 'GENERAL', 
+                  minStock: 5, 
+                  isWeighable: false, // Por defecto no pesable (se cambia a mano si es fiambrería)
+                  active: true,
+                  createdAt: new Date().toISOString(),
+                  syncStatus: 'SYNCED' 
+              });
+          });
+
+          if (csvMap.size === 0) throw new Error("No se encontraron productos válidos en el archivo.");
+
+          // 2. 🛡️ VERIFICACIÓN DE SEGURIDAD (CRÍTICO PARA CLIENTES EXISTENTES)
+          // Descargamos SOLO los IDs existentes para ver qué ya está creado.
+          setLoadingMsg(`🛡️ Protegiendo stock existente en empresa...`);
+          
+          const existingSnapshot = await getDocs(collection(db, 'companies', targetCompanyId, 'products'));
+          const existingCodes = new Set();
+          
+          // Creamos un Set con los códigos que YA existen en la DB
+          existingSnapshot.forEach(d => existingCodes.add(d.id));
+
+          const productsToUpload = [];
+          let skippedCount = 0;
+
+          for (const [code, product] of csvMap) {
+              if (existingCodes.has(code)) {
+                  // 🛑 SI YA EXISTE, LO SALTAMOS. NO TOCAMOS STOCK NI PRECIO.
+                  skippedCount++;
+              } else {
+                  // ✅ Solo si es nuevo, lo agregamos a la cola de subida
+                  productsToUpload.push(product);
+              }
+          }
+
+          console.log(`📊 Reporte: ${productsToUpload.length} Nuevos | ${skippedCount} Ignorados (Ya existían)`);
+
+          // 3. SUBIDA EFICIENTE POR LOTES (BATCH)
+          if (productsToUpload.length > 0) {
+              setLoadingMsg(`🚀 Inyectando ${productsToUpload.length} productos nuevos...`);
+              
+              const chunkSize = 450; // Firebase permite 500 max por batch
+              const chunks = [];
+              for (let i = 0; i < productsToUpload.length; i += chunkSize) {
+                  chunks.push(productsToUpload.slice(i, i + chunkSize));
+              }
+
+              let batchCount = 0;
+              for (const chunk of chunks) {
+                  const batch = writeBatch(db);
+                  
+                  chunk.forEach(prod => {
+                      const docRef = doc(db, `companies/${targetCompanyId}/products`, prod.id);
+                      batch.set(docRef, prod);
+                  });
+                  
+                  await batch.commit(); // 🔥 1 sola llamada de red para 450 productos
+                  
+                  batchCount++;
+                  setLoadingMsg(`📦 Lote ${batchCount}/${chunks.length} guardado...`);
+                  await delay(500); // Pausa técnica para no saturar el navegador
+              }
+              
+              setLoadingMsg(`✅ ¡Listo! Se agregaron ${productsToUpload.length} productos.`);
+          } else {
+              setLoadingMsg("⚠️ No hubo cambios: Todos los productos ya existían.");
+          }
+          
+          setIsSeeding(false);
+          return productsToUpload.length;
+
+      } catch (err) {
+          console.error("Error en proceso de seeding:", err);
+          setLoadingMsg("Error: " + err.message);
+          setIsSeeding(false);
+          throw err;
+      }
+  };
+
+  // 📂 OPCIÓN A: Cargar desde Archivo (Drag & Drop en Configuración)
   const uploadCatalog = async (targetCompanyId, file) => {
-    
-    if (!targetCompanyId) { alert("❌ Faltó ID Empresa"); return; }
-    if (!file) { alert("❌ Faltó Archivo"); return; }
-
+    if (!targetCompanyId || !file) return;
     setIsSeeding(true);
-    setLoadingMsg(`Leyendo archivo local...`);
-
+    
     return new Promise((resolve, reject) => {
-        // ⚙️ CAMBIO CLAVE: header: false
-        // Esto le dice al sistema: "No busques títulos, dame los datos crudos por posición [0, 1, 2...]"
         Papa.parse(file, {
             header: false, 
             skipEmptyLines: true,
             complete: async (results) => {
                 try {
-                    const rows = results.data;
-                    
-                    if (rows.length === 0) {
-                        throw new Error("El archivo CSV está vacío.");
-                    }
-
-                    console.log("🔍 Ejemplo de fila cruda:", rows[0]); // Para depuración
-
-                    const csvMap = new Map();
-                    let processedCount = 0;
-
-                    // 1. PROCESAR FILAS POR POSICIÓN (ÍNDICES)
-                    rows.forEach((row) => {
-                        // Tu CSV es: NOMBRE, CODIGO, STOCK, PRECIO
-                        // Array:     [0],    [1],    [2],   [3]
-                        
-                        const nameRaw = row[0]; // Columna A
-                        const codeRaw = row[1]; // Columna B
-                        const priceRaw = row[3]; // Columna D (La C es stock, la saltamos)
-
-                        const code = String(codeRaw || '').trim();
-                        const name = String(nameRaw || '').trim();
-                        
-                        // Limpieza de precio (quita símbolos raros si hay)
-                        const price = parseFloat(String(priceRaw).replace('$','').replace(',','')) || 0;
-
-                        // Validación mínima
-                        if (!code || !name) return;
-
-                        // Detectar si la primera fila es un encabezado accidental
-                        // Si el código dice "CODIGO" o "779..." no es un número válido, lo saltamos si quieres, 
-                        // pero tu archivo parece no tener headers, así que procesamos todo.
-                        
-                        processedCount++;
-
-                        // Guardamos en el Mapa (Deduplicación automática)
-                        csvMap.set(code, {
-                            id: code, 
-                            code: code,
-                            name: name.toUpperCase(),
-                            price: price,
-                            stock: 0, // Regla de negocio: Stock 0
-                            cost: 0, 
-                            category: 'GENERAL', 
-                            minStock: 5, 
-                            isWeighable: false,
-                            active: true,
-                            createdAt: new Date().toISOString(),
-                            syncStatus: 'SYNCED' 
-                        });
-                    });
-
-                    console.log(`📊 Productos válidos detectados: ${processedCount}`);
-
-                    if (csvMap.size === 0) {
-                        throw new Error(`❌ No se pudieron leer productos. Revisa que el CSV tenga el formato correcto.`);
-                    }
-
-                    // 2. VERIFICAR NUBE (Para no sobrescribir)
-                    setLoadingMsg(`☁️ Verificando duplicados en ${targetCompanyId}...`);
-                    const existingSnapshot = await getDocs(collection(db, 'companies', targetCompanyId, 'products'));
-                    const existingCodes = new Set();
-                    existingSnapshot.forEach(d => existingCodes.add(d.id));
-
-                    const productsToUpload = [];
-                    for (const [code, product] of csvMap) {
-                        if (!existingCodes.has(code)) {
-                            productsToUpload.push(product);
-                        }
-                    }
-
-                    // 3. SUBIDA POR LOTES (Batch)
-                    if (productsToUpload.length > 0) {
-                        setLoadingMsg(`🚀 Subiendo ${productsToUpload.length} productos...`);
-                        
-                        const chunkSize = 450;
-                        const chunks = [];
-                        for (let i = 0; i < productsToUpload.length; i += chunkSize) {
-                            chunks.push(productsToUpload.slice(i, i + chunkSize));
-                        }
-
-                        let batchCount = 0;
-                        for (const chunk of chunks) {
-                            let success = false;
-                            let attempts = 0;
-
-                            while (!success && attempts < 3) {
-                                try {
-                                    const batch = writeBatch(db);
-                                    chunk.forEach(prod => {
-                                        // Guardar en la colección de la empresa
-                                        const docRef = doc(db, `companies/${targetCompanyId}/products`, prod.id);
-                                        batch.set(docRef, prod);
-                                    });
-                                    await batch.commit();
-                                    success = true;
-                                } catch (e) {
-                                    attempts++;
-                                    console.warn(`Reintento lote... (${attempts}/3)`);
-                                    await delay(2000);
-                                }
-                            }
-                            if (!success) throw new Error("Error de red al subir datos.");
-                            
-                            batchCount++;
-                            setLoadingMsg(`📦 Lote ${batchCount}/${chunks.length} subido...`);
-                        }
-                        console.log(`✅ Carga finalizada.`);
-                    } else {
-                        console.log('⚠️ Todo ya existía.');
-                    }
-                    
-                    setIsSeeding(false);
-                    setLoadingMsg(""); 
-                    resolve(productsToUpload.length);
-
-                } catch (innerError) {
-                    console.error("Error procesando:", innerError);
-                    setLoadingMsg("Error: " + innerError.message);
-                    setIsSeeding(false);
-                    reject(innerError);
-                }
+                    const count = await processAndUpload(targetCompanyId, results.data);
+                    resolve(count);
+                } catch (e) { reject(e); }
             },
             error: (err) => {
-                console.error("Error CSV:", err);
-                setLoadingMsg("Error leyendo archivo");
+                setLoadingMsg("Error leyendo CSV local");
                 setIsSeeding(false);
                 reject(err);
             }
@@ -157,5 +147,36 @@ export const useDbSeeder = () => {
     });
   };
 
-  return { uploadCatalog, loadingMsg, isSeeding };
+  // 🌐 OPCIÓN B: Cargar desde URL (Para el Wizard de Registro)
+  const seedFromUrl = async (targetCompanyId, url) => {
+      if (!targetCompanyId || !url) return;
+      setIsSeeding(true);
+      setLoadingMsg("Descargando catálogo base...");
+
+      try {
+          const response = await fetch(url);
+          if (!response.ok) throw new Error("No se pudo descargar el catálogo base.");
+          const csvText = await response.text();
+
+          return new Promise((resolve, reject) => {
+              Papa.parse(csvText, {
+                  header: false,
+                  skipEmptyLines: true,
+                  complete: async (results) => {
+                      try {
+                          const count = await processAndUpload(targetCompanyId, results.data);
+                          resolve(count);
+                      } catch (e) { reject(e); }
+                  },
+                  error: (err) => reject(err)
+              });
+          });
+      } catch (error) {
+          setLoadingMsg("Error de descarga");
+          setIsSeeding(false);
+          throw error;
+      }
+  };
+
+  return { uploadCatalog, seedFromUrl, loadingMsg, isSeeding };
 };

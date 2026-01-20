@@ -1,7 +1,8 @@
-// listar_cajas.js
-// SCRIPT PARA VER LOS IDs REALES DE LAS CAJAS
+// ---------------------------------------------------------
+// 🧪 SCRIPT DE PRUEBA DIRECTA A MERCADO PAGO
+// ---------------------------------------------------------
 
-// 👇 PEGA TU TOKEN AQUÍ (El mismo de Integraciones)
+// 1. REEMPLAZA ESTO CON TU TOKEN REAL (Cópialo de Integraciones)
 const ACCESS_TOKEN = "APP_USR-8932702393988485-011415-de68562ce58fcf5b11928416b85716cc-356944829"; 
 
 async function verCajas() {
@@ -47,4 +48,4 @@ async function verCajas() {
     }
 }
 
-verCajas();
+probarQR();
