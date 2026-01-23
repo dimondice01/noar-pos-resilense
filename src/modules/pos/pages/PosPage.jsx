@@ -1,8 +1,8 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { 
-  Search, Trash2, ShoppingCart, PackageOpen, 
-  Keyboard, User, DollarSign, ChevronRight, Plus, 
-  Lock, Wallet, ArrowRight, Loader2
+    Search, Trash2, ShoppingCart, PackageOpen, 
+    Keyboard, User, DollarSign, ChevronRight, Plus, 
+    Lock, Wallet, ArrowRight, Loader2
 } from 'lucide-react';
 
 // Repositorios y Servicios
@@ -115,7 +115,7 @@ export const PosPage = () => {
       try {
           // Abrimos turno pasando monto inicial y nombre
           // El repo interno ya inyecta el ID de usuario desde el Store
-          await cashRepository.openShift(parseFloat(openingAmount), user.name);
+          await cashRepository.openShift(parseFloat(openingAmount), user?.name || 'Cajero');
           
           setHasOpenShift(true); // Desbloqueamos la pantalla
           setOpeningAmount('');
@@ -295,7 +295,12 @@ export const PosPage = () => {
   const handlePaymentConfirm = async (paymentData) => {
     setIsProcessingSale(true);
     try {
-      // Triple check de seguridad
+      // 0. Validación de Identidad (Seguridad)
+      if (!user || !user.uid || !user.companyId) {
+          throw new Error("⛔ ERROR DE SESIÓN: No se detecta el usuario activo. Recargue la página.");
+      }
+
+      // 1. Validación de Caja
       if (paymentData.amountPaid > 0) {
           const shift = await cashRepository.getCurrentShift();
           if (!shift) {

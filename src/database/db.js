@@ -1,128 +1,99 @@
-import { openDB } from 'idb';
+import Dexie from 'dexie';
 
-const DB_NAME = 'NoarPosDB';
-const DB_VERSION = 8; // 🔥 SUBIMOS A v8 PARA CREAR 'supplier_ledger'
+// =================================================================
+// 🏛️ ARQUITECTURA ENTERPRISE (DEXIE v8)
+// =================================================================
 
-export const initDB = async () => {
-  return openDB(DB_NAME, DB_VERSION, {
-    async upgrade(db, oldVersion, newVersion, transaction) {
-      console.log(`🔄 Migrando base de datos de v${oldVersion} a v${newVersion}...`);
+export const db = new Dexie('NoarPosDB');
 
-      // -----------------------------------------------------------------------
-      // BLOQUE 1: ESTRUCTURA BASE (LEGACY)
-      // -----------------------------------------------------------------------
-      if (oldVersion < 1) {
-        if (!db.objectStoreNames.contains('products')) {
-          const productStore = db.createObjectStore('products', { keyPath: 'id' });
-          productStore.createIndex('code', 'code', { unique: true });
-          productStore.createIndex('name', 'name', { unique: false });
-        }
-        if (!db.objectStoreNames.contains('sales')) {
-          const salesStore = db.createObjectStore('sales', { keyPath: 'localId' }); 
-          salesStore.createIndex('status', 'status', { unique: false });
-          salesStore.createIndex('date', 'date', { unique: false });
-        }
-        if (!db.objectStoreNames.contains('clients')) {
-          db.createObjectStore('clients', { keyPath: 'id' });
-        }
+// Definimos el esquema FINAL (v8).
+// Dexie se encarga automáticamente de crear tablas e índices si no existen.
+db.version(8).stores({
+  // 📦 INVENTARIO
+  products: 'id, code, name, categoryId, active, syncStatus, lastUpdated', 
+  categories: 'id, name, syncStatus',
+  brands: 'id, name, syncStatus',
+
+  // 💰 VENTAS & CAJA
+  sales: 'localId, firestoreId, shiftId, date, status, [date+status], syncStatus', 
+  shifts: 'id, userId, status, openedAt, syncStatus',
+  cash_movements: '++id, shiftId, type, date, syncStatus',
+
+  // 👥 CRM & TERCEROS
+  clients: 'id, docNumber, name, email, syncStatus',
+  suppliers: 'id, name, docNumber, syncStatus',
+
+  // 📉 CUENTAS CORRIENTES (LEDGERS)
+  customer_ledger: '++id, clientId, date, type, syncStatus',
+  supplier_ledger: '++id, supplierId, date, type, syncStatus', // 🔥 La nueva tabla
+
+  // ⚙️ SISTEMA & KARDEX
+  config: 'key',
+  users: 'email, role',
+  movements: '++id, productId, date, type, syncStatus'
+});
+
+// Middlewares: Datos por defecto al crear la DB
+db.on('populate', (tx) => {
+  tx.table('config').add({ key: 'theme', value: 'light' });
+  tx.table('config').add({ key: 'offline_mode', value: true });
+});
+
+// =================================================================
+// 🚀 ACCESO SEGURO CON "SAFETY CHECK" DE MIGRACIÓN
+// =================================================================
+
+export const getDB = async () => {
+  const MIGRATION_KEY = 'NOAR_MIGRATION_DEXIE_V1';
+  const isMigrated = localStorage.getItem(MIGRATION_KEY);
+
+  // CASO: USUARIO LEGACY DETECTADO (Aun tiene la DB vieja de 'idb')
+  if (!isMigrated) {
+      console.log("🔄 Verificando condiciones para migración a Dexie...");
+
+      // 🛑 REGLA DE SEGURIDAD: SI NO HAY INTERNET, NO TOCAMOS NADA
+      // Esto evita borrar datos viejos si no podemos descargar los nuevos.
+      if (!navigator.onLine) {
+          console.warn("⛔ Migración pospuesta: Se requiere internet para actualizar.");
+          // Lanzamos un error controlado. Tu App debería capturar esto y mostrar:
+          // "Para actualizar a la nueva versión, conéctese a Internet una vez."
+          throw new Error("REQUIRES_ONLINE_FOR_MIGRATION");
       }
 
-      if (oldVersion < 2) {
-        if (!db.objectStoreNames.contains('categories')) db.createObjectStore('categories', { keyPath: 'id', autoIncrement: true });
-        if (!db.objectStoreNames.contains('brands')) db.createObjectStore('brands', { keyPath: 'id', autoIncrement: true });
-        // Aseguramos que suppliers exista desde versiones viejas
-        if (!db.objectStoreNames.contains('suppliers')) db.createObjectStore('suppliers', { keyPath: 'id', autoIncrement: true });
-      }
-
-      if (oldVersion < 3) {
-        if (!db.objectStoreNames.contains('movements')) {
-          const movementStore = db.createObjectStore('movements', { keyPath: 'id', autoIncrement: true });
-          movementStore.createIndex('productId', 'productId', { unique: false });
-          movementStore.createIndex('date', 'date', { unique: false });
-        }
-      }
-
-      // -----------------------------------------------------------------------
-      // BLOQUE 2: SEGURIDAD, CAJA Y CRM (CONSOLIDADO)
-      // -----------------------------------------------------------------------
-      if (oldVersion < 6) {
-        // A. Seguridad (Usuarios Locales)
-        if (!db.objectStoreNames.contains('users')) {
-          const userStore = db.createObjectStore('users', { keyPath: 'email' });
-          userStore.createIndex('role', 'role', { unique: false });
-        }
-        
-        // B. CRM: Índices para Clientes
-        if (db.objectStoreNames.contains('clients')) {
-            const clientStore = transaction.objectStore('clients');
-            if (!clientStore.indexNames.contains('docNumber')) clientStore.createIndex('docNumber', 'docNumber', { unique: false });
-            if (!clientStore.indexNames.contains('name')) clientStore.createIndex('name', 'name', { unique: false });
-        }
-
-        // C. Cash Management (Tablas de Caja)
-        if (!db.objectStoreNames.contains('shifts')) {
-          const shiftsStore = db.createObjectStore('shifts', { keyPath: 'id' });
-          shiftsStore.createIndex('status', 'status', { unique: false });
-          shiftsStore.createIndex('userId', 'userId', { unique: false });
-          shiftsStore.createIndex('openedAt', 'openedAt', { unique: false });
-        }
-
-        if (!db.objectStoreNames.contains('cash_movements')) {
-          const cashStore = db.createObjectStore('cash_movements', { keyPath: 'id', autoIncrement: true });
-          cashStore.createIndex('shiftId', 'shiftId', { unique: false });
-          cashStore.createIndex('type', 'type', { unique: false });
-        }
-
-        // D. Actualizar Ventas (Shift ID)
-        if (db.objectStoreNames.contains('sales')) {
-            const salesStore = transaction.objectStore('sales');
-            if (!salesStore.indexNames.contains('shiftId')) {
-              salesStore.createIndex('shiftId', 'shiftId', { unique: false });
-            }
-        }
-
-        // E. Ledger (Cuenta Corriente Clientes)
-        if (!db.objectStoreNames.contains('customer_ledger')) {
-          const ledgerStore = db.createObjectStore('customer_ledger', { keyPath: 'id', autoIncrement: true });
-          ledgerStore.createIndex('clientId', 'clientId', { unique: false });
-          ledgerStore.createIndex('date', 'date', { unique: false });
-          ledgerStore.createIndex('type', 'type', { unique: false }); 
-        }
-      }
-
-      // -----------------------------------------------------------------------
-      // BLOQUE 3: CONFIGURACIÓN LOCAL
-      // -----------------------------------------------------------------------
-      if (oldVersion < 7) {
-         if (!db.objectStoreNames.contains('config')) {
-            db.createObjectStore('config', { keyPath: 'key' });
-            console.log("✅ Tabla 'config' creada correctamente.");
-         }
-      }
-
-      // -----------------------------------------------------------------------
-      // BLOQUE 4: GESTIÓN DE PROVEEDORES (FIX ACTUAL)
-      // -----------------------------------------------------------------------
-      if (oldVersion < 8) {
-          console.log("🛠️ Aplicando parche v8: Tablas de Proveedores...");
+      // ✅ SI HAY INTERNET: PROCEDEMOS CON EL RESET SEGURO
+      try {
+          console.warn("✨ Conexión detectada. Ejecutando actualización crítica...");
           
-          // 1. Asegurar tabla de Proveedores (si se borró o no existía)
-          if (!db.objectStoreNames.contains('suppliers')) {
-              db.createObjectStore('suppliers', { keyPath: 'id' });
-          }
+          if (db.isOpen()) db.close();
 
-          // 2. Crear tabla de Cuenta Corriente de Proveedores (Ledger)
-          if (!db.objectStoreNames.contains('supplier_ledger')) {
-              const supplierLedger = db.createObjectStore('supplier_ledger', { keyPath: 'id' });
-              supplierLedger.createIndex('supplierId', 'supplierId', { unique: false });
-              supplierLedger.createIndex('date', 'date', { unique: false });
-              console.log("✅ Tabla 'supplier_ledger' creada exitosamente.");
-          }
-      }
+          // Borramos la base vieja corrupta/legacy
+          await Dexie.delete('NoarPosDB');
+          
+          console.log("✅ Base de datos Legacy eliminada. Sistema limpio.");
+          localStorage.setItem(MIGRATION_KEY, 'true');
+          
+          // Recargamos para limpiar caché de memoria y arrancar Dexie limpio
+          window.location.reload(); 
+          return; 
       
-      console.log(`✅ Base de datos actualizada y verificada a v${newVersion}`);
-    },
-  });
-};
+      } catch (e) {
+          console.error("⚠️ Error migración:", e);
+      }
+  }
 
-export const getDB = async () => await initDB();
+  // APERTURA NORMAL
+  if (!db.isOpen()) {
+      try {
+        await db.open();
+      } catch (err) {
+        // Failsafe: Si la DB está corrupta, reset de fábrica
+        if (err.name === 'VersionError' || err.name === 'OpenFailedError') {
+             console.error("💥 DB Corrupta. Reset de fábrica.");
+             await Dexie.delete('NoarPosDB');
+             await db.open();
+             localStorage.setItem(MIGRATION_KEY, 'true');
+        }
+      }
+  }
+  return db;
+};

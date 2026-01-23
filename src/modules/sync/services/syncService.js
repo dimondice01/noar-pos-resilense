@@ -3,8 +3,9 @@ import {
   writeBatch, 
   doc, 
   onSnapshot, 
-  setDoc,
-  query
+  query,
+  orderBy,
+  limit
 } from 'firebase/firestore'; 
 import { db } from '../../../database/firebase'; 
 import { salesRepository } from '../../sales/repositories/salesRepository';
@@ -15,6 +16,10 @@ import { useAuthStore } from '../../auth/store/useAuthStore';
 export const syncService = {
   
   _unsubscribes: [],
+
+  // =================================================================
+  // 🧼 SANITIZADORES
+  // =================================================================
 
   _deepSanitize(obj) {
     if (obj === undefined) return null;
@@ -33,196 +38,331 @@ export const syncService = {
     return obj;
   },
 
+  // 1. PRODUCTOS
+  _sanitizeCloudProduct(data, id) {
+      return {
+          id: id, 
+          code: data.code ? String(data.code).trim() : 'SIN_CODIGO_' + id.slice(-4),
+          name: data.name || 'Producto Sin Nombre',
+          price: parseFloat(data.price) || 0,
+          cost: parseFloat(data.cost) || 0,
+          stock: parseFloat(data.stock) || 0,
+          categoryId: data.categoryId || 'uncategorized',
+          category: data.category || '', 
+          brand: data.brand || '',       
+          supplier: data.supplier || data.provider || '', 
+          batches: Array.isArray(data.batches) ? data.batches : [],
+          minStock: parseFloat(data.minStock) || 5,
+          isWeighable: data.isWeighable === true,
+          active: data.active !== false,
+          deleted: data.deleted === true,
+          lastUpdated: data.lastUpdated || new Date().toISOString(),
+          syncStatus: 'synced' 
+      };
+  },
+
+  // 2. VENTAS
+  _sanitizeCloudSale(data, id) {
+      let rawItems = data.items || data.cart || data.details || [];
+      if (typeof rawItems === 'string') { try { rawItems = JSON.parse(rawItems); } catch (e) { rawItems = []; } }
+
+      return {
+          localId: data.localId || id, 
+          firestoreId: id,
+          date: data.date || new Date().toISOString(),
+          total: parseFloat(data.total) || 0,
+          subtotal: parseFloat(data.subtotal) || 0,
+          discount: parseFloat(data.discount) || 0,
+          status: data.status || 'COMPLETED',
+          items: Array.isArray(rawItems) ? rawItems : [],
+          itemCount: Array.isArray(rawItems) ? rawItems.length : 0, 
+          payment: data.payment || { method: 'cash' },
+          userId: data.userId || 'unknown',
+          userName: data.userName || 'Vendedor',
+          sellerName: data.sellerName || data.userName || 'Cajero',
+          createdBy: data.createdBy || '',
+          client: data.client || null, 
+          afip: data.afip || null,
+          syncStatus: 'synced'
+      };
+  },
+
+  // 3. MOVIMIENTOS STOCK
+  _sanitizeCloudMovement(data, id) {
+      return {
+          id: id, 
+          productId: data.productId || 'unknown',
+          type: data.type || 'INFO',
+          amount: parseFloat(data.amount) || 0,
+          description: data.description || '',
+          date: data.date || new Date().toISOString(),
+          user: data.user || 'Sistema', 
+          refId: data.refId || null,
+          syncStatus: 'synced'
+      };
+  },
+
+  // 4. CAJAS (SHIFTS)
+  _sanitizeCloudShift(data, id) {
+      const finalAmount = data.finalAmount !== undefined ? data.finalAmount : (data.finalCash || 0);
+      const systemAmount = data.systemAmount !== undefined ? data.systemAmount : (data.expectedCash || 0);
+
+      return {
+          id: id,
+          localId: data.localId || id,
+          userId: data.userId || 'unknown',
+          userName: data.userName || 'Cajero',
+          userEmail: data.userEmail || '',
+          status: data.status || 'CLOSED',
+          
+          openedAt: data.openedAt || new Date().toISOString(),
+          closedAt: data.closedAt || null,
+          
+          initialAmount: parseFloat(data.initialAmount) || 0,
+          
+          finalAmount: parseFloat(finalAmount),
+          systemAmount: parseFloat(systemAmount),
+          finalCash: parseFloat(finalAmount), 
+          expectedCash: parseFloat(systemAmount), 
+          
+          difference: parseFloat(data.difference) || 0,
+          stats: data.stats || {}, 
+          
+          audited: data.audited === true,
+          
+          syncStatus: 'synced'
+      };
+  },
+
+  // 5. MOVIMIENTOS CAJA
+  _sanitizeCloudCashMovement(data, id) {
+      return {
+          id: id,
+          shiftId: data.shiftId,
+          type: data.type,
+          amount: parseFloat(data.amount) || 0,
+          description: data.description || '',
+          date: data.date || new Date().toISOString(),
+          method: data.method || 'cash',
+          userId: data.userId, 
+          userName: data.userName,
+          syncStatus: 'synced'
+      };
+  },
+
   _getCompanyId() {
     const { user } = useAuthStore.getState();
-    if (!user || !user.companyId || user.companyId === 'undefined') {
-        return null;
-    }
+    if (!user || !user.companyId || user.companyId === 'undefined') return null;
     return user.companyId;
   },
 
-  // =================================================================
-  // 🧹 LIMPIEZA DE SEGURIDAD MULTI-TENANT
-  // =================================================================
   async checkTenantIntegrity(currentCompanyId) {
       if (!currentCompanyId) return;
-
       const lastCompanyId = localStorage.getItem('NOAR_LAST_COMPANY_ID');
 
       if (lastCompanyId && lastCompanyId !== currentCompanyId) {
-          console.warn(`🚨 Cambio de Empresa detectado (${lastCompanyId} -> ${currentCompanyId}). Purgando datos locales...`);
-          
+          console.warn(`🚨 Cambio de Empresa detectado. Limpiando DB Local...`);
           try {
               const localDb = await getDB();
-              // Limpiamos todas las tiendas locales para evitar cruce de datos
-              await localDb.clear('products');
-              await localDb.clear('clients');
-              await localDb.clear('sales'); 
-              await localDb.clear('categories');
-              await localDb.clear('config'); 
-              
-              console.log("✨ Base de datos local purgada con éxito.");
-          } catch (error) {
-              console.error("Error purgando DB:", error);
-          }
+              await Promise.all([
+                  localDb.products.clear(),
+                  localDb.clients.clear(),
+                  localDb.sales.clear(),
+                  localDb.categories.clear(),
+                  localDb.brands.clear(),
+                  localDb.suppliers.clear(),
+                  localDb.config.clear(),
+                  localDb.cash_movements.clear(),
+                  localDb.shifts.clear(), 
+                  localDb.movements.clear() 
+              ]);
+          } catch (error) { console.error(error); }
       }
-
-      // Actualizamos el registro del último tenant usado
       localStorage.setItem('NOAR_LAST_COMPANY_ID', currentCompanyId);
   },
 
   // =================================================================
-  // 📡 ESCUCHA ACTIVA (NUBE -> LOCAL) - CON FILTRO ANTI-DUPLICADOS
+  // 📡 LISTENERS
   // =================================================================
   
   async startRealTimeListeners(companyIdArg = null) {
     this.stopListeners();
 
-    // Priorizamos el argumento, si no, intentamos obtenerlo del store
     const companyId = companyIdArg || this._getCompanyId();
-    if (!companyId) {
-        console.warn("⚠️ SyncService: No se pudo iniciar listeners (Falta CompanyID)");
-        return;
-    }
+    if (!companyId) return;
 
-    console.log(`📡 Sincronizando datos de: ${companyId}`);
-
-    // 1. VERIFICAR INTEGRIDAD (Limpiar si cambió de usuario)
+    console.log(`📡 [SYNC] Motor Iniciado: ${companyId}`);
     await this.checkTenantIntegrity(companyId);
 
-    // A. CONFIGURACIÓN
+    // 1. CONFIGURACIÓN
     const configQuery = query(collection(db, 'companies', companyId, 'config'));
-    const unsubConfig = onSnapshot(configQuery, async (snapshot) => {
+    this._unsubscribes.push(onSnapshot(configQuery, async (snapshot) => {
       try {
           const localDb = await getDB();
-          const tx = localDb.transaction('config', 'readwrite');
-          snapshot.docChanges().forEach((change) => {
-            const data = change.doc.data();
-            if (change.type === 'added' || change.type === 'modified') tx.store.put({ key: change.doc.id, value: data.value });
-            if (change.type === 'removed') tx.store.delete(change.doc.id);
+          snapshot.docChanges().forEach(async (change) => {
+             const data = change.doc.data();
+             if (change.type === 'added' || change.type === 'modified') {
+                 await localDb.config.put({ key: change.doc.id, value: data.value });
+             }
           });
-          await tx.done;
-      } catch (e) { console.error("Error sync config:", e); }
-    });
-    this._unsubscribes.push(unsubConfig);
+      } catch (e) { console.error("Error config:", e); }
+    }));
 
-    // B. PRODUCTOS (BATCH + FILTRO DE MEMORIA)
+    // 2. PRODUCTOS
     const productsQuery = query(collection(db, 'companies', companyId, 'products'));
-
-    const unsubProducts = onSnapshot(productsQuery, async (snapshot) => {
+    this._unsubscribes.push(onSnapshot(productsQuery, async (snapshot) => {
       if (snapshot.empty) return;
-
-      const rawToPut = []; // Guardamos todo en bruto primero
+      const toPut = [];
       const toDelete = [];
-
       snapshot.docChanges().forEach((change) => {
-        if (change.type === 'added' || change.type === 'modified') {
-           const data = change.doc.data();
-           rawToPut.push({ id: change.doc.id, ...data, syncStatus: 'synced' });
-        }
-        if (change.type === 'removed') toDelete.push(change.doc.id);
+        if (change.type === 'removed') { toDelete.push(change.doc.id); } 
+        else { toPut.push(this._sanitizeCloudProduct(change.doc.data(), change.doc.id)); }
       });
-
-      // 🛑 PASO CRÍTICO: DEDUPLICACIÓN EN MEMORIA
-      // Si la nube manda 2 productos con el mismo 'code', nos quedamos con el último.
-      const uniqueMap = new Map();
-      
-      rawToPut.forEach(item => {
-          // Si tiene código, usamos el código como llave única para filtrar
-          if (item.code) {
-             uniqueMap.set(item.code, item); // Sobrescribe si ya existía uno con ese código
-          } else {
-             uniqueMap.set(item.id, item); // Fallback al ID
-          }
-      });
-
-      // Convertimos el mapa limpio de vuelta a array
-      const toPut = Array.from(uniqueMap.values());
-
-      if (toPut.length === 0 && toDelete.length === 0) return;
-
-      const localDb = await getDB();
-
-      // 🛡️ INTENTO 1: BATCH RÁPIDO (Ahora es seguro porque filtramos antes)
-      try {
-          const tx = localDb.transaction('products', 'readwrite');
-          await Promise.all([
-              ...toPut.map(item => tx.store.put(item)),
-              ...toDelete.map(id => tx.store.delete(id))
-          ]);
-          await tx.done;
-          console.log(`📦 Inventario: ${toPut.length} items sincronizados.`);
-      
-      } catch (err) {
-          // Si AÚN ASÍ falla (por conflicto con datos viejos en DB), activamos reparación
-          if (err.name === 'ConstraintError' || err.message?.includes('Constraint')) {
-              console.warn("⚠️ Conflicto persistente. Activando modo Auto-Reparación...");
-              await this._fallbackSafeSync(toPut, localDb);
-          } else if (err.name !== 'AbortError') {
-              console.error("❌ Error sync productos:", err);
-          }
+      if (toPut.length > 0 || toDelete.length > 0) {
+          await this._applyProductChangesStrict(toPut, toDelete);
       }
-    }, (error) => {
-        if (error.code !== 'permission-denied') console.error("Error listener:", error);
-    });
+    }, (error) => console.error("Error Listener Productos:", error)));
 
-    this._unsubscribes.push(unsubProducts);
+    // 3. VENTAS
+    try {
+        const salesQuery = query(collection(db, 'companies', companyId, 'sales'), orderBy('date', 'desc'), limit(500));
+        this._unsubscribes.push(onSnapshot(salesQuery, async (snapshot) => {
+            const salesToPut = [];
+            snapshot.docChanges().forEach(change => {
+                if (change.type === 'added' || change.type === 'modified') {
+                    salesToPut.push(this._sanitizeCloudSale(change.doc.data(), change.doc.id));
+                }
+            });
+            if (salesToPut.length > 0) {
+                const localDb = await getDB();
+                await localDb.sales.bulkPut(salesToPut);
+            }
+        }));
+    } catch (e) { console.warn("Listener Ventas off:", e); }
+
+    // 4. MOVIMIENTOS KARDEX
+    try {
+        const movementsQuery = query(collection(db, 'companies', companyId, 'movements'), orderBy('date', 'desc'), limit(200));
+        this._unsubscribes.push(onSnapshot(movementsQuery, async (snapshot) => {
+            const movsToPut = [];
+            snapshot.docChanges().forEach(change => {
+                if (change.type === 'added' || change.type === 'modified') {
+                    movsToPut.push(this._sanitizeCloudMovement(change.doc.data(), change.doc.id));
+                }
+            });
+            if (movsToPut.length > 0) {
+                const localDb = await getDB();
+                await localDb.movements.bulkPut(movsToPut);
+            }
+        }));
+    } catch (e) { console.warn("Listener Movements off:", e); }
+
+    // 5. CAJAS (SHIFTS)
+    try {
+        const shiftsQuery = query(
+            collection(db, 'companies', companyId, 'shifts'), 
+            orderBy('openedAt', 'desc'),
+            limit(100)
+        );
+        this._unsubscribes.push(onSnapshot(shiftsQuery, async (snapshot) => {
+            const shiftsToPut = [];
+            snapshot.docChanges().forEach(change => {
+                if (change.type === 'added' || change.type === 'modified') {
+                    shiftsToPut.push(this._sanitizeCloudShift(change.doc.data(), change.doc.id));
+                }
+            });
+            if (shiftsToPut.length > 0) {
+                const localDb = await getDB();
+                await localDb.shifts.bulkPut(shiftsToPut); 
+            }
+        }));
+    } catch (e) { console.warn("Listener Cajas off:", e); }
+
+    // 6. MOVIMIENTOS DE CAJA
+    try {
+        const cashMovsQuery = query(
+            collection(db, 'companies', companyId, 'cash_movements'),
+            orderBy('date', 'desc'),
+            limit(500)
+        );
+        this._unsubscribes.push(onSnapshot(cashMovsQuery, async (snapshot) => {
+            const movsToPut = [];
+            snapshot.docChanges().forEach(change => {
+                if (change.type === 'added' || change.type === 'modified') {
+                    movsToPut.push(this._sanitizeCloudCashMovement(change.doc.data(), change.doc.id));
+                }
+            });
+            if (movsToPut.length > 0) {
+                const localDb = await getDB();
+                await localDb.cash_movements.bulkPut(movsToPut);
+            }
+        }));
+    } catch (e) { console.warn("Listener Cash Movs off:", e); }
+
+    // 7. MAESTROS
+    const masterCollections = ['categories', 'brands', 'clients', 'suppliers'];
+    masterCollections.forEach(collectionName => {
+        const q = query(collection(db, 'companies', companyId, collectionName));
+        this._unsubscribes.push(onSnapshot(q, async (snapshot) => {
+            const itemsToPut = [];
+            const idsToDelete = [];
+            snapshot.docChanges().forEach(change => {
+                if (change.type === 'removed') { idsToDelete.push(change.doc.id); } 
+                else if (change.type === 'added' || change.type === 'modified') {
+                    const cleanData = this._deepSanitize(change.doc.data());
+                    itemsToPut.push({ id: change.doc.id, ...cleanData, syncStatus: 'synced' });
+                }
+            });
+            const localDb = await getDB();
+            if (idsToDelete.length > 0) { try { await localDb.table(collectionName).bulkDelete(idsToDelete); } catch(e){} }
+            if (itemsToPut.length > 0) { try { await localDb.table(collectionName).bulkPut(itemsToPut); } catch(e){} }
+        }));
+    });
   },
 
-  // 🛠️ HELPER: MODO AUTO-REPARACIÓN
-  async _fallbackSafeSync(items, db) {
-      let fixedCount = 0;
-      for (const item of items) {
-          try {
-              const tx = db.transaction('products', 'readwrite');
-              await tx.store.put(item);
-              await tx.done;
-          } catch (e) {
-              if (e.name === 'ConstraintError') {
-                  const txFix = db.transaction('products', 'readwrite');
-                  const index = txFix.store.index('code'); 
-                  const conflictingItem = await index.get(item.code);
+  async _applyProductChangesStrict(itemsToPut, idsToDelete) {
+      const localDb = await getDB();
+      try {
+          await localDb.transaction('rw', localDb.products, async () => {
+              if (idsToDelete.length > 0) await localDb.products.bulkDelete(idsToDelete);
+              if (itemsToPut.length > 0) {
+                  const finalItems = [];
+                  const idsToKillLocal = []; 
+                  const incomingCodes = itemsToPut.map(i => i.code).filter(c => c);
                   
-                  if (conflictingItem) {
-                      await txFix.store.delete(conflictingItem.id); // Borra el viejo
-                      await txFix.store.put(item); // Pone el nuevo
-                      fixedCount++;
+                  const conflicts = await localDb.products.where('code').anyOf(incomingCodes).toArray();
+                  const conflictsMap = new Map(); 
+                  conflicts.forEach(p => conflictsMap.set(String(p.code), p));
+
+                  for (const incoming of itemsToPut) {
+                      const code = String(incoming.code);
+                      const localMatch = conflictsMap.get(code);
+                      if (localMatch) {
+                          const localId = String(localMatch.id);
+                          const incomingId = String(incoming.id);
+                          if (localId === incomingId) { finalItems.push(incoming); } 
+                          else {
+                              const isIncomingLegacy = incomingId.length < 20; 
+                              const isLocalLegacy = localId.length < 20;
+                              if (isIncomingLegacy && !isLocalLegacy) { idsToKillLocal.push(localMatch.id); finalItems.push(incoming); } 
+                          }
+                      } else { finalItems.push(incoming); }
                   }
-                  await txFix.done;
+                  if (idsToKillLocal.length > 0) await localDb.products.bulkDelete(idsToKillLocal);
+                  if (finalItems.length > 0) await localDb.products.bulkPut(finalItems);
               }
-          }
-      }
-      if (fixedCount > 0) console.log(`✅ Auto-Reparación completada: ${fixedCount} conflictos resueltos.`);
+          });
+      } catch (err) { console.error("❌ Error FATAL en Sync:", err); }
   },
 
   stopListeners() {
-      if (this._unsubscribes.length > 0) {
-          this._unsubscribes.forEach(unsub => unsub());
-          this._unsubscribes = [];
-      }
+      this._unsubscribes.forEach(unsub => unsub());
+      this._unsubscribes = [];
   },
 
   // =================================================================
-  // 🚀 ESCRITURA GLOBAL
+  // 🚀 SUBIDA (LOCAL -> NUBE)
   // =================================================================
-
-  async pushGlobalConfig(key, value) {
-    const companyId = this._getCompanyId();
-    if (!companyId) return false;
-
-    try {
-      await setDoc(doc(db, 'companies', companyId, 'config', key), { 
-        value, 
-        updatedAt: new Date().toISOString() 
-      });
-      const localDb = await getDB();
-      await localDb.put('config', { key, value });
-      return true;
-    } catch (error) {
-      console.error("Error config:", error);
-      return false;
-    }
-  },
 
   async syncUp() { return this.syncAll(); },
 
@@ -232,57 +372,71 @@ export const syncService = {
     if (!companyId) return { sales: 0, products: 0 };
 
     try {
-        const salesResult = await this.syncPendingSales(companyId);
-        const productsResult = await this.syncPendingProducts(companyId);
-
-        if (salesResult.synced > 0 || productsResult.synced > 0) {
-            console.log(`✅ SUBIDA: ${salesResult.synced} Ventas, ${productsResult.synced} Productos.`);
-        }
-        return { sales: salesResult.synced, products: productsResult.synced };
+        const salesRes = await this.syncPendingSales(companyId);
+        const prodRes = await this.syncPendingProducts(companyId);
+        await this.syncPendingMasters(companyId); 
+        return { sales: salesRes.synced, products: prodRes.synced };
     } catch (error) {
-        console.error("❌ Sync Error:", error);
+        console.error("❌ Error Sync Up:", error);
         return { sales: 0, products: 0 };
     }
+  },
+
+  async syncPendingMasters(companyId) {
+      const localDb = await getDB();
+      const masterCollections = ['categories', 'brands', 'suppliers', 'clients'];
+      for (const collectionName of masterCollections) {
+          try {
+              const pendingItems = await localDb.table(collectionName).where('syncStatus').equals('pending').toArray();
+              if (pendingItems.length === 0) continue;
+              const batch = writeBatch(db);
+              const colRef = collection(db, 'companies', companyId, collectionName);
+              for (const item of pendingItems) {
+                  // 🔥 FIX: Validar que el ID no sea vacío
+                  if (!item.id) continue; 
+                  const docRef = doc(colRef, String(item.id));
+                  const { syncStatus, ...cleanItem } = item;
+                  batch.set(docRef, this._deepSanitize(cleanItem), { merge: true });
+              }
+              await batch.commit();
+              await localDb.table(collectionName).bulkPut(pendingItems.map(i => ({ ...i, id: i.id, syncStatus: 'synced' })));
+          } catch(e) { console.warn(`Error syncing masters (${collectionName}):`, e); }
+      }
   },
 
   async syncPendingSales(companyId) {
     const localDb = await getDB();
     const allSales = await salesRepository.getTodaySales(); 
-    const pendingSales = allSales.filter(s => s.syncStatus === 'pending' || s.syncStatus === 'PENDING');
-
+    const pendingSales = allSales.filter(s => s.syncStatus === 'pending');
     if (pendingSales.length === 0) return { synced: 0 };
 
-    const chunks = this.chunkArray(pendingSales, 450);
+    const chunks = this.chunkArray(pendingSales, 400); 
     let totalSynced = 0;
-
     for (const batchSales of chunks) {
         const batch = writeBatch(db);
         const salesCollection = collection(db, 'companies', companyId, 'sales');
         const syncedIds = [];
-
         for (const sale of batchSales) {
-            const docRef = doc(salesCollection); 
+            // 🔥 FIX: Validar ID
+            const safeId = sale.firestoreId || sale.localId;
+            if (!safeId) continue;
+
+            const docRef = doc(salesCollection, String(safeId)); 
             const { localId, syncStatus, ...cleanSale } = sale;
-            const finalSale = this._deepSanitize(cleanSale);
-            
             batch.set(docRef, {
-                ...finalSale,
+                ...this._deepSanitize(cleanSale),
                 date: new Date(cleanSale.date).toISOString(), 
                 firestoreId: docRef.id,
                 syncedAt: new Date().toISOString(),
                 origin: 'POS_WEB' 
-            });
+            }, { merge: true });
             syncedIds.push(sale.localId);
         }
-
         await batch.commit();
-
-        const tx = localDb.transaction('sales', 'readwrite');
-        for (const id of syncedIds) {
-            const s = await tx.store.get(id);
-            if (s) { s.syncStatus = 'synced'; s.firestoreId = s.firestoreId || 'uploaded'; tx.store.put(s); }
-        }
-        await tx.done;
+        const tx = localDb.transaction('rw', localDb.sales, async () => {
+             for (const id of syncedIds) { await localDb.sales.update(id, { syncStatus: 'synced' }); }
+        });
+        await tx;
         totalSynced += batchSales.length;
     }
     return { synced: totalSynced };
@@ -291,28 +445,27 @@ export const syncService = {
   async syncPendingProducts(companyId) {
     const pendingProducts = await productRepository.getPendingSync();
     if (pendingProducts.length === 0) return { synced: 0 };
-
-    const chunks = this.chunkArray(pendingProducts, 450);
+    const chunks = this.chunkArray(pendingProducts, 400); 
     let totalSynced = 0;
-
     for (const chunk of chunks) {
         const batch = writeBatch(db);
         const productsCollection = collection(db, 'companies', companyId, 'products');
         const syncedIds = [];
-
         for (const product of chunk) {
-            const docRef = doc(productsCollection, product.id);
+            // 🔥 FIX: Validar ID antes de llamar a doc()
+            if (!product.id) continue;
+            
+            const docRef = doc(productsCollection, String(product.id));
             const { syncStatus, ...dataToUpload } = product;
-            const cleanData = this._deepSanitize(dataToUpload);
-
-            const payload = product.deleted 
-                ? { ...cleanData, active: false, deleted: true, lastUpdated: new Date().toISOString() }
-                : { ...cleanData, lastUpdated: new Date().toISOString() };
-
-            batch.set(docRef, payload, { merge: true });
+            batch.set(docRef, {
+                 ...this._deepSanitize(dataToUpload),
+                 category: dataToUpload.category || '',
+                 brand: dataToUpload.brand || '',
+                 supplier: dataToUpload.supplier || '',
+                 lastUpdated: new Date().toISOString()
+            }, { merge: true });
             syncedIds.push(product.id);
         }
-
         await batch.commit();
         await productRepository.markAsSynced(syncedIds);
         totalSynced += chunk.length;
@@ -323,9 +476,7 @@ export const syncService = {
   chunkArray(myArray, chunk_size){
       var results = [];
       const arrayCopy = [...myArray];
-      while (arrayCopy.length) {
-          results.push(arrayCopy.splice(0, chunk_size));
-      }
+      while (arrayCopy.length) { results.push(arrayCopy.splice(0, chunk_size)); }
       return results;
   }
 };

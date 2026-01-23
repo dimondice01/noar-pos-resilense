@@ -6,15 +6,45 @@ import { cn } from '../../../core/utils/cn';
 import html2canvas from 'html2canvas'; 
 import jsPDF from 'jspdf';
 
-const formatCurrency = (amount) => `$ ${Number(amount).toLocaleString('es-AR', { minimumFractionDigits: 2 })}`;
+const formatCurrency = (amount) => `$ ${Number(amount || 0).toLocaleString('es-AR', { minimumFractionDigits: 2 })}`;
 
 export const TicketZModal = ({ isOpen, onClose, reportData, onConfirmAudit }) => {
   const reportRef = useRef(null);
   
   if (!isOpen || !reportData) return null;
 
-  const isPositiveDeviation = reportData.deviation >= 0;
-  const isPerfectMatch = reportData.deviation === 0;
+  // ===========================================================================
+  // 🕵️ DETECTIVE DE DATOS V2: Prioridad al cálculo en vivo (totalCash)
+  // ===========================================================================
+  
+  // 1. EFECTIVO ESPERADO (SISTEMA)
+  // 🔥 FIX: Añadido reportData.totalCash como primera prioridad (que es lo que usa el detalle)
+  const finalExpected = Number(reportData.totalCash) 
+                     || Number(reportData.expectedTotal)
+                     || Number(reportData.systemAmount)
+                     || Number(reportData.stats?.expectedTotal)
+                     || Number(reportData.expectedCash)
+                     || 0;
+
+  // 2. EFECTIVO REAL (DECLARADO)
+  const finalDeclared = Number(reportData.actualCash) 
+                     || Number(reportData.finalAmount)
+                     || Number(reportData.declaredCash)
+                     || Number(reportData.stats?.declaredCash) 
+                     || 0;
+  
+  // 3. MOVIMIENTOS
+  const cashIn = Number(reportData.deposits) || Number(reportData.stats?.deposits) || 0;
+  
+  const cashOut = (Number(reportData.withdrawals) + Number(reportData.expenses)) 
+               || (Number(reportData.stats?.withdrawals) + Number(reportData.stats?.expenses)) 
+               || 0;
+
+  // ===========================================================================
+
+  const visualDeviation = finalDeclared - finalExpected;
+  const isPositiveDeviation = visualDeviation >= 0;
+  const isPerfectMatch = Math.abs(visualDeviation) < 50; 
 
   const handleDownloadPDF = async () => {
     const reportElement = reportRef.current;
@@ -55,9 +85,8 @@ export const TicketZModal = ({ isOpen, onClose, reportData, onConfirmAudit }) =>
   return (
     <div className="fixed inset-0 z-[90] flex items-center justify-center bg-sys-900/80 backdrop-blur-md p-4 animate-in fade-in zoom-in-95 duration-200 print:hidden">
       
-      {/* Botones de acción flotantes (Header) */}
+      {/* Botones de acción */}
       <div className="absolute top-4 right-4 flex gap-3 z-[100]">
-         {/* 🔥 BOTÓN DE CONFIRMACIÓN (SOLO SI SE PASA LA FUNCIÓN) */}
          {onConfirmAudit && (
              <Button 
                 onClick={onConfirmAudit} 
@@ -81,7 +110,7 @@ export const TicketZModal = ({ isOpen, onClose, reportData, onConfirmAudit }) =>
          </Button>
       </div>
       
-      {/* Zona de Renderizado */}
+      {/* Ticket Renderizado */}
       <div 
         ref={reportRef}
         className="bg-white text-sys-900 font-mono text-[11px] leading-tight w-full max-w-[320px] shadow-2xl rounded-xl overflow-hidden max-h-[85vh] overflow-y-auto" 
@@ -90,19 +119,19 @@ export const TicketZModal = ({ isOpen, onClose, reportData, onConfirmAudit }) =>
            <div className="text-center w-full border-b border-sys-900 pb-3 mb-4 space-y-1">
               <h1 className="font-sans font-black text-xl tracking-tight text-sys-900 mb-1">REPORTE Z</h1>
               <p className="font-bold text-sm uppercase">AUDITORÍA DE CAJA FINAL</p>
-              <p className="text-xs text-sys-500">CAJERO: {reportData.shiftName}</p> 
+              <p className="text-xs text-sys-500">CAJERO: {reportData.userName || reportData.shiftName || 'Cajero'}</p> 
            </div>
 
            <div className="w-full text-left mb-4 text-[11px]">
-               <p className="flex justify-between border-b border-dashed border-sys-200 pb-1 mb-1"><span className="font-bold">Fecha/Hora Cierre:</span> {new Date(reportData.closeTime).toLocaleString('es-AR')}</p>
-               <p className="flex justify-between border-b border-dashed border-sys-200 pb-1 mb-1"><span className="font-bold">Ventas Totales:</span> {reportData.salesCount}</p>
+               <p className="flex justify-between border-b border-dashed border-sys-200 pb-1 mb-1"><span className="font-bold">Fecha/Hora Cierre:</span> {reportData.closeTime ? new Date(reportData.closeTime).toLocaleString('es-AR') : '---'}</p>
+               <p className="flex justify-between border-b border-dashed border-sys-200 pb-1 mb-1"><span className="font-bold">Ventas Totales:</span> {reportData.salesCount || 0}</p>
                <p className="flex justify-between border-b border-dashed border-sys-200 pb-1 mb-1"><span className="font-bold">Balance Inicial:</span> {formatCurrency(reportData.initialAmount)}</p>
            </div>
            
            <div className="w-full border-b border-sys-900 pb-3 mb-4">
               <p className="font-bold text-sm mb-2">RESUMEN POR MEDIO</p>
               <div className="space-y-1 text-xs">
-                  {Object.entries(reportData.salesByMethod).map(([method, amount]) => (
+                  {reportData.salesByMethod && Object.entries(reportData.salesByMethod).map(([method, amount]) => (
                       <div key={method} className="flex justify-between items-center text-sys-700">
                           <span className="capitalize">{method.replace('mercadopago', 'MP QR').replace('digitalOther', 'Otros Digitales')}</span>
                           <span>{formatCurrency(amount)}</span>
@@ -118,11 +147,13 @@ export const TicketZModal = ({ isOpen, onClose, reportData, onConfirmAudit }) =>
            <div className="w-full mb-4">
               <p className="font-bold text-sm mb-2">MOVIMIENTOS DE CAJA</p>
               <div className="space-y-1 text-xs">
-                  <p className="flex justify-between text-sys-700"><span className="font-bold">(+) Ingresos Manuales:</span> {formatCurrency(reportData.cashIn)}</p>
-                  <p className="flex justify-between text-sys-700"><span className="font-bold">(-) Egresos/Retiros:</span> {formatCurrency(reportData.cashOut)}</p>
+                  <p className="flex justify-between text-sys-700"><span className="font-bold">(+) Ingresos Manuales:</span> {formatCurrency(cashIn)}</p>
+                  <p className="flex justify-between text-sys-700"><span className="font-bold">(-) Egresos/Retiros:</span> {formatCurrency(cashOut)}</p>
+                  
                   <div className="pt-2 flex justify-between font-bold border-t border-dashed border-sys-300">
                       <span>EFECTIVO ESPERADO EN CAJA:</span>
-                      <span className="text-blue-600">{formatCurrency(reportData.expectedCash)}</span>
+                      {/* 🔥 Ahora sí muestra el valor correcto */}
+                      <span className="text-blue-600">{formatCurrency(finalExpected)}</span>
                   </div>
               </div>
            </div>
@@ -138,7 +169,7 @@ export const TicketZModal = ({ isOpen, onClose, reportData, onConfirmAudit }) =>
                        "text-sys-900",
                        isPerfectMatch ? "text-green-700" : isPositiveDeviation ? "text-orange-700" : "text-red-700"
                    )}>
-                       {formatCurrency(reportData.actualCash)}
+                       {formatCurrency(finalDeclared)}
                    </p>
                </div>
                <div className="flex justify-between items-center text-sm pt-2 mt-2 border-t border-dashed border-sys-300">
@@ -150,16 +181,16 @@ export const TicketZModal = ({ isOpen, onClose, reportData, onConfirmAudit }) =>
                        "text-lg font-black",
                        isPerfectMatch ? "text-green-700" : isPositiveDeviation ? "text-orange-700" : "text-red-700"
                    )}>
-                       {formatCurrency(Math.abs(reportData.deviation))}
+                       {formatCurrency(Math.abs(visualDeviation))}
                    </p>
                </div>
            </div>
 
            <div className="mt-6 border-t border-dashed border-sys-200 pt-4 text-xs text-sys-500 text-center">
               <p className="font-bold mb-1">RESUMEN FISCAL DEL TURNO</p>
-              <p>Último Comp. Emitido: <span className="font-bold text-sys-700">{reportData.lastCbte}</span></p>
+              <p>Último Comp. Emitido: <span className="font-bold text-sys-700">{reportData.lastCbte || 'N/A'}</span></p>
               <p>Monto Facturado AFIP: <span className="font-bold text-sys-700">{formatCurrency(reportData.totalAfip)}</span></p>
-              <p>Comprobantes Pendientes (AFIP): <span className="font-bold text-red-500">{reportData.pendingAfip}</span></p>
+              <p>Comprobantes Pendientes (AFIP): <span className="font-bold text-red-500">{reportData.pendingAfip || 0}</span></p>
            </div>
         </div>
       </div>

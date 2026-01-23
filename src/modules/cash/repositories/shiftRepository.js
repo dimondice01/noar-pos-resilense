@@ -1,7 +1,7 @@
 import { getDB } from '../../../database/db';
 import { db } from '../../../database/firebase';
 import { doc, setDoc } from 'firebase/firestore';
-import { useAuthStore } from '../../auth/store/useAuthStore'; // 🔑 CLAVE
+import { useAuthStore } from '../../auth/store/useAuthStore'; 
 
 // Helper IDs
 const generateId = (prefix) => `${prefix}_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
@@ -9,28 +9,29 @@ const generateId = (prefix) => `${prefix}_${Date.now()}_${Math.random().toString
 // ==========================================
 // ☁️ HELPER: SYNC PRIVADO (Blindado por CompanyID)
 // ==========================================
-const syncToCloud = async (collectionName, data) => {
+const triggerOptimisticSync = async (collectionName, data) => {
   if (!navigator.onLine) return;
 
   const { user } = useAuthStore.getState();
-  if (!user || !user.companyId) {
-      console.warn(`⛔ Sync Abortado: Falta usuario o empresa.`);
-      return;
-  }
+  if (!user || !user.companyId) return;
 
   try {
     const { syncStatus, ...cloudData } = data;
-    // Ruta aislada: companies/{id}/shifts/{shiftId}
     const path = `companies/${user.companyId}/${collectionName}`;
 
-    await setDoc(doc(db, path, data.id), {
+    // Fire & Forget
+    setDoc(doc(db, path, data.id), {
       ...cloudData,
       firestoreId: data.id,
-      syncedAt: new Date().toISOString()
-    }, { merge: true });
-    
-    const dbLocal = await getDB();
-    await dbLocal.put(collectionName, { ...data, syncStatus: 'SYNCED' });
+      syncedAt: new Date().toISOString(),
+      syncStatus: 'synced'
+    }, { merge: true }).then(async () => {
+        try {
+            const dbLocal = await getDB();
+            const table = collectionName === 'shifts' ? dbLocal.shifts : dbLocal.cash_movements;
+            await table.update(data.id, { syncStatus: 'synced' });
+        } catch (e) { /* ignore */ }
+    });
 
   } catch (e) {
     console.warn(`⚠️ Error sync ${collectionName}:`, e);
@@ -51,10 +52,12 @@ export const shiftRepository = {
     if (!user) return null;
 
     const dbLocal = await getDB();
-    const all = await dbLocal.getAll('shifts');
     
-    // 🔥 FILTRO EN MEMORIA: Solo turnos ABIERTOS de ESTE USUARIO
-    return all.find(s => s.status === 'OPEN' && s.userId === user.uid);
+    // Dexie query: Busca caja OPEN del usuario actual
+    return await dbLocal.shifts
+        .where('status').equals('OPEN')
+        .filter(s => s.userId === user.uid)
+        .first();
   },
 
   /**
@@ -65,29 +68,29 @@ export const shiftRepository = {
     if (!user) return [];
 
     const dbLocal = await getDB();
-    const all = await dbLocal.getAll('shifts');
     
-    let filtered = [];
     if (user.role === 'ADMIN') {
-        // Admin ve todos los turnos de SU empresa
-        filtered = all.filter(s => s.companyId === user.companyId);
+        // Admin ve todo ordenado por fecha
+        return await dbLocal.shifts.orderBy('openedAt').reverse().toArray();
     } else {
         // Cajero solo ve SUS turnos
-        filtered = all.filter(s => s.userId === user.uid);
+        return await dbLocal.shifts
+            .where('userId').equals(user.uid)
+            .reverse()
+            .sortBy('openedAt');
     }
-
-    return filtered.sort((a, b) => new Date(b.openedAt) - new Date(a.openedAt));
   },
 
   /**
    * Abre turno (Blindado)
    */
-  async openShift(userId, initialAmount) {
+  async openShift(initialAmount) {
     const { user } = useAuthStore.getState();
     if (!user) throw new Error("No autenticado");
 
     const dbLocal = await getDB();
     
+    // Check concurrent open shift
     const current = await this.getCurrentShift();
     if (current) throw new Error("Ya tienes una caja abierta.");
 
@@ -97,16 +100,16 @@ export const shiftRepository = {
     const newShift = {
       id: shiftId,
       status: 'OPEN',
-      userId: user.uid,        // 🔥 ID Real
-      userEmail: user.email,   // Trazabilidad
+      userId: user.uid,
+      userEmail: user.email,
       userName: user.name || 'Cajero',
-      companyId: user.companyId, // Aislamiento
+      companyId: user.companyId,
       openedAt: timestamp,
       initialAmount: parseFloat(initialAmount),
       finalAmount: 0,
       closedAt: null,
       difference: 0,
-      syncStatus: 'PENDING'
+      syncStatus: 'pending'
     };
 
     // Movimiento Inicial
@@ -119,18 +122,18 @@ export const shiftRepository = {
       userId: user.uid,
       companyId: user.companyId,
       date: timestamp,
-      syncStatus: 'PENDING'
+      syncStatus: 'pending'
     };
 
-    // 1. Guardar Local
-    const tx = dbLocal.transaction(['shifts', 'cash_movements'], 'readwrite');
-    await tx.objectStore('shifts').put(newShift);
-    await tx.objectStore('cash_movements').put(openingMovement);
-    await tx.done;
+    // 1. Guardar Local (Transacción)
+    await dbLocal.transaction('rw', [dbLocal.shifts, dbLocal.cash_movements], async () => {
+        await dbLocal.shifts.put(newShift);
+        await dbLocal.cash_movements.put(openingMovement);
+    });
 
     // 2. Sync Nube
-    syncToCloud('shifts', newShift);
-    syncToCloud('cash_movements', openingMovement);
+    triggerOptimisticSync('shifts', newShift);
+    triggerOptimisticSync('cash_movements', openingMovement);
 
     return newShift;
   },
@@ -140,7 +143,7 @@ export const shiftRepository = {
    */
   async closeShift(shiftId, declaredAmount, stats) {
     const dbLocal = await getDB();
-    const shift = await dbLocal.get('shifts', shiftId);
+    const shift = await dbLocal.shifts.get(shiftId);
     
     if (!shift) throw new Error("Turno no encontrado");
 
@@ -150,7 +153,7 @@ export const shiftRepository = {
         throw new Error("No tienes permiso para cerrar esta caja.");
     }
 
-    const expectedAmount = stats.expectedTotal; 
+    const expectedAmount = stats.expectedTotal || 0; 
     const difference = declaredAmount - expectedAmount;
 
     const closedShift = {
@@ -160,12 +163,12 @@ export const shiftRepository = {
       systemAmount: parseFloat(expectedAmount), // Guardamos lo que decía el sistema
       difference: difference,
       closedAt: new Date().toISOString(),
-      stats: stats, // Guardamos resumen completo
-      syncStatus: 'PENDING'
+      stats: stats, // Guardamos resumen completo congelado
+      syncStatus: 'pending'
     };
 
-    await dbLocal.put('shifts', closedShift);
-    syncToCloud('shifts', closedShift);
+    await dbLocal.shifts.put(closedShift);
+    triggerOptimisticSync('shifts', closedShift);
 
     return closedShift;
   },
@@ -175,7 +178,7 @@ export const shiftRepository = {
   // ==========================================
   async addMovement(shiftId, type, amount, description) {
     if (amount <= 0) throw new Error("Monto debe ser positivo");
-    if (!['WITHDRAWAL', 'DEPOSIT'].includes(type)) throw new Error("Tipo inválido");
+    if (!['WITHDRAWAL', 'DEPOSIT', 'EXPENSE'].includes(type)) throw new Error("Tipo inválido");
 
     const { user } = useAuthStore.getState();
     const dbLocal = await getDB();
@@ -189,11 +192,11 @@ export const shiftRepository = {
       userId: user.uid,
       companyId: user.companyId,
       date: new Date().toISOString(),
-      syncStatus: 'PENDING'
+      syncStatus: 'pending'
     };
 
-    await dbLocal.put('cash_movements', movement);
-    syncToCloud('cash_movements', movement);
+    await dbLocal.cash_movements.put(movement);
+    triggerOptimisticSync('cash_movements', movement);
 
     return movement;
   },
@@ -203,7 +206,9 @@ export const shiftRepository = {
    */
   async getShiftMovements(shiftId) {
     const dbLocal = await getDB();
-    const movements = await dbLocal.getAllFromIndex('cash_movements', 'shiftId', shiftId);
-    return movements.sort((a, b) => new Date(b.date) - new Date(a.date));
+    return await dbLocal.cash_movements
+        .where('shiftId').equals(shiftId)
+        .reverse()
+        .sortBy('date');
   }
 };

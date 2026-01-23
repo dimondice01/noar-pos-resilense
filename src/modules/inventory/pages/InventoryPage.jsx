@@ -8,6 +8,7 @@ import { useNavigate } from 'react-router-dom';
 
 import { productRepository } from '../repositories/productRepository';
 import { masterRepository } from '../repositories/masterRepository';
+import { useAuthStore } from '../../auth/store/useAuthStore'; // 🔥 IMPORT CRÍTICO
 
 import { Card } from '../../../core/ui/Card';
 import { Button } from '../../../core/ui/Button';
@@ -16,7 +17,7 @@ import { MastersModal } from '../components/MastersModal';
 import { ProductHistoryModal } from '../components/ProductHistoryModal'; 
 import { cn } from '../../../core/utils/cn';
 
-// 🔥 HELPER DE FORMATEO (Consistente con POS)
+// 🔥 HELPER DE FORMATEO
 const formatMoney = (amount) => {
     return amount ? amount.toLocaleString('es-AR', { minimumFractionDigits: 0, maximumFractionDigits: 2 }) : '0';
 };
@@ -50,7 +51,7 @@ const StockEntryModal = ({ isOpen, onClose, product, onConfirm }) => {
 
     return (
         <div className="fixed inset-0 z-[90] flex items-center justify-center bg-sys-900/60 backdrop-blur-sm p-4 animate-in fade-in zoom-in-95">
-             <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden">
+              <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden">
                 <div className="p-4 bg-brand text-white flex justify-between items-center">
                     <h3 className="font-bold flex items-center gap-2"><Package size={18}/> Ingreso de Stock</h3>
                     <button onClick={onClose} className="hover:bg-white/20 p-1 rounded"><X size={18}/></button>
@@ -188,6 +189,7 @@ const BulkUpdateModal = ({ isOpen, onClose, onConfirm, allProducts, masters, man
 // =================================================================
 export const InventoryPage = () => {
   const navigate = useNavigate();
+  const { user } = useAuthStore(); // 🔥 OBTENEMOS EL USUARIO
 
   // Estados de Datos
   const [products, setProducts] = useState([]);
@@ -288,18 +290,23 @@ export const InventoryPage = () => {
     }
   };
 
-  // 🔥 FILTRADO DEFENSIVO (SOLUCIÓN DEL BUG)
+  // 🔥 FILTRADO DEFENSIVO
   const filteredProducts = products.filter(p => {
     const term = searchTerm.toLowerCase();
     
-    // Protección contra valores nulos/undefined
+    // Normalización para evitar falsos negativos por espacios o mayúsculas
     const name = (p.name || '').toLowerCase();
     const code = (p.code || '').toString().toLowerCase();
+    const cat = (p.category || '').toString();
+    const brand = (p.brand || '').toString();
+    const supp = (p.supplier || '').toString();
 
     const matchesSearch = name.includes(term) || code.includes(term);
-    const matchesCat = filters.category ? p.category === filters.category : true;
-    const matchesBrand = filters.brand ? p.brand === filters.brand : true;
-    const matchesSupp = filters.supplier ? p.supplier === filters.supplier : true;
+    
+    const matchesCat = filters.category ? cat === filters.category : true;
+    const matchesBrand = filters.brand ? brand === filters.brand : true;
+    const matchesSupp = filters.supplier ? supp === filters.supplier : true;
+    
     return matchesSearch && matchesCat && matchesBrand && matchesSupp;
   });
 
@@ -326,7 +333,8 @@ export const InventoryPage = () => {
   };
 
   const handleSaveProduct = async (productData) => {
-    await productRepository.save(productData);
+    // Nota: ProductModal ya maneja el usuario internamente, pero por si acaso
+    await productRepository.save(productData); 
     loadData();
   };
 
@@ -339,7 +347,8 @@ export const InventoryPage = () => {
 
   const handleQuickStockEntry = async (productId, qty, expiryDate) => {
     try {
-        await productRepository.addStock(productId, qty, expiryDate);
+        const userName = user?.name || user?.email || 'Usuario'; // 🔥 NOMBRE REAL
+        await productRepository.addStock(productId, qty, expiryDate, userName); // 🔥 PASAMOS EL USUARIO
         loadData();
     } catch (e) {
         alert("Error al sumar stock: " + e.message);
@@ -351,14 +360,18 @@ export const InventoryPage = () => {
     if (!window.confirm(`⚠️ CONFIRMACIÓN:\nSe actualizarán ${targetProducts.length} productos.\nCost: +${costPct}% | Precio: +${pricePct}%`)) return;
     setLoading(true);
     try {
+      const userName = user?.name || user?.email || 'Usuario'; // 🔥 NOMBRE REAL
       const updates = targetProducts.map(p => {
           const newCost = p.cost * (1 + costPct / 100);
           let calculatedPrice = p.price * (1 + pricePct / 100);
           const newPrice = Math.ceil(calculatedPrice / 50) * 50; 
           const newMarkup = newCost > 0 ? ((newPrice - newCost) / newCost * 100).toFixed(2) : p.markup;
-          return { ...p, cost: newCost, price: newPrice, markup: newMarkup };
+          // Inyectamos user en el objeto para que el save lo registre
+          return { ...p, cost: newCost, price: newPrice, markup: newMarkup, user: userName }; 
       });
+      
       for (const p of updates) { await productRepository.save(p); }
+      
       alert(`✅ Éxito: ${updates.length} productos actualizados.`);
       setSelectedIds(new Set());
       setIsBulkUpdateOpen(false);
@@ -378,8 +391,8 @@ export const InventoryPage = () => {
         <div>
           <h2 className="text-2xl font-bold text-sys-900">Inventario</h2>
           <div className="flex gap-4 mt-2 text-xs text-sys-500">
-             <p>Valuación Total (Costo): <span className="font-bold text-sys-800">$ {formatMoney(totalStockValuado)}</span></p>
-             <p>Items: <span className="font-bold text-sys-800">{filteredProducts.length}</span></p>
+              <p>Valuación Total (Costo): <span className="font-bold text-sys-800">$ {formatMoney(totalStockValuado)}</span></p>
+              <p>Items: <span className="font-bold text-sys-800">{filteredProducts.length}</span></p>
           </div>
         </div>
         
@@ -388,7 +401,6 @@ export const InventoryPage = () => {
                 <Printer size={18} className="mr-2" /> Etiquetas
             </Button>
             
-            {/* 🔥 CORRECCIÓN: Uso de ruta relativa 'movements' */}
             <Button variant="secondary" className="border-blue-200 text-blue-700 bg-blue-50 hover:bg-blue-100 px-3" onClick={() => navigate('movements')}>
                 <ArrowRightLeft size={18} className="mr-2" /> Movimientos
             </Button>
@@ -478,9 +490,9 @@ export const InventoryPage = () => {
                 if (p.batches && p.batches.length > 0) {
                     const activeBatches = p.batches.filter(b => parseFloat(b.quantity) > 0);
                     activeBatches.sort((a, b) => {
-                         const dateA = a.dateAdded ? new Date(a.dateAdded) : new Date(0);
-                         const dateB = b.dateAdded ? new Date(b.dateAdded) : new Date(0);
-                         return dateA - dateB;
+                          const dateA = a.dateAdded ? new Date(a.dateAdded) : new Date(0);
+                          const dateB = b.dateAdded ? new Date(b.dateAdded) : new Date(0);
+                          return dateA - dateB;
                     });
                     if (activeBatches.length > 0 && activeBatches[0].expiryDate) {
                         expiryDate = new Date(activeBatches[0].expiryDate);

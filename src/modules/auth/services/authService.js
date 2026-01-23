@@ -1,215 +1,277 @@
 import { 
     signInWithEmailAndPassword, 
     signOut, 
-    onAuthStateChanged
+    onAuthStateChanged 
 } from 'firebase/auth';
 import { doc, getDoc } from 'firebase/firestore';
 import { auth, db } from '../../../database/firebase';
-import { getDB } from '../../../database/db'; 
+import { getDB } from '../../../database/db'; // Importamos la nueva DB Dexie
 
 // 🌍 URL de Producción (Asegúrate que esta sea la correcta de tu deploy actual)
 const API_URL = import.meta.env.VITE_API_URL || "https://api-ps25yq7qaq-uc.a.run.app";
 
 export const authService = {
-  
-  // ==========================================
-  // LOGIN (Unificado)
-  // ==========================================
-  async login(email, password) {
-    if (!navigator.onLine) {
-        return await this._tryLocalLogin(email, password);
-    }
 
-    try {
-      const userCredential = await signInWithEmailAndPassword(auth, email, password);
-      const uid = userCredential.user.uid;
-      const userDocRef = doc(db, 'users', uid);
-      
-      let userData = {
-        uid,
-        email: userCredential.user.email,
-        name: userCredential.user.displayName || 'Usuario',
-        role: 'CAJERO', 
-        companyId: null, 
-        mode: 'ONLINE'
-      };
-
-      try {
-        const userDoc = await getDoc(userDocRef);
-        if (userDoc.exists()) {
-          const data = userDoc.data();
-          userData.role = data.role || 'CAJERO';
-          userData.name = data.name || userData.name;
-          userData.companyId = data.companyId; 
-        } else if (email.toLowerCase().includes('admin')) {
-             userData.role = 'ADMIN'; 
-             userData.companyId = 'master_admin';
+    // ==========================================
+    // 🔐 LOGIN (Híbrido: Cloud + Local Backup)
+    // ==========================================
+    async login(email, password) {
+        // Fallback rápido si estamos offline
+        if (!navigator.onLine) {
+            return await this._tryLocalLogin(email, password);
         }
-      } catch (firestoreError) {
-        console.warn("⚠️ Firestore no respondió, usando caché local.");
-        const localData = await this._getLocalUser(email);
-        if (localData) {
-            userData.role = localData.role;
-            userData.name = localData.name;
-            userData.companyId = localData.companyId; 
-        }
-      }
 
-      await this._saveUserLocally({ ...userData, password }); 
-      return userData;
-
-    } catch (error) {
-      console.error("❌ Error Auth:", error.code);
-      // Fallback a local si hay error técnico (no de contraseña)
-      const isTechnicalError = !['auth/wrong-password', 'auth/user-not-found', 'auth/invalid-email'].includes(error.code);
-      if (isTechnicalError) {
-        return await this._tryLocalLogin(email, password);
-      }
-      throw new Error("Credenciales inválidas");
-    }
-  },
-
-  async logout() {
-    await signOut(auth);
-  },
-
-  onAuthStateChanged(callback) {
-    return onAuthStateChanged(auth, async (firebaseUser) => {
-      if (firebaseUser) {
         try {
-          const userDoc = await getDoc(doc(db, 'users', firebaseUser.uid));
-          let userProfile = {
-              uid: firebaseUser.uid,
-              email: firebaseUser.email,
-              name: firebaseUser.displayName || 'Usuario',
-              role: 'CAJERO',
-              companyId: null,
-              mode: 'ONLINE'
-          };
+            // 1. Intentar Login en Firebase
+            const userCredential = await signInWithEmailAndPassword(auth, email, password);
+            const firebaseUser = userCredential.user;
 
-          if (userDoc.exists()) {
-            const data = userDoc.data();
-            userProfile.role = data.role || 'CAJERO';
-            userProfile.name = data.name || userProfile.name;
-            userProfile.companyId = data.companyId;
-          } 
+            // 2. Obtener datos extra (Rol, Empresa) de Firestore
+            let userData = await this._getFirestoreProfile(firebaseUser.uid);
 
-          await this._saveUserLocally({ ...userProfile, password: '***' }); 
-          callback(userProfile);
-
-        } catch (e) {
-          const localUser = await this._getLocalUser(firebaseUser.email);
-          if (localUser) {
-              callback({ uid: firebaseUser.uid, email: firebaseUser.email, ...localUser, mode: 'OFFLINE' });
-          } else {
-              callback(null);
-          }
-        }
-      } else {
-        callback(null);
-      }
-    });
-  },
-
-  // ==========================================
-  // 🔥 CREACIÓN DE USUARIO (ADMIN SDK) - CORREGIDO
-  // ==========================================
-  async createUser(newUser) {
-    // 1. Guardar preventivamente en local (Optimistic UI)
-    await this._saveUserLocally({
-        ...newUser,
-        password: btoa(newUser.password) 
-    });
-    
-    // 2. Si hay internet, llamamos a la Cloud Function
-    if (navigator.onLine) {
-      try {
-        const token = await auth.currentUser?.getIdToken();
-        if (!token) throw new Error("No hay sesión admin activa");
-
-        // 🔥 LOG PARA DEPURAR URL
-        console.log("📡 Conectando a:", `${API_URL}/create-user`);
-
-        const response = await fetch(`${API_URL}/create-user`, {
-          method: 'POST',
-          headers: { 
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}` 
-          },
-          body: JSON.stringify(newUser) 
-        });
-
-        // 🔥 MANEJO DE ERROR DETALLADO
-        if (!response.ok) {
-            // Intentamos leer el JSON de error, si falla es porque es un error de infraestructura (HTML 403/500)
-            let errorMessage = `Error ${response.status}: ${response.statusText}`;
-            try {
-                const errData = await response.json();
-                if (errData.error) errorMessage = errData.error;
-            } catch (e) {
-                // Si no es JSON, probablemente sea error de Cloud Run IAM (403 Forbidden HTML)
-                if(response.status === 403) errorMessage = "Permiso denegado en Servidor (Cloud Run IAM). Revisa configuración pública.";
+            // 3. Si no hay datos en Firestore (caso raro), usar básicos
+            if (!userData) {
+                // Caso especial Admin Master (Hardcoded)
+                if (email.toLowerCase().includes('admin')) {
+                    userData = {
+                        uid: firebaseUser.uid,
+                        email: firebaseUser.email,
+                        name: 'Super Admin',
+                        role: 'ADMIN',
+                        companyId: 'master_admin',
+                        mode: 'ONLINE'
+                    };
+                } else {
+                    userData = {
+                        uid: firebaseUser.uid,
+                        email: firebaseUser.email,
+                        name: firebaseUser.displayName || 'Usuario',
+                        role: 'CASHIER', // Default seguro
+                        companyId: null,
+                        mode: 'ONLINE'
+                    };
+                }
             }
-            throw new Error(errorMessage);
+
+            // 4. Guardar sesión en DB Local (Dexie) para offline y persistencia
+            // Incluimos la contraseña (hasheada simple base64) para login offline de emergencia
+            await this._saveLocalUser({ ...userData, password });
+
+            return userData;
+
+        } catch (error) {
+            console.warn("⚠️ Error Login Online:", error.code);
+            
+            // 5. Fallback Offline: Intentar loguear con datos locales si falla la red
+            if (error.code === 'auth/network-request-failed') {
+                return await this._tryLocalLogin(email, password);
+            }
+            throw error;
         }
+    },
+
+    // ==========================================
+    // 🚪 LOGOUT
+    // ==========================================
+    async logout() {
+        try {
+            await signOut(auth);
+            // Opcional: ¿Borrar usuario local al salir? 
+            // await this._clearLocalUser(); 
+        } catch (error) {
+            console.error("Error Logout:", error);
+        }
+    },
+
+    // ==========================================
+    // 🎧 LISTENER DE ESTADO (Recarga de pág)
+    // ==========================================
+    onAuthStateChanged(callback) {
+        return onAuthStateChanged(auth, async (firebaseUser) => {
+            if (firebaseUser) {
+                // Si hay usuario de firebase, intentamos obtener perfil completo
+                try {
+                    // Primero intentamos Firestore (Verdad Absoluta)
+                    let userProfile = await this._getFirestoreProfile(firebaseUser.uid);
+                    
+                    if (!userProfile) {
+                         // Fallback a Local Dexie si Firestore falla
+                        const localUser = await this._getLocalUser(firebaseUser.email);
+                        if (localUser) {
+                             userProfile = { ...localUser, uid: firebaseUser.uid, mode: 'OFFLINE_SYNC' };
+                        } else {
+                             // Perfil básico
+                             userProfile = {
+                                 uid: firebaseUser.uid,
+                                 email: firebaseUser.email,
+                                 name: firebaseUser.displayName || 'Usuario',
+                                 role: 'CASHIER',
+                                 companyId: null,
+                                 mode: 'ONLINE'
+                             };
+                        }
+                    } else {
+                        userProfile.mode = 'ONLINE';
+                    }
+
+                    // Guardamos sesión actualizada
+                    await this._saveLocalUser({ ...userProfile, password: '***' }); // No guardamos pass real aquí
+                    
+                    callback(userProfile);
+
+                } catch (e) {
+                    // Error crítico (ej: red muerta), usamos local puro
+                    const localUser = await this._getLocalUser(firebaseUser.email);
+                    if (localUser) {
+                        callback({ uid: firebaseUser.uid, email: firebaseUser.email, ...localUser, mode: 'OFFLINE' });
+                    } else {
+                        callback(null);
+                    }
+                }
+            } else {
+                callback(null);
+            }
+        });
+    },
+
+    // ==========================================
+    // 🔥 CREACIÓN DE USUARIO (ADMIN SDK)
+    // ==========================================
+    async createUser(newUser) {
+        // 1. Guardar preventivamente en local (Optimistic UI) - Dexie
+        await this._saveLocalUser({
+            ...newUser,
+            password: btoa(newUser.password) 
+        });
         
-        const data = await response.json();
-        return { success: true, uid: data.uid };
+        // 2. Si hay internet, llamamos a la Cloud Function
+        if (navigator.onLine) {
+            try {
+                const token = await auth.currentUser?.getIdToken();
+                if (!token) throw new Error("No hay sesión admin activa");
 
-      } catch (error) {
-        console.error("API Error:", error);
-        // 🔥 IMPORTANTE: Propagamos el error para que la UI (TeamPage) lo muestre
-        throw error; 
-      }
-    } else {
-      return { success: true, localOnly: true };
+                console.log("📡 Conectando a:", `${API_URL}/create-user`);
+
+                const response = await fetch(`${API_URL}/create-user`, {
+                    method: 'POST',
+                    headers: { 
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}` 
+                    },
+                    body: JSON.stringify(newUser) 
+                });
+
+                if (!response.ok) {
+                    let errorMessage = `Error ${response.status}: ${response.statusText}`;
+                    try {
+                        const errData = await response.json();
+                        if (errData.error) errorMessage = errData.error;
+                    } catch (e) {
+                        if(response.status === 403) errorMessage = "Permiso denegado (Cloud Run IAM).";
+                    }
+                    throw new Error(errorMessage);
+                }
+                
+                const data = await response.json();
+                return { success: true, uid: data.uid };
+
+            } catch (error) {
+                console.error("API Error:", error);
+                throw error; 
+            }
+        } else {
+            return { success: true, localOnly: true };
+        }
+    },
+
+    // ==========================================
+    // 🛠️ HELPERS PRIVADOS (Adaptados a Dexie)
+    // ==========================================
+
+    async _getFirestoreProfile(uid) {
+        try {
+            const docRef = doc(db, 'users', uid);
+            const docSnap = await getDoc(docRef);
+            
+            if (docSnap.exists()) {
+                const data = docSnap.data();
+                return { 
+                    uid, 
+                    email: data.email,
+                    name: data.name,
+                    role: data.role,
+                    companyId: data.companyId 
+                };
+            }
+            return null;
+        } catch (e) {
+            console.warn("Error leyendo Firestore Profile:", e);
+            return null;
+        }
+    },
+
+    // 🔥 FIX: Adaptado para Dexie
+    async _saveLocalUser(user) {
+        try {
+            const dbLocal = await getDB();
+            
+            // Lógica de contraseña segura
+            let passwordToSave = user.password;
+            if (passwordToSave === '***' || !passwordToSave) {
+                 const existing = await dbLocal.users.get(user.email);
+                 if (existing?.password) passwordToSave = existing.password;
+            } else {
+                 passwordToSave = btoa(passwordToSave); 
+            }
+
+            // Dexie usa db.tabla.put
+            await dbLocal.users.put({
+                email: user.email,
+                password: passwordToSave,
+                uid: user.uid,
+                role: user.role || 'CASHIER',
+                companyId: user.companyId,
+                name: user.name || 'Usuario',
+                updatedAt: new Date()
+            });
+        } catch (e) {
+            console.error("Error guardando usuario local:", e);
+        }
+    },
+
+    // 🔥 FIX: Adaptado para Dexie
+    async _getLocalUser(email) {
+        if (!email) return null;
+        try {
+            const dbLocal = await getDB();
+            // Dexie usa db.tabla.get
+            return await dbLocal.users.get(email);
+        } catch (e) {
+            console.error("Error leyendo usuario local:", e);
+            return null;
+        }
+    },
+
+    async _tryLocalLogin(email, password) {
+        const localUser = await this._getLocalUser(email);
+        if (!localUser) throw new Error("Usuario no encontrado localmente. Conéctese para el primer inicio.");
+        
+        let storedPassword = localUser.password;
+        try {
+            if (!storedPassword.includes(' ')) storedPassword = atob(storedPassword);
+        } catch(e) {}
+
+        if (storedPassword === password) {
+           console.log("🟢 Login Offline Exitoso");
+           return {
+             uid: localUser.uid || 'local_' + Date.now(),
+             email: localUser.email,
+             name: localUser.name,
+             role: localUser.role,
+             companyId: localUser.companyId,
+             mode: 'OFFLINE'
+           };
+        }
+        throw new Error("Contraseña incorrecta (Offline).");
     }
-  },
-
-  // ... (Helpers Privados se mantienen igual) ...
-  async _saveUserLocally(userData) {
-    const db = await getDB();
-    if (userData.password === '***') {
-        const existing = await db.get('users', userData.email);
-        if (existing?.password) userData.password = existing.password;
-    } else {
-        userData.password = btoa(userData.password); 
-    }
-
-    await db.put('users', {
-      email: userData.email,
-      password: userData.password, 
-      name: userData.name,
-      role: userData.role,
-      companyId: userData.companyId, 
-      updatedAt: new Date()
-    });
-  },
-
-  async _getLocalUser(email) {
-    const db = await getDB();
-    return await db.get('users', email);
-  },
-
-  async _tryLocalLogin(email, password) {
-    const localUser = await this._getLocalUser(email);
-    if (!localUser) throw new Error("Usuario no encontrado localmente.");
-    
-    let storedPassword = localUser.password;
-    try {
-        if (!storedPassword.includes(' ')) storedPassword = atob(storedPassword);
-    } catch(e) {}
-
-    if (storedPassword === password) {
-       return {
-         uid: 'local_' + Date.now(),
-         email: localUser.email,
-         name: localUser.name,
-         role: localUser.role,
-         companyId: localUser.companyId,
-         mode: 'OFFLINE'
-       };
-    }
-    throw new Error("Contraseña incorrecta.");
-  }
 };

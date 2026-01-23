@@ -1,5 +1,3 @@
-// src/modules/inventory/components/ProductModal.jsx
-
 import React, { useState, useEffect, useRef } from 'react';
 import { X, Save, ScanLine, Scale, Package, DollarSign, Tag, Truck, AlertTriangle, Award, ChevronDown, Check, Calendar } from 'lucide-react';
 import { Button } from '../../../core/ui/Button';
@@ -7,9 +5,9 @@ import { Switch } from '../../../core/ui/Switch';
 import { cn } from '../../../core/utils/cn';
 import { masterRepository } from '../repositories/masterRepository';
 import { productRepository } from '../repositories/productRepository';
+import { useAuthStore } from '../../auth/store/useAuthStore'; // 🔥 IMPORT CRÍTICO
 
-// ... (Los componentes PremiumSelect y PremiumInput se mantienen IGUAL, no cambian) ...
-
+// ... (Componentes PremiumSelect y PremiumInput se mantienen IGUAL - OMITIDOS PARA BREVEDAD) ...
 const PremiumSelect = ({ label, icon: Icon, value, onChange, options, placeholder = "Seleccionar..." }) => {
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef(null);
@@ -111,9 +109,14 @@ const PremiumInput = ({ label, icon: Icon, rightIcon, className, ...props }) => 
         )}
       </div>
     </div>
-  );
+);
+
+// ==========================================
+// 🏭 COMPONENTE PRINCIPAL
+// ==========================================
 
 export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
+  const { user } = useAuthStore(); // 🔥 OBTENER USUARIO ACTUAL
   const [activeTab, setActiveTab] = useState('general'); 
   const [lists, setLists] = useState({ categories: [], brands: [], suppliers: [] });
   const [isSaving, setIsSaving] = useState(false);
@@ -129,11 +132,11 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
     stock: '',
     minStock: '5',
     supplier: '',
-    expiryDate: '', // 🔥 Nuevo campo
-    isWeighable: false
+    expiryDate: '',
+    isWeighable: false 
   });
 
-  // Cargar Listas
+  // Cargar Listas Maestras
   useEffect(() => {
     if (isOpen) {
         const loadMasters = async () => {
@@ -152,14 +155,17 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
     }
   }, [isOpen]);
 
-  // Cargar Datos
+  // Cargar Datos del Producto (Edición)
   useEffect(() => {
     if (isOpen) {
       if (productToEdit) {
         let calculatedMarkup = productToEdit.markup;
         if (!calculatedMarkup && productToEdit.cost && productToEdit.price) {
-           calculatedMarkup = ((productToEdit.price - productToEdit.cost) / productToEdit.cost * 100).toFixed(2);
+           const cost = parseFloat(productToEdit.cost);
+           const price = parseFloat(productToEdit.price);
+           if (cost > 0) calculatedMarkup = ((price - cost) / cost * 100).toFixed(2);
         }
+
         setFormData({
             ...productToEdit,
             markup: calculatedMarkup || '0',
@@ -167,13 +173,15 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
             category: productToEdit.category || '',
             supplier: productToEdit.supplier || '',
             minStock: productToEdit.minStock || '5',
-            expiryDate: productToEdit.expiryDate || '' // Cargar si existe
+            expiryDate: productToEdit.expiryDate || '',
+            isWeighable: productToEdit.isWeighable === true
         });
       } else {
         setFormData({ 
             name: '', code: '', category: '', brand: '',
             cost: '', markup: '30', price: '',
-            stock: '', minStock: '5', supplier: '', expiryDate: '', isWeighable: false 
+            stock: '', minStock: '5', supplier: '', expiryDate: '', 
+            isWeighable: false 
         });
       }
       setActiveTab('general');
@@ -181,7 +189,6 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
     }
   }, [isOpen, productToEdit]);
 
-  // Cálculos
   const handlePriceCalculation = (field, value) => {
     let newData = { ...formData, [field]: value };
     const cost = parseFloat(field === 'cost' ? value : formData.cost) || 0;
@@ -202,7 +209,6 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
     setFormData(newData);
   };
 
-  // 🔥 VALIDACIÓN Y LIMPIEZA DE DATOS (FIX PARA ERROR DE CONSTRAINT)
   const handleSubmit = async (e) => { 
     e.preventDefault();
     
@@ -211,29 +217,34 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
     setIsSaving(true); 
 
     try {
-        // 1. Limpieza de datos (SANITIZACIÓN)
         const dataToSave = { ...formData };
-        if (!dataToSave.code || dataToSave.code.trim() === '') {
+        if (!dataToSave.code || String(dataToSave.code).trim() === '') {
             delete dataToSave.code;
         }
 
-        // 2. Validación de duplicados (Solo si hay código real)
         if (dataToSave.code) {
             const existing = await productRepository.findByCode(dataToSave.code);
-            if (existing && (!productToEdit || existing.id !== productToEdit.id)) {
-                setIsSaving(false);
-                return alert(`⛔ EL CÓDIGO YA EXISTE\n\nEl código "${dataToSave.code}" ya pertenece a: "${existing.name}".`);
+            if (existing) {
+                const isSelf = productToEdit && String(existing.id) === String(productToEdit.id);
+                if (!isSelf) {
+                    setIsSaving(false);
+                    return alert(`⛔ EL CÓDIGO YA EXISTE\n\nEl código "${dataToSave.code}" ya pertenece a: "${existing.name}".`);
+                }
             }
         }
 
-        // 3. Guardar
+        // 🔥 INYECTAR USUARIO PARA AUDITORÍA
+        const currentUser = user?.name || user?.email || 'Usuario';
+
         await onSave({
           ...dataToSave,
           price: parseFloat(dataToSave.price),
           cost: parseFloat(dataToSave.cost || 0),
           markup: parseFloat(dataToSave.markup || 0),
           stock: parseFloat(dataToSave.stock || 0),
-          minStock: parseFloat(dataToSave.minStock || 0)
+          minStock: parseFloat(dataToSave.minStock || 0),
+          isWeighable: Boolean(dataToSave.isWeighable),
+          user: currentUser // 🔥 PASAMOS EL USUARIO AL REPOSITORIO
         });
         
         onClose();
@@ -252,20 +263,18 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-sys-900/40 backdrop-blur-md p-4 animate-in fade-in zoom-in-95 duration-200">
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh]">
         
-        {/* Header */}
         <div className="flex justify-between items-center px-6 py-5 border-b border-sys-100 bg-white">
           <div>
-             <h3 className="font-bold text-xl text-sys-900 tracking-tight">
-               {productToEdit ? 'Editar Producto' : 'Nuevo Producto'}
-             </h3>
-             <p className="text-xs text-sys-500 font-medium">Gestión de inventario</p>
+              <h3 className="font-bold text-xl text-sys-900 tracking-tight">
+                {productToEdit ? 'Editar Producto' : 'Nuevo Producto'}
+              </h3>
+              <p className="text-xs text-sys-500 font-medium">Gestión de inventario</p>
           </div>
           <button onClick={onClose} className="p-2 bg-sys-50 hover:bg-sys-100 rounded-full text-sys-500 transition-colors">
             <X size={20} />
           </button>
         </div>
 
-        {/* Tabs */}
         <div className="px-6 pt-4 pb-2 bg-white">
             <div className="flex p-1 bg-sys-100 rounded-xl">
                 {['general', 'precios', 'avanzado'].map((tab) => (
@@ -285,10 +294,8 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
             </div>
         </div>
 
-        {/* Formulario */}
         <form onSubmit={handleSubmit} className="p-6 overflow-y-auto custom-scrollbar flex-1 bg-white">
           
-          {/* TAB 1: GENERAL */}
           {activeTab === 'general' && (
              <div className="space-y-6 animate-in slide-in-from-right-8 duration-300 fade-in">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
@@ -333,7 +340,6 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
                         />
                     </div>
 
-                    {/* Switch Pesable */}
                     <div className="bg-sys-50 p-3 rounded-xl border border-sys-200 flex items-center justify-between h-[74px] mt-auto">
                         <div className="flex items-center gap-3 text-sys-700 pl-2">
                             <div className={cn("p-2 rounded-lg", formData.isWeighable ? "bg-orange-100 text-orange-600" : "bg-blue-100 text-blue-600")}>
@@ -346,13 +352,12 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
                                 </p>
                             </div>
                         </div>
-                        <Switch checked={formData.isWeighable} onCheckedChange={(c) => setFormData({...formData, isWeighable: c})} />
+                        <Switch checked={!!formData.isWeighable} onCheckedChange={(c) => setFormData({...formData, isWeighable: c})} />
                     </div>
                 </div>
              </div>
           )}
 
-          {/* TAB 2: PRECIOS */}
           {activeTab === 'precios' && (
              <div className="space-y-6 animate-in slide-in-from-right-8 duration-300 fade-in">
                 <div className="bg-brand-light/30 p-4 rounded-xl border border-brand/20 flex gap-4 items-start">
@@ -406,7 +411,6 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
              </div>
           )}
 
-          {/* TAB 3: AVANZADO */}
           {activeTab === 'avanzado' && (
              <div className="space-y-6 animate-in slide-in-from-right-8 duration-300 fade-in">
                 <div className="grid grid-cols-2 gap-5">
@@ -427,7 +431,6 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
                         />
                     </div>
 
-                    {/* 🔥 NUEVO CAMPO: VENCIMIENTO LOTE INICIAL */}
                     <div className="col-span-2 border-t border-sys-100 pt-4 mt-2">
                         <div className="bg-red-50 p-4 rounded-xl border border-red-100 flex flex-col gap-2">
                             <h4 className="text-sm font-bold text-red-800 flex items-center gap-2"><Calendar size={16}/> Vencimiento (Lote Inicial)</h4>
@@ -446,7 +449,6 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
 
         </form>
 
-        {/* Footer */}
         <div className="p-5 border-t border-sys-100 bg-sys-50/50 flex justify-end gap-3 backdrop-blur-sm">
             <Button variant="ghost" onClick={onClose} className="hover:bg-sys-200/50 text-sys-600" disabled={isSaving}>Cancelar</Button>
             <Button onClick={handleSubmit} className="px-8 shadow-xl shadow-brand/20 active:scale-95 transition-all" disabled={isSaving}>

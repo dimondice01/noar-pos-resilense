@@ -17,6 +17,9 @@ export default defineConfig({
       
       // 🧠 CEREBRO DEL OFFLINE (Workbox):
       workbox: {
+        // 👇 SOLUCIÓN AL ERROR DEL BUILD: Aumentamos el límite de caché a 4MB
+        maximumFileSizeToCacheInBytes: 4 * 1024 * 1024, 
+
         // Cacheamos HTML, JS, CSS, Imágenes, JSON
         globPatterns: ['**/*.{js,css,html,ico,png,svg,json}'], 
         
@@ -81,4 +84,28 @@ export default defineConfig({
       }
     })
   ],
+  // 🚀 OPTIMIZACIÓN DE BUILD (Code Splitting)
+  // Esto divide el archivo gigante de 2.4MB en chunks más pequeños
+  build: {
+    chunkSizeWarningLimit: 1000, // Aumentamos la advertencia a 1MB
+    rollupOptions: {
+        output: {
+            manualChunks(id) {
+                // Separamos node_modules para que el navegador los cachee mejor
+                if (id.includes('node_modules')) {
+                    // Firebase es muy grande, lo ponemos aparte
+                    if (id.includes('firebase')) {
+                        return 'firebase';
+                    }
+                    // Librerías de UI o PDF
+                    if (id.includes('lucide') || id.includes('radix')) {
+                        return 'ui-libs';
+                    }
+                    // El resto de dependencias
+                    return 'vendor';
+                }
+            }
+        }
+    }
+  }
 })

@@ -4,23 +4,41 @@ import { doc, setDoc } from 'firebase/firestore';
 import { useAuthStore } from '../../auth/store/useAuthStore';
 import { cashRepository } from '../../cash/repositories/cashRepository';
 
-// Helper Sync
-const syncToCloud = async (collectionName, data) => {
+// ==========================================
+// ☁️ HELPER: SYNC OPTIMISTA
+// ==========================================
+const triggerOptimisticSync = async (collectionName, data) => {
     if (!navigator.onLine) return;
     const { user } = useAuthStore.getState();
     if (!user || !user.companyId) return;
+
     try {
         const path = `companies/${user.companyId}/${collectionName}`;
-        await setDoc(doc(db, path, data.id), { ...data, syncedAt: new Date().toISOString() }, { merge: true });
-    } catch (e) { console.warn("Sync error:", e); }
+        // Fire & Forget (No await) para no bloquear UI
+        setDoc(doc(db, path, data.id), { 
+            ...data, 
+            syncedAt: new Date().toISOString(),
+            syncStatus: 'synced'
+        }, { merge: true });
+    } catch (e) { console.warn("Sync warning:", e); }
 };
 
 export const supplierRepository = {
 
+    // ==========================================
+    // 📊 OBTENER PROVEEDORES CON SALDO
+    // ==========================================
     async getAllWithBalance() {
         const dbLocal = await getDB();
-        const suppliers = await dbLocal.getAll('suppliers'); 
-        const ledger = await dbLocal.getAll('supplier_ledger');
+        
+        // Obtenemos todos los proveedores
+        const suppliers = await dbLocal.suppliers.toArray(); 
+        
+        // Obtenemos TODOS los movimientos (Ledger)
+        // Nota: Si hay millones, esto se debería paginar, pero para <10k está bien.
+        const ledger = await dbLocal.supplier_ledger.toArray();
+        
+        // Calculamos saldo en memoria (MapReduce)
         return suppliers.map(sup => {
             const myMovements = ledger.filter(m => m.supplierId === sup.id);
             const balance = myMovements.reduce((acc, m) => {
@@ -30,37 +48,78 @@ export const supplierRepository = {
         });
     },
 
+    // ==========================================
+    // 🛒 REGISTRAR COMPRA (FACTURA)
+    // ==========================================
     async registerPurchase({ supplierId, date, totalAmount, paidAmount, description, invoiceNumber }) {
         const dbLocal = await getDB();
-        const purchaseId = `pur_${Date.now()}`;
+        const purchaseId = `pur_${Date.now()}_${Math.random().toString(36).substr(2,4)}`;
+        const timestamp = date || new Date().toISOString();
 
-        // 1. FACTURA (Deuda)
+        // Objeto Movimiento (Deuda)
         const purchaseMovement = {
-            id: purchaseId,
+            id: purchaseId, // Dexie usará este string como key si está definido
             supplierId,
-            date: date || new Date().toISOString(),
+            date: timestamp,
             type: 'PURCHASE', 
             amount: parseFloat(totalAmount),
             description: description || `Compra Factura #${invoiceNumber || 'S/N'}`,
             invoiceNumber,
-            syncStatus: 'PENDING'
+            syncStatus: 'pending'
         };
-        await dbLocal.put('supplier_ledger', purchaseMovement);
-        syncToCloud('supplier_ledger', purchaseMovement);
 
-        // 2. PAGO INICIAL (Si hubo)
-        if (parseFloat(paidAmount) > 0) {
-            await this.registerPayment({
-                supplierId,
-                amount: paidAmount,
-                method: 'cash', 
-                description: `Pago Inicial Fac #${invoiceNumber || 'S/N'}`,
-                refId: purchaseId // 🔥 Vinculamos pago a esta factura
-            });
-        }
+        let paymentMovement = null;
+
+        // Transacción Atómica
+        await dbLocal.transaction('rw', [dbLocal.supplier_ledger, dbLocal.cash_movements, dbLocal.shifts], async () => {
+            
+            // 1. Guardar Deuda
+            await dbLocal.supplier_ledger.put(purchaseMovement);
+
+            // 2. Registrar Pago Inicial (Si hubo)
+            if (parseFloat(paidAmount) > 0) {
+                const payId = `pay_${Date.now()}_${Math.random().toString(36).substr(2,4)}`;
+                
+                paymentMovement = {
+                    id: payId,
+                    supplierId,
+                    date: timestamp,
+                    type: 'PAYMENT',
+                    amount: parseFloat(paidAmount),
+                    description: `Pago Inicial Fac #${invoiceNumber || 'S/N'}`,
+                    refId: purchaseId, // Vinculado a la factura
+                    method: 'cash',
+                    syncStatus: 'pending'
+                };
+
+                await dbLocal.supplier_ledger.put(paymentMovement);
+
+                // 3. Impactar en Caja (Egreso)
+                // Usamos cashRepository dentro de la lógica (pero ojo con la transacción anidada)
+                // Para seguridad, lo hacemos manual aquí o confiamos en que cashRepository use la misma db instance
+                try {
+                     await cashRepository.registerExpense(
+                        parseFloat(paidAmount), 
+                        `${description} (Prov)`, 
+                        supplierId, 
+                        'Sistema'
+                    );
+                } catch (e) {
+                    console.warn("No se pudo descontar de caja (quizás cerrada):", e);
+                }
+            }
+        });
+
+        // Sync Optimista
+        triggerOptimisticSync('supplier_ledger', purchaseMovement);
+        if (paymentMovement) triggerOptimisticSync('supplier_ledger', paymentMovement);
+
         return true;
     },
 
+    // ==========================================
+    // 💸 REGISTRAR PAGO A CUENTA
+    // ==========================================
     async registerPayment({ supplierId, amount, method, description, refId }) {
         const dbLocal = await getDB();
         
@@ -73,41 +132,50 @@ export const supplierRepository = {
             description: description || 'Pago a cuenta',
             refId: refId || null, 
             method,
-            syncStatus: 'PENDING'
+            syncStatus: 'pending'
         };
 
-        await dbLocal.put('supplier_ledger', paymentMovement);
-        syncToCloud('supplier_ledger', paymentMovement);
+        await dbLocal.transaction('rw', [dbLocal.supplier_ledger, dbLocal.cash_movements, dbLocal.shifts], async () => {
+            // 1. Guardar en Cta Cte Proveedor
+            await dbLocal.supplier_ledger.put(paymentMovement);
+            
+            // 2. Descontar de Caja
+            try {
+                await cashRepository.registerExpense(
+                    parseFloat(amount), 
+                    `${description} (Prov)`, 
+                    supplierId, 
+                    'Sistema'
+                );
+            } catch (e) {
+                console.warn("Advertencia de Caja:", e.message);
+            }
+        });
 
-        try {
-            await cashRepository.registerExpense(
-                parseFloat(amount), 
-                `${description} (Prov)`, 
-                supplierId, 
-                'Sistema'
-            );
-        } catch (e) {
-            console.warn("Caja cerrada o error de caja:", e.message);
-        }
+        triggerOptimisticSync('supplier_ledger', paymentMovement);
 
         return paymentMovement;
     },
 
-    // 🔥 MODIFICADO: Calculamos saldo restante por factura
+    // ==========================================
+    // 📜 OBTENER HISTORIAL (CTA CTE)
+    // ==========================================
     async getLedger(supplierId) {
         const dbLocal = await getDB();
-        const all = await dbLocal.getAll('supplier_ledger');
         
-        // Filtramos solo los de este proveedor
-        const supplierMovements = all.filter(m => m.supplierId === supplierId);
+        // Usamos índice para filtrar rápido
+        const supplierMovements = await dbLocal.supplier_ledger
+            .where('supplierId')
+            .equals(supplierId)
+            .toArray();
 
-        // Separmos Compras y Pagos
+        // Separamos en memoria
         const purchases = supplierMovements.filter(m => m.type === 'PURCHASE');
         const payments = supplierMovements.filter(m => m.type === 'PAYMENT');
 
-        // Enriquecemos las compras con su saldo pendiente
+        // Enriquecemos compras con saldo pendiente
         const enrichedPurchases = purchases.map(pur => {
-            // Buscamos pagos que tengan como referencia ESTA compra
+            // Pagos vinculados específicamente a esta factura
             const relatedPayments = payments.filter(p => p.refId === pur.id);
             const totalPaid = relatedPayments.reduce((sum, p) => sum + p.amount, 0);
             
@@ -118,8 +186,7 @@ export const supplierRepository = {
             };
         });
 
-        // Combinamos de nuevo para mostrar cronológicamente
-        // (Reemplazamos las compras originales por las enriquecidas)
+        // Reconstruimos el array final cronológico
         const finalLedger = supplierMovements.map(m => {
             if (m.type === 'PURCHASE') {
                 return enrichedPurchases.find(p => p.id === m.id) || m;
@@ -128,5 +195,18 @@ export const supplierRepository = {
         });
 
         return finalLedger.sort((a, b) => new Date(b.date) - new Date(a.date));
+    },
+
+    // Sync helpers
+    async getPendingSync() {
+        const dbLocal = await getDB();
+        return await dbLocal.supplier_ledger.where('syncStatus').equals('pending').toArray();
+    },
+
+    async markAsSynced(ids) {
+        const dbLocal = await getDB();
+        await dbLocal.supplier_ledger.bulkUpdate(
+            ids.map(id => ({ key: id, changes: { syncStatus: 'synced' } }))
+        );
     }
 };

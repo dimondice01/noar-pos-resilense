@@ -4,11 +4,12 @@ import {
   LayoutDashboard, ShoppingCart, Package, Settings, 
   FileText, Cloud, RefreshCw, LogOut, User, ShieldCheck, Wallet,
   Users, Lock, ArrowRight, X, Loader2, Plug, 
-  Building, Truck 
+  Building, Truck, Unlock, WifiOff
 } from 'lucide-react';
 import { doc, onSnapshot } from 'firebase/firestore'; 
 
-import { cn } from '../core/utils/cn';
+// 🔥 RUTAS CORREGIDAS
+import { cn } from '../core/utils/cn'; 
 import { useAutoSync } from '../core/hooks/useAutoSync';
 import { useAuthStore } from '../modules/auth/store/useAuthStore';
 import { securityService } from '../modules/security/services/securityService';
@@ -17,6 +18,7 @@ import { db } from '../database/firebase';
 // Imports del Módulo de Caja
 import { CashClosingModal } from '../modules/cash/components/CashClosingModal'; 
 import { cashRepository } from '../modules/cash/repositories/cashRepository';
+import { shiftRepository } from '../modules/cash/repositories/shiftRepository';
 
 import defaultLogo from '../assets/logo.png'; 
 
@@ -151,22 +153,25 @@ const PinRequestModal = ({ isOpen, onClose, onSuccess }) => {
 };
 
 // ============================================================================
-// 3. COMPONENTE WRAPPER: CIERRE DE CAJA
+// 3. COMPONENTE WRAPPER: CIERRE DE CAJA (ROBUSTO ANTI-DUPLICADOS)
 // ============================================================================
-const CloseShiftModalWrapper = ({ isOpen, onClose }) => {
+const CloseShiftModalWrapper = ({ isOpen, onClose, onShiftClosed }) => {
     const [balance, setBalance] = useState(null);
     const [shift, setShift] = useState(null);
     const [loading, setLoading] = useState(false);
+    const [processing, setProcessing] = useState(false); 
 
     useEffect(() => {
         if (isOpen) {
             const fetchShiftData = async () => {
                 setLoading(true);
                 try {
-                    if (!cashRepository) { onClose(); return; }
-                    const currentShift = await cashRepository.getCurrentShift();
+                    // 1. Obtener Turno Actual (Misma lógica que CashPage)
+                    const currentShift = await shiftRepository.getCurrentShift(); 
+                    
                     if (currentShift) {
                         setShift(currentShift);
+                        // 2. Obtener Balance
                         const currentBalance = await cashRepository.getShiftBalance(currentShift.id);
                         setBalance(currentBalance);
                     } else {
@@ -186,24 +191,57 @@ const CloseShiftModalWrapper = ({ isOpen, onClose }) => {
     }, [isOpen]);
 
     const handleConfirm = async (data) => {
-        if (!shift || !balance) return;
+        // Validación estricta para evitar doble submit
+        if (!shift || !balance || processing) return;
+        
+        setProcessing(true); 
         try {
-            await cashRepository.closeShift(shift.id, {
+            // 🔥 Aseguramos la lectura correcta del valor declarado
+            // El modal puede devolverlo como 'declaredCash' o 'finalAmount'
+            const declaredAmount = parseFloat(data.declaredCash !== undefined ? data.declaredCash : (data.finalAmount || 0));
+            
+            const stats = {
                 ...data,
-                expectedCash: balance.totalCash,
-                expectedDigital: balance.totalDigital 
-            });
+                expectedTotal: balance.totalCash, 
+                expectedCash: balance.totalCash
+            };
+            
+            // 3. Cerrar Turno (Await estricto)
+            await shiftRepository.closeShift(shift.id, declaredAmount, stats);
+            
             alert("✅ Turno Cerrado Correctamente.");
             onClose();
-            window.location.reload(); 
+            
+            // 🔥 RETRASO DE SEGURIDAD PARA EVITAR RACE CONDITIONS CON FIREBASE/SYNC
+            setTimeout(() => {
+                if (onShiftClosed) onShiftClosed(); 
+            }, 1000); // 1 segundo completo para que la BD asiente el cambio
+            
         } catch (e) {
-            console.error(e);
+            console.error("Error closing shift from sidebar:", e);
             alert(`Error al cerrar turno: ${e.message}`);
+            setProcessing(false); // Solo desbloqueamos si hubo error
         }
     };
 
     if (!isOpen) return null;
-    if (loading || !balance) return null;
+    
+    // Spinner Bloqueante
+    if (loading || processing) return (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-sys-900/60 backdrop-blur-sm">
+            <div className="bg-white p-8 rounded-2xl shadow-2xl flex flex-col items-center gap-4 animate-in zoom-in-95">
+                <Loader2 size={40} className="animate-spin text-brand"/>
+                <div className="text-center">
+                    <p className="text-lg font-bold text-sys-900">
+                        {processing ? "Cerrando Turno..." : "Calculando Balance..."}
+                    </p>
+                    <p className="text-xs text-sys-500 mt-1">Por favor espere, no recargue la página.</p>
+                </div>
+            </div>
+        </div>
+    );
+    
+    if (!balance) return null;
 
     return (
         <CashClosingModal 
@@ -222,6 +260,9 @@ export const Sidebar = () => {
   const { isSyncing } = useAutoSync(15000);
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   
+  const [hasActiveShift, setHasActiveShift] = useState(false);
+  const [checkingShift, setCheckingShift] = useState(true);
+
   const [isCloseModalOpen, setIsCloseModalOpen] = useState(false);
   const [isPinModalOpen, setIsPinModalOpen] = useState(false);
   const [pendingRoute, setPendingRoute] = useState(null);
@@ -232,10 +273,8 @@ export const Sidebar = () => {
   
   const isAdmin = user?.role?.toUpperCase() === 'ADMIN';
 
-  // Branding
   const [companyInfo, setCompanyInfo] = useState({ name: 'MAXI KIOSCO', logo: defaultLogo });
 
-  // Helper Links
   const getLink = (path) => {
       const root = companySlug || user?.companyId; 
       if (!path) return `/${root}`; 
@@ -246,6 +285,44 @@ export const Sidebar = () => {
       const redirectSlug = companySlug || user?.companyId;
       await logout();
       navigate(`/login/${redirectSlug}`);
+  };
+
+  const checkShiftStatus = async () => {
+      if (!user) return;
+      try {
+          const current = await shiftRepository.getCurrentShift();
+          setHasActiveShift(!!current);
+      } catch (e) { 
+          console.error("Error checking shift status:", e); 
+          setHasActiveShift(false);
+      } finally {
+          setCheckingShift(false);
+      }
+  };
+
+  useEffect(() => {
+      checkShiftStatus();
+      const interval = setInterval(checkShiftStatus, 10000); 
+      return () => clearInterval(interval);
+  }, [user]); 
+
+  const handleOpenShiftDirectly = async () => {
+      const input = prompt("Monto inicial en caja:", "1000");
+      if (input === null) return;
+      const amount = parseFloat(input);
+      if (isNaN(amount) || amount < 0) return alert("Monto inválido");
+      
+      try {
+          await cashRepository.openShift(amount, user?.name); 
+          alert("✅ Caja abierta correctamente.");
+          
+          // Recarga segura
+          setTimeout(async () => {
+              await checkShiftStatus(); 
+              window.location.reload(); 
+          }, 800);
+          
+      } catch (e) { alert(e.message); }
   };
 
   useEffect(() => {
@@ -294,7 +371,7 @@ export const Sidebar = () => {
     <>
       <aside className="w-64 h-screen bg-white border-r border-sys-200 flex flex-col fixed left-0 top-0 z-20 hidden md:flex shadow-[4px_0_24px_rgba(0,0,0,0.02)]">
         
-        {/* Header con Branding */}
+        {/* Header */}
         <div className="p-6 border-b border-sys-100 flex flex-col items-center text-center">
           <div className="w-20 h-20 mb-3 bg-white rounded-full flex items-center justify-center overflow-hidden border border-sys-100 shadow-sm p-2 relative">
               <img 
@@ -314,7 +391,7 @@ export const Sidebar = () => {
             </p>
           </div>
 
-          {/* Tarjeta Usuario */}
+          {/* User Card */}
           <div className="w-full text-left flex items-center gap-2.5 bg-sys-50 p-2 rounded-xl border border-sys-200 mt-5">
               <div className={cn("w-7 h-7 rounded-full flex items-center justify-center text-white shadow-sm shrink-0", isAdmin ? "bg-sys-900" : "bg-brand")}>
                   {isAdmin ? <ShieldCheck size={14} /> : <User size={14} />}
@@ -329,7 +406,7 @@ export const Sidebar = () => {
           </div>
         </div>
 
-        {/* Navegación */}
+        {/* Navigation */}
         <nav className="flex-1 p-4 space-y-1 overflow-y-auto no-scrollbar">
           
           <div className="px-4 py-2 text-xs font-semibold text-sys-400 uppercase tracking-wider mb-1">Operación</div>
@@ -338,10 +415,9 @@ export const Sidebar = () => {
           <MenuLink to={getLink('pos')} icon={ShoppingCart} label="Punto de Venta" />
           <MenuLink to={getLink('sales')} icon={FileText} label="Ventas" />
           <MenuLink to={getLink('clients')} icon={Users} label="Clientes" />
-          {/* 🔥 NUEVO ENLACE: PROVEEDORES */}
           <MenuLink to={getLink('suppliers')} icon={Truck} label="Proveedores" />
 
-          {/* SECCIÓN GESTIÓN */}
+          {/* Gestión */}
           <div className="mt-6 mb-1">
              <div className="px-4 py-2 text-xs font-semibold text-sys-400 uppercase tracking-wider">
                Gestión
@@ -366,14 +442,42 @@ export const Sidebar = () => {
           </div>
         </nav>
 
-        {/* Footer */}
+        {/* Footer: Smart Button */}
         <div className="p-4 border-t border-sys-100 bg-sys-50/50 space-y-3">
-          <button 
-            onClick={() => setIsCloseModalOpen(true)}
-            className="w-full flex items-center justify-center gap-2 bg-white border border-red-200 text-red-600 hover:bg-red-50 py-2.5 rounded-xl text-sm font-bold transition-all shadow-sm active:scale-95 group"
-          >
-             <LogOut size={16} className="group-hover:text-red-700" /> Cerrar Turno
-          </button>
+          
+          {checkingShift ? (
+              <div className="w-full h-10 bg-sys-100 animate-pulse rounded-xl" />
+          ) : hasActiveShift ? (
+              
+              // 🔥 MODIFICADO: BOTÓN DE CIERRE CON BLOQUEO OFFLINE
+              <button 
+                onClick={() => {
+                    if (isOnline) setIsCloseModalOpen(true);
+                    else alert("⚠️ DEBE ESTAR ONLINE\n\nEl cierre de caja requiere conexión a internet para sincronizar los datos y evitar errores.");
+                }}
+                disabled={!isOnline}
+                className={cn(
+                    "w-full flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-bold transition-all shadow-sm group",
+                    isOnline 
+                        ? "bg-white border border-red-200 text-red-600 hover:bg-red-50 active:scale-95 cursor-pointer" 
+                        : "bg-sys-100 border border-sys-200 text-sys-400 cursor-not-allowed"
+                )}
+              >
+                 {isOnline ? (
+                     <><LogOut size={16} className="group-hover:text-red-700" /> Cerrar Turno</>
+                 ) : (
+                     <><WifiOff size={16} /> Cerrar (Requiere Red)</>
+                 )}
+              </button>
+
+          ) : (
+              <button 
+                onClick={handleOpenShiftDirectly}
+                className="w-full flex items-center justify-center gap-2 bg-green-600 border border-green-700 text-white hover:bg-green-700 py-2.5 rounded-xl text-sm font-bold transition-all shadow-md active:scale-95 group"
+              >
+                 <Unlock size={16} /> Abrir Turno
+              </button>
+          )}
 
           <div className={cn("px-3 py-2 rounded-lg border flex items-center gap-2 text-xs transition-colors duration-300", !isOnline ? "bg-red-50 border-red-100 text-red-600" : "bg-white border-sys-200 text-sys-600")}>
              <div className={cn("w-2 h-2 rounded-full", !isOnline ? "bg-red-500" : isSyncing ? "bg-blue-500 animate-pulse" : "bg-green-500")} />
@@ -394,6 +498,13 @@ export const Sidebar = () => {
       <CloseShiftModalWrapper 
         isOpen={isCloseModalOpen} 
         onClose={() => setIsCloseModalOpen(false)} 
+        onShiftClosed={() => {
+            // 🔥 RECARGA DEMORADA (1s) PARA EVITAR DUPLICADOS POR RACE CONDITION
+            setTimeout(() => {
+                checkShiftStatus(); 
+                window.location.reload(); 
+            }, 1000);
+        }}
       />
     </>
   );

@@ -12,6 +12,8 @@ import { syncService } from './modules/sync/services/syncService';
 // Componentes Auth
 import { LoginPage } from './modules/auth/pages/LoginPage';
 import { RegisterPage } from './modules/auth/pages/RegisterPage'; 
+import { ValeriaRegisterPage } from './modules/auth/pages/ValeriaRegisterPage'; 
+
 import { PaymentRequiredPage } from './modules/auth/pages/PaymentRequiredPage'; 
 import { ProtectedRoute } from './core/components/ProtectedRoute';
 import { SubscriptionGuard } from './core/guards/SubscriptionGuard'; 
@@ -78,6 +80,7 @@ function App() {
                 
                 {/* ✨ REGISTRO */}
                 <Route path="/register" element={<RegisterPage />} /> 
+                <Route path="/valeria" element={<ValeriaRegisterPage />} /> 
 
                 {/* Login Genérico */}
                 <Route path="/login" element={<LoginPage />} />

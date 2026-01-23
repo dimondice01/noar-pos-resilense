@@ -23,7 +23,8 @@ export const LoginPage = () => {
       isCustom: false 
   });
 
-  const login = useAuthStore(state => state.login);
+  // 👇 IMPORTAMOS updateUser PARA ACTUALIZAR EL STORE MANUALMENTE
+  const { login, updateUser } = useAuthStore();
   const navigate = useNavigate();
 
   // 1. CARGAR BRANDING SI HAY SLUG
@@ -60,18 +61,15 @@ export const LoginPage = () => {
       // ---------------------------------------------------------
       // PASO 1: AUTENTICACIÓN (Firebase Auth)
       // ---------------------------------------------------------
-      // Si la contraseña está mal, esto lanza error y va al catch.
       await login(email, password);
       
       // ---------------------------------------------------------
       // PASO 2: REDIRECCIÓN "VIP" (SUPER ADMIN)
       // ---------------------------------------------------------
-      // 🔥 FIX: Si es el email maestro, pasamos directo sin leer Firestore.
-      // Esto evita que datos corruptos o faltantes en la DB bloqueen al dueño.
       if (email.trim().toLowerCase() === 'admin@admin.com') {
           console.log("👑 Super Admin detectado. Redirigiendo...");
           navigate('/master-admin');
-          return; // Stop aquí.
+          return; 
       }
 
       // ---------------------------------------------------------
@@ -81,14 +79,21 @@ export const LoginPage = () => {
       
       if (!currentUser) throw new Error("No se pudo obtener la sesión.");
 
+      // Buscamos los datos completos del usuario (Rol, CompanyID, etc)
       const userDocRef = doc(db, "users", currentUser.uid);
       const userSnap = await getDoc(userDocRef);
 
       if (userSnap.exists()) {
           const userData = userSnap.data();
           
+          // 🔥 FIX CRÍTICO: INYECTAMOS LOS DATOS AL STORE AHORA MISMO
+          // Esto evita que ProtectedRoute vea el usuario incompleto y nos expulse.
+          updateUser({ ...userData, uid: currentUser.uid });
+
           // A. Si tiene empresa asignada (Cajero / Dueño)
           if (userData.companyId) {
+              console.log("✅ Acceso concedido a:", userData.companyId);
+
               // Si entró por link personalizado correcto, se queda ahí
               if (branding.isCustom && companySlug === userData.companyId) {
                   navigate(`/${companySlug}`);
@@ -99,24 +104,23 @@ export const LoginPage = () => {
               return;
           }
           
-          // B. Caso raro: Admin sin email "admin@admin.com" (Backup)
+          // B. Caso raro: Admin sin email "admin@admin.com"
           if (userData.role === 'ADMIN' || userData.role === 'SUPER_ADMIN') {
              navigate('/master-admin');
              return;
           }
       }
       
-      // Fallback: Si no tiene empresa ni es admin, algo está mal.
-      // Lo mandamos al home o mostramos error.
       console.warn("⚠️ Usuario sin rol ni empresa detectado.");
       navigate('/');
 
     } catch (err) {
       console.error(err);
       setError("Credenciales incorrectas o error de conexión.");
-    } finally {
-      setIsSubmitting(false);
-    }
+      setIsSubmitting(false); // Solo desbloqueamos si hubo error
+    } 
+    // Nota: No ponemos setIsSubmitting(false) en finally si hubo éxito, 
+    // para que el botón no parpadee antes de cambiar de página.
   };
 
   return (

@@ -6,6 +6,139 @@ import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../../../database/firebase'; 
 import defaultLogo from '../../../assets/logo.png'; 
 
+// =========================================================
+// CONTENIDO DEL TICKET (Componente Puro)
+// =========================================================
+const TicketContent = ({ logoSrc, EMPRESA, tipoComprobante, letra, isFiscal, sale, data, clientData, docLabel, docValue, condFiscal, isSale, formatAfipDate }) => (
+    <div className="w-full bg-white text-black font-bold pb-10"> 
+        
+        {/* ENCABEZADO */}
+        <div className="flex flex-col items-center text-center mb-2 px-0">
+            {logoSrc && (
+                <img 
+                    src={logoSrc} 
+                    alt="Logo"
+                    className="mb-1 object-contain"
+                    style={{ maxHeight: '15mm', maxWidth: '100%' }} 
+                />
+            )}
+            <span className="t-title leading-tight mb-1">{EMPRESA.nombre?.substring(0,25)}</span>
+            {EMPRESA.direccion && <span className="t-small leading-tight">{EMPRESA.direccion.substring(0,40)}</span>}
+            <span className="t-small mt-0.5">{EMPRESA.condicionIva?.substring(0,25)}</span>
+            {EMPRESA.cuit && <span className="t-small">CUIT: {EMPRESA.cuit}</span>}
+        </div>
+
+        <div className="border-dash"></div>
+
+        {/* INFO */}
+        <div className="flex justify-between items-end mb-1 px-0">
+            <div className="flex flex-col">
+                <span className="t-normal">{tipoComprobante} "{letra}"</span>
+                <span className="t-small">N° {isFiscal ? String(sale.afip.cbteNumero).padStart(8, '0') : (data.localId?.slice(-8) || '---')}</span>
+            </div>
+            <div className="flex flex-col text-right">
+                <span className="t-small">{new Date(data.date).toLocaleDateString('es-AR')}</span>
+                <span className="t-small">{new Date(data.date).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
+            </div>
+        </div>
+
+        {/* CLIENTE */}
+        <div className="mb-2">
+            <div className="flex t-small"><span className="w-8">CLI:</span> <span className="flex-1 truncate">{clientData.name.substring(0, 20)}</span></div>
+            {(docValue !== '-' && docValue !== '0') && (
+                <div className="flex t-small"><span className="w-8">{docLabel}:</span> <span>{docValue}</span></div>
+            )}
+            <div className="flex t-small"><span className="w-8">IVA:</span> <span className="flex-1 truncate">{condFiscal.substring(0,18)}</span></div>
+        </div>
+
+        <div className="border-solid"></div>
+
+        {/* ITEMS */}
+        {isSale && (
+            <div className="mb-2">
+                <div className="row-flex t-small pb-1">
+                    <div className="col-qty">CNT</div>
+                    <div className="col-desc">DESC</div>
+                    <div className="col-total">TOTAL</div>
+                </div>
+                
+                <div className="flex flex-col gap-1"> 
+                    {data.items.map((item, idx) => (
+                    <div key={idx} className="row-flex t-normal">
+                        <div className="col-qty">
+                            {item.isWeighable ? parseFloat(item.quantity).toFixed(2) : item.quantity}
+                        </div>
+                        <div className="col-desc">
+                            {item.name}
+                        </div>
+                        <div className="col-total">
+                            {Math.round(item.subtotal)}
+                        </div>
+                    </div>
+                    ))}
+                </div>
+            </div>
+        )}
+
+        {/* MOVIMIENTOS CAJA */}
+        {!isSale && (
+            <div className="text-center py-4">
+                <div className="border-2 border-black py-1 mb-2"><span className="t-title">PAGO A CUENTA</span></div>
+                <p className="t-normal">MONTO ABONADO:</p>
+                <p className="t-big mt-1">$ {data.amount}</p>
+            </div>
+        )}
+
+        <div className="border-solid"></div>
+
+        {/* TOTALES */}
+        {isSale && (
+            <div className="mt-2 px-0">
+                <div className="row-flex items-center">
+                    <span className="t-title">TOTAL</span>
+                    <span className="t-big">$ {Math.round(data.total).toLocaleString('es-AR')}</span>
+                </div>
+                <div className="row-flex t-small mt-1 justify-end">
+                     <span className="mr-2">PAGO:</span>
+                     <span>{(isSale ? (data.payment?.method || data.paymentMethod) : data.method) || 'EFECTIVO'}</span>
+                </div>
+            </div>
+        )}
+
+        <div className="border-dash"></div>
+
+        {/* FOOTER */}
+        <div className="mt-2 text-center"> 
+            {isFiscal ? (
+                <div className="flex flex-col items-center w-full">
+                    <div className="bg-white p-1 mb-2" style={{ width: '32mm' }}>
+                        {sale.afip.qr && <QRCode value={sale.afip.qr} size={100} style={{ height: "auto", maxWidth: "100%", width: "100%" }} viewBox={`0 0 256 256`} />}
+                    </div>
+                    <div className="flex items-center justify-center gap-1 w-full mb-1">
+                        <span className="italic font-bold t-small">AFIP</span>
+                        <span className="t-small">Autorizado</span>
+                    </div>
+                    <div className="flex justify-between w-full t-small font-mono mt-1 px-0">
+                        <span>CAE: {sale.afip.cae}</span>
+                        <span>VTO: {formatAfipDate(sale.afip.vtoCAE)}</span>
+                    </div>
+                </div>
+            ) : (
+                <div className="space-y-2 mt-2">
+                    {!isSale && (
+                        <div className="flex flex-col items-center mt-6">
+                            <div className="border-t-2 border-black w-24 mb-1"></div>
+                            <span className="t-small">FIRMA</span>
+                        </div>
+                    )}
+                    <p className="t-small pt-2">*** NO VALIDO COMO FACTURA ***</p>
+                </div>
+            )}
+            <p className="mt-4 text-[9px]">SISTEMA: NOAR POS</p>
+        </div>
+    </div>
+);
+
 export const TicketModal = ({ isOpen, onClose, sale, receipt, companyConfig }) => {
   const data = sale || receipt;
   const { user } = useAuthStore(); 
@@ -13,17 +146,44 @@ export const TicketModal = ({ isOpen, onClose, sale, receipt, companyConfig }) =
   const [dbConfig, setDbConfig] = useState(null);
   const [loadingConfig, setLoadingConfig] = useState(true);
 
+  // 🟢 LOGICA OFFLINE: Intentar LocalStorage primero, luego Firestore
   useEffect(() => {
     if (isOpen && user?.companyId) {
         const fetchCompanyData = async () => {
             try {
-                const docRef = doc(db, 'companies', user.companyId);
-                const snap = await getDoc(docRef);
-                if (snap.exists()) {
-                    setDbConfig(snap.data());
+                // 1. Intentar caché local primero (más rápido y funciona offline)
+                const cachedConfig = localStorage.getItem(`NOAR_COMPANY_CONFIG_${user.companyId}`);
+                if (cachedConfig) {
+                    setDbConfig(JSON.parse(cachedConfig));
+                    setLoadingConfig(false);
+                    
+                    // Si estamos online, revalidar en segundo plano
+                    if (navigator.onLine) {
+                        try {
+                            const docRef = doc(db, 'companies', user.companyId);
+                            const snap = await getDoc(docRef);
+                            if (snap.exists()) {
+                                const freshData = snap.data();
+                                setDbConfig(freshData);
+                                localStorage.setItem(`NOAR_COMPANY_CONFIG_${user.companyId}`, JSON.stringify(freshData));
+                            }
+                        } catch(e) { console.warn("Background sync failed"); }
+                    }
+                    return;
+                }
+
+                // 2. Si no hay caché y estamos online, ir a Firestore
+                if (navigator.onLine) {
+                    const docRef = doc(db, 'companies', user.companyId);
+                    const snap = await getDoc(docRef);
+                    if (snap.exists()) {
+                        const freshData = snap.data();
+                        setDbConfig(freshData);
+                        localStorage.setItem(`NOAR_COMPANY_CONFIG_${user.companyId}`, JSON.stringify(freshData));
+                    }
                 }
             } catch (error) {
-                console.error("Error cargando datos:", error);
+                console.error("Error cargando datos empresa:", error);
             } finally {
                 setLoadingConfig(false);
             }
@@ -69,11 +229,12 @@ export const TicketModal = ({ isOpen, onClose, sale, receipt, companyConfig }) =
     <div className="fixed inset-0 z-[70] flex items-center justify-center bg-sys-900/80 backdrop-blur-sm p-4 animate-in fade-in duration-200">
       
       {/* --- VISTA PREVIA (Pantalla) --- */}
+      {/* 🔥 FIX: 'print:hidden' asegura que esto NO salga en la impresora */}
       <div className="bg-sys-100 p-6 rounded-2xl shadow-2xl max-h-[90vh] overflow-y-auto w-full max-w-sm print:hidden">
-        <div className="flex justify-between items-center mb-4 print:hidden">
+        <div className="flex justify-between items-center mb-4">
           <h3 className="font-bold text-sys-900 text-sm">Vista Previa (POS-58)</h3>
           <div className="flex gap-2">
-            <button onClick={handlePrint} className="p-2 bg-brand text-white rounded-full hover:bg-brand-hover shadow-lg"><Printer size={18} /></button>
+            <button onClick={handlePrint} className="p-2 bg-brand text-white rounded-full hover:bg-brand-hover shadow-lg" title="Imprimir (Ctrl+P)"><Printer size={18} /></button>
             <button onClick={onClose} className="p-2 bg-white text-sys-500 rounded-full hover:bg-sys-200"><X size={18} /></button>
           </div>
         </div>
@@ -92,7 +253,8 @@ export const TicketModal = ({ isOpen, onClose, sale, receipt, companyConfig }) =
       </div>
 
       {/* --- ÁREA DE IMPRESIÓN REAL --- */}
-      <div className="print-area">
+      {/* 🔥 FIX: 'hidden' por defecto, 'print:block' solo al imprimir */}
+      <div className="hidden print:block print-area">
           {!loadingConfig && (
               <TicketContent 
                     logoSrc={logoSrc} EMPRESA={EMPRESA} tipoComprobante={tipoComprobante} letra={letra} 
@@ -193,136 +355,3 @@ export const TicketModal = ({ isOpen, onClose, sale, receipt, companyConfig }) =
     </div>
   );
 };
-
-// =========================================================
-// CONTENIDO DEL TICKET (Diseño Full Width 48mm)
-// =========================================================
-const TicketContent = ({ logoSrc, EMPRESA, tipoComprobante, letra, isFiscal, sale, data, clientData, docLabel, docValue, condFiscal, isSale, formatAfipDate }) => (
-    <div className="w-full bg-white text-black font-bold pb-10"> 
-        
-        {/* ENCABEZADO */}
-        <div className="flex flex-col items-center text-center mb-2 px-0">
-            {logoSrc && (
-                <img 
-                    src={logoSrc} 
-                    alt="Logo"
-                    className="mb-1 object-contain"
-                    style={{ maxHeight: '15mm', maxWidth: '100%' }} 
-                />
-            )}
-            <span className="t-title leading-tight mb-1">{EMPRESA.nombre.substring(0,25)}</span>
-            {EMPRESA.direccion && <span className="t-small leading-tight">{EMPRESA.direccion.substring(0,40)}</span>}
-            <span className="t-small mt-0.5">{EMPRESA.condicionIva.substring(0,25)}</span>
-            {EMPRESA.cuit && <span className="t-small">CUIT: {EMPRESA.cuit}</span>}
-        </div>
-
-        <div className="border-dash"></div>
-
-        {/* INFO */}
-        <div className="flex justify-between items-end mb-1 px-0">
-            <div className="flex flex-col">
-                <span className="t-normal">{tipoComprobante} "{letra}"</span>
-                <span className="t-small">N° {isFiscal ? String(sale.afip.cbteNumero).padStart(8, '0') : (data.localId?.slice(-8) || '---')}</span>
-            </div>
-            <div className="flex flex-col text-right">
-                <span className="t-small">{new Date(data.date).toLocaleDateString('es-AR')}</span>
-                <span className="t-small">{new Date(data.date).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
-            </div>
-        </div>
-
-        {/* CLIENTE */}
-        <div className="mb-2">
-            <div className="flex t-small"><span className="w-8">CLI:</span> <span className="flex-1 truncate">{clientData.name.substring(0, 20)}</span></div>
-            {(docValue !== '-' && docValue !== '0') && (
-                <div className="flex t-small"><span className="w-8">{docLabel}:</span> <span>{docValue}</span></div>
-            )}
-            <div className="flex t-small"><span className="w-8">IVA:</span> <span className="flex-1 truncate">{condFiscal.substring(0,18)}</span></div>
-        </div>
-
-        <div className="border-solid"></div>
-
-        {/* ITEMS */}
-        {isSale && (
-            <div className="mb-2">
-                <div className="row-flex t-small pb-1">
-                    <div className="col-qty">CNT</div>
-                    <div className="col-desc">DESC</div>
-                    <div className="col-total">TOTAL</div>
-                </div>
-                
-                <div className="flex flex-col gap-1"> 
-                    {data.items.map((item, idx) => (
-                    <div key={idx} className="row-flex t-normal">
-                        <div className="col-qty">
-                            {item.isWeighable ? item.quantity.toFixed(2) : item.quantity}
-                        </div>
-                        <div className="col-desc">
-                            {item.name}
-                        </div>
-                        <div className="col-total">
-                            {Math.round(item.subtotal)}
-                        </div>
-                    </div>
-                    ))}
-                </div>
-            </div>
-        )}
-
-        {/* MOVIMIENTOS CAJA */}
-        {!isSale && (
-            <div className="text-center py-4">
-                <div className="border-2 border-black py-1 mb-2"><span className="t-title">PAGO A CUENTA</span></div>
-                <p className="t-normal">MONTO ABONADO:</p>
-                <p className="t-big mt-1">$ {data.amount}</p>
-            </div>
-        )}
-
-        <div className="border-solid"></div>
-
-        {/* TOTALES */}
-        {isSale && (
-            <div className="mt-2 px-0">
-                <div className="row-flex items-center">
-                    <span className="t-title">TOTAL</span>
-                    <span className="t-big">$ {Math.round(data.total).toLocaleString('es-AR')}</span>
-                </div>
-                <div className="row-flex t-small mt-1 justify-end">
-                     <span className="mr-2">PAGO:</span>
-                     <span>{(isSale ? (data.payment?.method || data.paymentMethod) : data.method) || 'EFECTIVO'}</span>
-                </div>
-            </div>
-        )}
-
-        <div className="border-dash"></div>
-
-        {/* FOOTER */}
-        <div className="mt-2 text-center"> 
-            {isFiscal ? (
-                <div className="flex flex-col items-center w-full">
-                    <div className="bg-white p-1 mb-2" style={{ width: '32mm' }}>
-                        {sale.afip.qr && <QRCode value={sale.afip.qr} size={100} style={{ height: "auto", maxWidth: "100%", width: "100%" }} viewBox={`0 0 256 256`} />}
-                    </div>
-                    <div className="flex items-center justify-center gap-1 w-full mb-1">
-                        <span className="italic font-bold t-small">AFIP</span>
-                        <span className="t-small">Autorizado</span>
-                    </div>
-                    <div className="flex justify-between w-full t-small font-mono mt-1 px-0">
-                        <span>CAE: {sale.afip.cae}</span>
-                        <span>VTO: {formatAfipDate(sale.afip.vtoCAE)}</span>
-                    </div>
-                </div>
-            ) : (
-                <div className="space-y-2 mt-2">
-                    {!isSale && (
-                        <div className="flex flex-col items-center mt-6">
-                            <div className="border-t-2 border-black w-24 mb-1"></div>
-                            <span className="t-small">FIRMA</span>
-                        </div>
-                    )}
-                    <p className="t-small pt-2">*** NO VALIDO COMO FACTURA ***</p>
-                </div>
-            )}
-            <p className="mt-4 text-[9px]">SISTEMA: NOAR POS</p>
-        </div>
-    </div>
-);

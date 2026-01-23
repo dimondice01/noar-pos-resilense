@@ -1,22 +1,25 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { 
     FileText, CheckCircle, AlertCircle, Printer, RefreshCw, Search, 
-    ArrowDownLeft, ShoppingBag, XCircle, RotateCcw, Calendar, User
+    ArrowDownLeft, ShoppingBag, XCircle, RotateCcw, Calendar, User,
+    ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight
 } from 'lucide-react';
 import { billingService } from '../../billing/services/billingService';
 import { Card } from '../../../core/ui/Card';
 import { Button } from '../../../core/ui/Button';
 import { cn } from '../../../core/utils/cn';
-import { getDB } from '../../../database/db';
+import { salesRepository } from '../repositories/salesRepository'; 
 import { TicketModal } from '../components/TicketModal';
 import { useAuthStore } from '../../auth/store/useAuthStore'; 
-
-// 🔥 NUEVOS IMPORTS PARA TRAER CAJEROS
 import { collection, query, where, getDocs } from 'firebase/firestore';
 import { db as firestoreDB } from '../../../database/firebase';
 
-// Helper de fechas
-const toInputDate = (date) => date.toISOString().split('T')[0];
+// Helper de fechas seguro
+const toInputDate = (date) => {
+    try {
+        return date.toISOString().split('T')[0];
+    } catch (e) { return new Date().toISOString().split('T')[0]; }
+};
 
 export const SalesPage = () => {
   const { user } = useAuthStore(); 
@@ -24,7 +27,7 @@ export const SalesPage = () => {
 
   // Estado de Datos
   const [operations, setOperations] = useState([]); 
-  const [cashiersList, setCashiersList] = useState([]); // Lista de usuarios de la empresa
+  const [cashiersList, setCashiersList] = useState([]); 
   const [loading, setLoading] = useState(true);
   
   // Estado de Filtros
@@ -35,11 +38,15 @@ export const SalesPage = () => {
   const [filterCashier, setFilterCashier] = useState('ALL'); 
   const [searchTerm, setSearchTerm] = useState('');
 
+  // 🔥 ESTADO DE PAGINACIÓN
+  const [currentPage, setCurrentPage] = useState(1);
+  const itemsPerPage = 20; 
+
   // Estados UI
   const [loadingMap, setLoadingMap] = useState({}); 
   const [selectedOpForTicket, setSelectedOpForTicket] = useState(null); 
 
-  // 1. CARGAR LISTA DE CAJEROS (Usuarios de la empresa)
+  // 1. CARGAR LISTA DE CAJEROS (Usuarios reales de la empresa)
   useEffect(() => {
       if (user?.companyId) {
           const fetchCashiers = async () => {
@@ -49,93 +56,140 @@ export const SalesPage = () => {
                       where('companyId', '==', user.companyId)
                   );
                   const snapshot = await getDocs(q);
-                  const users = snapshot.docs.map(doc => doc.data());
+                  const users = snapshot.docs.map(doc => ({
+                      uid: doc.id, // ID de Firestore (Auth UID a veces es el ID del doc)
+                      ...doc.data()
+                  }));
                   setCashiersList(users);
-              } catch (error) {
-                  console.error("Error cargando cajeros:", error);
-                  // Si falla (ej: offline), no rompemos nada, cashiersList queda vacío
-              }
+              } catch (error) { console.error("Error cargando cajeros:", error); }
           };
           fetchCashiers();
       }
   }, [user?.companyId]);
 
-  // 2. CARGAR OPERACIONES (Ventas)
+  // 2. CARGAR OPERACIONES
+  const fetchOperations = async () => {
+      setLoading(true);
+      try {
+          let start = new Date();
+          let end = new Date();
+          end.setHours(23, 59, 59, 999);
+
+          if (filterPeriod === 'today') {
+              start.setHours(0, 0, 0, 0);
+          } else if (filterPeriod === 'yesterday') {
+              start.setDate(start.getDate() - 1);
+              start.setHours(0, 0, 0, 0);
+              end.setDate(end.getDate() - 1);
+              end.setHours(23, 59, 59, 999);
+          } else if (filterPeriod === 'week') {
+              const day = start.getDay() || 7; 
+              if (day !== 1) start.setHours(-24 * (day - 1)); 
+              start.setHours(0, 0, 0, 0);
+          } else if (filterPeriod === 'month') {
+              start.setDate(1);
+              start.setHours(0, 0, 0, 0);
+          } else if (filterPeriod === 'custom') {
+              start = new Date(customStart + 'T00:00:00');
+              end = new Date(customEnd + 'T23:59:59');
+          }
+
+          let rawData = [];
+          if (salesRepository.getOperationsByDateRange) {
+               rawData = await salesRepository.getOperationsByDateRange(start, end);
+          } else {
+               rawData = await salesRepository.getTodaySales();
+          }
+          
+          setOperations(rawData || []);
+          setCurrentPage(1); 
+
+      } catch (error) {
+          console.error("Error cargando historial:", error);
+      } finally {
+          setLoading(false);
+      }
+  };
+
   useEffect(() => {
-    const fetchOperations = async () => {
-        setLoading(true);
-        try {
-            let start = new Date();
-            let end = new Date();
-            end.setHours(23, 59, 59, 999);
-
-            if (filterPeriod === 'today') {
-                start.setHours(0, 0, 0, 0);
-            } else if (filterPeriod === 'yesterday') {
-                start.setDate(start.getDate() - 1);
-                start.setHours(0, 0, 0, 0);
-                end.setDate(end.getDate() - 1);
-            } else if (filterPeriod === 'week') {
-                const day = start.getDay() || 7; 
-                if (day !== 1) start.setHours(-24 * (day - 1)); 
-                start.setHours(0, 0, 0, 0);
-            } else if (filterPeriod === 'month') {
-                start.setDate(1);
-                start.setHours(0, 0, 0, 0);
-            } else if (filterPeriod === 'custom') {
-                start = new Date(customStart);
-                start.setHours(0,0,0,0);
-                start = new Date(start.getTime() + start.getTimezoneOffset() * 60000);
-                end = new Date(customEnd);
-                end = new Date(end.getTime() + end.getTimezoneOffset() * 60000);
-                end.setHours(23, 59, 59, 999);
-            }
-
-            const db = await getDB();
-            const allSales = await db.getAll('sales');
-            
-            const filtered = allSales.filter(op => {
-                const opDate = new Date(op.date);
-                return opDate >= start && opDate <= end;
-            });
-
-            filtered.sort((a, b) => new Date(b.date) - new Date(a.date));
-            setOperations(filtered);
-        } catch (error) {
-            console.error("Error cargando historial:", error);
-        } finally {
-            setLoading(false);
-        }
-    };
-    fetchOperations();
+      fetchOperations();
   }, [filterPeriod, customStart, customEnd]);
 
-  // 3. FILTRADO EN MEMORIA
+  // 🔥 HELPER: RESOLUCIÓN INTELIGENTE DE NOMBRE
+  const resolveCashierName = (op) => {
+      const idToCheck = op.userId || op.createdBy;
+      
+      // 1. Buscamos match exacto en la lista de usuarios (por UID o Email)
+      const matchedUser = cashiersList.find(u => u.uid === idToCheck || u.email === idToCheck);
+      if (matchedUser) return matchedUser.name || matchedUser.email.split('@')[0];
+
+      // 2. Si no está en la lista, usamos lo que guardó la venta (snapshot histórico)
+      if (op.sellerName && op.sellerName !== 'Cajero') return op.sellerName;
+      if (op.userName && op.userName !== 'Vendedor') return op.userName;
+
+      // 3. Si es un email suelto, lo formateamos
+      if (typeof idToCheck === 'string' && idToCheck.includes('@')) {
+          return idToCheck.split('@')[0];
+      }
+
+      // 4. Último recurso
+      return "Desconocido";
+  };
+
+  // 3. FILTRADO (LÓGICA CORREGIDA)
   const visibleOperations = useMemo(() => {
       return operations.filter(op => {
-          // Filtro por Tipo
+          // A. Filtro Tipo
           if (filterType === 'SALE' && op.type === 'RECEIPT') return false;
           if (filterType === 'RECEIPT' && op.type !== 'RECEIPT') return false;
 
-          // Filtro por Cajero (Compara email del creador)
+          // B. Filtro Cajero (CORREGIDO)
           if (filterCashier !== 'ALL') {
-             // Normalizamos: la venta puede tener createdBy o userId
-             const opUser = op.createdBy || op.userId;
-             if (opUser !== filterCashier) return false;
+             // filterCashier es el EMAIL del usuario seleccionado en el dropdown
+             const selectedUser = cashiersList.find(u => u.email === filterCashier);
+             
+             // Si no encontramos al usuario seleccionado en la lista, algo raro pasa, no mostramos nada
+             if (!selectedUser) return false;
+
+             // Comparamos contra UID
+             if (op.userId === selectedUser.uid) return true;
+             
+             // Comparamos contra Email
+             if (op.createdBy === selectedUser.email) return true;
+
+             // Comparamos contra Nombre guardado (Fallback para legacy)
+             const opName = (op.sellerName || op.userName || '').toLowerCase();
+             const selName = (selectedUser.name || '').toLowerCase();
+             if (opName && selName && opName === selName) return true;
+
+             return false;
           }
 
-          // Búsqueda Texto
+          // C. Búsqueda Texto
           if (searchTerm) {
               const search = searchTerm.toLowerCase();
-              const clientName = op.client?.name?.toLowerCase() || '';
-              const totalStr = op.total.toString();
-              return clientName.includes(search) || totalStr.includes(search);
+              const clientName = (op.client?.name || '').toLowerCase();
+              const totalStr = (op.total || '').toString();
+              const docNum = (op.afip?.cbteNumero || '').toString();
+              const cashierName = resolveCashierName(op).toLowerCase();
+              
+              return clientName.includes(search) || 
+                     totalStr.includes(search) || 
+                     docNum.includes(search) ||
+                     cashierName.includes(search);
           }
           return true;
       });
-  }, [operations, filterType, filterCashier, searchTerm]);
+  }, [operations, filterType, filterCashier, searchTerm, cashiersList]);
 
-  // Lógica Fiscal
+  // 🔥 4. LÓGICA DE PAGINACIÓN
+  const totalPages = Math.ceil(visibleOperations.length / itemsPerPage);
+  const paginatedOperations = useMemo(() => {
+      const startIndex = (currentPage - 1) * itemsPerPage;
+      return visibleOperations.slice(startIndex, startIndex + itemsPerPage);
+  }, [visibleOperations, currentPage]);
+
+  // Acciones Fiscales
   const handleFacturar = async (op) => {
     if (op.type === 'RECEIPT') return;
     setLoadingMap(prev => ({ ...prev, [op.localId]: true }));
@@ -167,9 +221,9 @@ export const SalesPage = () => {
   };
 
   const updateOperationStatus = async (op, afipData, status) => {
+    const { getDB } = await import('../../../database/db'); 
     const db = await getDB();
-    const tx = db.transaction('sales', 'readwrite');
-    const store = tx.objectStore('sales');
+    
     const ventaActualizada = {
       ...op,
       afip: {
@@ -179,10 +233,11 @@ export const SalesPage = () => {
         cbteLetra: afipData?.tipo || null, 
         qr: afipData?.qr_data || null,
         vtoCAE: afipData?.vto || null
-      }
+      },
+      syncStatus: 'pending' 
     };
-    await store.put(ventaActualizada);
-    await tx.done;
+    
+    await db.sales.put(ventaActualizada);
     setOperations(prev => prev.map(o => o.localId === op.localId ? ventaActualizada : o));
   };
 
@@ -199,24 +254,27 @@ export const SalesPage = () => {
                 <p className="text-sys-500 text-sm">Gestiona ventas, cobros y facturación electrónica.</p>
             </div>
             
-            {/* KPI Dinámico */}
-            <Card className="px-6 py-2 bg-white border border-sys-200 shadow-sm flex items-center gap-4">
-                <div>
-                    <p className="text-[10px] text-sys-400 uppercase font-bold">Total Selección</p>
-                    <p className="text-xl font-black text-sys-900">
-                        $ {visibleOperations
-                            .filter(op => op.afip?.status !== 'VOIDED')
-                            .reduce((acc, op) => acc + (op.total || 0), 0)
-                            .toLocaleString('es-AR', {minimumFractionDigits: 2})}
-                    </p>
-                </div>
-            </Card>
+            <div className="flex items-center gap-3">
+                <Button variant="outline" onClick={fetchOperations} className="h-10 w-10 p-0 rounded-xl border-sys-200 text-sys-500 hover:text-brand hover:bg-sys-50" title="Recargar listado">
+                    <RefreshCw size={18} className={loading ? "animate-spin" : ""}/>
+                </Button>
+                <Card className="px-6 py-2 bg-white border border-sys-200 shadow-sm flex items-center gap-4">
+                    <div>
+                        <p className="text-[10px] text-sys-400 uppercase font-bold">Total Selección</p>
+                        <p className="text-xl font-black text-sys-900">
+                            $ {visibleOperations
+                                .filter(op => op.afip?.status !== 'VOIDED')
+                                .reduce((acc, op) => acc + (parseFloat(op.total) || 0), 0)
+                                .toLocaleString('es-AR', {minimumFractionDigits: 2})}
+                        </p>
+                    </div>
+                </Card>
+            </div>
           </div>
 
           {/* BARRA DE HERRAMIENTAS */}
           <Card className="p-2 flex flex-col xl:flex-row gap-3 items-center bg-sys-50 border-sys-200">
               
-              {/* Período */}
               <div className="flex bg-white rounded-lg border border-sys-200 p-1 shadow-sm w-full xl:w-auto overflow-x-auto">
                   {[{ id: 'today', label: 'Hoy' }, { id: 'yesterday', label: 'Ayer' }, { id: 'week', label: 'Semana' }, { id: 'month', label: 'Mes' }, { id: 'custom', label: 'Custom', icon: Calendar }].map(p => (
                       <button key={p.id} onClick={() => setFilterPeriod(p.id)} className={cn("px-3 py-1.5 rounded-md text-xs font-bold transition-all whitespace-nowrap flex items-center gap-1", filterPeriod === p.id ? "bg-sys-900 text-white shadow-md" : "text-sys-500 hover:bg-sys-50 hover:text-sys-900")}>
@@ -225,7 +283,6 @@ export const SalesPage = () => {
                   ))}
               </div>
 
-              {/* Fechas Custom */}
               {filterPeriod === 'custom' && (
                   <div className="flex items-center gap-2 bg-white px-2 py-1 rounded-lg border border-sys-200">
                       <input type="date" value={customStart} onChange={e => setCustomStart(e.target.value)} className="text-xs border-none outline-none font-medium text-sys-700"/>
@@ -236,10 +293,7 @@ export const SalesPage = () => {
 
               <div className="flex-1"></div>
 
-              {/* FILTROS LATERALES */}
               <div className="flex flex-col sm:flex-row gap-2 w-full xl:w-auto">
-                  
-                  {/* SELECTOR DE CAJERO */}
                   <div className="relative min-w-[140px]">
                       <User size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-sys-400 pointer-events-none"/>
                       <select 
@@ -264,15 +318,15 @@ export const SalesPage = () => {
 
                   <div className="relative flex-1 xl:w-64">
                       <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-sys-400"/>
-                      <input type="text" placeholder="Buscar..." className="w-full pl-9 pr-3 py-2 text-sm bg-white border border-sys-200 rounded-lg outline-none focus:border-brand transition-all" value={searchTerm} onChange={e => setSearchTerm(e.target.value)}/>
+                      <input type="text" placeholder="Buscar cliente, monto..." className="w-full pl-9 pr-3 py-2 text-sm bg-white border border-sys-200 rounded-lg outline-none focus:border-brand transition-all" value={searchTerm} onChange={e => setSearchTerm(e.target.value)}/>
                   </div>
               </div>
           </Card>
       </div>
 
-      {/* TABLA CORREGIDA */}
-      <Card className="p-0 overflow-hidden shadow-soft border-0 min-h-[400px]">
-        <div className="overflow-x-auto">
+      {/* TABLA DE RESULTADOS PAGINADA */}
+      <Card className="p-0 overflow-hidden shadow-soft border-0 min-h-[400px] flex flex-col">
+        <div className="overflow-x-auto flex-1">
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className="bg-sys-50/80 text-sys-500 text-xs uppercase tracking-wider border-b border-sys-100 backdrop-blur-sm sticky top-0 z-10">
@@ -288,7 +342,7 @@ export const SalesPage = () => {
             <tbody className="divide-y divide-sys-100 bg-white">
               {loading ? (
                   <tr><td colSpan="7" className="p-10 text-center"><RefreshCw className="animate-spin mx-auto text-sys-300"/></td></tr>
-              ) : visibleOperations.length === 0 ? (
+              ) : paginatedOperations.length === 0 ? (
                 <tr>
                   <td colSpan="7" className="p-12 text-center">
                     <div className="flex flex-col items-center justify-center text-sys-300">
@@ -298,17 +352,15 @@ export const SalesPage = () => {
                   </td>
                 </tr>
               ) : (
-                visibleOperations.map((op) => {
+                paginatedOperations.map((op) => {
                     const isReceipt = op.type === 'RECEIPT';
                     const isFacturado = op.afip?.status === 'APPROVED';
                     const isAnulado = op.afip?.status === 'VOIDED'; 
                     const isLoading = loadingMap[op.localId];
                     const paymentMethod = op.payment?.method || op.paymentMethod || 'cash';
                     
-                    // Buscamos el nombre del cajero en la lista descargada
-                    const cajeroEmail = op.createdBy || op.userId;
-                    const cajeroObj = cashiersList.find(c => c.email === cajeroEmail);
-                    const cajeroName = cajeroObj?.name || cajeroEmail?.split('@')[0] || 'Desconocido';
+                    // Usamos el helper de resolución
+                    const cajeroName = resolveCashierName(op);
 
                     return (
                       <tr key={op.localId} className={cn("transition-colors group", isAnulado ? "bg-red-50/30 opacity-60" : "hover:bg-sys-50/40")}>
@@ -329,13 +381,13 @@ export const SalesPage = () => {
                           <div className="flex flex-col">
                             <span className="font-bold truncate max-w-[200px]">{op.client?.name || 'Consumidor Final'}</span>
                             <span className="text-[10px] text-sys-400 font-normal truncate max-w-[250px]">
-                               {isReceipt ? "Pago a Cuenta" : `${op.itemCount} items: ${op.items?.map(i => i.name).join(', ')}`}
+                               {isReceipt ? "Pago a Cuenta" : `${op.itemCount || (op.items?.length) || 0} items`}
                             </span>
                           </div>
                         </td>
                         <td className="p-4 text-right">
                           <span className={cn("font-bold whitespace-nowrap text-sm", isAnulado ? "text-red-400 line-through decoration-red-400" : "text-sys-900")}>
-                            $ {op.total.toLocaleString('es-AR', {minimumFractionDigits: 2})}
+                            $ {(parseFloat(op.total) || 0).toLocaleString('es-AR', {minimumFractionDigits: 2})}
                           </span>
                         </td>
                         <td className="p-4 text-center">
@@ -381,6 +433,52 @@ export const SalesPage = () => {
             </tbody>
           </table>
         </div>
+
+        {/* 🔥 FOOTER DE PAGINACIÓN */}
+        {visibleOperations.length > itemsPerPage && (
+            <div className="p-4 border-t border-sys-100 bg-sys-50/50 flex items-center justify-between">
+                <span className="text-xs text-sys-500 font-medium">
+                    Mostrando {((currentPage - 1) * itemsPerPage) + 1} - {Math.min(currentPage * itemsPerPage, visibleOperations.length)} de {visibleOperations.length}
+                </span>
+                <div className="flex items-center gap-1">
+                    <Button 
+                        variant="ghost" 
+                        disabled={currentPage === 1}
+                        onClick={() => setCurrentPage(1)}
+                        className="h-8 w-8 p-0"
+                    >
+                        <ChevronsLeft size={16}/>
+                    </Button>
+                    <Button 
+                        variant="ghost" 
+                        disabled={currentPage === 1}
+                        onClick={() => setCurrentPage(prev => prev - 1)}
+                        className="h-8 w-8 p-0"
+                    >
+                        <ChevronLeft size={16}/>
+                    </Button>
+                    <span className="text-xs font-bold text-sys-700 px-3">
+                        Página {currentPage} de {totalPages}
+                    </span>
+                    <Button 
+                        variant="ghost" 
+                        disabled={currentPage === totalPages}
+                        onClick={() => setCurrentPage(prev => prev + 1)}
+                        className="h-8 w-8 p-0"
+                    >
+                        <ChevronRight size={16}/>
+                    </Button>
+                    <Button 
+                        variant="ghost" 
+                        disabled={currentPage === totalPages}
+                        onClick={() => setCurrentPage(totalPages)}
+                        className="h-8 w-8 p-0"
+                    >
+                        <ChevronsRight size={16}/>
+                    </Button>
+                </div>
+            </div>
+        )}
       </Card>
 
       <TicketModal 
