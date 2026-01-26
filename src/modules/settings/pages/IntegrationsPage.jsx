@@ -3,7 +3,7 @@ import {
     CreditCard, Save, HelpCircle, CheckCircle2, 
     AlertCircle, ExternalLink, Eye, EyeOff, Plug, FileText, ScrollText, Download, Key,
     Search, X, Loader2, Info, Link as LinkIcon, Terminal, Smartphone, MonitorSmartphone,
-    HardDrive // Icono para guardar local
+    HardDrive 
 } from 'lucide-react';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { db } from '../../../database/firebase';
@@ -14,8 +14,7 @@ import { Card } from '../../../core/ui/Card';
 import { Button } from '../../../core/ui/Button';
 import { cn } from '../../../core/utils/cn';
 
-// URL del Backend
-const API_URL = import.meta.env.VITE_API_URL || import.meta.env.VITE_API_URL; 
+const API_URL = import.meta.env.VITE_API_URL || "https://us-central1-salvadorpos1.cloudfunctions.net/api";
 
 // ==================================================================================
 // 🎓 MODAL TUTORIAL (SÚPER EXPLICADO)
@@ -78,18 +77,18 @@ const TutorialModal = ({ isOpen, onClose, type }) => {
             link: "https://www.clover.com/dashboard/login",
             icon: ExternalLink
         },
-        {
-            title: "2. Obtener Merchant ID",
+        { 
+            title: "2. Obtener Merchant ID", 
             desc: "Tu Merchant ID (MID) está en la URL del navegador o en Configuración > Comerciante. Es un código tipo 'ABC123DEF456'.",
             icon: Search
         },
-        {
-            title: "3. Crear Token API",
+        { 
+            title: "3. Crear Token API", 
             desc: "Ve a Configuración (Setup) > API Tokens. Crea uno nuevo con permisos de 'Merchant R/W' y 'Payments R/W'.",
             icon: Key
         },
-        {
-            title: "4. Remote App ID (Opcional)",
+        { 
+            title: "4. Remote App ID (Opcional)", 
             desc: "Si desarrollaste una App específica en Clover, usa su ID. Si no, déjalo en blanco o usa el ID de nuestra App (consúltanos).",
             icon: Plug
         }
@@ -189,21 +188,20 @@ export const IntegrationsPage = () => {
   const [generatingCsr, setGeneratingCsr] = useState(false);
   const [searchingPos, setSearchingPos] = useState(false);
   
-  // Listas de Opciones (Traídas del Backend)
-  const [posList, setPosList] = useState([]);      // Cajas QR (Stores)
-  const [pointList, setPointList] = useState([]);  // Terminales Físicas (Devices)
+  // Listas de Opciones
+  const [posList, setPosList] = useState([]);      
+  const [pointList, setPointList] = useState([]);  
   const [loadingPoints, setLoadingPoints] = useState(false);
   const [configuringPoint, setConfiguringPoint] = useState(false);
 
-  // 🌍 CONFIGURACIÓN GLOBAL (Firestore - Credenciales)
+  // Configs
   const [mpConfig, setMpConfig] = useState({ accessToken: '', userId: '', isActive: false });
   const [afipConfig, setAfipConfig] = useState({ cuit: '', ptoVta: 1, razonSocial: '', cert: '', key: '', condicion: 'MONOTRIBUTO', isActive: false });
   const [cloverConfig, setCloverConfig] = useState({ merchantId: '', apiToken: '', remoteAppId: '', isActive: false });
 
-  // 💻 CONFIGURACIÓN LOCAL (LocalStorage - Qué aparato usa ESTA PC)
+  // 💻 Config Local
   const [localConfig, setLocalConfig] = useState({ qrId: '', pointId: '' });
 
-  // 🔑 HOOK SAAS
   const user = useAuthStore(state => state.user);
 
   useEffect(() => { 
@@ -213,24 +211,21 @@ export const IntegrationsPage = () => {
       }
   }, [user]);
 
-  // 🔥 1. Cargar desde LocalStorage (¡El secreto de la persistencia!)
+  // Carga Local
   const loadLocalConfig = () => {
       try {
           const saved = localStorage.getItem('NOAR_TERMINAL_CONFIG');
           if (saved) {
               const parsed = JSON.parse(saved);
               setLocalConfig(parsed);
-              console.log("📂 Configuración Local Cargada:", parsed);
           }
       } catch (e) { console.error("Error leyendo LocalStorage", e); }
   };
 
-  // 🔥 2. Actualizar Estado Local (Solo React State, no guarda aún)
   const updateLocalState = (key, value) => {
       setLocalConfig(prev => ({ ...prev, [key]: value }));
   };
 
-  // 🔥 3. BOTÓN GUARDAR LOCAL (Acción explícita del usuario)
   const handleSaveLocal = () => {
       localStorage.setItem('NOAR_TERMINAL_CONFIG', JSON.stringify(localConfig));
       alert(`✅ ¡Configuración guardada en ESTE equipo!\n\nCaja QR: ${localConfig.qrId || 'Ninguna'}\nPoint: ${localConfig.pointId || 'Ninguno'}`);
@@ -250,7 +245,7 @@ export const IntegrationsPage = () => {
     } catch (error) { console.error(error); } finally { setLoading(false); }
   };
 
-  // --- 1. MP: BUSCAR CAJAS QR (Stores) ---
+  // --- 1. MP: BUSCAR CAJAS QR ---
   const handleSearchPos = async () => {
       if (!mpConfig.accessToken) return alert("⚠️ Primero guarda tu Access Token");
       setSearchingPos(true);
@@ -268,13 +263,12 @@ export const IntegrationsPage = () => {
 
           if (data.cajas && data.cajas.length > 0) {
               setPosList(data.cajas);
-              // Si solo hay una y no tengo local configurado, la selecciono por defecto en el estado
               if (data.cajas.length === 1 && !localConfig.qrId) {
                   updateLocalState('qrId', data.cajas[0].external_id);
               }
               alert(`✅ Encontradas ${data.cajas.length} Cajas QR.`);
           } else {
-              alert("⚠️ No se encontraron Sucursales/Cajas en tu cuenta de MP.");
+              alert("⚠️ No se encontraron Sucursales/Cajas.");
           }
       } catch (error) {
           console.error(error);
@@ -284,7 +278,7 @@ export const IntegrationsPage = () => {
       }
   };
 
-  // --- 2. MP: BUSCAR TERMINALES POINT ---
+  // --- 2. MP: BUSCAR TERMINALES POINT (CORREGIDO Y BLINDADO) ---
   const handleFetchPoints = async () => {
     if (!mpConfig.accessToken) return alert("⚠️ Primero guarda tu Access Token");
     setLoadingPoints(true);
@@ -297,12 +291,28 @@ export const IntegrationsPage = () => {
         const data = await res.json();
         
         if (data.devices && data.devices.length > 0) {
-            setPointList(data.devices);
-            // Si solo hay una y no tengo local, auto-seleccionar
-            if (data.devices.length === 1 && !localConfig.pointId) {
-                updateLocalState('pointId', data.devices[0].id);
+            
+            // 🔥 FILTRO SUPREMO: Eliminamos cualquier cosa que sea 'undefined'
+            const cleanList = data.devices.filter(d => 
+                d.id && 
+                d.id !== 'undefined' && 
+                d.id !== 'null' &&
+                String(d.id).trim() !== ''
+            );
+            
+            console.log("✅ Points Limpios:", cleanList);
+            setPointList(cleanList);
+            
+            if (cleanList.length > 0) {
+                // Auto-seleccionar si es el único
+                if (cleanList.length === 1 && !localConfig.pointId) {
+                    updateLocalState('pointId', cleanList[0].id);
+                }
+                alert(`✅ Encontradas ${cleanList.length} Terminales Point.`);
+            } else {
+                alert("⚠️ Se encontraron datos pero no parecen ser terminales válidas.");
             }
-            alert(`✅ Encontradas ${data.devices.length} Terminales Point.`);
+            
         } else {
             alert("⚠️ No se encontraron terminales Point vinculados.");
         }
@@ -314,10 +324,16 @@ export const IntegrationsPage = () => {
     }
   };
 
-  // --- 3. MP: CAMBIAR MODO POINT (OPERACIÓN REMOTA) ---
+  // --- 3. MP: CAMBIAR MODO POINT (FIXED) ---
   const handleChangePointMode = async (targetMode) => {
+    // Check localConfig.pointId
     if (!localConfig.pointId) return alert("⚠️ Selecciona una terminal en 'Configuración de ESTE EQUIPO' primero.");
     
+    // Check if undefined string
+    if (localConfig.pointId === 'undefined' || localConfig.pointId === 'null') {
+        return alert("❌ Error: El ID de la terminal es inválido. Por favor, busca las terminales de nuevo.");
+    }
+
     setConfiguringPoint(true);
     try {
         const res = await fetch(`${API_URL}/configure-mp-point`, {
@@ -325,8 +341,8 @@ export const IntegrationsPage = () => {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ 
                 accessToken: mpConfig.accessToken,
-                terminalId: localConfig.pointId, // Usamos la ID Local seleccionada
-                mode: targetMode // 'PDV' o 'STANDALONE'
+                terminalId: localConfig.pointId, // 🔥 Enviamos el ID sanitizado
+                mode: targetMode 
             })
         });
         
@@ -341,9 +357,8 @@ export const IntegrationsPage = () => {
     }
   };
 
-  // --- 4. AFIP: GENERAR CLAVES ---
+  // --- 4. AFIP ---
   const handleGenerateCSR = async () => {
-    // ... (Lógica AFIP existente se mantiene igual)
     if (!afipConfig.cuit || !afipConfig.razonSocial) return alert("⚠️ Escribe tu CUIT y Nombre arriba primero.");
     setGeneratingCsr(true);
     try {
@@ -376,7 +391,7 @@ export const IntegrationsPage = () => {
         link.download = `pedido_afip_${afipConfig.cuit}.csr`;
         link.click();
 
-        alert("✅ ¡LISTO!\n\n1. La Clave Privada se guardó sola.\n2. Se descargó el archivo .CSR.\n3. Sube ese archivo a la web de AFIP para obtener tu certificado.\n4. ¡NO OLVIDES VINCULAR EL SERVICIO!");
+        alert("✅ ¡LISTO!\n\n1. Clave Privada guardada.\n2. Archivo .CSR descargado.\n3. Súbelo a AFIP.\n4. ¡VINCULA EL SERVICIO!");
     } catch (error) { 
         console.error(error);
         alert("Error generando claves: " + error.message); 
@@ -385,26 +400,18 @@ export const IntegrationsPage = () => {
     }
   };
 
-  // ==============================================================================
-  // 🛑 GUARDADO GLOBAL (Limpia IDs para no afectar a otras cajas)
-  // ==============================================================================
   const handleSaveGlobal = async (e) => {
     e.preventDefault();
     setSaving(true);
     try {
       if (!user?.companyId) throw new Error("No tienes empresa asignada.");
       
-      // 1. CLONAMOS la configuración global
       const cleanMpConfig = { ...mpConfig, updatedAt: new Date().toISOString() };
-      
-      // 2. 🗑️ LIMPIEZA PROFUNDA: Borramos cualquier rastro de ID de caja
       delete cleanMpConfig.externalPosId; 
       delete cleanMpConfig.terminalId;
       delete cleanMpConfig.deviceId; 
 
-      // 3. Guardar en Firestore (Tokens y estado activo)
       await setDoc(doc(db, 'companies', user.companyId, 'config', 'mercadopago'), cleanMpConfig);
-      
       await setDoc(doc(db, 'companies', user.companyId, 'config', 'afip'), { ...afipConfig, updatedAt: new Date().toISOString() }, { merge: true });
       await setDoc(doc(db, 'companies', user.companyId, 'config', 'clover'), { ...cloverConfig, updatedAt: new Date().toISOString() }, { merge: true });
 
@@ -423,7 +430,6 @@ export const IntegrationsPage = () => {
   return (
     <div className="max-w-5xl mx-auto space-y-8 pb-24 px-4 md:px-0">
       
-      {/* HEADER */}
       <header className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
             <h2 className="text-2xl font-bold text-sys-900 flex items-center gap-2"><Plug className="text-brand" /> Configuración de Pagos</h2>
@@ -434,7 +440,6 @@ export const IntegrationsPage = () => {
         </div>
       </header>
 
-      {/* FORMULARIO GLOBAL */}
       <form onSubmit={handleSaveGlobal} className="grid grid-cols-1 lg:grid-cols-2 gap-8">
         
         {/* === MERCADO PAGO === */}
@@ -457,7 +462,6 @@ export const IntegrationsPage = () => {
 
              {mpConfig.isActive && (
                  <div className="space-y-4 animate-in slide-in-from-top-2 fade-in duration-300">
-                    {/* CREDENCIALES GLOBALES */}
                     <div className="p-4 bg-blue-50/50 rounded-xl border border-blue-100 mb-6">
                         <SecretInput label="Access Token (Producción)" placeholder="APP_USR-..." value={mpConfig.accessToken} onChange={(val) => setMpConfig({...mpConfig, accessToken: val})} />
                         <div className="flex justify-between items-center mt-2">
@@ -465,9 +469,7 @@ export const IntegrationsPage = () => {
                         </div>
                     </div>
 
-                    {/* ======================================================= */}
-                    {/* 🖥️ VINCULACIÓN LOCAL DE EQUIPO (LOCALSTORAGE)           */}
-                    {/* ======================================================= */}
+                    {/* CONFIGURACIÓN LOCAL */}
                     <div className="border-t border-dashed border-sys-200 pt-4 bg-gray-50/50 -mx-6 px-6 pb-4">
                         <div className="flex items-center justify-between mb-3">
                             <div className="flex items-center gap-2">
@@ -478,25 +480,12 @@ export const IntegrationsPage = () => {
                         </div>
 
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-                            
-                            {/* CAJA QR LOCAL */}
                             <div>
                                 <label className="text-[10px] font-bold text-sys-500 uppercase block mb-1">Caja QR (Pantalla)</label>
                                 <div className="flex gap-1">
-                                    <select 
-                                        className="w-full input-std text-xs h-[38px]"
-                                        value={localConfig.qrId || ''}
-                                        onChange={(e) => updateLocalState('qrId', e.target.value)}
-                                    >
+                                    <select className="w-full input-std text-xs h-[38px]" value={localConfig.qrId || ''} onChange={(e) => updateLocalState('qrId', e.target.value)}>
                                         <option value="">-- Sin asignar --</option>
-                                        {posList.map(pos => {
-                                            const validValue = pos.external_id || pos.id.toString();
-                                            return (
-                                                <option key={pos.id} value={validValue}>
-                                                    {pos.name} ({validValue})
-                                                </option>
-                                            );
-                                        })}
+                                        {posList.map(pos => <option key={pos.id} value={pos.external_id || pos.id}>{pos.name}</option>)}
                                     </select>
                                     <Button type="button" onClick={handleSearchPos} disabled={searchingPos} className="h-[38px] w-[38px] p-0 flex items-center justify-center bg-white border border-sys-200 text-sys-600 hover:text-[#009EE3]">
                                         {searchingPos ? <Loader2 className="animate-spin" size={14}/> : <Search size={14}/>}
@@ -504,7 +493,7 @@ export const IntegrationsPage = () => {
                                 </div>
                             </div>
 
-                            {/* TERMINAL POINT LOCAL */}
+                            {/* SELECTOR POINT */}
                             <div>
                                 <label className="text-[10px] font-bold text-sys-500 uppercase block mb-1">Terminal Point</label>
                                 <div className="flex gap-1">
@@ -515,7 +504,7 @@ export const IntegrationsPage = () => {
                                     >
                                         <option value="">-- Sin asignar --</option>
                                         {pointList.map(dev => (
-                                            <option key={dev.id} value={dev.id}>{dev.name}</option>
+                                            <option key={dev.id} value={dev.id}>{dev.name} ({dev.id})</option>
                                         ))}
                                     </select>
                                     <Button type="button" onClick={handleFetchPoints} disabled={loadingPoints} className="h-[38px] w-[38px] p-0 flex items-center justify-center bg-white border border-sys-200 text-sys-600 hover:text-[#009EE3]">
@@ -523,22 +512,13 @@ export const IntegrationsPage = () => {
                                     </Button>
                                 </div>
                             </div>
-
                         </div>
 
-                        {/* 🔥 BOTÓN PARA GUARDAR LOCALMENTE 🔥 */}
-                        <Button 
-                            type="button" 
-                            onClick={handleSaveLocal} 
-                            className="w-full bg-sys-800 hover:bg-black text-white text-xs h-9 shadow-sm flex items-center justify-center gap-2 transition-all active:scale-[0.98]"
-                        >
+                        <Button type="button" onClick={handleSaveLocal} className="w-full bg-sys-800 hover:bg-black text-white text-xs h-9 shadow-sm flex items-center justify-center gap-2 transition-all active:scale-[0.98]">
                             <HardDrive size={14} /> Guardar Configuración de ESTE EQUIPO
                         </Button>
                     </div>
 
-                    {/* ======================================================= */}
-                    {/* 📱 ACCIONES DE POINT (VINCULACIÓN REMOTA)               */}
-                    {/* ======================================================= */}
                     {localConfig.pointId && (
                         <div className="mt-4 pt-4 border-t border-dashed border-sys-200">
                              <div className="flex items-center gap-2 mb-2">
@@ -546,26 +526,15 @@ export const IntegrationsPage = () => {
                                 <span className="text-xs font-bold text-sys-700">Acciones sobre Point: {localConfig.pointId}</span>
                              </div>
                              <div className="flex gap-2">
-                                <Button 
-                                    type="button" 
-                                    onClick={() => handleChangePointMode('PDV')}
-                                    disabled={configuringPoint}
-                                    className="flex-1 h-[36px] bg-sys-900 hover:bg-black text-white text-[10px] font-bold shadow-md"
-                                >
+                                <Button type="button" onClick={() => handleChangePointMode('PDV')} disabled={configuringPoint} className="flex-1 h-[36px] bg-sys-900 hover:bg-black text-white text-[10px] font-bold shadow-md">
                                     {configuringPoint ? <Loader2 className="animate-spin" size={14}/> : <><Plug size={14} className="mr-1.5"/> ACTIVAR INTEGRACIÓN</>}
                                 </Button>
-                                <Button 
-                                    type="button" 
-                                    onClick={() => handleChangePointMode('STANDALONE')}
-                                    disabled={configuringPoint}
-                                    className="flex-1 h-[36px] bg-white text-sys-600 border border-sys-200 hover:bg-red-50 hover:text-red-600 text-[10px] font-bold"
-                                >
+                                <Button type="button" onClick={() => handleChangePointMode('STANDALONE')} disabled={configuringPoint} className="flex-1 h-[36px] bg-white text-sys-600 border border-sys-200 hover:bg-red-50 hover:text-red-600 text-[10px] font-bold">
                                     DESVINCULAR
                                 </Button>
                              </div>
                         </div>
                     )}
-
                  </div>
              )}
         </Card>
@@ -669,7 +638,6 @@ export const IntegrationsPage = () => {
       </form>
       <TutorialModal isOpen={!!tutorialOpen} onClose={() => setTutorialOpen(null)} type={tutorialOpen} />
       
-      {/* Estilos locales */}
       <style>{`
         .input-std { width: 100%; background: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 0.75rem; padding: 0.6rem 0.9rem; font-size: 0.875rem; outline: none; transition: all 0.2s; color: #1E293B; font-weight: 500; }
         .input-std:focus { border-color: #0F172A; box-shadow: 0 0 0 3px rgba(15,23,42,0.05); background: white; }

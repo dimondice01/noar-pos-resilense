@@ -73,108 +73,130 @@ async function getCompanyConfig(companyId, type) {
 }
 
 // ==================================================================
-// 1. ENDPOINT: OBTENER TERMINALES (USANDO LA API QUE SÍ TE FUNCIONA)
+// 1. ENDPOINT: OBTENER TERMINALES (MODO DEBUG TOTAL)
 // ==================================================================
 app.post('/get-mp-terminals', async (req, res) => {
     try {
         const { accessToken } = req.body;
 
-        if (!accessToken) {
-            return res.status(400).json({ error: "Falta el Access Token" });
-        }
+        if (!accessToken) return res.status(400).json({ error: "Falta el Access Token" });
 
-        console.log("🔍 Buscando en API Legacy (la que funciona)...");
+        console.log("🔍 MODO DEBUG: Buscando cualquier cosa que parezca un Point...");
 
-        // 1. Usamos la API Legacy que confirmaste que SÍ trae datos
-        const response = await fetch('https://api.mercadopago.com/point/integration-api/devices', {
-            method: 'GET',
-            headers: { 
-                'Authorization': `Bearer ${accessToken}`,
-                'Content-Type': 'application/json'
+        const strategies = [
+            fetch('https://api.mercadopago.com/point/integration-api/devices', {
+                method: 'GET',
+                headers: { 'Authorization': `Bearer ${accessToken}` }
+            }).then(r => r.json().then(data => ({ source: 'legacy', data }))),
+
+            fetch('https://api.mercadopago.com/pos', {
+                method: 'GET',
+                headers: { 'Authorization': `Bearer ${accessToken}` }
+            }).then(r => r.json().then(data => ({ source: 'new', data })))
+        ];
+
+        const results = await Promise.allSettled(strategies);
+        const uniqueMap = new Map();
+
+        results.forEach(result => {
+            if (result.status === 'fulfilled') {
+                const { source, data } = result.value;
+                
+                // --- A. PROCESAR LEGACY (Aquí estaba tu terminal) ---
+                if (source === 'legacy' && Array.isArray(data.devices)) {
+                    console.log(`📦 Legacy encontró: ${data.devices.length} items`);
+                    
+                    data.devices.forEach((d, index) => {
+                        // 🔥 LOG DE ORO: Ver qué tiene adentro este objeto
+                        console.log(`🔎 Item Legacy #${index}:`, JSON.stringify(d));
+
+                        // Intentamos pescar el ID de donde sea
+                        const rawId = d.device_id || d.id || d.serial_number || d.uuid;
+                        
+                        // Si aun así es nulo, generamos uno falso para que LO VEAS en pantalla
+                        const finalId = rawId ? String(rawId) : `UNKNOWN_ID_${index}`;
+
+                        uniqueMap.set(finalId, {
+                            id: finalId,
+                            name: d.name || `Point Detectado (${d.model || '?'})`,
+                            model: d.model || 'Legacy Device',
+                            // Guardamos todo el objeto original para inspección
+                            original_data: d 
+                        });
+                    });
+                } 
+                
+                // --- B. PROCESAR NUEVA API ---
+                else if (source === 'new' && Array.isArray(data.results)) {
+                    data.results.forEach(pos => {
+                        // Filtro suave: Si tiene 'category' o 'point' en el nombre
+                        const isHardware = pos.category === 'mpos' || pos.category === 'point' || (pos.name && pos.name.toLowerCase().includes('point'));
+                        
+                        if (isHardware) {
+                            const rawId = pos.id || pos.external_id;
+                            const id = String(rawId);
+                            
+                            if (!uniqueMap.has(id)) {
+                                uniqueMap.set(id, {
+                                    id: id,
+                                    name: pos.name,
+                                    model: 'Smart POS (Nube)',
+                                    original_data: pos
+                                });
+                            }
+                        }
+                    });
+                }
             }
         });
-        
-        const data = await response.json();
-        
-        if (!response.ok) {
-            console.error("Error MP Devices:", data);
-            return res.status(400).json({ error: "Error obteniendo terminales", details: data });
-        }
 
-        // 2. PROCESAMIENTO INTELIGENTE (Para evitar Error 400 al configurar)
-        const validDevices = (data.devices || []).map(d => {
-            // A veces device_id viene nulo, usamos el serial como respaldo
-            const rawId = d.device_id || d.serial_number;
-            
-            // Si no hay ningún identificador, saltamos (esto evita el crash)
-            if (!rawId) return null; 
+        // NO NORMALIZAMOS IDS AÚN PARA VER QUÉ LLEGA REALMENTE
+        const validDevices = Array.from(uniqueMap.values());
 
-            // Convertimos a string para asegurar
-            let finalId = String(rawId);
-            
-            // 🔥 ARREGLO DE ID: Si es corto, le agregamos el prefijo 'NEWLAND_N950__'
-            if (!finalId.includes('__')) {
-                const model = (d.model || "").toUpperCase();
-                let prefix = "NEWLAND_N950"; // Default más común
-                
-                if (model.includes("A910")) prefix = "PAX_A910";
-                
-                // Usamos el serial number preferentemente para el ID
-                const suffix = d.serial_number || finalId;
-                finalId = `${prefix}__${suffix}`;
-            }
-
-            return {
-                id: finalId, // Este ID ya va arreglado (NEWLAND_N950__xxxx)
-                name: d.name || `Point ${d.model || ''}`,
-                model: d.model
-            };
-        }).filter(item => item !== null); // Eliminamos los nulos
-
-        console.log(`✅ Encontradas: ${validDevices.length}`);
+        console.log(`✅ Devolviendo ${validDevices.length} dispositivos brutos.`);
         return res.json({ devices: validDevices });
 
     } catch (error) {
         console.error("Server Error:", error);
-        return res.status(500).json({ error: "Error interno del servidor" });
+        return res.status(500).json({ error: "Error interno" });
     }
 });
-
 // ==================================================================
-// 2. ENDPOINT: CONFIGURAR (CON REFUDERZO MANUAL)
+// 2. ENDPOINT: CONFIGURAR POINT (CAMBIO DE MODO)
 // ==================================================================
 app.post('/configure-mp-point', async (req, res) => {
     try {
-        const { accessToken, terminalId, mode } = req.body;
+        // Normalizamos nombres de variables para aceptar lo que manda el frontend
+        const { accessToken, deviceId, terminalId, mode } = req.body;
+        
+        // Aceptamos deviceId O terminalId (para robustez)
+        let targetId = deviceId || terminalId;
 
-        if (!accessToken || !terminalId) {
+        if (!accessToken || !targetId) {
             return res.status(400).json({ error: "Faltan datos (Token o ID)" });
         }
 
-        // 🔥 DOBLE SEGURIDAD: Si el usuario mandó un ID manual corto, lo arreglamos aquí también
-        let cleanId = terminalId.trim();
-        if (!cleanId.includes('__')) {
-            console.log(`⚠️ ID corto recibido: ${cleanId}. Agregando prefijo N950...`);
-            cleanId = `NEWLAND_N950__${cleanId}`;
+        // 🔥 LIMPIEZA DE ID: Aseguramos formato correcto si viene sucio
+        targetId = targetId.trim();
+        if (!targetId.includes('__')) {
+            console.log(`⚠️ ID corto recibido: ${targetId}. Agregando prefijo N950...`);
+            targetId = `NEWLAND_N950__${targetId}`;
         }
 
-        const targetMode = mode === 'PDV' ? "PDV | STANDALONE" : "STANDALONE";
+        // 🔥 VALOR EXACTO: La API solo acepta "PDV" o "STANDALONE"
+        const targetMode = (mode === 'PDV' || mode === 'POINT') ? "PDV" : "STANDALONE";
 
-        console.log(`⚙️ Enviando a MP: ${cleanId} -> ${targetMode}`);
+        console.log(`⚙️ Configurando Point: ${targetId} -> ${targetMode}`);
 
-        const response = await fetch('https://api.mercadopago.com/terminals/v1/setup', {
+        // 🔥 ENDPOINT CORRECTO: Usamos la API de Integración de Dispositivos (PATCH)
+        const response = await fetch(`https://api.mercadopago.com/point/integration-api/devices/${targetId}`, {
             method: 'PATCH',
             headers: {
                 'Content-Type': 'application/json',
                 'Authorization': `Bearer ${accessToken}`
             },
             body: JSON.stringify({
-                terminals: [
-                    {
-                        id: cleanId,
-                        operating_mode: targetMode
-                    }
-                ]
+                operating_mode: targetMode
             })
         });
 
@@ -183,12 +205,13 @@ app.post('/configure-mp-point', async (req, res) => {
         if (!response.ok) {
             console.error("Error MP Setup:", JSON.stringify(data));
             return res.status(400).json({ 
-                error: "Fallo al configurar", 
+                error: "Fallo al configurar en Mercado Pago", 
                 details: data,
-                sent_id: cleanId
+                sent_id: targetId
             });
         }
 
+        console.log("✅ Point Configurado Exitosamente:", data);
         return res.json({ success: true, data });
 
     } catch (error) {
@@ -196,7 +219,6 @@ app.post('/configure-mp-point', async (req, res) => {
         return res.status(500).json({ error: "Error interno del servidor" });
     }
 });
-
 // ==================================================================
 // 🛡️ ENDPOINT: GESTIÓN DE USUARIOS (SaaS AWARE)
 // ==================================================================
