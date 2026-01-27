@@ -4,7 +4,7 @@ import {
     Wallet, ArrowRight, RefreshCw, DollarSign,
     Lock, Unlock, Monitor, FileText, CheckCircle2, History, X, 
     ShoppingBag, Banknote, Shield, Key, BarChart3, TrendingDown,
-    Activity, Signal, Settings 
+    Activity, Signal, Settings, LayoutGrid
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
@@ -25,6 +25,9 @@ import { Button } from '../../../core/ui/Button';
 import { cn } from '../../../core/utils/cn';
 import { TicketZModal } from '../../reports/components/TicketZModal'; 
 
+// Componentes Nuevos (Multi-Sucursal)
+import { BranchSelector } from '../components/BranchSelector';
+
 // Modales Operativos
 import { ExpenseModal } from '../../cash/components/ExpenseModal';
 import { WithdrawalModal } from '../../cash/components/WithdrawalModal'; 
@@ -32,6 +35,7 @@ import { WithdrawalModal } from '../../cash/components/WithdrawalModal';
 // Firestore
 import { collection, query, where, getDocs } from 'firebase/firestore';
 import { db as firestoreDB } from '../../../database/firebase';
+import { db as localDb } from '../../../database/db'; // 🔥 Necesario para verificar Legacy
 
 // =================================================================
 // 🧠 HELPER: LECTURA INTELIGENTE DE VALORES (IMPORTADO DE CASHPAGE)
@@ -551,7 +555,7 @@ const CajeroDashboardView = ({ metrics, money, handleOpenShift, handleCloseShift
 
 const AdminDashboardView = ({ 
     metrics, money, navigate, loadIntelligence, handleUpdatePin, allShifts, cloudLoading,
-    handleOpenShift, handleCloseShift, onExpenseClick, onWithdrawalClick, resolveName 
+    handleOpenShift, handleCloseShift, onExpenseClick, onWithdrawalClick, resolveName, activeBranchName 
 }) => (
     <div className="space-y-6 pb-20 animate-in fade-in">
         
@@ -599,22 +603,13 @@ const AdminDashboardView = ({
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <Card className="p-5 flex items-center justify-between border-l-4 border-l-indigo-500 shadow-sm bg-white">
-                <div>
-                    <p className="text-[10px] font-bold uppercase text-slate-400 mb-1">Ticket Promedio</p>
-                    <h3 className="text-xl font-bold text-slate-900">$ {money(metrics.averageTicket)}</h3>
-                    <p className="text-[9px] text-slate-400">Gasto medio</p>
-                </div>
+                <div><p className="text-[10px] font-bold uppercase text-slate-400 mb-1">Ticket Promedio</p><h3 className="text-xl font-bold text-slate-900">$ {money(metrics.averageTicket)}</h3><p className="text-[9px] text-slate-400">Gasto medio</p></div>
                 <div className="p-3 bg-indigo-50 rounded-full text-indigo-600"><TrendingUp size={20} /></div>
             </Card>
-
             <Card className="col-span-1 md:col-span-2 p-0 overflow-hidden border border-slate-200 shadow-sm bg-white">
-                <div className="p-3 bg-white border-b border-slate-100 flex justify-between items-center">
-                    <h4 className="font-bold text-xs text-slate-800 flex items-center gap-2">
-                        <Package size={14} className="text-brand"/> Top 5 Más Vendidos (Hoy)
-                    </h4>
-                </div>
+                <div className="p-3 bg-white border-b border-slate-100 flex justify-between items-center"><h4 className="font-bold text-xs text-slate-800 flex items-center gap-2"><Package size={14} className="text-brand"/> Top 5 Más Vendidos (Hoy)</h4></div>
                 <div className="p-3">
-                    {metrics.topProducts && metrics.topProducts.length > 0 ? (
+                    {metrics.topProducts?.length > 0 ? (
                         <div className="flex gap-3 overflow-x-auto pb-2 no-scrollbar">
                             {metrics.topProducts.map((p, idx) => (
                                 <div key={idx} className="flex-none w-32 bg-slate-50 border border-slate-100 p-2.5 rounded-xl text-center">
@@ -624,9 +619,7 @@ const AdminDashboardView = ({
                                 </div>
                             ))}
                         </div>
-                    ) : (
-                        <p className="text-[10px] text-slate-400 text-center py-2">Sin datos de productos aún.</p>
-                    )}
+                    ) : <p className="text-[10px] text-slate-400 text-center py-2">Sin datos de productos.</p>}
                 </div>
             </Card>
         </div>
@@ -647,58 +640,35 @@ const AdminDashboardView = ({
                  />
                  
                  <Card className="p-0 overflow-hidden shadow-sm border border-slate-200 bg-white">
-                    <div className="p-3 border-b border-slate-100 bg-white flex justify-between items-center">
-                         <h3 className="font-bold text-xs text-slate-800 flex items-center gap-2"><Activity size={14}/> Actividad Reciente</h3>
-                    </div>
+                    <div className="p-3 border-b border-slate-100 bg-white flex justify-between items-center"><h3 className="font-bold text-xs text-slate-800 flex items-center gap-2"><Activity size={14}/> Actividad Reciente</h3></div>
                     <div className="divide-y divide-slate-50 max-h-[250px] overflow-y-auto custom-scrollbar">
-                        {metrics.recentSales && metrics.recentSales.length > 0 ? (
-                            metrics.recentSales.map((sale) => (
-                                <div key={sale.id} className="p-3 hover:bg-slate-50 transition-colors flex items-center justify-between text-xs">
-                                    <div className="flex items-center gap-3">
-                                        <div className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-slate-500 border border-slate-200"><ShoppingBag size={14} /></div>
-                                        <div>
-                                            <p className="font-bold text-slate-800">#{sale.id.slice(-4)}</p>
-                                            <p className="text-[9px] text-slate-400">{sale.time} hs • {sale.items} un.</p>
-                                        </div>
-                                    </div>
-                                    <div className="text-right">
-                                        <p className="font-bold text-slate-900">$ {money(sale.total)}</p>
-                                        <span className="text-[9px] uppercase font-bold text-slate-400 tracking-wide">{(sale.method || '').toUpperCase() === 'CASH' ? 'EFVO' : 'DIGITAL'}</span>
-                                    </div>
+                        {metrics.recentSales?.length > 0 ? metrics.recentSales.map((sale) => (
+                            <div key={sale.id} className="p-3 hover:bg-slate-50 transition-colors flex items-center justify-between text-xs">
+                                <div className="flex items-center gap-3">
+                                    <div className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-slate-500 border border-slate-200"><ShoppingBag size={14} /></div>
+                                    <div><p className="font-bold text-slate-800">#{sale.id.slice(-4)}</p><p className="text-[9px] text-slate-400">{sale.time} hs • {sale.items} un.</p></div>
                                 </div>
-                            ))
-                        ) : (
-                            <div className="p-6 text-center text-slate-400 text-[10px] italic">Sin ventas recientes hoy</div>
-                        )}
+                                <div className="text-right"><p className="font-bold text-slate-900">$ {money(sale.total)}</p><span className="text-[9px] uppercase font-bold text-slate-400 tracking-wide">{(sale.method || '').toUpperCase() === 'CASH' ? 'EFVO' : 'DIGITAL'}</span></div>
+                            </div>
+                        )) : <div className="p-6 text-center text-slate-400 text-[10px] italic">Sin ventas recientes hoy</div>}
                     </div>
                  </Card>
             </div>
-
             <div className="space-y-6">
                 <MyShiftCard metrics={metrics} money={money} handleOpenShift={handleOpenShift} />
-
                 <div className="grid grid-cols-2 gap-4">
                     <Card className="p-4 border-l-4 border-l-amber-500 cursor-pointer hover:shadow-md transition-all flex flex-col justify-between shadow-sm bg-white" onClick={() => navigate('clients')}>
                         <p className="text-[10px] text-slate-400 uppercase font-bold mb-1">Créditos</p>
-                        <div className="flex justify-between items-end">
-                             <p className="text-sm font-black text-slate-800">$ {money(metrics.totalDebt)}</p>
-                             <Users className="text-amber-500 opacity-20" size={20}/>
-                        </div>
+                        <div className="flex justify-between items-end"><p className="text-sm font-black text-slate-800">$ {money(metrics.totalDebt)}</p><Users className="text-amber-500 opacity-20" size={20}/></div>
                     </Card>
-
                     <Card className="p-4 border-l-4 border-l-violet-500 cursor-pointer hover:shadow-md transition-all flex flex-col justify-between shadow-sm bg-white" onClick={() => navigate('inventory')}>
                          <p className="text-[10px] text-slate-400 uppercase font-bold mb-1">Stock Bajo</p>
-                         <div className="flex justify-between items-end">
-                             <p className="text-sm font-black text-slate-800">{metrics.lowStockCount}</p>
-                             <Package className="text-violet-500 opacity-20" size={20}/>
-                        </div>
+                         <div className="flex justify-between items-end"><p className="text-sm font-black text-slate-800">{metrics.lowStockCount}</p><Package className="text-violet-500 opacity-20" size={20}/></div>
                     </Card>
                 </div>
-                
                 <AdminSecurityPanel onUpdatePin={handleUpdatePin} />
             </div>
         </div>
-        
         <QuickActionsPanel navigate={navigate} isAdmin={true} onExpenseClick={onExpenseClick} onWithdrawalClick={onWithdrawalClick} />
     </div>
 );
@@ -708,9 +678,11 @@ const AdminDashboardView = ({
 // =================================================================
 export const DashboardPage = () => {
     const navigate = useNavigate();
-    const { user } = useAuthStore(); 
+    const { user, activeBranchId, activeBranchName } = useAuthStore(); 
     
     const [loading, setLoading] = useState(true);
+    const [branchCount, setBranchCount] = useState(0); // 🔥 Estado para detectar Legacy
+    
     const [metrics, setMetrics] = useState({ 
         todaySales: 0, cashInHand: 0, digitalSales: 0, totalExpenses: 0, 
         fiscalCount: 0, salesByMethod: { cash: 0, digital: 0 },
@@ -723,23 +695,31 @@ export const DashboardPage = () => {
     const [isWithdrawalModalOpen, setIsWithdrawalModalOpen] = useState(false); 
     const [cashiersList, setCashiersList] = useState([]); 
     
-    const isAdmin = user?.role?.toUpperCase() === 'ADMIN';
-    const cloudStats = useCloudDashboard();
+    const isAdmin = user?.role?.toUpperCase() === 'ADMIN' || user?.role === 'OWNER';
+    const cloudStats = useCloudDashboard(activeBranchId);
 
     if (!user) return <div className="p-10 text-center text-slate-500">Error: Usuario no autenticado.</div>;
     const money = (val) => val ? val.toLocaleString('es-AR', {minimumFractionDigits: 2}) : '0.00';
+
+    // 🔥 Detección de Legacy (0 sucursales) o Single-Branch
+    useEffect(() => {
+        if (isAdmin && user?.companyId) {
+            localDb.branches.count().then(count => {
+                console.log("🏢 Sucursales detectadas:", count);
+                setBranchCount(count);
+                // Si es Legacy (0) o Single (1), forzar carga inmediata sin esperar selección
+                if (count <= 1) setLoading(false); 
+            });
+        }
+    }, [isAdmin, user?.companyId]);
 
     useEffect(() => {
         if (user?.companyId && isAdmin) {
             const fetchCashiers = async () => {
                 try {
-                    const q = query(
-                        collection(firestoreDB, 'users'), 
-                        where('companyId', '==', user.companyId)
-                    );
+                    const q = query(collection(firestoreDB, 'users'), where('companyId', '==', user.companyId));
                     const snapshot = await getDocs(q);
-                    const users = snapshot.docs.map(doc => ({ uid: doc.id, ...doc.data() }));
-                    setCashiersList(users);
+                    setCashiersList(snapshot.docs.map(doc => ({ uid: doc.id, ...doc.data() })));
                 } catch (error) { console.error("Error cargando usuarios:", error); }
             };
             fetchCashiers();
@@ -749,14 +729,18 @@ export const DashboardPage = () => {
     const resolveCashierName = (shiftUserId, shiftUserName) => {
         const matchedUser = cashiersList.find(u => u.uid === shiftUserId || u.email === shiftUserId);
         if (matchedUser) return matchedUser.name || matchedUser.email.split('@')[0];
-        if (shiftUserName && shiftUserName !== 'Cajero') return shiftUserName;
-        if (typeof shiftUserId === 'string' && shiftUserId.includes('@')) return shiftUserId.split('@')[0];
-        return "Cajero";
+        return shiftUserName !== 'Cajero' ? shiftUserName : "Cajero";
     };
 
-    useEffect(() => { if (user) loadIntelligence(); }, [user.name, user.role]);
+    useEffect(() => { if (user) loadIntelligence(); }, [user.name, user.role, activeBranchId, branchCount]);
 
     const loadIntelligence = async () => {
+        // 🔥 BLOQUEO DE SEGURIDAD PARA MULTI-SUCURSAL REAL
+        // Solo bloqueamos la carga si: Es Admin + Tiene >1 Sucursal + No ha seleccionado ninguna.
+        if (isAdmin && branchCount > 1 && !activeBranchId) {
+            return; 
+        }
+
         setLoading(true);
         let products = [], allShifts = [], allSales = [];
 
@@ -886,10 +870,42 @@ export const DashboardPage = () => {
         alert("✅ PIN Maestro actualizado correctamente.");
     };
     
-    if (loading && !finalMetrics.allShifts.length) return <div className="p-10 text-center animate-pulse text-slate-400">Cargando sistema...</div>;
+    // 🛑 LOADING STATE (Bloqueo SOLO si es multi-sucursal y no ha elegido)
+    if (isAdmin && branchCount > 1 && !activeBranchId) {
+        return (
+            <div className="w-full h-[80vh] flex flex-col items-center justify-center animate-in fade-in duration-500">
+                <div className="relative">
+                    <div className="w-16 h-16 border-4 border-slate-100 border-t-brand rounded-full animate-spin"></div>
+                    <div className="absolute inset-0 flex items-center justify-center text-brand"><LayoutGrid size={24}/></div>
+                </div>
+                <h2 className="mt-6 text-xl font-bold text-slate-800">Cargando Entorno...</h2>
+                <p className="text-slate-400 text-sm mt-2">Sincronizando sucursales y métricas.</p>
+                <div className="mt-8 opacity-0 animate-[fade-in_1s_ease-out_1s_forwards]">
+                    {/* Fallback si tarda mucho: mostrar selector */}
+                    <BranchSelector /> 
+                </div>
+            </div>
+        );
+    }
+
+    if (loading && !finalMetrics.allShifts.length && branchCount > 1) return <div className="p-10 text-center animate-pulse text-slate-400">Cargando sistema...</div>;
 
     return (
-        <div className="w-full">
+        <div className="w-full space-y-8 pb-20 max-w-7xl mx-auto">
+            {/* HEADER */}
+            <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-6">
+                <div>
+                    <h1 className="text-3xl font-black text-slate-900 tracking-tight flex items-center gap-3">
+                        Hola, {user?.name?.split(' ')[0] || 'Admin'} <span className="text-2xl">👋</span>
+                    </h1>
+                    <p className="text-slate-500 font-medium text-sm mt-1">Resumen operativo en tiempo real.</p>
+                </div>
+                
+                {/* 🔥 SELECTOR SIEMPRE VISIBLE PARA ADMINS (Que el selector maneje si está vacío o no) */}
+                {isAdmin && <BranchSelector />}
+            </div>
+
+            {/* CONTENIDO */}
             {isAdmin ? (
                 <AdminDashboardView 
                     metrics={finalMetrics} 
@@ -904,6 +920,7 @@ export const DashboardPage = () => {
                     onExpenseClick={() => setIsExpenseModalOpen(true)}
                     onWithdrawalClick={() => setIsWithdrawalModalOpen(true)}
                     resolveName={resolveCashierName} 
+                    activeBranchName={activeBranchName}
                 />
             ) : (
                 <CajeroDashboardView 

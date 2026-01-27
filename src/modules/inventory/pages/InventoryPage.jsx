@@ -2,7 +2,8 @@ import React, { useEffect, useState, useRef } from 'react';
 import { 
     Plus, Search, Edit2, Trash2, Package, Scale, AlertTriangle, 
     ArrowUpRight, Filter, CheckSquare, Square, X, History,
-    Printer, ArrowRightLeft, Calendar, ChevronLeft, ChevronRight 
+    Printer, ArrowRightLeft, Calendar, ChevronLeft, ChevronRight,
+    Upload // 🔥 Nuevo Icono
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom'; 
 
@@ -14,7 +15,8 @@ import { Card } from '../../../core/ui/Card';
 import { Button } from '../../../core/ui/Button';
 import { ProductModal } from '../components/ProductModal';
 import { MastersModal } from '../components/MastersModal';
-import { ProductHistoryModal } from '../components/ProductHistoryModal'; 
+import { ProductHistoryModal } from '../components/ProductHistoryModal';
+import { ImportMapperModal } from '../components/ImportMapperModal'; // 🔥 IMPORTACIÓN DEL IMPORTADOR
 import { cn } from '../../../core/utils/cn';
 
 // 🔥 HELPER DE FORMATEO
@@ -189,7 +191,7 @@ const BulkUpdateModal = ({ isOpen, onClose, onConfirm, allProducts, masters, man
 // =================================================================
 export const InventoryPage = () => {
   const navigate = useNavigate();
-  const { user } = useAuthStore(); // 🔥 OBTENEMOS EL USUARIO
+  const { user, activeBranchId } = useAuthStore(); // 🔥 OBTENEMOS EL ID DE SUCURSAL ACTIVA
 
   // Estados de Datos
   const [products, setProducts] = useState([]);
@@ -214,6 +216,7 @@ export const InventoryPage = () => {
   const [isProductModalOpen, setIsProductModalOpen] = useState(false);
   const [isMastersModalOpen, setIsMastersModalOpen] = useState(false);
   const [isBulkUpdateOpen, setIsBulkUpdateOpen] = useState(false);
+  const [isImportModalOpen, setIsImportModalOpen] = useState(false); // 🔥 Nuevo Modal
   
   const [editingProduct, setEditingProduct] = useState(null);
   const [historyProduct, setHistoryProduct] = useState(null);
@@ -261,10 +264,10 @@ export const InventoryPage = () => {
 
   // 🔥 FOCUS MANAGEMENT
   useEffect(() => {
-      if (!isProductModalOpen && !isMastersModalOpen && !isBulkUpdateOpen && !historyProduct && !stockEntryProduct) {
+      if (!isProductModalOpen && !isMastersModalOpen && !isBulkUpdateOpen && !historyProduct && !stockEntryProduct && !isImportModalOpen) {
           setTimeout(() => searchInputRef.current?.focus(), 150);
       }
-  }, [isProductModalOpen, isMastersModalOpen, isBulkUpdateOpen, historyProduct, stockEntryProduct]);
+  }, [isProductModalOpen, isMastersModalOpen, isBulkUpdateOpen, historyProduct, stockEntryProduct, isImportModalOpen]);
 
   // 🔥 SCANNER HANDLER
   const handleSearchKeyDown = (e) => {
@@ -333,7 +336,6 @@ export const InventoryPage = () => {
   };
 
   const handleSaveProduct = async (productData) => {
-    // Nota: ProductModal ya maneja el usuario internamente, pero por si acaso
     await productRepository.save(productData); 
     loadData();
   };
@@ -347,8 +349,8 @@ export const InventoryPage = () => {
 
   const handleQuickStockEntry = async (productId, qty, expiryDate) => {
     try {
-        const userName = user?.name || user?.email || 'Usuario'; // 🔥 NOMBRE REAL
-        await productRepository.addStock(productId, qty, expiryDate, userName); // 🔥 PASAMOS EL USUARIO
+        const userName = user?.name || user?.email || 'Usuario';
+        await productRepository.addStock(productId, qty, expiryDate, userName); 
         loadData();
     } catch (e) {
         alert("Error al sumar stock: " + e.message);
@@ -360,13 +362,12 @@ export const InventoryPage = () => {
     if (!window.confirm(`⚠️ CONFIRMACIÓN:\nSe actualizarán ${targetProducts.length} productos.\nCost: +${costPct}% | Precio: +${pricePct}%`)) return;
     setLoading(true);
     try {
-      const userName = user?.name || user?.email || 'Usuario'; // 🔥 NOMBRE REAL
+      const userName = user?.name || user?.email || 'Usuario';
       const updates = targetProducts.map(p => {
           const newCost = p.cost * (1 + costPct / 100);
           let calculatedPrice = p.price * (1 + pricePct / 100);
           const newPrice = Math.ceil(calculatedPrice / 50) * 50; 
           const newMarkup = newCost > 0 ? ((newPrice - newCost) / newCost * 100).toFixed(2) : p.markup;
-          // Inyectamos user en el objeto para que el save lo registre
           return { ...p, cost: newCost, price: newPrice, markup: newMarkup, user: userName }; 
       });
       
@@ -396,23 +397,32 @@ export const InventoryPage = () => {
           </div>
         </div>
         
+        {/* 🔥 BOTONERA PRINCIPAL */}
         <div className="flex flex-wrap gap-2 justify-end">
-            <Button variant="secondary" className="border-purple-200 text-purple-700 bg-purple-50 hover:bg-purple-100 px-3" onClick={() => navigate('print')}>
-                <Printer size={18} className="mr-2" /> Etiquetas
-            </Button>
-            
-            <Button variant="secondary" className="border-blue-200 text-blue-700 bg-blue-50 hover:bg-blue-100 px-3" onClick={() => navigate('movements')}>
-                <ArrowRightLeft size={18} className="mr-2" /> Movimientos
-            </Button>
+            <div className="flex gap-1">
+                <Button variant="secondary" className="border-purple-200 text-purple-700 bg-purple-50 hover:bg-purple-100 px-3" onClick={() => navigate('print')}>
+                    <Printer size={18} className="mr-2" /> Etiquetas
+                </Button>
+                <Button variant="secondary" className="border-blue-200 text-blue-700 bg-blue-50 hover:bg-blue-100 px-3" onClick={() => navigate('movements')}>
+                    <ArrowRightLeft size={18} className="mr-2" /> Movimientos
+                </Button>
+            </div>
             
             <div className="w-[1px] h-8 bg-sys-200 mx-1 hidden md:block"></div>
-            <Button variant="secondary" className="border-brand/20 text-brand bg-brand/5 hover:bg-brand/10" onClick={() => setIsBulkUpdateOpen(true)}>
-                <ArrowUpRight size={18} className="mr-2" /> Aumento Masivo
-            </Button>
-            <Button variant="secondary" onClick={() => setIsMastersModalOpen(true)}>
-                <Filter size={18} className="mr-2" /> Maestros
-            </Button>
-            <Button onClick={() => { setEditingProduct(null); setIsProductModalOpen(true); }} className="shadow-lg shadow-brand/20">
+            
+            <div className="flex gap-1">
+                <Button variant="secondary" className="border-gray-200 text-gray-700 bg-white hover:bg-gray-50 shadow-sm" onClick={() => setIsImportModalOpen(true)}>
+                    <Upload size={18} className="mr-2" /> Importar
+                </Button>
+                <Button variant="secondary" className="border-brand/20 text-brand bg-brand/5 hover:bg-brand/10" onClick={() => setIsBulkUpdateOpen(true)}>
+                    <ArrowUpRight size={18} className="mr-2" /> Aumento Masivo
+                </Button>
+                <Button variant="secondary" onClick={() => setIsMastersModalOpen(true)}>
+                    <Filter size={18} className="mr-2" /> Maestros
+                </Button>
+            </div>
+
+            <Button onClick={() => { setEditingProduct(null); setIsProductModalOpen(true); }} className="shadow-lg shadow-brand/20 ml-2">
                 <Plus size={20} className="mr-2" /> Nuevo
             </Button>
         </div>
@@ -587,6 +597,14 @@ export const InventoryPage = () => {
       <ProductHistoryModal isOpen={!!historyProduct} onClose={() => setHistoryProduct(null)} product={historyProduct} />
       <BulkUpdateModal isOpen={isBulkUpdateOpen} onClose={() => setIsBulkUpdateOpen(false)} onConfirm={executeBulkUpdate} allProducts={products} masters={masters} manualSelectionIds={selectedIds} />
       <StockEntryModal isOpen={!!stockEntryProduct} onClose={() => setStockEntryProduct(null)} product={stockEntryProduct} onConfirm={handleQuickStockEntry} />
+      
+      {/* 🔥 NUEVO MODAL DE IMPORTACIÓN INTELIGENTE (Corregido) */}
+      <ImportMapperModal 
+         isOpen={isImportModalOpen} 
+         onClose={() => setIsImportModalOpen(false)} 
+         branchId={activeBranchId || user?.branchId} // 🔥 CLAVE: Usar la sucursal activa, no solo la del user
+         onSuccess={loadData}     
+      />
 
       <style>{`
         .filter-select { @apply p-2 border border-sys-200 rounded-lg text-sm bg-white min-w-[120px] outline-none focus:border-brand; }

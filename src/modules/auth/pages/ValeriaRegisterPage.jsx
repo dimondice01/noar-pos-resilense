@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { 
     Store, Zap, ArrowRight, CheckCircle2, Loader2, Package, 
     ShoppingBag, Coffee, AlertCircle, Upload, Image as ImageIcon, ShieldCheck,
-    PartyPopper, UserCheck
+    PartyPopper, UserCheck, LayoutGrid
 } from 'lucide-react';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { doc, updateDoc } from 'firebase/firestore';
@@ -17,11 +17,17 @@ import confetti from 'canvas-confetti';
 // 🔥 URL DE TUS CLOUD FUNCTIONS
 const API_URL = import.meta.env.VITE_API_URL || "https://us-central1-salvadorpos1.cloudfunctions.net/api";
 
+// 🏢 PLANES DE NEGOCIO
+const PLAN_OPTIONS = [
+    { id: 'single', name: 'Plan Comercio', icon: Store, desc: '1 Sucursal', max: 1 },
+    { id: 'multi', name: 'Plan Enterprise', icon: LayoutGrid, desc: 'Multi-Sucursal (Hasta 10)', max: 10 },
+];
+
+// 📦 OPCIONES DE CATÁLOGO INICIAL
 const CATALOG_OPTIONS = [
-    { id: 'kiosco', name: 'Maxikiosco', icon: Store, file: '/seeders/catalogo.csv', desc: 'Caramelos, Bebidas, Cigarrillos (~2500 prod)' },
-    { id: 'almacen', name: 'Almacén / Despensa', icon: ShoppingBag, file: '/seeders/catalogo.csv', desc: 'Básicos, Limpieza, Comestibles' },
-    { id: 'cafe', name: 'Cafetería / Bar', icon: Coffee, file: null, desc: 'Cafés, Medialunas (Carga manual)' },
-    { id: 'otro', name: 'Otro / Vacío', icon: Package, file: null, desc: 'Empieza con el inventario en blanco' },
+    { id: 'custom', name: 'Importar Excel Maestro', icon: Upload, file: null, desc: 'Subir archivo con precios y códigos propios' },
+    { id: 'kiosco', name: 'Plantilla Maxikiosco', icon: ShoppingBag, file: '/seeders/catalogo.csv', desc: 'Cargar ~2500 productos base' },
+    { id: 'otro', name: 'Empezar de Cero', icon: Package, file: null, desc: 'Sin productos iniciales' },
 ];
 
 export const ValeriaRegisterPage = () => {
@@ -38,6 +44,8 @@ export const ValeriaRegisterPage = () => {
         password: '',
         confirmPassword: '',
         ownerName: '',
+        planType: 'single', // Por defecto
+        branchesCount: 1,   // Por defecto
         captcha: '' 
     });
 
@@ -50,7 +58,6 @@ export const ValeriaRegisterPage = () => {
     // Desafío matemático simple (Anti-Spam)
     const [mathChallenge] = useState({ 
         q: `${Math.floor(Math.random() * 5) + 1} + ${Math.floor(Math.random() * 5) + 1}`, 
-        a: 0 
     });
     const realAnswer = eval(mathChallenge.q);
 
@@ -83,6 +90,15 @@ export const ValeriaRegisterPage = () => {
         }
     };
 
+    // --- MANEJO DE SELECCIÓN DE PLAN ---
+    const handlePlanSelect = (plan) => {
+        setFormData({
+            ...formData,
+            planType: plan.id,
+            branchesCount: plan.id === 'single' ? 1 : 3 // Si es Multi, sugerimos 3 de entrada
+        });
+    };
+
     // --- PASO 1: CREAR CUENTA ---
     const handleRegister = async (e) => {
         e.preventDefault();
@@ -92,11 +108,14 @@ export const ValeriaRegisterPage = () => {
         if (formData.password !== formData.confirmPassword) return setError("Las contraseñas no coinciden.");
         if (formData.password.length < 6) return setError("La contraseña debe tener al menos 6 caracteres.");
         if (parseInt(formData.captcha) !== realAnswer) return setError("La verificación anti-robot es incorrecta.");
+        if (formData.planType === 'multi' && (formData.branchesCount < 2 || formData.branchesCount > 10)) {
+            return setError("El plan Enterprise requiere entre 2 y 10 sucursales.");
+        }
 
         setLoading(true);
 
         try {
-            // 1. Crear Tenant (Inyectando metadata de vendedor)
+            // 1. Crear Tenant (Inyectando metadata de vendedor y plan)
             const res = await fetch(`${API_URL}/create-tenant`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -105,11 +124,12 @@ export const ValeriaRegisterPage = () => {
                     email: formData.email,
                     password: formData.password,
                     ownerName: formData.ownerName,
-                    // 🔥 Metadata extra para tracking de comisión
+                    // 🔥 Metadata crítica para Multi-Sucursal
                     metadata: {
                         source: 'presencial',
                         representative: 'Valeria Gaitan',
-                        plan: 'FULL' // Asumimos full en venta directa
+                        plan: formData.planType,
+                        initialBranches: formData.branchesCount
                     }
                 })
             });
@@ -142,23 +162,25 @@ export const ValeriaRegisterPage = () => {
         }
     };
 
-    // --- PASO 2: CARGA DE DATOS ---
+    // --- PASO 2: CARGA DE MAESTROS ---
     const handleFinish = async () => {
         if (!selectedOption) return;
         
         try {
+            // Si eligió una plantilla predefinida (ej. Kiosco), la cargamos ahora
+            // Si eligió "Custom Excel" u "Otro", no cargamos nada aquí, se hará en el dashboard
             if (selectedOption.file) {
                 const currentUser = useAuthStore.getState().user;
                 if (!currentUser?.companyId) throw new Error("Error de sesión. Recarga la página.");
                 await seedFromUrl(currentUser.companyId, selectedOption.file);
             }
             
-            // 🔥 ÉXITO: PASAMOS AL PASO 3 (CELEBRACIÓN)
+            // 🔥 ÉXITO: PASAMOS AL PASO 3
             setStep(3);
             triggerCelebration(); 
 
         } catch (err) {
-            setError("Error cargando productos: " + err.message);
+            setError("Error configurando catálogo: " + err.message);
         }
     };
 
@@ -188,13 +210,13 @@ export const ValeriaRegisterPage = () => {
                     </h2>
                     <div className="space-y-4 text-slate-300">
                         <div className="flex items-center gap-3">
-                            <CheckCircle2 className="text-brand" /> <span>Configuración Prioritaria</span>
+                            <CheckCircle2 className="text-brand" /> <span>Multi-Sucursal Nativo</span>
                         </div>
                         <div className="flex items-center gap-3">
-                            <CheckCircle2 className="text-brand" /> <span>Base de Datos Optimizada</span>
+                            <CheckCircle2 className="text-brand" /> <span>Inventario Distribuido</span>
                         </div>
                         <div className="flex items-center gap-3">
-                            <CheckCircle2 className="text-brand" /> <span>Soporte Directo Dedicado</span>
+                            <CheckCircle2 className="text-brand" /> <span>Auditoría en Tiempo Real</span>
                         </div>
                     </div>
                 </div>
@@ -213,8 +235,8 @@ export const ValeriaRegisterPage = () => {
                     {step === 1 && (
                         <div className="animate-in fade-in slide-in-from-right-8 duration-500">
                             <div className="text-center mb-6">
-                                <h2 className="text-3xl font-bold text-sys-900">Alta de Nuevo Cliente</h2>
-                                <p className="text-sys-500 mt-2 font-medium">Ingresa los datos del comercio.</p>
+                                <h2 className="text-3xl font-bold text-sys-900">Configurar Licencia</h2>
+                                <p className="text-sys-500 mt-2 font-medium">Define la estructura del comercio.</p>
                             </div>
 
                             {error && (
@@ -225,19 +247,62 @@ export const ValeriaRegisterPage = () => {
                             )}
 
                             <form onSubmit={handleRegister} className="space-y-4">
+                                
+                                {/* SELECTOR DE PLAN */}
+                                <div className="grid grid-cols-2 gap-4">
+                                    {PLAN_OPTIONS.map((plan) => (
+                                        <div 
+                                            key={plan.id}
+                                            onClick={() => handlePlanSelect(plan)}
+                                            className={cn(
+                                                "p-4 rounded-xl border-2 cursor-pointer transition-all text-center flex flex-col items-center gap-2 hover:shadow-md",
+                                                formData.planType === plan.id ? "border-brand bg-brand/5 ring-1 ring-brand" : "border-sys-200 bg-white"
+                                            )}
+                                        >
+                                            <plan.icon size={24} className={formData.planType === plan.id ? "text-brand" : "text-sys-400"} />
+                                            <div>
+                                                <p className="text-xs font-bold uppercase">{plan.name}</p>
+                                                <p className="text-[10px] text-sys-500">{plan.desc}</p>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+
+                                {/* CONFIGURACIÓN EXTRA PARA MULTI-SUCURSAL */}
+                                {formData.planType === 'multi' && (
+                                    <div className="bg-blue-50 p-4 rounded-xl border border-blue-100 animate-in zoom-in-95 duration-200">
+                                        <div className="flex justify-between items-center mb-2">
+                                            <label className="text-xs font-bold uppercase text-blue-800">Cantidad de Sucursales</label>
+                                            <span className="text-xs font-bold bg-white text-blue-600 px-2 py-0.5 rounded border border-blue-200">
+                                                {formData.branchesCount}
+                                            </span>
+                                        </div>
+                                        <input 
+                                            type="range" 
+                                            min="2" max="10" 
+                                            value={formData.branchesCount}
+                                            onChange={(e) => setFormData({...formData, branchesCount: parseInt(e.target.value)})}
+                                            className="w-full accent-brand h-2 bg-blue-200 rounded-lg appearance-none cursor-pointer"
+                                        />
+                                        <p className="text-[10px] text-blue-500 mt-2 text-center">
+                                            Se crearán {formData.branchesCount} sucursales y 1 depósito central.
+                                        </p>
+                                    </div>
+                                )}
+
                                 {/* LOGO UPLOAD */}
-                                <div className="flex justify-center mb-6">
+                                <div className="flex justify-center my-6">
                                     <div className="relative group cursor-pointer">
                                         <div className={cn(
-                                            "w-24 h-24 rounded-full border-2 border-dashed flex items-center justify-center overflow-hidden transition-all",
+                                            "w-20 h-20 rounded-full border-2 border-dashed flex items-center justify-center overflow-hidden transition-all",
                                             logoPreview ? "border-brand bg-white" : "border-sys-300 bg-sys-50 hover:bg-sys-100"
                                         )}>
                                             {logoPreview ? (
                                                 <img src={logoPreview} alt="Logo" className="w-full h-full object-cover" />
                                             ) : (
                                                 <div className="text-center text-sys-400">
-                                                    <ImageIcon className="mx-auto mb-1" size={20} />
-                                                    <span className="text-[9px] font-bold uppercase">Logo</span>
+                                                    <ImageIcon className="mx-auto mb-1" size={18} />
+                                                    <span className="text-[8px] font-bold uppercase">Logo</span>
                                                 </div>
                                             )}
                                         </div>
@@ -247,28 +312,28 @@ export const ValeriaRegisterPage = () => {
                                             onChange={handleLogoChange}
                                             className="absolute inset-0 opacity-0 cursor-pointer"
                                         />
-                                        <div className="absolute bottom-0 right-0 bg-sys-900 text-white p-1.5 rounded-full shadow-lg">
-                                            <Upload size={12} />
+                                        <div className="absolute bottom-0 right-0 bg-sys-900 text-white p-1 rounded-full shadow-lg">
+                                            <Upload size={10} />
                                         </div>
                                     </div>
                                 </div>
 
-                                {/* CAMPOS */}
+                                {/* CAMPOS BÁSICOS */}
                                 <div>
                                     <label className="text-xs font-bold uppercase text-sys-500 ml-1">Nombre del Negocio</label>
-                                    <input type="text" required className="w-full input-std" placeholder="Ej: Kiosco El Paso"
+                                    <input type="text" required className="w-full input-std" placeholder="Ej: Supermercados del Sur"
                                         value={formData.businessName} onChange={e => setFormData({...formData, businessName: e.target.value})} />
                                 </div>
 
                                 <div className="grid grid-cols-2 gap-4">
                                     <div>
-                                        <label className="text-xs font-bold uppercase text-sys-500 ml-1">Nombre Dueño</label>
-                                        <input type="text" required className="w-full input-std" placeholder="Ej: Juan"
+                                        <label className="text-xs font-bold uppercase text-sys-500 ml-1">Dueño / Titular</label>
+                                        <input type="text" required className="w-full input-std" placeholder="Nombre Completo"
                                             value={formData.ownerName} onChange={e => setFormData({...formData, ownerName: e.target.value})} />
                                     </div>
                                     <div>
-                                        <label className="text-xs font-bold uppercase text-sys-500 ml-1">Email</label>
-                                        <input type="email" required className="w-full input-std" placeholder="juan@email.com"
+                                        <label className="text-xs font-bold uppercase text-sys-500 ml-1">Email Admin</label>
+                                        <input type="email" required className="w-full input-std" placeholder="admin@empresa.com"
                                             value={formData.email} onChange={e => setFormData({...formData, email: e.target.value})} />
                                     </div>
                                 </div>
@@ -303,7 +368,7 @@ export const ValeriaRegisterPage = () => {
                         </div>
                     )}
 
-                    {/* PASO 2: SEEDER */}
+                    {/* PASO 2: CATÁLOGO MAESTRO */}
                     {step === 2 && (
                         <div className="animate-in fade-in slide-in-from-right-8 duration-500">
                             <div className="text-center mb-8">
@@ -311,8 +376,10 @@ export const ValeriaRegisterPage = () => {
                                     <CheckCircle2 size={40} />
                                     {logoPreview && <img src={logoPreview} className="absolute inset-0 w-full h-full object-cover rounded-full opacity-50" alt="" />}
                                 </div>
-                                <h2 className="text-2xl font-bold text-sys-900">Cuenta Creada con Éxito</h2>
-                                <p className="text-sys-500 mt-2">Selecciona la plantilla inicial para <b>{formData.businessName}</b>.</p>
+                                <h2 className="text-2xl font-bold text-sys-900">¡Cuenta Activa!</h2>
+                                <p className="text-sys-500 mt-2 max-w-xs mx-auto">
+                                    Ahora definamos el <b>Catálogo Maestro</b> que compartirán las sucursales.
+                                </p>
                             </div>
 
                             {isSeeding ? (
@@ -321,7 +388,7 @@ export const ValeriaRegisterPage = () => {
                                         <div className="h-full bg-brand animate-[loading_2s_ease-in-out_infinite]"></div>
                                     </div>
                                     <Loader2 className="animate-spin mx-auto text-brand mb-4" size={48} />
-                                    <h3 className="text-lg font-bold text-sys-800">Inicializando Base de Datos...</h3>
+                                    <h3 className="text-lg font-bold text-sys-800">Procesando Catálogo...</h3>
                                     <p className="text-sm text-sys-500 mt-2 font-medium animate-pulse">{loadingMsg}</p>
                                 </div>
                             ) : (
@@ -349,7 +416,7 @@ export const ValeriaRegisterPage = () => {
                                     ))}
 
                                     <Button onClick={handleFinish} disabled={!selectedOption} className="w-full py-4 mt-6 text-base bg-brand hover:bg-brand-dark text-white shadow-xl shadow-brand/20 transition-all hover:-translate-y-1">
-                                        {selectedOption?.file ? "Cargar Catálogo y Finalizar" : "Finalizar Configuración"} <ArrowRight size={18} className="ml-2"/>
+                                        {selectedOption?.file ? "Cargar y Continuar" : "Continuar al Dashboard"} <ArrowRight size={18} className="ml-2"/>
                                     </Button>
                                 </div>
                             )}
@@ -363,9 +430,9 @@ export const ValeriaRegisterPage = () => {
                                 <PartyPopper size={48} />
                             </div>
                             
-                            <h2 className="text-4xl font-black text-sys-900 mb-2">¡Activación Exitosa!</h2>
+                            <h2 className="text-4xl font-black text-sys-900 mb-2">¡Todo Listo!</h2>
                             <p className="text-sys-500 text-lg mb-8 max-w-xs mx-auto">
-                                La licencia para <strong>{formData.businessName}</strong> está activa.
+                                El sistema <strong>{formData.planType === 'multi' ? 'Enterprise' : 'Comercio'}</strong> está operativo.
                             </p>
 
                             <div className="bg-sys-50 p-6 rounded-2xl border border-sys-200 mb-8 text-left space-y-3">
@@ -373,11 +440,11 @@ export const ValeriaRegisterPage = () => {
                                     <CheckCircle2 size={18} className="text-green-500" /> <span>Usuario Admin Configurado</span>
                                 </div>
                                 <div className="flex gap-3 items-center text-sys-700">
-                                    <CheckCircle2 size={18} className="text-green-500" /> <span>Base de Datos Lista</span>
+                                    <CheckCircle2 size={18} className="text-green-500" /> <span>Estructura de Base de Datos Lista</span>
                                 </div>
-                                {selectedOption?.file && (
+                                {formData.planType === 'multi' && (
                                     <div className="flex gap-3 items-center text-sys-700">
-                                        <CheckCircle2 size={18} className="text-green-500" /> <span>Stock Inicial Cargado</span>
+                                        <CheckCircle2 size={18} className="text-green-500" /> <span>{formData.branchesCount} Sucursales Creadas</span>
                                     </div>
                                 )}
                             </div>
@@ -386,7 +453,7 @@ export const ValeriaRegisterPage = () => {
                                 onClick={() => navigate('/')} 
                                 className="w-full h-16 text-xl bg-sys-900 hover:bg-black text-white shadow-2xl shadow-sys-900/30 transition-all hover:scale-105"
                             >
-                                Acceder al Panel <ArrowRight size={24} className="ml-2"/>
+                                Ingresar al Sistema <ArrowRight size={24} className="ml-2"/>
                             </Button>
                         </div>
                     )}

@@ -10,6 +10,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@headlessui/react": "^2.2.9",
+    "@heroicons/react": "^2.2.0",
     "canvas-confetti": "^1.9.4",
     "clsx": "^2.1.1",
     "dexie": "^4.2.1",

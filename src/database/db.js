@@ -1,94 +1,124 @@
 import Dexie from 'dexie';
 
 // =================================================================
-// 🏛️ ARQUITECTURA ENTERPRISE (DEXIE v8)
+// 🏛️ ARQUITECTURA NOAR POS ENTERPRISE (DEXIE v11)
 // =================================================================
 
 export const db = new Dexie('NoarPosDB');
 
-// Definimos el esquema FINAL (v8).
-// Dexie se encarga automáticamente de crear tablas e índices si no existen.
-db.version(8).stores({
-  // 📦 INVENTARIO
-  products: 'id, code, name, categoryId, active, syncStatus, lastUpdated', 
+/**
+ * ESQUEMA DE DATOS v11
+ * - Multi-Tenant: Aislamiento por companyId.
+ * - Multi-Sucursal: Stock y Configuración Fiscal independiente.
+ * - Enterprise: Soporte para intereses, IVA y numeración profesional.
+ */
+db.version(11).stores({
+  // 🏢 ESTRUCTURA CORPORATIVA
+  companies: 'id, name', 
+  
+  // 📍 SUCURSALES (Nodo Fiscal e Integraciones)
+  // Cada sucursal puede tener su propio CUIT y configuración AFIP/MercadoPago
+  branches: 'id, companyId, name, cuit, taxCategory, afipPtoVenta, active', 
+
+  // 📦 CATÁLOGO MAESTRO (Global por Empresa)
+  // El precio y el taxRate (IVA) se definen aquí para consistencia total.
+  // NOTA: El stock ya no vive aquí, se movió a la tabla 'inventory'.
+  products: 'id, companyId, code, name, categoryId, brandId, taxRate, active, syncStatus', 
   categories: 'id, name, syncStatus',
   brands: 'id, name, syncStatus',
 
-  // 💰 VENTAS & CAJA
-  sales: 'localId, firestoreId, shiftId, date, status, [date+status], syncStatus', 
-  shifts: 'id, userId, status, openedAt, syncStatus',
-  cash_movements: '++id, shiftId, type, date, syncStatus',
+  // 🏥 INVENTARIO FÍSICO (Por Sucursal)
+  // La clave compuesta [productId+branchId] asegura un registro único de stock por producto/sucursal
+  inventory: '[productId+branchId], productId, branchId, stock, minStock, location',
+
+  // 💳 FINANZAS & TASAS (Configurables por Sucursal o Empresa)
+  // Permite manejar planes como Naranja (3, 6, 12 cuotas) con diferentes intereses
+  payment_methods: 'id, branchId, type, name, active', 
+  installments_config: '++id, paymentMethodId, installments, interestRate',
+
+  // 💰 VENTAS (Numeración Profesional A, B, C, X)
+  // Se indexa por branchId para cierres de caja y auditorías locales
+  // 'number' guardará el formato legal (ej: 0001-00000045)
+  sales: 'localId, firestoreId, companyId, branchId, userId, type, number, date, status, syncStatus', 
+
+  // 💸 CAJA Y TURNOS OPERATIVOS
+  shifts: 'id, userId, branchId, status, openedAt, syncStatus',
+  cash_movements: '++id, shiftId, branchId, type, amount, date, syncStatus',
 
   // 👥 CRM & TERCEROS
-  clients: 'id, docNumber, name, email, syncStatus',
-  suppliers: 'id, name, docNumber, syncStatus',
+  clients: 'id, companyId, docNumber, name, email, syncStatus',
+  suppliers: 'id, branchId, name, docNumber, syncStatus', // Proveedores pueden ser por sucursal
 
   // 📉 CUENTAS CORRIENTES (LEDGERS)
   customer_ledger: '++id, clientId, date, type, syncStatus',
-  supplier_ledger: '++id, supplierId, date, type, syncStatus', // 🔥 La nueva tabla
+  supplier_ledger: '++id, supplierId, date, type, syncStatus',
 
-  // ⚙️ SISTEMA & KARDEX
+  // 📈 KARDEX & AUDITORÍA DE MOVIMIENTOS
+  // Rastreabilidad total: Qué se movió, quién, dónde y cuándo
+  movements: '++id, productId, branchId, userId, type, date, amount, syncStatus',
+  
+  // ⚙️ SISTEMA & CONFIGURACIÓN
   config: 'key',
-  users: 'email, role',
-  movements: '++id, productId, date, type, syncStatus'
+  // El usuario ahora tiene companyId y branchId para definir qué ve
+  users: 'email, companyId, branchId, role'
 });
 
-// Middlewares: Datos por defecto al crear la DB
+// Middlewares: Inicialización de datos críticos
 db.on('populate', (tx) => {
   tx.table('config').add({ key: 'theme', value: 'light' });
   tx.table('config').add({ key: 'offline_mode', value: true });
+  tx.table('config').add({ key: 'last_migration', value: 'v11_enterprise' });
 });
 
 // =================================================================
-// 🚀 ACCESO SEGURO CON "SAFETY CHECK" DE MIGRACIÓN
+// 🚀 ACCESO SEGURO Y GESTIÓN DE MIGRACIONES CRÍTICAS
 // =================================================================
 
 export const getDB = async () => {
-  const MIGRATION_KEY = 'NOAR_MIGRATION_DEXIE_V1';
+  const MIGRATION_KEY = 'NOAR_MIGRATION_V11_FINAL';
   const isMigrated = localStorage.getItem(MIGRATION_KEY);
 
-  // CASO: USUARIO LEGACY DETECTADO (Aun tiene la DB vieja de 'idb')
+  // 🛑 SAFETY CHECK: Verificación de consistencia para nuevas versiones
   if (!isMigrated) {
-      console.log("🔄 Verificando condiciones para migración a Dexie...");
+      console.log("🔄 Ejecutando actualización de arquitectura Multi-Sucursal...");
 
-      // 🛑 REGLA DE SEGURIDAD: SI NO HAY INTERNET, NO TOCAMOS NADA
-      // Esto evita borrar datos viejos si no podemos descargar los nuevos.
+      // Regla de Oro: Requiere internet para asegurar el Sync inicial de la nueva estructura
       if (!navigator.onLine) {
-          console.warn("⛔ Migración pospuesta: Se requiere internet para actualizar.");
-          // Lanzamos un error controlado. Tu App debería capturar esto y mostrar:
-          // "Para actualizar a la nueva versión, conéctese a Internet una vez."
+          console.warn("⛔ Actualización pospuesta: Se requiere conexión para migrar a v11.");
+          // Lanzamos error controlado para que la UI avise al usuario
           throw new Error("REQUIRES_ONLINE_FOR_MIGRATION");
       }
 
-      // ✅ SI HAY INTERNET: PROCEDEMOS CON EL RESET SEGURO
       try {
-          console.warn("✨ Conexión detectada. Ejecutando actualización crítica...");
+          console.warn("✨ Aplicando cambios estructurales Enterprise...");
           
           if (db.isOpen()) db.close();
 
-          // Borramos la base vieja corrupta/legacy
+          // Borrado preventivo para re-estructuración de índices compuestos.
+          // Esto limpia la base local legacy para que al reiniciar baje todo limpio de Firebase
+          // con la nueva estructura de colecciones.
           await Dexie.delete('NoarPosDB');
           
-          console.log("✅ Base de datos Legacy eliminada. Sistema limpio.");
           localStorage.setItem(MIGRATION_KEY, 'true');
+          console.log("✅ Arquitectura v11 lista.");
           
-          // Recargamos para limpiar caché de memoria y arrancar Dexie limpio
+          // Recargamos para aplicar los cambios de esquema limpiamente
           window.location.reload(); 
           return; 
       
       } catch (e) {
-          console.error("⚠️ Error migración:", e);
+          console.error("⚠️ Error en migración crítica:", e);
       }
   }
 
-  // APERTURA NORMAL
+  // APERTURA Y FALLSAFE
   if (!db.isOpen()) {
       try {
         await db.open();
       } catch (err) {
-        // Failsafe: Si la DB está corrupta, reset de fábrica
+        // Si hay error de versión o corrupción, reseteamos de fábrica
         if (err.name === 'VersionError' || err.name === 'OpenFailedError') {
-             console.error("💥 DB Corrupta. Reset de fábrica.");
+             console.error("💥 Error de base de datos. Ejecutando reset de emergencia.");
              await Dexie.delete('NoarPosDB');
              await db.open();
              localStorage.setItem(MIGRATION_KEY, 'true');

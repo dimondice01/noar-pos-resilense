@@ -299,6 +299,24 @@ export const syncService = {
         }));
     } catch (e) { console.warn("Listener Cash Movs off:", e); }
 
+// ... dentro de startRealTimeListeners ...
+
+    // 8. SUCURSALES (Vital para Multi-Branch)
+    const branchesQuery = query(collection(db, 'companies', companyId, 'branches'));
+    this._unsubscribes.push(onSnapshot(branchesQuery, async (snapshot) => {
+        const branchesToPut = [];
+        snapshot.docChanges().forEach(change => {
+            if (change.type === 'added' || change.type === 'modified') {
+                branchesToPut.push({ id: change.doc.id, ...change.doc.data(), syncStatus: 'synced' });
+            }
+        });
+        if (branchesToPut.length > 0) {
+            const localDb = await getDB();
+            await localDb.branches.bulkPut(branchesToPut);
+            console.log(`🏢 Sucursales sincronizadas: ${branchesToPut.length}`);
+        }
+    }));
+     
     // 7. MAESTROS
     const masterCollections = ['categories', 'brands', 'clients', 'suppliers'];
     masterCollections.forEach(collectionName => {
