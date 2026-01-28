@@ -25,41 +25,43 @@ export const WithdrawalModal = ({ isOpen, onClose, onConfirm }) => {
     const val = parseFloat(amount);
     if (!val || val <= 0 || !adminPin) return;
     
-    // Enviamos todo al dashboard para que valide
+    // Aquí podríamos validar el PIN antes de cerrar
+    // if (adminPin !== '1234') return alert("PIN Incorrecto");
+
     onConfirm({ amount: val, description, adminPin });
     onClose();
   };
 
   return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center bg-sys-900/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden ring-1 ring-black/5">
         
         {/* Header - Estilo "Retiro Seguro" */}
-        <div className="bg-orange-50 p-4 border-b border-orange-100 flex justify-between items-center">
+        <div className="bg-orange-50 p-5 border-b border-orange-100 flex justify-between items-center">
           <div>
             <h3 className="font-bold text-lg text-orange-800 leading-none flex items-center gap-2">
               <Banknote size={20} /> Retiro de Efectivo
             </h3>
-            <p className="text-xs text-orange-600 mt-1">Requiere autorización de Supervisor</p>
+            <p className="text-xs text-orange-600 mt-1 font-medium">Requiere autorización de Supervisor</p>
           </div>
           <button onClick={onClose} className="p-2 rounded-full hover:bg-orange-100 text-orange-400 transition">
             <X size={20} />
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="p-6 space-y-5">
+        <form onSubmit={handleSubmit} className="p-6 space-y-6">
           
           {/* 1. Monto */}
           <div>
             <label className="block text-xs font-bold text-sys-500 uppercase tracking-wider mb-2">Monto a Retirar</label>
             <div className="relative group">
-              <span className="absolute left-4 top-3.5 text-sys-400 text-xl font-medium">$</span>
+              <span className="absolute left-4 top-1/2 -translate-y-1/2 text-sys-400 text-xl font-medium group-focus-within:text-orange-500 transition-colors">$</span>
               <input
                 ref={inputRef}
                 type="number"
                 value={amount}
                 onChange={(e) => setAmount(e.target.value)}
-                className="w-full pl-10 pr-4 py-3 text-2xl font-bold border-b-2 border-sys-200 focus:border-orange-500 outline-none bg-transparent text-sys-900"
+                className="w-full pl-10 pr-4 py-3 text-3xl font-black border-b-2 border-sys-200 focus:border-orange-500 outline-none bg-transparent text-sys-900 placeholder-sys-200 transition-colors"
                 placeholder="0.00"
               />
             </div>
@@ -72,7 +74,7 @@ export const WithdrawalModal = ({ isOpen, onClose, onConfirm }) => {
               type="text"
               value={description}
               onChange={(e) => setDescription(e.target.value)}
-              className="w-full px-4 py-3 rounded-xl border border-sys-200 bg-sys-50 focus:bg-white focus:border-orange-500 outline-none text-sm"
+              className="w-full px-4 py-3 rounded-xl border border-sys-200 bg-sys-50 focus:bg-white focus:border-orange-500 outline-none text-sm font-medium transition-all"
               placeholder="Ej: Retiro parcial a caja fuerte"
             />
           </div>
@@ -86,18 +88,18 @@ export const WithdrawalModal = ({ isOpen, onClose, onConfirm }) => {
               type="password"
               value={adminPin}
               onChange={(e) => setAdminPin(e.target.value)}
-              className="w-full px-4 py-2 rounded-lg border border-sys-300 bg-white text-center font-mono text-lg tracking-widest focus:border-sys-900 outline-none"
+              className="w-full px-4 py-2 rounded-lg border border-sys-300 bg-white text-center font-mono text-lg tracking-widest focus:border-sys-900 outline-none focus:ring-2 focus:ring-sys-900/10 transition-all"
               placeholder="• • • •"
               maxLength={6}
             />
-            <p className="text-[10px] text-sys-400 text-center mt-2">
+            <p className="text-[10px] text-sys-400 text-center mt-2 font-medium">
               El supervisor debe ingresar su clave para confirmar.
             </p>
           </div>
 
           <Button 
             type="submit" 
-            className="w-full py-4 text-lg bg-orange-600 hover:bg-orange-700 text-white shadow-xl shadow-orange-500/20"
+            className="w-full py-4 text-lg bg-orange-600 hover:bg-orange-700 text-white shadow-xl shadow-orange-500/20 h-14 rounded-xl"
             disabled={!amount || !adminPin}
           >
             Autorizar Retiro <ArrowRight size={20} className="ml-2" />

@@ -1,11 +1,10 @@
 import { useState, useEffect } from 'react';
-import { collection, query, where, orderBy, onSnapshot } from 'firebase/firestore';
+import { collection, query, where, orderBy, onSnapshot, limit } from 'firebase/firestore';
 import { db } from '../../../database/firebase';
-import { useAuthStore } from '../../auth/store/useAuthStore'; // 👈 IMPORTANTE
+import { useAuthStore } from '../../auth/store/useAuthStore';
 
 export const useCloudDashboard = () => {
-    // 1. Traemos el usuario para saber el ID de la empresa
-    const { user } = useAuthStore();
+    const { user, activeBranchId } = useAuthStore();
 
     const [stats, setStats] = useState({
         totalSales: 0,
@@ -16,11 +15,11 @@ export const useCloudDashboard = () => {
         fiscalCount: 0,
         recentSales: [],
         topProducts: [],
+        pendingShifts: [], // 🔥 NUEVO: Cajas por auditar
         loading: true
     });
 
     useEffect(() => {
-        // 2. Validación de Seguridad: Si no hay empresa, no consultamos nada
         if (!user || !user.companyId) {
             setStats(prev => ({ ...prev, loading: false }));
             return;
@@ -31,19 +30,23 @@ export const useCloudDashboard = () => {
         const end = new Date();
         end.setHours(23, 59, 59, 999);
 
-        // 3. 🔥 LA CORRECCIÓN CLAVE: Apuntar a la subcolección de la empresa
+        // --- 1. LISTENER DE VENTAS (HOY) ---
         const salesRef = collection(db, 'companies', user.companyId, 'sales');
-
-        const q = query(
-            salesRef, // Usamos la referencia SaaS
+        
+        // Query base: Ventas de hoy
+        let salesQ = query(
+            salesRef,
             where('date', '>=', start.toISOString()),
             where('date', '<=', end.toISOString()),
             orderBy('date', 'desc')
         );
 
-        console.log(`📡 Escuchando ventas en vivo para: ${user.companyId}`);
+        // Filtrar por sucursal si hay una seleccionada
+        if (activeBranchId) {
+            salesQ = query(salesQ, where('branchId', '==', activeBranchId));
+        }
 
-        const unsubscribe = onSnapshot(q, (snapshot) => {
+        const unsubSales = onSnapshot(salesQ, (snapshot) => {
             let total = 0;
             let cash = 0;
             let digital = 0;
@@ -57,51 +60,44 @@ export const useCloudDashboard = () => {
                 
                 total += saleTotal;
 
-                // Métodos
-                // Ajuste: A veces viene como 'cash', a veces 'EFECTIVO'. Normalizamos.
+                // Métodos de Pago
                 const paymentMethod = (data.payment?.method || data.method || '').toUpperCase();
-                
-                if (paymentMethod === 'CASH' || paymentMethod === 'EFECTIVO' || paymentMethod === 'EFVO') {
-                    cash += parseFloat(data.payment?.amountPaid || saleTotal); // Fallback a total si no hay amountPaid
+                if (paymentMethod === 'CASH' || paymentMethod === 'EFECTIVO') {
+                    cash += parseFloat(data.payment?.amountPaid || saleTotal);
                 } else {
                     digital += parseFloat(data.payment?.amountPaid || saleTotal);
                 }
 
-                // Fiscal
                 if (data.afip?.status === 'APPROVED') fiscal++;
 
-                // Lista Reciente (Max 10 para que se vea más lleno)
                 if (salesData.length < 10) {
                     salesData.push({
                         id: doc.id,
+                        number: data.number || `V-${doc.id.slice(-4)}`, // Mostrar número real
                         time: new Date(data.date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
                         total: saleTotal,
-                        items: data.items?.length || data.itemCount || 0,
-                        method: paymentMethod
+                        method: paymentMethod,
+                        branchId: data.branchId
                     });
                 }
 
-                // 🏆 LOGICA TOP PRODUCTOS
+                // Top Productos
                 if (data.items && Array.isArray(data.items)) {
                     data.items.forEach(item => {
                         const name = item.name;
                         const qty = parseFloat(item.quantity || 1);
-                        if (productMap[name]) {
-                            productMap[name] += qty;
-                        } else {
-                            productMap[name] = qty;
-                        }
+                        productMap[name] = (productMap[name] || 0) + qty;
                     });
                 }
             });
 
-            // Ordenar Top Productos (Top 5)
             const sortedProducts = Object.entries(productMap)
                 .sort(([, a], [, b]) => b - a)
                 .slice(0, 5)
                 .map(([name, quantity]) => ({ name, quantity }));
 
-            setStats({
+            setStats(prev => ({
+                ...prev,
                 totalSales: total,
                 count: snapshot.size,
                 averageTicket: snapshot.size > 0 ? total / snapshot.size : 0,
@@ -111,15 +107,39 @@ export const useCloudDashboard = () => {
                 recentSales: salesData,
                 topProducts: sortedProducts,
                 loading: false
-            });
-        }, (error) => {
-            // Si da error de permisos, es probable que la regla de Firestore tarde un seg en propagarse
-            console.error("Error Dashboard RealTime:", error);
-            setStats(prev => ({ ...prev, loading: false }));
-        });
+            }));
+        }, (err) => console.error("Error sales stream:", err));
 
-        return () => unsubscribe();
-    }, [user?.companyId]); // 4. Se reinicia si cambia la empresa
+        // --- 2. LISTENER DE CAJAS PENDIENTES (SHIFTS) ---
+        const shiftsRef = collection(db, 'companies', user.companyId, 'shifts');
+        
+        // Buscamos cajas CERRADAS pero NO AUDITADAS (audited: false)
+        // Opcional: Filtrar por sucursal también
+        let shiftsQ = query(
+            shiftsRef,
+            where('status', '==', 'CLOSED'),
+            where('audited', '==', false),
+            orderBy('closedAt', 'desc'),
+            limit(10) // Solo las últimas 10 pendientes para no saturar
+        );
+
+        if (activeBranchId) {
+            shiftsQ = query(shiftsQ, where('branchId', '==', activeBranchId));
+        }
+
+        const unsubShifts = onSnapshot(shiftsQ, (snapshot) => {
+            const pending = snapshot.docs.map(doc => ({
+                id: doc.id,
+                ...doc.data()
+            }));
+            setStats(prev => ({ ...prev, pendingShifts: pending }));
+        }, (err) => console.error("Error shifts stream:", err));
+
+        return () => {
+            unsubSales();
+            unsubShifts();
+        };
+    }, [user?.companyId, activeBranchId]); // Se recarga al cambiar sucursal
 
     return stats;
 };

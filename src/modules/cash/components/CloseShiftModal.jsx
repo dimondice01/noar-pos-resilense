@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { X, Lock, Calculator, AlertTriangle, CheckCircle } from 'lucide-react';
+import { X, Lock, Calculator, AlertTriangle } from 'lucide-react';
 import { Button } from '../../../core/ui/Button';
 import { shiftRepository } from '../repositories/shiftRepository';
 import { useShiftStore } from '../store/useShiftStore';
@@ -15,12 +15,13 @@ export const CloseShiftModal = ({ isOpen, onClose }) => {
     e.preventDefault();
     if (!declaredAmount) return;
     
-    if (!confirm("⚠️ ¿Estás seguro de cerrar la caja?\nEsta acción es irreversible.")) return;
+    // Doble confirmación para evitar errores fatales
+    if (!confirm("⚠️ ¿Estás seguro de cerrar la caja?\nEsta acción es irreversible y bloqueará el sistema.")) return;
 
     setLoading(true);
     try {
-      // En un sistema real, aquí calcularíamos el "expectedTotal" sumando ventas
-      const stats = { expectedTotal: 0 }; // Mock por ahora
+      // Mock stats (En un sistema real se calculan en backend o con getShiftAuditData antes)
+      const stats = { expectedTotal: 0 }; 
       
       await shiftRepository.closeShift(currentShift.id, parseFloat(declaredAmount), stats);
       
@@ -30,7 +31,7 @@ export const CloseShiftModal = ({ isOpen, onClose }) => {
       
     } catch (error) {
       console.error(error);
-      alert("Error al cerrar caja");
+      alert("Error al cerrar caja: " + error.message);
     } finally {
       setLoading(false);
     }
@@ -46,22 +47,22 @@ export const CloseShiftModal = ({ isOpen, onClose }) => {
            </div>
            <div>
               <h3 className="font-bold text-lg text-red-900">Cierre de Caja</h3>
-              <p className="text-xs text-red-600">Turno iniciado: {new Date(currentShift?.openedAt).toLocaleTimeString()}</p>
+              <p className="text-xs text-red-600 font-medium">Turno ID: #{currentShift?.id?.slice(-4)}</p>
            </div>
-           <button onClick={onClose} className="ml-auto p-2 hover:bg-red-100 rounded-full text-red-400"><X size={20}/></button>
+           <button onClick={onClose} className="ml-auto p-2 hover:bg-red-100 rounded-full text-red-400 transition-colors"><X size={20}/></button>
         </div>
 
         <form onSubmit={handleCloseShift} className="p-6 space-y-6">
            <div className="bg-sys-50 p-4 rounded-xl border border-sys-200">
-              <p className="text-sm text-sys-600 mb-2 font-medium flex items-center gap-2">
-                 <Calculator size={16}/> Arqueo Ciego
+              <p className="text-sm text-sys-600 mb-2 font-bold flex items-center gap-2">
+                 <Calculator size={16} className="text-sys-400"/> Arqueo Ciego
               </p>
-              <p className="text-xs text-sys-400 mb-4">
-                 Cuenta todo el dinero en efectivo (billetes y monedas) e ingrésalo aquí. El sistema comparará con lo registrado.
+              <p className="text-xs text-sys-400 mb-4 leading-relaxed">
+                 Cuente todo el dinero físico en la caja (billetes + monedas) e ingréselo aquí. El sistema comparará automáticamente.
               </p>
               
-              <div className="relative">
-                 <span className="absolute left-4 top-1/2 -translate-y-1/2 text-sys-400 font-bold text-xl">$</span>
+              <div className="relative group">
+                 <span className="absolute left-4 top-1/2 -translate-y-1/2 text-sys-400 font-bold text-xl group-focus-within:text-red-500 transition-colors">$</span>
                  <input 
                     autoFocus
                     type="number" 
@@ -74,9 +75,9 @@ export const CloseShiftModal = ({ isOpen, onClose }) => {
               </div>
            </div>
 
-           <div className="flex gap-3">
+           <div className="flex gap-3 pt-2">
               <Button type="button" variant="ghost" onClick={onClose} className="flex-1">Cancelar</Button>
-              <Button type="submit" variant="danger" className="flex-1 shadow-lg shadow-red-500/20" disabled={loading || !declaredAmount}>
+              <Button type="submit" className="flex-1 bg-red-600 hover:bg-red-700 text-white shadow-lg shadow-red-500/20" disabled={loading || !declaredAmount}>
                  {loading ? 'Cerrando...' : 'Confirmar Cierre Z'}
               </Button>
            </div>

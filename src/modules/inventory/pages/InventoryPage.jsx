@@ -1,36 +1,39 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useMemo } from 'react';
 import { 
     Plus, Search, Edit2, Trash2, Package, Scale, AlertTriangle, 
     ArrowUpRight, Filter, CheckSquare, Square, X, History,
     Printer, ArrowRightLeft, Calendar, ChevronLeft, ChevronRight,
-    Upload // 🔥 Nuevo Icono
+    Upload, RefreshCw 
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom'; 
 
 import { productRepository } from '../repositories/productRepository';
 import { masterRepository } from '../repositories/masterRepository';
-import { useAuthStore } from '../../auth/store/useAuthStore'; // 🔥 IMPORT CRÍTICO
+import { useAuthStore } from '../../auth/store/useAuthStore'; 
 
 import { Card } from '../../../core/ui/Card';
 import { Button } from '../../../core/ui/Button';
 import { ProductModal } from '../components/ProductModal';
 import { MastersModal } from '../components/MastersModal';
 import { ProductHistoryModal } from '../components/ProductHistoryModal';
-import { ImportMapperModal } from '../components/ImportMapperModal'; // 🔥 IMPORTACIÓN DEL IMPORTADOR
+import { ImportMapperModal } from '../components/ImportMapperModal'; 
 import { cn } from '../../../core/utils/cn';
 
-// 🔥 HELPER DE FORMATEO
+import { collection, getDocs, query, where, documentId } from 'firebase/firestore';
+import { db as firestoreDB } from '../../../database/firebase';
+
+// HELPERS
 const formatMoney = (amount) => {
     return amount ? amount.toLocaleString('es-AR', { minimumFractionDigits: 0, maximumFractionDigits: 2 }) : '0';
 };
 
 const formatStock = (stock) => {
-    if (!stock) return '0';
+    if (stock === undefined || stock === null) return '0';
     return parseFloat(Number(stock).toFixed(3));
 };
 
 // =================================================================
-// 1. STOCK ENTRY MODAL (Ingreso Rápido de Stock)
+// 1. STOCK ENTRY MODAL
 // =================================================================
 const StockEntryModal = ({ isOpen, onClose, product, onConfirm }) => {
     if (!isOpen || !product) return null;
@@ -63,22 +66,18 @@ const StockEntryModal = ({ isOpen, onClose, product, onConfirm }) => {
                         <p className="text-xs text-sys-500 uppercase font-bold mb-1">Producto</p>
                         <p className="text-lg font-bold text-sys-900 leading-tight">{product.name}</p>
                     </div>
-                    
                     <div>
                         <label className="text-xs text-sys-500 uppercase font-bold mb-1 block">Cantidad a Agregar</label>
-                        <div className="relative">
-                            <input 
-                                ref={inputRef}
-                                type="number" 
-                                className="w-full text-2xl font-black p-3 bg-sys-50 border-2 border-brand/20 rounded-xl focus:border-brand outline-none text-center"
-                                placeholder="0"
-                                value={qty}
-                                onChange={e => setQty(e.target.value)}
-                                onKeyDown={e => e.key === 'Enter' && handleConfirm()}
-                            />
-                        </div>
+                        <input 
+                            ref={inputRef}
+                            type="number" 
+                            className="w-full text-2xl font-black p-3 bg-sys-50 border-2 border-brand/20 rounded-xl focus:border-brand outline-none text-center"
+                            placeholder="0"
+                            value={qty}
+                            onChange={e => setQty(e.target.value)}
+                            onKeyDown={e => e.key === 'Enter' && handleConfirm()}
+                        />
                     </div>
-
                     <div className="bg-red-50 p-3 rounded-xl border border-red-100">
                         <label className="text-xs text-red-600 uppercase font-bold mb-1 block flex items-center gap-1"><Calendar size={14}/> Vencimiento (Nuevo Lote)</label>
                         <input 
@@ -87,11 +86,7 @@ const StockEntryModal = ({ isOpen, onClose, product, onConfirm }) => {
                             value={expiry}
                             onChange={e => setExpiry(e.target.value)}
                         />
-                        <p className="text-[10px] text-red-500 mt-1">
-                            Este lote se pondrá a la cola. Se consumirá después de los lotes más antiguos.
-                        </p>
                     </div>
-
                     <Button onClick={handleConfirm} className="w-full py-3 shadow-lg shadow-brand/20">Confirmar Ingreso</Button>
                 </div>
              </div>
@@ -159,14 +154,14 @@ const BulkUpdateModal = ({ isOpen, onClose, onConfirm, allProducts, masters, man
                         </div>
                         {targetList.map(p => (
                             <div key={p.id} className="p-3 flex justify-between items-center group hover:bg-white transition-colors bg-sys-50/50">
-                                <div className="flex items-center gap-3 overflow-hidden">
-                                    <button onClick={() => removeProduct(p.id)} className="p-1.5 bg-white border border-sys-200 rounded-md text-sys-400 hover:text-red-500 transition-colors shadow-sm"><X size={14} /></button>
-                                    <div className="truncate">
-                                        <p className="text-sm font-medium text-sys-800 truncate">{p.name}</p>
-                                        <p className="text-[10px] text-sys-400">{p.code}</p>
-                                    </div>
+                                <div className="truncate flex-1 pr-2">
+                                    <p className="text-sm font-medium text-sys-800 truncate">{p.name}</p>
+                                    <p className="text-[10px] text-sys-400">{p.code}</p>
                                 </div>
-                                <span className="text-sm font-mono font-bold text-sys-600">$ {p.price}</span>
+                                <div className="flex items-center gap-2">
+                                    <span className="text-sm font-mono font-bold text-sys-600">$ {p.price}</span>
+                                    <button onClick={() => removeProduct(p.id)} className="p-1 text-sys-400 hover:text-red-500"><X size={14} /></button>
+                                </div>
                             </div>
                         ))}
                     </div>
@@ -187,58 +182,57 @@ const BulkUpdateModal = ({ isOpen, onClose, onConfirm, allProducts, masters, man
 };
 
 // =================================================================
-// 3. INVENTORY PAGE (PRINCIPAL)
+// 3. INVENTORY PAGE (ENTERPRISE)
 // =================================================================
 export const InventoryPage = () => {
   const navigate = useNavigate();
-  const { user, activeBranchId } = useAuthStore(); // 🔥 OBTENEMOS EL ID DE SUCURSAL ACTIVA
+  const { user, activeBranchId } = useAuthStore(); 
 
-  // Estados de Datos
+  const isAdmin = user?.role === 'OWNER' || user?.role === 'ADMIN';
+
+  // Data States
   const [products, setProducts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [masters, setMasters] = useState({ categories: [], brands: [], suppliers: [] });
   
-  // 🔥 ESTADO DE BÚSQUEDA OPTIMIZADO (DEBOUNCE)
+  // Matrix Global State
+  const [branches, setBranches] = useState([]); 
+  const [globalStock, setGlobalStock] = useState({}); 
+  const [loadingStock, setLoadingStock] = useState(false);
+  
+  // Cache Ref para evitar bucles de fetchMatrix
+  const lastFetchedIds = useRef(""); 
+
+  // Search & Filter
   const [inputValue, setInputValue] = useState(''); 
   const [searchTerm, setSearchTerm] = useState('');
-  
   const [filters, setFilters] = useState({ category: '', brand: '', supplier: '' });
   const searchInputRef = useRef(null);
 
-  // Selección
+  // Selection & Pagination
   const [selectedIds, setSelectedIds] = useState(new Set());
-  
-  // Paginación
   const [currentPage, setCurrentPage] = useState(1);
   const ITEMS_PER_PAGE = 20;
 
-  // Modales
+  // Modals
   const [isProductModalOpen, setIsProductModalOpen] = useState(false);
   const [isMastersModalOpen, setIsMastersModalOpen] = useState(false);
   const [isBulkUpdateOpen, setIsBulkUpdateOpen] = useState(false);
-  const [isImportModalOpen, setIsImportModalOpen] = useState(false); // 🔥 Nuevo Modal
+  const [isImportModalOpen, setIsImportModalOpen] = useState(false); 
   
   const [editingProduct, setEditingProduct] = useState(null);
   const [historyProduct, setHistoryProduct] = useState(null);
   const [stockEntryProduct, setStockEntryProduct] = useState(null); 
 
-  // 🔥 EFECTO DEBOUNCE
+  // Debounce Search
   useEffect(() => {
-    const timer = setTimeout(() => {
-        setSearchTerm(inputValue);
-    }, 300);
-
+    const timer = setTimeout(() => setSearchTerm(inputValue), 300);
     return () => clearTimeout(timer);
   }, [inputValue]);
 
-  // Valuación
-  const totalStockValuado = products.reduce((acc, p) => {
-      const costo = parseFloat(p.cost) || 0;
-      const stock = parseFloat(p.stock) || 0;
-      return acc + (costo * stock);
-  }, 0);
-  
+  // Load Initial Data
   const loadData = async () => {
+    setLoading(true);
     try {
       const [allProducts, cats, brands, supps] = await Promise.all([
         productRepository.getAll(),
@@ -248,82 +242,133 @@ export const InventoryPage = () => {
       ]);
       setProducts((allProducts || []).reverse());
       setMasters({ categories: cats || [], brands: brands || [], suppliers: supps || [] });
-    } catch (error) {
-      console.error("Error loading data", error);
-    } finally {
-      setLoading(false);
-    }
+
+      if (isAdmin && user?.companyId) {
+         try {
+            const q = collection(firestoreDB, 'companies', user.companyId, 'branches');
+            const snap = await getDocs(q);
+            setBranches(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+         } catch (e) { console.error("Error loading branches:", e); }
+      }
+    } catch (error) { console.error("Error loading data", error); } 
+    finally { setLoading(false); }
   };
 
-  useEffect(() => { loadData(); }, []);
+  useEffect(() => { loadData(); }, [user, isAdmin]);
 
-  // Reset page when filtering
+  // Reset page on filter change
+  useEffect(() => { setCurrentPage(1); }, [searchTerm, filters]);
+
+  // Filter Logic
+  const filteredProducts = useMemo(() => {
+      const term = searchTerm.toLowerCase();
+      return products.filter(p => {
+        const name = (p.name || '').toLowerCase();
+        const code = (p.code || '').toString().toLowerCase();
+        const matchesSearch = name.includes(term) || code.includes(term);
+        
+        const matchesCat = filters.category ? p.category === filters.category : true;
+        const matchesBrand = filters.brand ? p.brand === filters.brand : true;
+        const matchesSupp = filters.supplier ? p.supplier === filters.supplier : true;
+        
+        return matchesSearch && matchesCat && matchesBrand && matchesSupp;
+      });
+  }, [products, searchTerm, filters]);
+
+  // Pagination Logic
+  const totalPages = Math.ceil(filteredProducts.length / ITEMS_PER_PAGE);
+  const currentProducts = useMemo(() => {
+      return filteredProducts.slice(
+          (currentPage - 1) * ITEMS_PER_PAGE, 
+          currentPage * ITEMS_PER_PAGE
+      );
+  }, [filteredProducts, currentPage]);
+
+  // Total Valuation
+  const totalStockValuado = useMemo(() => {
+      return products.reduce((acc, p) => acc + ((parseFloat(p.cost)||0) * (parseFloat(p.stock)||0)), 0);
+  }, [products]);
+
+  // 🔥 MATRIX FETCHING FIX (NO INFINITE LOOP)
   useEffect(() => {
-      setCurrentPage(1);
-  }, [searchTerm, filters]);
+      // Validaciones para no ejecutar
+      if (!isAdmin || branches.length === 0 || currentProducts.length === 0) return;
 
-  // 🔥 FOCUS MANAGEMENT
-  useEffect(() => {
-      if (!isProductModalOpen && !isMastersModalOpen && !isBulkUpdateOpen && !historyProduct && !stockEntryProduct && !isImportModalOpen) {
-          setTimeout(() => searchInputRef.current?.focus(), 150);
-      }
-  }, [isProductModalOpen, isMastersModalOpen, isBulkUpdateOpen, historyProduct, stockEntryProduct, isImportModalOpen]);
+      // Generar fingerprint de los productos visibles
+      const currentIdsString = currentProducts.map(p => p.id).sort().join(',');
+      
+      // Si son los mismos productos que la última vez, NO HACER NADA
+      if (lastFetchedIds.current === currentIdsString) return;
+      
+      // Actualizar ref y ejecutar
+      lastFetchedIds.current = currentIdsString;
 
-  // 🔥 SCANNER HANDLER
+      const fetchMatrix = async () => {
+          setLoadingStock(true);
+          const visibleIds = currentProducts.map(p => p.id);
+          const newStockMap = { ...globalStock }; // Clonamos estado actual
+
+          const chunks = [];
+          for (let i = 0; i < visibleIds.length; i += 10) {
+              chunks.push(visibleIds.slice(i, i + 10));
+          }
+
+          try {
+              for (const branch of branches) {
+                  for (const chunk of chunks) {
+                      const q = query(
+                          collection(firestoreDB, 'companies', user.companyId, 'branches', branch.id, 'inventory'),
+                          where(documentId(), 'in', chunk)
+                      );
+                      const snap = await getDocs(q);
+                      
+                      snap.docs.forEach(doc => {
+                          const prodId = doc.id;
+                          const data = doc.data();
+                          if (!newStockMap[prodId]) newStockMap[prodId] = {};
+                          newStockMap[prodId][branch.id] = data.stock;
+                      });
+
+                      // Rellenar ceros
+                      chunk.forEach(prodId => {
+                           if (!newStockMap[prodId]) newStockMap[prodId] = {};
+                           if (newStockMap[prodId][branch.id] === undefined) {
+                               newStockMap[prodId][branch.id] = 0;
+                           }
+                      });
+                  }
+              }
+              setGlobalStock(newStockMap);
+          } catch (e) { console.error("Matrix error:", e); } 
+          finally { setLoadingStock(false); }
+      };
+
+      fetchMatrix();
+      
+  }, [currentProducts, branches, isAdmin, user?.companyId]); // 🔥 Dependencias corregidas
+
+  // Handlers
   const handleSearchKeyDown = (e) => {
     if (e.key === 'Enter') {
         const term = e.target.value.trim(); 
-        
         if (!term) return;
-
-        // Búsqueda segura
         const exactMatch = products.find(p => (p.code || '').toString() === term);
         
         if (exactMatch) {
             setEditingProduct(exactMatch);
             setIsProductModalOpen(true);
-            setInputValue(''); 
-            setSearchTerm(''); 
+            setInputValue(''); setSearchTerm(''); 
         } else {
             setEditingProduct({ code: term, name: '', cost: 0, price: 0, stock: 0 });
             setIsProductModalOpen(true);
-            setInputValue('');
-            setSearchTerm('');
+            setInputValue(''); setSearchTerm('');
         }
     }
   };
 
-  // 🔥 FILTRADO DEFENSIVO
-  const filteredProducts = products.filter(p => {
-    const term = searchTerm.toLowerCase();
-    
-    // Normalización para evitar falsos negativos por espacios o mayúsculas
-    const name = (p.name || '').toLowerCase();
-    const code = (p.code || '').toString().toLowerCase();
-    const cat = (p.category || '').toString();
-    const brand = (p.brand || '').toString();
-    const supp = (p.supplier || '').toString();
-
-    const matchesSearch = name.includes(term) || code.includes(term);
-    
-    const matchesCat = filters.category ? cat === filters.category : true;
-    const matchesBrand = filters.brand ? brand === filters.brand : true;
-    const matchesSupp = filters.supplier ? supp === filters.supplier : true;
-    
-    return matchesSearch && matchesCat && matchesBrand && matchesSupp;
-  });
-
-  // Paginación
-  const totalPages = Math.ceil(filteredProducts.length / ITEMS_PER_PAGE);
-  const currentProducts = filteredProducts.slice(
-      (currentPage - 1) * ITEMS_PER_PAGE, 
-      currentPage * ITEMS_PER_PAGE
-  );
-
   const toggleSelection = (id) => {
     const newSet = new Set(selectedIds);
-    if (newSet.has(id)) newSet.delete(id);
-    else newSet.add(id);
+    if (newSet.has(id)) newSet.delete(id); else newSet.add(id);
     setSelectedIds(newSet);
   };
 
@@ -352,9 +397,7 @@ export const InventoryPage = () => {
         const userName = user?.name || user?.email || 'Usuario';
         await productRepository.addStock(productId, qty, expiryDate, userName); 
         loadData();
-    } catch (e) {
-        alert("Error al sumar stock: " + e.message);
-    }
+    } catch (e) { alert("Error al sumar stock: " + e.message); }
   };
 
   const executeBulkUpdate = async (targetProducts, costPct, pricePct) => {
@@ -367,22 +410,15 @@ export const InventoryPage = () => {
           const newCost = p.cost * (1 + costPct / 100);
           let calculatedPrice = p.price * (1 + pricePct / 100);
           const newPrice = Math.ceil(calculatedPrice / 50) * 50; 
-          const newMarkup = newCost > 0 ? ((newPrice - newCost) / newCost * 100).toFixed(2) : p.markup;
-          return { ...p, cost: newCost, price: newPrice, markup: newMarkup, user: userName }; 
+          return { ...p, cost: newCost, price: newPrice, user: userName }; 
       });
-      
       for (const p of updates) { await productRepository.save(p); }
-      
       alert(`✅ Éxito: ${updates.length} productos actualizados.`);
       setSelectedIds(new Set());
       setIsBulkUpdateOpen(false);
       loadData();
-    } catch (error) {
-      console.error(error);
-      alert("Error al actualizar.");
-    } finally {
-      setLoading(false);
-    }
+    } catch (error) { alert("Error al actualizar."); } 
+    finally { setLoading(false); }
   };
 
   return (
@@ -390,14 +426,13 @@ export const InventoryPage = () => {
       {/* HEADER */}
       <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-4">
         <div>
-          <h2 className="text-2xl font-bold text-sys-900">Inventario</h2>
+          <h2 className="text-2xl font-bold text-sys-900">Inventario {isAdmin ? 'Global' : 'Local'}</h2>
           <div className="flex gap-4 mt-2 text-xs text-sys-500">
               <p>Valuación Total (Costo): <span className="font-bold text-sys-800">$ {formatMoney(totalStockValuado)}</span></p>
               <p>Items: <span className="font-bold text-sys-800">{filteredProducts.length}</span></p>
           </div>
         </div>
         
-        {/* 🔥 BOTONERA PRINCIPAL */}
         <div className="flex flex-wrap gap-2 justify-end">
             <div className="flex gap-1">
                 <Button variant="secondary" className="border-purple-200 text-purple-700 bg-purple-50 hover:bg-purple-100 px-3" onClick={() => navigate('print')}>
@@ -407,9 +442,7 @@ export const InventoryPage = () => {
                     <ArrowRightLeft size={18} className="mr-2" /> Movimientos
                 </Button>
             </div>
-            
             <div className="w-[1px] h-8 bg-sys-200 mx-1 hidden md:block"></div>
-            
             <div className="flex gap-1">
                 <Button variant="secondary" className="border-gray-200 text-gray-700 bg-white hover:bg-gray-50 shadow-sm" onClick={() => setIsImportModalOpen(true)}>
                     <Upload size={18} className="mr-2" /> Importar
@@ -421,14 +454,13 @@ export const InventoryPage = () => {
                     <Filter size={18} className="mr-2" /> Maestros
                 </Button>
             </div>
-
             <Button onClick={() => { setEditingProduct(null); setIsProductModalOpen(true); }} className="shadow-lg shadow-brand/20 ml-2">
                 <Plus size={20} className="mr-2" /> Nuevo
             </Button>
         </div>
       </div>
 
-      {/* Filtros */}
+      {/* FILTROS */}
       <Card className="p-4 flex flex-col md:flex-row gap-4 items-center bg-white shadow-sm border border-sys-100">
         <div className="relative w-full md:w-1/3 group">
             <Search className="absolute left-3 top-2.5 text-sys-400 group-focus-within:text-brand transition-colors" size={18} />
@@ -462,6 +494,7 @@ export const InventoryPage = () => {
         </div>
       </Card>
 
+      {/* SELECCIÓN MASIVA */}
       {selectedIds.size > 0 && (
         <div className="bg-brand-light/30 border border-brand/20 p-3 rounded-xl flex justify-between items-center text-sm text-brand-hover">
             <span>Has seleccionado <b>{selectedIds.size} productos</b> manualmente.</span>
@@ -469,7 +502,7 @@ export const InventoryPage = () => {
         </div>
       )}
 
-      {/* TABLA DE PRODUCTOS (CON PAGINACIÓN) */}
+      {/* TABLA PRINCIPAL */}
       <Card className="p-0 overflow-hidden shadow-soft border-0 min-h-[400px] flex flex-col">
         <div className="overflow-x-auto flex-1">
           <table className="w-full text-left border-collapse">
@@ -480,11 +513,21 @@ export const InventoryPage = () => {
                         {selectedIds.size === currentProducts.length && currentProducts.length > 0 ? <CheckSquare size={18} /> : <Square size={18} />}
                     </button>
                 </th>
+                <th className="p-4 font-semibold w-12">Img</th>
                 <th className="p-4 font-semibold">Producto</th>
-                <th className="p-4 font-semibold">Datos</th>
-                <th className="p-4 font-semibold text-center">Vencimiento (1° Lote)</th> 
                 <th className="p-4 font-semibold text-right">Precios</th>
-                <th className="p-4 font-semibold text-center">Stock</th>
+
+                {/* COLUMNAS DINÁMICAS SUCURSALES (Admin Only) */}
+                {isAdmin ? (
+                    branches.map(b => (
+                        <th key={b.id} className="p-4 font-bold text-center text-sys-600 bg-sys-50 border-l border-sys-200 min-w-[120px]">
+                            {b.name}
+                        </th>
+                    ))
+                ) : (
+                    <th className="p-4 font-semibold text-center bg-brand/5 text-brand">Stock Local</th>
+                )}
+
                 <th className="p-4 font-semibold text-right">Acciones</th>
               </tr>
             </thead>
@@ -493,75 +536,61 @@ export const InventoryPage = () => {
                 const isSelected = selectedIds.has(p.id);
                 const isLowStock = p.stock <= (p.minStock || 5);
                 
-                // 🔥 LÓGICA DE VENCIMIENTO FIFO
-                let expiryDate = null;
-                let expiryText = '-';
-                
-                if (p.batches && p.batches.length > 0) {
-                    const activeBatches = p.batches.filter(b => parseFloat(b.quantity) > 0);
-                    activeBatches.sort((a, b) => {
-                          const dateA = a.dateAdded ? new Date(a.dateAdded) : new Date(0);
-                          const dateB = b.dateAdded ? new Date(b.dateAdded) : new Date(0);
-                          return dateA - dateB;
-                    });
-                    if (activeBatches.length > 0 && activeBatches[0].expiryDate) {
-                        expiryDate = new Date(activeBatches[0].expiryDate);
-                    }
-                } 
-                if (!expiryDate && p.expiryDate) {
-                    expiryDate = new Date(p.expiryDate);
-                }
-
-                // Cálculo visual (Alertas)
-                let isExpiring = false;
-                if (expiryDate) {
-                    const userTimezoneOffset = expiryDate.getTimezoneOffset() * 60000;
-                    const localDate = new Date(expiryDate.getTime() + userTimezoneOffset);
-                    const now = new Date();
-                    const daysLeft = (localDate - now) / (1000 * 60 * 60 * 24);
-                    isExpiring = daysLeft < 30; // Alerta 30 días
-                    expiryText = localDate.toLocaleDateString();
-                }
-
                 return (
-                  <tr key={p.id} className={cn("transition-colors group", isSelected ? "bg-brand-light/20" : "hover:bg-sys-50/50")}>
+                  <tr key={p.id} className={cn("transition-colors group hover:bg-sys-50", isSelected ? "bg-brand-light/20" : "")}>
                     <td className="p-4 text-center">
                         <button onClick={() => toggleSelection(p.id)} className={cn("transition-colors", isSelected ? "text-brand" : "text-sys-300 hover:text-sys-500")}>{isSelected ? <CheckSquare size={18} /> : <Square size={18} />}</button>
                     </td>
                     <td className="p-4">
-                        <div className="font-medium text-sys-900">{p.name}</div>
-                        <div className="text-xs text-sys-400 font-mono flex items-center gap-2">{p.code}</div>
-                    </td>
-                    <td className="p-4">
-                        <div className="flex flex-col gap-1">
-                            {p.category && <span className="badge">{p.category}</span>}
-                            {p.brand && <span className="text-xs text-sys-500">{p.brand}</span>}
+                        <div className="w-10 h-10 rounded-lg bg-gray-100 border border-gray-200 flex items-center justify-center text-gray-400">
+                            <Package size={16}/>
                         </div>
                     </td>
-                    <td className="p-4 text-center">
-                        {expiryDate ? (
-                            <span className={cn("px-2 py-1 rounded text-xs font-bold flex items-center justify-center gap-1", 
-                                isExpiring ? "bg-red-100 text-red-700" : "bg-green-50 text-green-700"
-                            )}>
-                                <Calendar size={12} /> {expiryText}
-                            </span>
-                        ) : <span className="text-sys-300 text-xs">-</span>}
+                    <td className="p-4">
+                        <div className="font-bold text-sys-900">{p.name}</div>
+                        <div className="text-xs text-sys-400 font-mono flex items-center gap-2">{p.code}</div>
+                        <div className="flex gap-1 mt-1">
+                            {p.category && <span className="badge">{p.category}</span>}
+                            {p.brand && <span className="text-xs text-sys-500 bg-sys-100 px-1 rounded">{p.brand}</span>}
+                        </div>
                     </td>
                     <td className="p-4 text-right">
                         <div className="text-[10px] text-sys-400">Costo: ${formatMoney(p.cost)}</div>
                         <div className="font-bold text-sys-900 text-base">$ {formatMoney(p.price)}</div>
                     </td>
-                    <td className="p-4 text-center">
-                        <div className="flex items-center justify-center gap-2">
-                             <button onClick={() => setStockEntryProduct(p)} className="p-1 rounded-full bg-green-50 text-green-600 border border-green-200 hover:bg-green-100 hover:scale-110 transition-all" title="Sumar Stock">
-                                 <Plus size={14} strokeWidth={3} />
-                             </button>
-                             <div className={cn("stock-badge", isLowStock ? "text-red-600 border-red-100 bg-red-50" : "text-sys-700 border-sys-200 bg-white")}>
-                                {isLowStock && <AlertTriangle size={12} />}
-                                {formatStock(p.stock)} {p.isWeighable ? 'kg' : 'un'}
-                             </div>
-                        </div>
-                    </td>
+                    
+                    {/* CELDAS SUCURSALES (Admin) */}
+                    {isAdmin ? (
+                        branches.map(b => {
+                            const stockVal = globalStock[p.id]?.[b.id];
+                            const isActiveBranch = b.id === activeBranchId;
+                            
+                            return (
+                                <td key={b.id} className={cn("p-4 text-center border-l border-sys-100 font-medium text-sys-600", isActiveBranch && "bg-brand/5")}>
+                                    {loadingStock ? (
+                                        <RefreshCw size={12} className="animate-spin mx-auto text-sys-300"/>
+                                    ) : (
+                                        <span className={cn("font-mono font-bold", stockVal > 0 ? "text-sys-800" : "text-sys-300")}>
+                                            {formatStock(stockVal)} 
+                                        </span>
+                                    )}
+                                </td>
+                            );
+                        })
+                    ) : (
+                        <td className="p-4 text-center">
+                            <div className="flex items-center justify-center gap-2">
+                                 <button onClick={() => setStockEntryProduct(p)} className="p-1 rounded-full bg-green-50 text-green-600 border border-green-200 hover:bg-green-100 hover:scale-110 transition-all" title="Sumar Stock">
+                                     <Plus size={14} strokeWidth={3} />
+                                 </button>
+                                 <div className={cn("stock-badge", isLowStock ? "text-red-600 border-red-100 bg-red-50" : "text-sys-700 border-sys-200 bg-white")}>
+                                    {isLowStock && <AlertTriangle size={12} />}
+                                    {formatStock(p.stock)} {p.isWeighable ? 'kg' : 'un'}
+                                 </div>
+                            </div>
+                        </td>
+                    )}
+
                     <td className="p-4 text-right">
                       <div className="flex justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
                         <button onClick={() => setHistoryProduct(p)} className="action-btn text-blue-600 bg-blue-50/50 hover:bg-blue-100 border border-blue-200" title="Ver Historial"><History size={16} /></button>
@@ -576,7 +605,7 @@ export const InventoryPage = () => {
           </table>
         </div>
 
-        {/* Paginación */}
+        {/* PAGINACIÓN */}
         {totalPages > 1 && (
             <div className="p-4 border-t border-sys-100 flex justify-between items-center bg-sys-50/50">
                 <span className="text-xs text-sys-500">
@@ -591,19 +620,18 @@ export const InventoryPage = () => {
         )}
       </Card>
 
-      {/* Modales */}
+      {/* MODALES */}
       <ProductModal isOpen={isProductModalOpen} onClose={() => setIsProductModalOpen(false)} productToEdit={editingProduct} onSave={handleSaveProduct} />
       <MastersModal isOpen={isMastersModalOpen} onClose={() => setIsMastersModalOpen(false)} />
       <ProductHistoryModal isOpen={!!historyProduct} onClose={() => setHistoryProduct(null)} product={historyProduct} />
       <BulkUpdateModal isOpen={isBulkUpdateOpen} onClose={() => setIsBulkUpdateOpen(false)} onConfirm={executeBulkUpdate} allProducts={products} masters={masters} manualSelectionIds={selectedIds} />
       <StockEntryModal isOpen={!!stockEntryProduct} onClose={() => setStockEntryProduct(null)} product={stockEntryProduct} onConfirm={handleQuickStockEntry} />
       
-      {/* 🔥 NUEVO MODAL DE IMPORTACIÓN INTELIGENTE (Corregido) */}
       <ImportMapperModal 
-         isOpen={isImportModalOpen} 
-         onClose={() => setIsImportModalOpen(false)} 
-         branchId={activeBranchId || user?.branchId} // 🔥 CLAVE: Usar la sucursal activa, no solo la del user
-         onSuccess={loadData}     
+          isOpen={isImportModalOpen} 
+          onClose={() => setIsImportModalOpen(false)} 
+          branchId={activeBranchId || user?.branchId} 
+          onSuccess={loadData}     
       />
 
       <style>{`

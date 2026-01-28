@@ -1,432 +1,200 @@
-import React, { useEffect, useState, useRef, useCallback } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { 
     Search, Trash2, ShoppingCart, PackageOpen, 
     Keyboard, User, DollarSign, ChevronRight, Plus, 
-    Lock, Wallet, ArrowRight, Loader2
+    Lock, Wallet, ArrowRight, Loader2, X, PlusCircle, CreditCard
 } from 'lucide-react';
 
-// Repositorios y Servicios
-import { productRepository } from '../../inventory/repositories/productRepository';
-import { salesRepository } from '../../sales/repositories/salesRepository';
-import { billingService } from '../../billing/services/billingService';
-import { cashRepository } from '../../cash/repositories/cashRepository';
-import { clientRepository } from '../../clients/repositories/clientRepository';
+// Controlador Maestro (Cerebro)
+import { usePosController } from '../hooks/usePosController';
 
-// Componentes del POS
+// Repositorios
+import { cashRepository } from '../../cash/repositories/cashRepository';
+import { useAuthStore } from '../../auth/store/useAuthStore';
+
+// Componentes UI
 import { QuantityModal } from '../components/QuantityModal';
 import { PaymentModal } from '../components/PaymentModal';
 import { ClientSelectionModal } from '../components/ClientSelectionModal'; 
-
-// Componente del Ticket
 import { TicketModal } from '../../sales/components/TicketModal';
-
-// Stores
-import { useCartStore } from '../store/useCartStore';
-import { useAuthStore } from '../../auth/store/useAuthStore';
-
-// UI Core
 import { Button } from '../../../core/ui/Button';
 import { cn } from '../../../core/utils/cn';
 
 export const PosPage = () => {
-  const { cart, addItem, removeItem, getTotal, clearCart } = useCartStore();
-  const { user } = useAuthStore(); 
-
-  // ==========================================
-  // ESTADOS Y REFS
-  // ==========================================
+  const { user } = useAuthStore();
   
-  // 🔥 ESTADO DE CAJA (SEGURIDAD)
+  // 🔥 INYECTAMOS EL CEREBRO DEL POS
+  const {
+      tabs,
+      activeTab,
+      activeTabId,
+      totals,
+      searchResults,
+      isProcessing,
+      // Acciones
+      addTab,
+      removeTab,
+      switchTab,
+      addToCart,
+      removeFromCart,
+      updateItemQuantity,
+      setClient,
+      clearCart,
+      searchProduct,
+      setSearchResults, // Para limpiar búsqueda manualmente
+      processSale
+  } = usePosController();
+
+  // Estados Locales de UI (No de negocio)
   const [isShiftChecking, setIsShiftChecking] = useState(true);
   const [hasOpenShift, setHasOpenShift] = useState(false);
   const [openingAmount, setOpeningAmount] = useState('');
   const [isOpening, setIsOpening] = useState(false);
-
-  // Estados del POS
-  const [products, setProducts] = useState([]);
+  
   const [searchTerm, setSearchTerm] = useState('');
   const [focusedIndex, setFocusedIndex] = useState(-1);
+  const [selectedProduct, setSelectedProduct] = useState(null); // Para modal cantidad
   
-  // ⚡ PAGINACIÓN (OPTIMIZACIÓN DE RENDIMIENTO)
-  const [visibleLimit, setVisibleLimit] = useState(20); 
-
-  const [client, setClient] = useState(null); 
-  const [discount, setDiscount] = useState(0); 
-
-  const searchInputRef = useRef(null);
-  const openingInputRef = useRef(null); // Ref para el input de apertura
-  const productsListRef = useRef(null);
-  
-  const [selectedProduct, setSelectedProduct] = useState(null); 
+  // Modales
   const [isPaymentOpen, setIsPaymentOpen] = useState(false);
   const [isClientSelectorOpen, setIsClientSelectorOpen] = useState(false);
-  
-  const [isProcessingSale, setIsProcessingSale] = useState(false);
-  const [lastSaleTicket, setLastSaleTicket] = useState(null);      
-  
-  const subtotal = getTotal();
-  const totalFinalRaw = subtotal * (1 - discount / 100);
-  const totalFinal = Math.round((totalFinalRaw + Number.EPSILON) * 100) / 100;
+  const [lastSaleTicket, setLastSaleTicket] = useState(null);
 
-  // HELPER DE FORMATEO
-  const formatMoney = (amount) => {
-    return amount ? amount.toLocaleString('es-AR', { minimumFractionDigits: 0, maximumFractionDigits: 2 }) : '0';
-  };
+  // Refs
+  const searchInputRef = useRef(null);
+  const openingInputRef = useRef(null);
+  const productsListRef = useRef(null);
 
-  const formatStock = (value) => {
-    if (!value) return '0';
-    return parseFloat(Number(value).toFixed(3));
-  };
-
-  // ==========================================
-  // 1. VERIFICACIÓN DE CAJA (AL INICIO)
-  // ==========================================
-  const checkShiftStatus = useCallback(async () => {
-      try {
-          // El repositorio ya se encarga de filtrar por usuario (verificar cashRepository)
-          const shift = await cashRepository.getCurrentShift();
-          
-          if (shift) {
-              setHasOpenShift(true);
-          } else {
-              setHasOpenShift(false);
-              clearCart(); // Limpieza de seguridad si la caja está cerrada
-              setTimeout(() => openingInputRef.current?.focus(), 200);
-          }
-      } catch (error) {
-          console.error("Error verificando caja:", error);
-          // Si falla (ej: offline), asumimos cerrado por seguridad
-          setHasOpenShift(false);
-      } finally {
-          setIsShiftChecking(false);
-      }
-  }, [clearCart]);
-
+  // =================================================================
+  // 1. VERIFICACIÓN DE CAJA (SEGURIDAD)
+  // =================================================================
   useEffect(() => {
-      checkShiftStatus();
-  }, [checkShiftStatus]);
+      const verifyShift = async () => {
+          try {
+              const shift = await cashRepository.getCurrentShift();
+              setHasOpenShift(!!shift);
+              if (!shift) setTimeout(() => openingInputRef.current?.focus(), 200);
+          } catch (e) { console.error(e); } 
+          finally { setIsShiftChecking(false); }
+      };
+      verifyShift();
+  }, []);
 
-  // Manejador para abrir caja desde el POS
   const handleOpenShift = async (e) => {
       e.preventDefault();
       if (!openingAmount) return;
-      
       setIsOpening(true);
       try {
-          // Abrimos turno pasando monto inicial y nombre
-          // El repo interno ya inyecta el ID de usuario desde el Store
-          await cashRepository.openShift(parseFloat(openingAmount), user?.name || 'Cajero');
-          
-          setHasOpenShift(true); // Desbloqueamos la pantalla
+          await cashRepository.openShift(openingAmount, user?.name);
+          setHasOpenShift(true);
           setOpeningAmount('');
-          // Cargar productos inmediatamente después de abrir
-          loadProducts();
-      } catch (error) {
-          console.error(error);
-          alert("Error al abrir la caja: " + error.message);
-      } finally {
-          setIsOpening(false);
-      }
+      } catch (err) { alert(err.message); }
+      finally { setIsOpening(false); }
   };
 
-  // ==========================================
-  // CARGA DE DATOS
-  // ==========================================
-  const loadProducts = useCallback(async () => {
-    try {
-      const all = await productRepository.getAll();
-      setProducts(all || []);
-    } catch (error) {
-      console.error("Error cargando catálogo:", error);
-    }
-  }, []);
-
-  // Cargar productos solo si hay caja abierta
+  // =================================================================
+  // 2. MANEJO DE INPUT BÚSQUEDA
+  // =================================================================
+  
+  // Efecto rebote para búsqueda (Debounce)
   useEffect(() => {
-    if (hasOpenShift) {
-        loadProducts();
-    }
-  }, [hasOpenShift, loadProducts]);
-
-  // Mantener foco (Solo si hay caja abierta)
-  const keepFocus = () => {
-    if (hasOpenShift && !isPaymentOpen && !selectedProduct && !lastSaleTicket && !isClientSelectorOpen) {
-      setTimeout(() => {
-        if (document.activeElement?.tagName !== 'INPUT' && document.activeElement?.tagName !== 'BUTTON') {
-           searchInputRef.current?.focus();
-        }
-      }, 200);
-    }
-  };
-
-  // ==========================================
-  // LÓGICA DE BÚSQUEDA Y NAVEGACIÓN
-  // ==========================================
-  const filteredProducts = products.filter(p => {
-    const term = searchTerm.toLowerCase();
-    const name = (p.name || '').toLowerCase();
-    const code = (p.code || '').toString().toLowerCase(); 
-    return name.includes(term) || code.includes(term);
-  });
-
-  // Resetear paginación y foco al buscar
-  useEffect(() => { 
-      setFocusedIndex(-1); 
-      setVisibleLimit(20); // ⚡ Resetea a 20 items al buscar
+      const timer = setTimeout(() => {
+          if (searchTerm.length > 1) {
+              searchProduct(searchTerm);
+          } else {
+              setSearchResults([]);
+          }
+      }, 250);
+      return () => clearTimeout(timer);
   }, [searchTerm]);
 
-  // Manejador de Scroll Infinito
-  const handleListScroll = useCallback((e) => {
-      const { scrollTop, clientHeight, scrollHeight } = e.currentTarget;
-      // Si llegamos cerca del final (100px antes), cargamos más
-      if (scrollHeight - scrollTop <= clientHeight + 100) {
-          setVisibleLimit(prev => prev + 20);
+  const handleSelectProduct = (product) => {
+      if (parseFloat(product.stock || 0) <= 0) {
+          // Opcional: Permitir venta negativa con advertencia
+          if(!confirm(`⚠️ STOCK 0: ${product.name}\n¿Agregar igual?`)) return;
       }
-  }, []);
 
-  useEffect(() => {
-    if (focusedIndex >= 0 && productsListRef.current) {
-        const activeItem = productsListRef.current.children[focusedIndex];
-        if (activeItem) activeItem.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-    }
-  }, [focusedIndex]);
-
-  const handleSelectProduct = useCallback((product) => {
-    if (!product) return;
-    if (parseFloat(product.stock || 0) <= 0) {
-        alert(`⛔ SIN STOCK: ${product.name}\nNo quedan unidades disponibles.`);
-        setSearchTerm('');
-        return;
-    }
-    if (product.isWeighable) {
-        setSelectedProduct(product);
-    } else {
-        addItem(product, 1, product.price);
-        setSearchTerm(''); 
-        setFocusedIndex(-1);
-        setVisibleLimit(20); // Reset al seleccionar
-        setTimeout(() => searchInputRef.current?.focus(), 50);
-    }
-  }, [addItem]);
+      if (product.isWeighable) {
+          setSelectedProduct(product);
+      } else {
+          addToCart(product, 1);
+          setSearchTerm(''); // Limpiar input
+          setSearchResults([]); // Limpiar lista
+          setTimeout(() => searchInputRef.current?.focus(), 50);
+      }
+  };
 
   const handleKeyDownInput = (e) => {
-    if (e.key === 'ArrowDown') {
-        e.preventDefault();
-        setFocusedIndex(prev => {
-            const next = prev < filteredProducts.length - 1 ? prev + 1 : prev;
-            // ⚡ Si bajamos con teclado más allá de lo visible, cargamos más
-            if (next >= visibleLimit - 2) setVisibleLimit(l => l + 20);
-            return next;
-        });
-    } else if (e.key === 'ArrowUp') {
-        e.preventDefault();
-        setFocusedIndex(prev => (prev > 0 ? prev - 1 : prev));
-    } else if (e.key === 'Enter') {
-        e.preventDefault();
-        if (focusedIndex >= 0 && filteredProducts[focusedIndex]) {
-            handleSelectProduct(filteredProducts[focusedIndex]);
-            return;
-        }
-        const term = searchTerm.trim();
-        if (!term) return;
-        const exactMatch = products.find(p => (p.code || '').toString() === term);
-        if (exactMatch) {
-            handleSelectProduct(exactMatch);
-        } else if (filteredProducts.length === 1) {
-            handleSelectProduct(filteredProducts[0]);
-        }
-    }
+      if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          setFocusedIndex(prev => (prev < searchResults.length - 1 ? prev + 1 : prev));
+      } else if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          setFocusedIndex(prev => (prev > 0 ? prev - 1 : prev));
+      } else if (e.key === 'Enter') {
+          e.preventDefault();
+          if (focusedIndex >= 0 && searchResults[focusedIndex]) {
+              handleSelectProduct(searchResults[focusedIndex]);
+          } else if (searchResults.length === 1) {
+              handleSelectProduct(searchResults[0]);
+          }
+      }
   };
 
-  const handleQuantityConfirm = (product, quantity, price) => {
-    addItem(product, quantity, price);
-    setSelectedProduct(null);
-    setTimeout(() => searchInputRef.current?.focus(), 100);
-  };
-
-  const handleCloseQuantity = () => {
-    setSelectedProduct(null);
-    setTimeout(() => searchInputRef.current?.focus(), 100);
-  };
-
-  const handleOpenClientSelector = () => setIsClientSelectorOpen(true);
-
-  const handleDiscount = () => {
-    const disc = prompt("Ingrese porcentaje de descuento (0-100):", discount);
-    if (disc !== null && !isNaN(disc)) setDiscount(Math.min(100, Math.max(0, parseFloat(disc))));
-  };
-
-  // Teclas Globales
+  // Scroll automático en lista de resultados
   useEffect(() => {
-    const handleGlobalKeys = (e) => {
-      // Bloqueo de teclas si no hay caja
-      if (!hasOpenShift || isProcessingSale || isClientSelectorOpen) return;
+      if (focusedIndex >= 0 && productsListRef.current) {
+          const item = productsListRef.current.children[focusedIndex];
+          item?.scrollIntoView({ block: 'nearest' });
+      }
+  }, [focusedIndex]);
 
-      switch(e.key) {
-        case 'F2': e.preventDefault(); searchInputRef.current?.focus(); break;
-        case 'F3': e.preventDefault(); handleOpenClientSelector(); break;
-        case 'F4': 
-          e.preventDefault();
-          if (cart.length > 0 && confirm('¿Vaciar carrito actual?')) {
-            clearCart();
-            setDiscount(0);
-            setClient(null);
-            searchInputRef.current?.focus();
+  // Teclas Globales (F-Keys)
+  useEffect(() => {
+      const handleGlobalKeys = (e) => {
+          if (!hasOpenShift || isPaymentOpen || isClientSelectorOpen) return;
+          
+          switch(e.key) {
+              case 'F2': e.preventDefault(); searchInputRef.current?.focus(); break;
+              case 'F3': e.preventDefault(); setIsClientSelectorOpen(true); break;
+              case 'F4': e.preventDefault(); if(confirm('¿Limpiar carrito?')) clearCart(); break;
+              case 'F12': 
+                  e.preventDefault(); 
+                  if (activeTab.items.length > 0) setIsPaymentOpen(true); 
+                  break;
+              case 'Escape': searchInputRef.current?.blur(); setSearchResults([]); break;
           }
-          break;
-        case 'F6': e.preventDefault(); handleDiscount(); break;
-        case 'F12': 
-          e.preventDefault();
-          if (cart.length > 0 && !selectedProduct && !isPaymentOpen) setIsPaymentOpen(true);
-          break;
-        case 'Escape':
-          if (document.activeElement === searchInputRef.current) searchInputRef.current?.blur();
-          break;
-      }
-    };
-
-    window.addEventListener('keydown', handleGlobalKeys);
-    return () => window.removeEventListener('keydown', handleGlobalKeys);
-  }, [cart, isProcessingSale, selectedProduct, isPaymentOpen, clearCart, client, discount, isClientSelectorOpen, hasOpenShift]);
-
-  // ==========================================
-  // CONFIRMACIÓN DE PAGO
-  // ==========================================
-  const handlePaymentConfirm = async (paymentData) => {
-    setIsProcessingSale(true);
-    try {
-      // 0. Validación de Identidad (Seguridad)
-      if (!user || !user.uid || !user.companyId) {
-          throw new Error("⛔ ERROR DE SESIÓN: No se detecta el usuario activo. Recargue la página.");
-      }
-
-      // 1. Validación de Caja
-      if (paymentData.amountPaid > 0) {
-          const shift = await cashRepository.getCurrentShift();
-          if (!shift) {
-              setHasOpenShift(false); // Bloqueamos la UI inmediatamente
-              throw new Error("⛔ BLOQUEO: La caja se cerró inesperadamente. Vuelva a abrirla.");
-          }
-      }
-      
-      const docNroForAfip = client?.docNumber || "0";
-      const saleClient = { 
-          id: client?.id || null, 
-          name: client?.name || 'CONSUMIDOR FINAL',
-          docNumber: docNroForAfip,
-          docType: client?.docType || '99'
       };
+      window.addEventListener('keydown', handleGlobalKeys);
+      return () => window.removeEventListener('keydown', handleGlobalKeys);
+  }, [hasOpenShift, isPaymentOpen, activeTab.items]);
 
-      let afipData = null;
-      if (paymentData.withAfip) {
-        try {
-          const tempSaleForAfip = {
-            total: paymentData.totalSale, 
-            client: { docNumber: docNroForAfip } 
-          };
-          const factura = await billingService.emitirFactura(tempSaleForAfip);
-          afipData = {
-            status: 'APPROVED',
-            cae: factura.cae,
-            cbteNumero: factura.numero,
-            cbteLetra: factura.tipo,
-            qr: factura.qr_data,
-            vtoCAE: factura.vto
-          };
-        } catch (afipError) {
-          console.error("Fallo AFIP:", afipError);
-          alert(`⚠️ Alerta: AFIP no respondió.\nError: ${afipError.message}`);
-          afipData = { status: 'PENDING', error: afipError.message };
-        }
-      }
 
-      // 🔥 CORRECCIÓN CLAVE: Inyectamos datos del usuario para el historial
-      const saleData = {
-        items: cart,
-        total: paymentData.totalSale,
-        subtotal: subtotal,
-        discount: discount,
-        payment: {
-            method: paymentData.method,
-            amountPaid: paymentData.amountPaid, 
-            amountDebt: paymentData.amountDebt, 
-            total: paymentData.totalSale        
-        },
-        client: saleClient,
-        
-        // 👇 DATOS DEL VENDEDOR (Fundamental para SalesPage)
-        userId: user.uid,          // ID del usuario
-        createdBy: user.email,     // Email para matcheo
-        sellerName: user.name || 'Cajero', // Nombre visual
-        companyId: user.companyId, // Tenant ID
-        
-        itemCount: cart.length,
-        date: new Date(),
-        afip: afipData || { status: 'SKIPPED' } 
-      };
-
-      const savedSale = await salesRepository.createSale(saleData);
-
-      const promises = []; 
-      if (paymentData.amountPaid > 0) {
-          promises.push(cashRepository.registerIncome(paymentData.amountPaid, paymentData.method, `Venta #${savedSale.localId.slice(-6)}`));
-      }
-      if (paymentData.amountDebt > 0 && client?.id) {
-          promises.push(clientRepository.registerMovement(client.id, 'SALE_DEBT', paymentData.amountDebt, `Saldo Venta #${savedSale.localId.slice(-6)}`, savedSale.localId));
-      }
-
-      await Promise.all(promises);
-      await loadProducts(); // Refresh stock
-
-      clearCart();
-      setDiscount(0);
-      setClient(null);
-      setIsPaymentOpen(false);
-      setLastSaleTicket(savedSale);
-
-    } catch (error) {
-      console.error("❌ Error Crítico:", error);
-      alert(`Error crítico: ${error.message}`);
-    } finally {
-      setIsProcessingSale(false);
-    }
-  };
-
-  // ==========================================
-  // RENDER: PANTALLA DE BLOQUEO (SI NO HAY CAJA)
-  // ==========================================
-  if (isShiftChecking) {
-      return (
-          <div className="h-full flex flex-col items-center justify-center bg-sys-50">
-              <Loader2 size={48} className="text-brand animate-spin mb-4" />
-              <p className="text-sys-500 font-medium">Verificando estado de caja...</p>
-          </div>
-      );
-  }
+  // =================================================================
+  // RENDER: PANTALLA BLOQUEO
+  // =================================================================
+  if (isShiftChecking) return <div className="h-full flex items-center justify-center"><Loader2 className="animate-spin text-brand" size={40}/></div>;
 
   if (!hasOpenShift) {
       return (
           <div className="h-[calc(100vh-4rem)] flex items-center justify-center bg-sys-100 p-4">
-              <div className="bg-white max-w-md w-full rounded-3xl shadow-xl overflow-hidden border border-sys-200">
-                  <div className="bg-red-50 p-8 flex flex-col items-center text-center border-b border-red-100">
-                      <div className="w-20 h-20 bg-white rounded-full flex items-center justify-center shadow-sm mb-4">
-                          <Lock size={40} className="text-red-500" />
+              <div className="bg-white max-w-md w-full rounded-3xl shadow-2xl overflow-hidden border border-sys-200">
+                  <div className="bg-gradient-to-br from-red-50 to-white p-8 text-center border-b border-red-100">
+                      <div className="w-20 h-20 bg-white rounded-2xl flex items-center justify-center shadow-sm mx-auto mb-4 border border-red-100">
+                          <Lock size={40} className="text-red-500" strokeWidth={1.5} />
                       </div>
-                      <h2 className="text-2xl font-black text-sys-900 mb-2">Caja Cerrada</h2>
-                      <p className="text-sys-500 text-sm">
-                          Para comenzar a vender, es obligatorio abrir un turno de caja indicando el dinero inicial.
-                      </p>
+                      <h2 className="text-2xl font-black text-sys-900 mb-1">Caja Cerrada</h2>
+                      <p className="text-sys-500 text-sm">Inicie su turno para comenzar a operar.</p>
                   </div>
-                  
                   <form onSubmit={handleOpenShift} className="p-8 space-y-6">
-                      <div className="space-y-2">
-                          <label className="text-xs font-bold text-sys-500 uppercase tracking-wider ml-1">Saldo Inicial (Cambio)</label>
-                          <div className="relative">
+                      <div>
+                          <label className="text-xs font-bold text-sys-500 uppercase ml-1">Fondo Inicial</label>
+                          <div className="relative mt-1">
                               <Wallet className="absolute left-4 top-3.5 text-sys-400" size={20} />
                               <input 
                                   ref={openingInputRef}
                                   type="number" 
-                                  className="w-full pl-12 pr-4 py-3 bg-sys-50 border border-sys-200 rounded-xl text-lg font-bold text-sys-900 outline-none focus:border-brand focus:ring-4 focus:ring-brand/10 transition-all placeholder:text-sys-300"
+                                  className="w-full pl-12 pr-4 py-3 bg-sys-50 border border-sys-200 rounded-xl text-lg font-bold outline-none focus:border-brand focus:ring-4 focus:ring-brand/10 transition-all"
                                   placeholder="0.00"
                                   value={openingAmount}
                                   onChange={(e) => setOpeningAmount(e.target.value)}
@@ -434,14 +202,8 @@ export const PosPage = () => {
                               />
                           </div>
                       </div>
-
-                      <Button 
-                          type="submit" 
-                          className="w-full py-4 text-lg shadow-lg shadow-brand/20 flex items-center justify-center gap-2"
-                          disabled={!openingAmount || isOpening}
-                      >
-                          {isOpening ? <Loader2 className="animate-spin" /> : <ArrowRight size={20} />}
-                          {isOpening ? 'Abriendo...' : 'Abrir Caja y Comenzar'}
+                      <Button type="submit" className="w-full py-4 text-lg rounded-xl shadow-lg shadow-brand/20" disabled={isOpening || !openingAmount}>
+                          {isOpening ? <Loader2 className="animate-spin"/> : <ArrowRight/>} Abrir Caja
                       </Button>
                   </form>
               </div>
@@ -449,203 +211,252 @@ export const PosPage = () => {
       );
   }
 
-  // ==========================================
-  // RENDER: POS NORMAL (SOLO SI HAY CAJA ABIERTA)
-  // ==========================================
+  // =================================================================
+  // RENDER: POS INTERFACE
+  // =================================================================
   return (
-    <div className="h-[calc(100vh-4rem)] flex gap-6 relative flex-col pb-12 bg-sys-50/50" onClick={keepFocus}>
+    <div className="h-[calc(100vh-4rem)] flex flex-col bg-sys-50 relative overflow-hidden">
       
-      {/* AREA DE TRABAJO (TICKET + LISTA) */}
-      <div className="flex-1 flex flex-col-reverse md:flex-row gap-4 min-h-0 p-4">
-        
-        {/* TICKET */}
-        <div className="flex-1 bg-white rounded-2xl shadow-soft border border-sys-200 flex flex-col overflow-hidden relative z-10 w-full">
-          {/* Header Ticket */}
-          <div className="bg-white border-b border-sys-100 p-3 shrink-0 flex items-center justify-between">
-             <button 
-                onClick={handleOpenClientSelector}
-                className={cn(
-                    "flex items-center gap-3 px-3 py-1.5 rounded-xl transition-all border group min-w-[240px]",
-                    client 
-                        ? "bg-brand-light/10 border-brand/20 text-brand-hover" 
-                        : "bg-sys-50 border-sys-200 text-sys-500 hover:border-sys-300"
-                )}
-            >
-                <div className={cn(
-                    "w-8 h-8 rounded-full flex items-center justify-center shrink-0 transition-colors",
-                    client ? "bg-brand text-white" : "bg-white border border-sys-200 text-sys-400"
-                )}>
-                    <User size={16} />
-                </div>
-                <div className="flex flex-col items-start min-w-0 text-left">
-                    <span className="text-[9px] font-bold uppercase tracking-wider opacity-70">
-                        {client ? (client.docType === '80' ? 'Factura A' : 'Consumidor Final') : 'Cliente (F3)'}
-                    </span>
-                    <span className="text-sm font-bold truncate max-w-[180px]">
-                        {client ? client.name : "Seleccionar Cliente..."}
-                    </span>
-                </div>
-                <ChevronRight size={14} className="opacity-50 ml-auto" />
-            </button>
-
-            <div className="text-right hidden md:block px-2">
-                <p className="text-[10px] text-sys-400 font-bold uppercase">Cajero</p>
-                <p className="text-xs font-bold text-sys-700 bg-sys-100 px-2 py-0.5 rounded-full">{user?.name || 'Operador'}</p>
-            </div>
-          </div>
-
-          {/* Lista Items */}
-          <div className="flex-1 overflow-y-auto p-4 space-y-2 bg-white/50">
-            {cart.length === 0 ? (
-              <div className="h-full flex flex-col items-center justify-center text-sys-300 gap-3 opacity-60">
-                 <div className="w-20 h-20 bg-sys-100 rounded-full flex items-center justify-center">
-                   <ShoppingCart size={32} className="opacity-40" />
-                 </div>
-                 <p className="font-medium text-base">Su ticket está vacío</p>
-                 <p className="text-sm">Escanee un producto o búsquelo en la lista</p>
+      {/* 🟢 BARRA SUPERIOR: PESTAÑAS (MULTI-CART) */}
+      <div className="h-12 bg-white border-b border-sys-200 flex items-end px-2 gap-1 overflow-x-auto no-scrollbar shrink-0 z-20 shadow-sm">
+          {tabs.map(tab => (
+              <div 
+                  key={tab.id}
+                  onClick={() => switchTab(tab.id)}
+                  className={cn(
+                      "group relative px-4 py-2.5 min-w-[140px] max-w-[200px] cursor-pointer rounded-t-xl transition-all border-t border-x flex items-center justify-between select-none",
+                      activeTabId === tab.id 
+                          ? "bg-sys-50 border-sys-200 border-b-transparent text-brand-dark font-bold translate-y-[1px] shadow-[0_-2px_5px_rgba(0,0,0,0.02)]" 
+                          : "bg-gray-50/50 border-transparent text-sys-500 hover:bg-gray-100 hover:text-sys-700"
+                  )}
+              >
+                  <span className="truncate text-xs">{tab.client ? tab.client.name.split(' ')[0] : tab.name}</span>
+                  {tabs.length > 1 && (
+                      <button 
+                          onClick={(e) => { e.stopPropagation(); removeTab(tab.id); }}
+                          className="opacity-0 group-hover:opacity-100 hover:text-red-500 p-0.5 rounded-full hover:bg-red-50 transition-all"
+                      >
+                          <X size={12} />
+                      </button>
+                  )}
+                  {/* Indicador de Items */}
+                  {tab.items.length > 0 && (
+                      <span className="absolute top-1 right-1 w-2 h-2 bg-brand rounded-full"></span>
+                  )}
               </div>
-            ) : (
-              cart.map((item) => (
-                <div key={item.cartId} className="group flex items-center p-2 bg-white hover:bg-sys-50 rounded-lg transition-all border border-sys-100 hover:border-sys-200 shadow-sm animate-in slide-in-from-left-2 duration-200">
-                  <div className="w-10 h-10 bg-sys-100 rounded-md flex flex-col items-center justify-center shrink-0 border border-sys-200 text-sys-700 font-mono">
-                      <span className="text-base font-bold leading-none">{formatStock(item.quantity)}</span>
-                      <span className="text-[8px] uppercase opacity-70">{item.isWeighable ? 'KG' : 'UN'}</span>
-                  </div>
-                  <div className="flex-1 min-w-0 px-3">
-                    <p className="text-sm font-bold text-sys-900 truncate leading-tight">{item.name}</p>
-                    <div className="flex items-center gap-2 text-xs text-sys-500 mt-0.5">
-                      <span className="font-mono text-[10px] bg-sys-50 px-1 rounded text-sys-600 border border-sys-100">{item.code}</span>
-                      <span>x ${formatMoney(item.price)}</span>
-                    </div>
-                  </div>
-                  <div className="text-right">
-                    <p className="font-black text-sys-900 text-base tracking-tight">$ {formatMoney(item.subtotal)}</p>
-                    <button onClick={() => removeItem(item.cartId)} className="text-[10px] font-medium text-red-500 hover:text-red-700 hover:underline opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-end gap-1 ml-auto mt-0.5">
-                      <Trash2 size={10}/> Quitar
-                    </button>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-
-          {/* Footer Ticket */}
-          <div className="bg-white border-t border-sys-200 p-4 z-10 shadow-[0_-4px_20px_rgba(0,0,0,0.05)]">
-            <div className="flex justify-between items-end mb-3">
-                <div className="flex flex-col">
-                    <span className="text-xs text-sys-500 font-bold uppercase tracking-wider mb-1">Total a Pagar</span>
-                    {discount > 0 && <span className="text-[10px] text-green-600 font-bold bg-green-50 px-1.5 py-0.5 rounded self-start mb-1">Desc. {discount}%</span>}
-                    <span className="text-4xl font-black text-sys-900 tracking-tighter leading-none">$ {formatMoney(totalFinal)}</span>
-                </div>
-                <div className="flex gap-2 items-end">
-                    <button onClick={() => { if(confirm('¿Borrar todo?')) { clearCart(); setDiscount(0); setClient(null); } }} className="w-12 h-12 rounded-xl border border-red-100 text-red-500 hover:bg-red-50 hover:text-red-600 flex items-center justify-center transition-colors" title="Cancelar Venta (F4)">
-                        <Trash2 size={20} />
-                    </button>
-                    <Button className="h-12 px-6 text-lg shadow-lg shadow-brand/20 active:scale-[0.98] transition-transform flex items-center gap-2 rounded-xl" disabled={cart.length === 0} onClick={() => setIsPaymentOpen(true)}>
-                        <DollarSign size={20} strokeWidth={3}/> COBRAR
-                        <span className="bg-white/20 px-1.5 py-0.5 rounded text-[10px] font-mono opacity-90 font-bold border border-white/10 ml-1">F12</span>
-                    </Button>
-                </div>
-            </div>
-          </div>
-        </div>
-
-        {/* CATÁLOGO (SIDEBAR DERECHA) */}
-        <div className="w-full md:w-[380px] flex flex-col min-w-0 bg-white border-l border-sys-200 shadow-xl fixed right-0 top-16 bottom-12 z-20 md:relative md:top-0 md:bottom-0 md:shadow-none md:border md:rounded-2xl">
-          <div className="p-3 border-b border-sys-100 bg-white z-10">
-            <div className="relative group">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-sys-400 group-focus-within:text-brand transition-colors" size={18} />
-                <input 
-                  ref={searchInputRef}
-                  type="text" 
-                  placeholder="Buscar producto (F2)..." 
-                  className="w-full pl-9 pr-4 py-2.5 rounded-xl border border-sys-200 bg-sys-50 focus:bg-white focus:border-brand focus:ring-4 focus:ring-brand/10 outline-none transition-all text-sm font-medium shadow-sm"
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                  onKeyDown={handleKeyDownInput}
-                  autoFocus
-                  autoComplete="off"
-                />
-            </div>
-          </div>
-
-          {/* 🔥 LISTA CON SCROLL INFINITO */}
-          <div 
-            ref={productsListRef} 
-            onScroll={handleListScroll} 
-            className="flex-1 overflow-y-auto px-2 py-2 space-y-1 custom-scrollbar bg-sys-50/30"
+          ))}
+          <button 
+              onClick={addTab}
+              className="ml-1 mb-1.5 p-1.5 text-sys-400 hover:text-brand hover:bg-brand/10 rounded-full transition-colors"
+              title="Nueva Venta (Pestaña)"
           >
-            {filteredProducts.length > 0 ? (
-              <>
-                {filteredProducts.slice(0, visibleLimit).map((product, index) => {
-                  const hasStock = parseFloat(product.stock || 0) > 0;
-                  return (
-                    <div 
-                        key={product.id} 
-                        onClick={() => handleSelectProduct(product)}
-                        className={cn(
-                            "group flex items-center justify-between p-2.5 rounded-lg border cursor-pointer transition-all active:scale-[0.98]",
-                            index === focusedIndex ? "bg-brand text-white border-brand shadow-md transform scale-[1.02]" : "bg-white hover:bg-brand-light/10 border-transparent hover:border-brand/20",
-                            !hasStock && "opacity-60 grayscale"
-                        )}
-                    >
-                        <div className="flex-1 min-w-0 pr-3">
-                            <h4 className={cn("font-bold text-sm truncate transition-colors", index === focusedIndex ? "text-white" : "text-sys-800 group-hover:text-brand")}>{product.name}</h4>
-                            <div className="flex items-center gap-2 mt-1">
-                                <span className={cn("text-[10px] font-mono px-1 rounded", index === focusedIndex ? "bg-white/20 text-white" : "bg-sys-50 text-sys-400")}>{product.code}</span>
-                                <span className={cn("text-[10px] font-bold px-1.5 rounded", index === focusedIndex ? "bg-white/20 text-white" : product.stock <= (product.minStock || 5) ? "text-red-600 bg-red-50" : "text-green-600 bg-green-50")}>
-                                    {formatStock(product.stock)} {product.isWeighable ? 'kg' : 'un'}
-                                </span>
-                            </div>
-                        </div>
-                        <div className="text-right">
-                            <span className={cn("block font-bold text-sm", index === focusedIndex ? "text-white" : "text-sys-900")}>$ {formatMoney(product.price)}</span>
-                            <div className={cn("mt-1 transition-opacity", index === focusedIndex ? "opacity-100" : "opacity-0 group-hover:opacity-100")}>
-                                <div className={cn("w-5 h-5 rounded-full flex items-center justify-center shadow-sm ml-auto", index === focusedIndex ? "bg-white text-brand" : "bg-brand text-white")}><Plus size={12} strokeWidth={3} /></div>
-                            </div>
-                        </div>
-                    </div>
-                  );
-                })}
-                {/* Loader al final de la lista si hay más */}
-                {filteredProducts.length > visibleLimit && (
-                    <div className="py-4 text-center text-sys-400 text-xs flex items-center justify-center gap-2">
-                        <Loader2 size={12} className="animate-spin" />
-                        Cargando más productos...
-                    </div>
-                )}
-              </>
-            ) : (
-              <div className="h-full flex flex-col items-center justify-center text-sys-400 p-6 text-center">
-                <PackageOpen size={48} strokeWidth={1} className="mb-4 opacity-30" />
-                <p className="text-sm font-medium">Sin resultados</p>
+              <PlusCircle size={20} />
+          </button>
+      </div>
+
+      {/* 🟡 AREA PRINCIPAL: IZQUIERDA (LISTA) | DERECHA (BUSCADOR) */}
+      <div className="flex-1 flex overflow-hidden">
+          
+          {/* 👈 IZQUIERDA: DETALLE DE VENTA */}
+          <div className="flex-1 flex flex-col bg-white shadow-xl z-10 relative">
+              
+              {/* Header Cliente */}
+              <div className="p-3 border-b border-sys-100 flex items-center justify-between bg-white shrink-0">
+                  <div className="flex items-center gap-3 w-full">
+                      <button 
+                          onClick={() => setIsClientSelectorOpen(true)}
+                          className={cn(
+                              "flex-1 flex items-center gap-3 px-3 py-2 rounded-xl border transition-all text-left",
+                              activeTab.client 
+                                  ? "bg-brand-light/5 border-brand/20 text-brand-dark" 
+                                  : "bg-sys-50 border-sys-200 hover:border-sys-300 text-sys-500"
+                          )}
+                      >
+                          <div className={cn("w-8 h-8 rounded-full flex items-center justify-center shrink-0", activeTab.client ? "bg-brand text-white" : "bg-white border text-sys-400")}>
+                              <User size={16} />
+                          </div>
+                          <div className="flex flex-col overflow-hidden">
+                              <span className="text-[10px] uppercase font-bold opacity-70 tracking-wider">
+                                  {activeTab.client?.docType === '80' ? 'Factura A' : 'Consumidor Final'}
+                              </span>
+                              <span className="text-sm font-bold truncate">
+                                  {activeTab.client?.name || "Seleccionar Cliente (F3)"}
+                              </span>
+                          </div>
+                          <ChevronRight size={16} className="ml-auto opacity-50"/>
+                      </button>
+                  </div>
               </div>
-            )}
+
+              {/* Lista de Items */}
+              <div className="flex-1 overflow-y-auto p-2 bg-sys-50/30">
+                  {activeTab.items.length === 0 ? (
+                      <div className="h-full flex flex-col items-center justify-center text-sys-300 gap-4 select-none">
+                          <ShoppingCart size={48} strokeWidth={1} className="opacity-20" />
+                          <p className="text-sm font-medium">Escanee un producto o búsquelo</p>
+                      </div>
+                  ) : (
+                      <div className="space-y-2">
+                          {activeTab.items.map((item) => (
+                              <div key={item.id} className="group flex items-center p-2 bg-white border border-sys-100 rounded-lg shadow-sm hover:shadow-md transition-all">
+                                  <div className="w-10 text-center mr-3">
+                                      <div className="text-base font-bold text-sys-800">{item.quantity}</div>
+                                      <div className="text-[9px] uppercase text-sys-400 font-bold">{item.isWeighable ? 'KG' : 'UN'}</div>
+                                  </div>
+                                  <div className="flex-1 min-w-0">
+                                      <div className="text-sm font-bold text-sys-900 truncate">{item.name}</div>
+                                      <div className="text-xs text-sys-500 font-mono mt-0.5">${item.price.toLocaleString()} x un.</div>
+                                  </div>
+                                  <div className="text-right pl-3">
+                                      <div className="text-base font-black text-sys-900 tracking-tight">${item.subtotal.toLocaleString()}</div>
+                                      <button 
+                                          onClick={() => removeFromCart(item.id)}
+                                          className="text-[10px] text-red-500 font-medium hover:underline opacity-0 group-hover:opacity-100 transition-opacity"
+                                      >
+                                          Quitar
+                                      </button>
+                                  </div>
+                              </div>
+                          ))}
+                      </div>
+                  )}
+              </div>
+
+              {/* Footer Totales */}
+              <div className="p-4 bg-white border-t border-sys-200 shadow-[0_-5px_20px_rgba(0,0,0,0.05)] z-20">
+                  <div className="flex justify-between items-end mb-4">
+                      <div>
+                          <p className="text-xs font-bold text-sys-400 uppercase tracking-widest mb-1">Total a Pagar</p>
+                          <p className="text-4xl font-black text-sys-900 tracking-tighter leading-none">${totals.total.toLocaleString('es-AR', {minimumFractionDigits: 2})}</p>
+                      </div>
+                      <div className="flex gap-2">
+                          <Button 
+                              variant="ghost" 
+                              className="h-12 w-12 rounded-xl border border-red-100 text-red-500 hover:bg-red-50 hover:text-red-600 p-0"
+                              onClick={() => { if(confirm('¿Limpiar venta?')) clearCart(); }}
+                          >
+                              <Trash2 size={20}/>
+                          </Button>
+                          <Button 
+                              className="h-12 px-8 text-lg rounded-xl shadow-lg shadow-brand/20 active:scale-95 transition-transform flex items-center gap-2"
+                              disabled={activeTab.items.length === 0}
+                              onClick={() => setIsPaymentOpen(true)}
+                          >
+                              <DollarSign size={22} strokeWidth={2.5}/> COBRAR <span className="opacity-60 text-xs font-mono ml-1">F12</span>
+                          </Button>
+                      </div>
+                  </div>
+              </div>
           </div>
-        </div>
+
+          {/* 👉 DERECHA: BUSCADOR Y RESULTADOS */}
+          <div className="w-[400px] border-l border-sys-200 bg-white hidden md:flex flex-col z-0">
+              <div className="p-3 border-b border-sys-100 bg-white">
+                  <div className="relative">
+                      <Search className="absolute left-3 top-3 text-sys-400" size={18} />
+                      <input 
+                          ref={searchInputRef}
+                          type="text" 
+                          className="w-full pl-10 pr-4 py-2.5 bg-sys-50 border border-sys-200 rounded-xl outline-none focus:bg-white focus:border-brand focus:ring-4 focus:ring-brand/10 transition-all font-medium text-sys-800 placeholder:text-sys-400"
+                          placeholder="Buscar producto (F2)..."
+                          value={searchTerm}
+                          onChange={(e) => setSearchTerm(e.target.value)}
+                          onKeyDown={handleKeyDownInput}
+                          autoFocus
+                          autoComplete="off"
+                      />
+                  </div>
+              </div>
+
+              <div ref={productsListRef} className="flex-1 overflow-y-auto p-2 space-y-1">
+                  {searchResults.map((product, idx) => (
+                      <div 
+                          key={product.id}
+                          onClick={() => handleSelectProduct(product)}
+                          className={cn(
+                              "group flex items-center justify-between p-3 rounded-xl border cursor-pointer transition-all",
+                              idx === focusedIndex 
+                                  ? "bg-brand text-white border-brand shadow-md scale-[1.02]" 
+                                  : "bg-white border-transparent hover:bg-sys-50 hover:border-sys-200"
+                          )}
+                      >
+                          <div className="flex-1 min-w-0 pr-2">
+                              <div className={cn("font-bold text-sm truncate", idx === focusedIndex ? "text-white" : "text-sys-800")}>{product.name}</div>
+                              <div className={cn("text-xs mt-0.5", idx === focusedIndex ? "text-white/80" : "text-sys-400 font-mono")}>{product.code}</div>
+                          </div>
+                          <div className="text-right">
+                              <div className={cn("font-bold", idx === focusedIndex ? "text-white" : "text-sys-900")}>${product.price}</div>
+                              <div className={cn("text-[10px] font-bold uppercase", idx === focusedIndex ? "text-white/70" : parseFloat(product.stock) > 0 ? "text-green-600" : "text-red-500")}>
+                                  {parseFloat(product.stock) > 0 ? `${product.stock} disp.` : 'Sin Stock'}
+                              </div>
+                          </div>
+                      </div>
+                  ))}
+                  {searchTerm.length > 1 && searchResults.length === 0 && (
+                      <div className="text-center py-10 text-sys-400">
+                          <PackageOpen size={32} className="mx-auto mb-2 opacity-30"/>
+                          <p className="text-sm">No encontrado</p>
+                      </div>
+                  )}
+              </div>
+          </div>
       </div>
 
-      {/* BARRA COMANDOS */}
-      <div className="fixed bottom-0 left-0 right-0 md:left-64 h-10 bg-sys-900 flex items-center px-4 gap-6 text-[11px] font-medium text-sys-300 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.1)] z-50 border-t border-sys-700">
-         <div className="flex items-center gap-1.5 shrink-0"><Keyboard size={14} className="text-brand" /><span className="text-white font-bold tracking-wide">COMANDOS:</span></div>
-         <div className="h-4 w-[1px] bg-sys-700 shrink-0"></div>
-         <div className="flex items-center gap-1 shrink-0"><span className="bg-sys-800 text-white px-1.5 rounded border border-sys-600 font-mono">F2</span> <span>Buscar</span></div>
-         <div className="flex items-center gap-1 shrink-0"><span className="bg-sys-800 text-white px-1.5 rounded border border-sys-600 font-mono">F3</span> <span>Cliente</span></div>
-         <div className="flex items-center gap-1 shrink-0"><span className="bg-sys-800 text-white px-1.5 rounded border border-sys-600 font-mono">F4</span> <span>Limpiar</span></div>
-         <div className="flex items-center gap-1 shrink-0"><span className="bg-sys-800 text-white px-1.5 rounded border border-sys-600 font-mono">F6</span> <span>Descuento</span></div>
-         <div className="flex items-center gap-1 shrink-0"><span className="bg-brand text-white px-1.5 rounded border border-brand-hover font-mono font-bold">F12</span> <span className="text-white font-bold">COBRAR</span></div>
-         <div className="flex-1"></div>
-         <div className="flex items-center gap-2 text-sys-500 shrink-0">
-            <span className="w-2 h-2 rounded-full bg-green-500"></span><span>Sistema Online</span>
-         </div>
+      {/* 🕹️ FOOTER DE COMANDOS */}
+      <div className="h-8 bg-sys-800 border-t border-sys-700 flex items-center px-4 gap-6 text-[10px] font-medium text-sys-300 shrink-0 select-none">
+          <div className="flex items-center gap-1"><Keyboard size={12} className="text-brand"/> <span className="font-bold text-white">COMANDOS:</span></div>
+          <div className="flex items-center gap-1"><span className="bg-sys-700 px-1 rounded text-white font-mono">F2</span> Buscar</div>
+          <div className="flex items-center gap-1"><span className="bg-sys-700 px-1 rounded text-white font-mono">F3</span> Cliente</div>
+          <div className="flex items-center gap-1"><span className="bg-sys-700 px-1 rounded text-white font-mono">F12</span> Cobrar</div>
+          <div className="ml-auto flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-green-500 shadow-[0_0_5px_rgba(34,197,94,0.5)]"></span>
+              <span>Caja Abierta: {user?.name}</span>
+          </div>
       </div>
 
-      {/* MODALES */}
-      {isProcessingSale && <div className="absolute inset-0 z-[80] bg-white/80 backdrop-blur-sm flex items-center justify-center rounded-2xl animate-in fade-in"><div className="flex flex-col items-center p-8"><div className="animate-spin rounded-full h-12 w-12 border-4 border-sys-200 border-t-brand mb-4"></div><p className="font-bold text-lg text-sys-900">Procesando Venta...</p></div></div>}
-      <QuantityModal isOpen={!!selectedProduct} product={selectedProduct} onClose={handleCloseQuantity} onConfirm={handleQuantityConfirm} />
-      <PaymentModal isOpen={isPaymentOpen} onClose={() => setIsPaymentOpen(false)} total={totalFinal} client={client} onConfirm={handlePaymentConfirm} />
-      <ClientSelectionModal isOpen={isClientSelectorOpen} onClose={() => { setIsClientSelectorOpen(false); setTimeout(() => searchInputRef.current?.focus(), 100); }} onSelect={(c) => setClient(c)} />
-      <TicketModal isOpen={!!lastSaleTicket} sale={lastSaleTicket} onClose={() => { setLastSaleTicket(null); setTimeout(() => searchInputRef.current?.focus(), 100); }} />
+      {/* 🚀 MODALES Y OVERLAYS */}
+      {isProcessing && (
+          <div className="absolute inset-0 bg-white/80 backdrop-blur-sm z-50 flex items-center justify-center flex-col">
+              <Loader2 size={48} className="text-brand animate-spin mb-4"/>
+              <p className="text-lg font-bold text-sys-800">Procesando Venta...</p>
+          </div>
+      )}
+
+      {/* Modal Cantidad (Para productos pesables) */}
+      <QuantityModal 
+          isOpen={!!selectedProduct} 
+          product={selectedProduct} 
+          onClose={() => { setSelectedProduct(null); setTimeout(() => searchInputRef.current?.focus(), 100); }} 
+          onConfirm={(product, qty) => { addToCart(product, qty); setSelectedProduct(null); setTimeout(() => searchInputRef.current?.focus(), 100); }} 
+      />
+
+      {/* Modal Pagos */}
+      <PaymentModal 
+          isOpen={isPaymentOpen} 
+          total={totals.total} 
+          client={activeTab.client} 
+          onClose={() => setIsPaymentOpen(false)}
+          onConfirm={async (paymentData) => {
+              const result = await processSale(paymentData);
+              if (result) setLastSaleTicket(result); // Mostrar ticket si hubo venta
+              setIsPaymentOpen(false);
+          }} 
+      />
+
+      {/* Selector de Clientes */}
+      <ClientSelectionModal 
+          isOpen={isClientSelectorOpen} 
+          onClose={() => { setIsClientSelectorOpen(false); setTimeout(() => searchInputRef.current?.focus(), 100); }} 
+          onSelect={(c) => { setClient(c); setIsClientSelectorOpen(false); }} 
+      />
+
+      {/* Ticket Post-Venta */}
+      <TicketModal 
+          isOpen={!!lastSaleTicket} 
+          sale={lastSaleTicket} 
+          onClose={() => { setLastSaleTicket(null); setTimeout(() => searchInputRef.current?.focus(), 100); }} 
+      />
+
     </div>
   );
 };

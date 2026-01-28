@@ -1,330 +1,242 @@
 import { getDB } from '../../../database/db';
 import { db } from '../../../database/firebase';
-import { doc, setDoc, writeBatch, collection } from 'firebase/firestore'; 
+import { 
+    doc, 
+    setDoc, 
+    updateDoc, 
+    increment, 
+    serverTimestamp, 
+    collection, 
+    writeBatch 
+} from 'firebase/firestore'; 
 import { useAuthStore } from '../../auth/store/useAuthStore'; 
 
-// ==========================================
-// ☁️ HELPER: SYNC OPTIMISTA (Fire & Forget)
-// ==========================================
-const triggerOptimisticSync = async (collectionName, data) => {
-  if (!navigator.onLine) return;
-
-  const { user } = useAuthStore.getState();
-  if (!user || !user.companyId) return;
-
-  try {
-    const { syncStatus, ...cloudData } = data;
-    const path = `companies/${user.companyId}/${collectionName}`;
-
-    // Si data.id existe lo usamos, si no (raro en este punto), dejamos que Firestore asigne
-    const docRef = data.id ? doc(db, path, data.id) : doc(collection(db, path));
-
-    // No usamos await para no bloquear la UI del usuario
-    setDoc(docRef, {
-      ...cloudData,
-      firestoreId: docRef.id,
-      syncedAt: new Date().toISOString(),
-      syncStatus: 'synced' // En nube ya está synced
-    }, { merge: true }).then(async () => {
-        // Callback de éxito: Actualizamos localmente
-        try {
-            const dbLocal = await getDB();
-            // Dexie update parcial
-            const table = collectionName === 'movements' ? dbLocal.movements : dbLocal.products;
-            if (data.id) {
-                await table.update(data.id, { syncStatus: 'synced' });
-            }
-        } catch (e) { /* Silent fail local update */ }
-    });
-
-  } catch (e) {
-    console.warn(`⚠️ Sync Optimista falló (${collectionName}), se reintentará luego.`);
-  }
-};
+// ===========================================================================
+// 🧠 PRODUCT REPOSITORY (ENTERPRISE EDITION v2.1)
+// ===========================================================================
 
 export const productRepository = {
 
-  // ==========================================
-  // 📖 LECTURA (Optimizado con Dexie)
-  // ==========================================
+    // ==========================================
+    // 📖 LECTURA (Local - Ultra Rápida)
+    // ==========================================
 
-  async getAll() {
-    const db = await getDB();
-    return await db.products
-        .filter(p => !p.deleted)
-        .toArray();
-  },
+    async getAll() {
+        const dbLocal = await getDB();
+        return await dbLocal.products
+            .filter(p => !p.deleted)
+            .toArray();
+    },
 
-  async findByCode(code) {
-    const db = await getDB();
-    const product = await db.products.where('code').equals(code).first();
-    if (product && product.deleted) return null;
-    return product;
-  },
+    async findByCode(code) {
+        const dbLocal = await getDB();
+        const product = await dbLocal.products.where('code').equals(code).first();
+        if (product && product.deleted) return null;
+        return product;
+    },
 
-  async getHistory(productId) {
-    const db = await getDB();
-    return await db.movements
-        .where('productId')
-        .equals(productId)
-        .reverse() 
-        .sortBy('date');
-  },
+    // 🔥 FIX: FALTABA ESTE MÉTODO CRÍTICO PARA EL POS
+    async search(query) {
+        const dbLocal = await getDB();
+        const term = query.toLowerCase().trim();
 
-  // ==========================================
-  // 💾 ESCRITURA TRANSACCIONAL (ACID)
-  // ==========================================
+        if (!term) return [];
 
-  // 🔥 FIX: Aceptar parámetro 'currentUser' para firmar movimientos
-  async save(product) {
-    const dbLocal = await getDB();
-    
-    // 1. Preparar ID y Datos
-    const productId = product.id || crypto.randomUUID();
-    
-    // Obtenemos estado anterior para comparar (snapshot)
-    const oldProduct = await dbLocal.products.get(productId);
+        // Búsqueda optimizada en memoria local (Dexie)
+        // Busca coincidencias en Nombre O Código O Código de Barras
+        return await dbLocal.products
+            .filter(p => 
+                !p.deleted && (
+                    p.name.toLowerCase().includes(term) || 
+                    (p.code && p.code.toString().toLowerCase().includes(term)) ||
+                    (p.barcode && p.barcode.toString().toLowerCase().includes(term))
+                )
+            )
+            .limit(50) // Limitamos a 50 resultados para no saturar la UI
+            .toArray();
+    },
 
-    // 2. Gestión Inteligente de Lotes (Batches)
-    let batches = product.batches || (oldProduct?.batches || []);
-    
-    // Auto-generar lote si es producto nuevo con stock inicial
-    if (!oldProduct && parseFloat(product.stock) > 0 && product.expiryDate) {
-        batches = [{
-            id: crypto.randomUUID(),
-            quantity: parseFloat(product.stock),
-            expiryDate: product.expiryDate,
-            dateAdded: new Date().toISOString()
-        }];
-    }
+    async getHistory(productId) {
+        const dbLocal = await getDB();
+        return await dbLocal.movements
+            .where('productId')
+            .equals(productId)
+            .reverse() 
+            .sortBy('date');
+    },
 
-    // 3. Objeto Final a Guardar
-    // Extraemos 'user' del objeto product si viene inyectado, sino usamos default
-    const { user: injectedUser, ...cleanProduct } = product; 
-    
-    const productToSave = {
-      ...cleanProduct,
-      id: productId,
-      batches: batches,
-      updatedAt: new Date().toISOString(),
-      syncStatus: 'pending',
-      deleted: false
-    };
+    // ==========================================
+    // 💾 GUARDADO DE MAESTROS (Global)
+    // ==========================================
+    async save(product) {
+        const dbLocal = await getDB();
+        const { user } = useAuthStore.getState();
 
-    const movementsToSave = [];
-    const timestamp = new Date().toISOString();
-    
-    // 🔥 USAMOS EL USUARIO INYECTADO O 'Sistema' COMO FALLBACK
-    const finalUser = injectedUser || 'Sistema';
+        if (!user || !user.companyId) throw new Error("Sesión no válida para guardar.");
 
-    // 4. Lógica de Negocio: Generar Movimientos (Kardex)
-    if (!oldProduct) {
-        // CREACIÓN
-        movementsToSave.push({
-            id: `mov_${crypto.randomUUID()}`, 
-            productId,
-            type: 'CREATION',
-            description: 'Producto dado de alta',
-            user: finalUser, 
-            date: timestamp,
-            syncStatus: 'pending'
-        });
-        if (parseFloat(productToSave.stock) > 0) {
-            movementsToSave.push({
-                id: `mov_${crypto.randomUUID()}`,
-                productId,
-                type: 'STOCK_IN',
-                description: `Stock inicial: ${productToSave.stock}`,
-                amount: parseFloat(productToSave.stock),
-                user: finalUser,
-                date: timestamp,
-                syncStatus: 'pending'
-            });
-        }
-    } else {
-        // ACTUALIZACIÓN
-        if (parseFloat(oldProduct.price) !== parseFloat(productToSave.price)) {
-            movementsToSave.push({
-                id: `mov_${crypto.randomUUID()}`,
-                productId,
-                type: 'PRICE_CHANGE',
-                description: `Precio: $${oldProduct.price} ➝ $${productToSave.price}`,
-                user: finalUser,
-                date: timestamp,
-                syncStatus: 'pending'
-            });
-        }
+        // 1. Preparar Datos
+        const productId = product.id || crypto.randomUUID();
+        const timestamp = new Date().toISOString();
         
-        const diff = parseFloat(productToSave.stock) - parseFloat(oldProduct.stock);
-        if (Math.abs(diff) > 0.001) { 
-            movementsToSave.push({
-                id: `mov_${crypto.randomUUID()}`,
-                productId,
-                type: 'STOCK_ADJUST_' + (diff > 0 ? 'IN' : 'OUT'),
-                description: `Ajuste manual: ${diff > 0 ? '+' : ''}${diff.toFixed(2)}`,
-                amount: Math.abs(diff),
-                user: finalUser,
-                date: timestamp,
-                syncStatus: 'pending'
+        const productToSave = {
+            ...product,
+            id: productId,
+            updatedAt: timestamp,
+            syncStatus: 'pending', 
+            deleted: false
+        };
+
+        // Limpieza para Nube (Separación de Concerns)
+        const { stock, batches, user: _, ...cloudMasterData } = productToSave;
+
+        // 2. Guardado Local (Dexie)
+        await dbLocal.products.put(productToSave);
+
+        // 3. Sincronización Cloud (Fondo)
+        if (navigator.onLine) {
+            const masterRef = doc(db, `companies/${user.companyId}/products`, productId);
+            setDoc(masterRef, {
+                ...cloudMasterData,
+                updatedAt: serverTimestamp() 
+            }, { merge: true }).catch(err => {
+                console.warn("⚠️ Falló subida a Cloud (Maestro), se reintentará por SyncService:", err);
             });
         }
-    }
 
-    // 🔥 TRANSACCIÓN ACID: Todo o Nada
-    await dbLocal.transaction('rw', [dbLocal.products, dbLocal.movements], async () => {
-        await dbLocal.products.put(productToSave);
-        if (movementsToSave.length > 0) {
-            await dbLocal.movements.bulkAdd(movementsToSave);
+        return productToSave;
+    },
+
+    // ==========================================
+    // ⚡ GESTIÓN DE STOCK (Transactional / Branch Aware)
+    // ==========================================
+    async addStock(productId, quantity, expiryDate, userName = 'Sistema') {
+        const dbLocal = await getDB();
+        const { user, activeBranchId } = useAuthStore.getState();
+
+        if (!user || !user.companyId) throw new Error("No hay sesión de empresa activa.");
+        
+        const targetBranchId = activeBranchId || user.branchId; 
+        
+        if (!targetBranchId) {
+            throw new Error("⚠️ Debes seleccionar una Sucursal para mover stock.");
         }
-    });
-
-    // 5. Sync Optimista (Fuera de la transacción para velocidad)
-    triggerOptimisticSync('products', productToSave);
-    movementsToSave.forEach(mov => triggerOptimisticSync('movements', mov));
-
-    return productToSave;
-  },
-
-  // ==========================================
-  // ⚡ INGRESO RÁPIDO DE STOCK
-  // ==========================================
-  // 🔥 FIX: Añadido parámetro 'user'
-  async addStock(productId, quantity, expiryDate, user = 'Sistema') {
-    const dbLocal = await getDB();
-    
-    // Transacción Read-Write
-    await dbLocal.transaction('rw', [dbLocal.products, dbLocal.movements], async () => {
-        const product = await dbLocal.products.get(productId);
-        if (!product) throw new Error("Producto no encontrado");
 
         const qty = parseFloat(quantity);
-        const newStock = (parseFloat(product.stock) || 0) + qty;
+        if (isNaN(qty) || qty === 0) return;
 
-        // Gestión de lotes
-        let batches = product.batches || [];
-        if (qty > 0) {
-            batches.push({
-                id: crypto.randomUUID(),
-                quantity: qty,
-                expiryDate: expiryDate || null, 
-                dateAdded: new Date().toISOString()
-            });
-        }
-
-        // Ordenar lotes por vencimiento para FIFO futuro
-        const activeBatches = batches
-            .filter(b => b.quantity > 0 && b.expiryDate)
-            .sort((a, b) => new Date(a.expiryDate) - new Date(b.expiryDate));
+        // --- A. LÓGICA LOCAL (DEXIE) ---
+        await dbLocal.transaction('rw', [dbLocal.products, dbLocal.movements], async () => {
+            const product = await dbLocal.products.get(productId);
             
-        const nextExpiry = activeBatches.length > 0 ? activeBatches[0].expiryDate : product.expiryDate;
+            if (product) {
+                const currentStock = parseFloat(product.stock) || 0;
+                const newStock = currentStock + qty;
 
-        const updatedProduct = {
-            ...product,
-            stock: newStock,
-            batches: batches,
-            expiryDate: nextExpiry,
-            updatedAt: new Date().toISOString(),
-            syncStatus: 'pending'
-        };
+                let batches = product.batches || [];
+                if (qty > 0) { 
+                    batches.push({
+                        id: crypto.randomUUID(),
+                        quantity: qty,
+                        expiryDate: expiryDate || null, 
+                        dateAdded: new Date().toISOString()
+                    });
+                }
 
-        const movement = {
-            id: `mov_${crypto.randomUUID()}`, 
-            productId,
-            type: 'STOCK_IN',
-            description: `Ingreso Rápido (+${qty}) ${expiryDate ? 'Vence: ' + expiryDate : ''}`,
-            amount: qty,
-            user: user, // 🔥 USAMOS EL USUARIO PASADO
-            date: new Date().toISOString(),
-            syncStatus: 'pending'
-        };
+                await dbLocal.products.update(productId, {
+                    stock: newStock,
+                    batches: batches,
+                    syncStatus: 'pending_stock' 
+                });
+            }
 
-        // Guardado Atómico
-        await dbLocal.products.put(updatedProduct);
-        await dbLocal.movements.put(movement); 
-
-        // Disparar sync
-        (async () => {
-             triggerOptimisticSync('products', updatedProduct);
-             triggerOptimisticSync('movements', movement); 
-        })();
-    });
-  },
-
-  // ==========================================
-  // ☁️ SYNC SERVICE HELPERS
-  // ==========================================
-
-  async getPendingSync() {
-    const db = await getDB();
-    return await db.products.where('syncStatus').equals('pending').toArray();
-  },
-
-  async markAsSynced(ids) {
-    const db = await getDB();
-    await db.products.bulkUpdate(
-        ids.map(id => ({ key: id, changes: { syncStatus: 'synced' } }))
-    );
-  },
-
-  // ==========================================
-  // 🗑️ SOFT DELETE
-  // ==========================================
-  async delete(id) {
-    const dbLocal = await getDB();
-    
-    await dbLocal.transaction('rw', dbLocal.products, async () => {
-        const product = await dbLocal.products.get(id);
-        if (product) {
-            const deletedProduct = {
-                ...product,
-                deleted: true,
-                syncStatus: 'pending',
-                updatedAt: new Date().toISOString()
+            const movement = {
+                id: `mov_${crypto.randomUUID()}`, 
+                productId,
+                type: qty > 0 ? 'STOCK_IN' : 'STOCK_OUT',
+                description: qty > 0 ? 'Ingreso Manual' : 'Ajuste Manual',
+                amount: Math.abs(qty),
+                branchId: targetBranchId, 
+                user: userName, 
+                date: new Date().toISOString(),
+                syncStatus: 'pending'
             };
-            await dbLocal.products.put(deletedProduct);
-            triggerOptimisticSync('products', deletedProduct);
-        }
-    });
-  },
-
-  // ==========================================
-  // ✍️ IMPORTACIÓN MASIVA (Excel)
-  // ==========================================
-  async saveAll(products) {
-    const db = await getDB();
-    const productsToSave = products.map(p => ({
-        ...p,
-        syncStatus: 'pending' 
-    }));
-    await db.products.bulkPut(productsToSave);
-  },
-
-  // ==========================================
-  // 👑 SUPER ADMIN (Maestro)
-  // ==========================================
-  async saveToMasterCatalog(products) {
-    const BATCH_SIZE = 400; 
-    const chunks = [];
-    for (let i = 0; i < products.length; i += BATCH_SIZE) {
-        chunks.push(products.slice(i, i + BATCH_SIZE));
-    }
-
-    let batchCount = 0;
-    for (const chunk of chunks) {
-        const batch = writeBatch(db);
-        chunk.forEach(product => {
-            const docRef = doc(db, "master_products", product.id);
-            const { syncStatus, ...cleanProduct } = product;
-            batch.set(docRef, {
-                ...cleanProduct,
-                isMaster: true,
-                updatedAt: new Date().toISOString()
-            });
+            await dbLocal.movements.put(movement);
         });
-        await batch.commit();
-        batchCount++;
-        console.log(`☁️ Maestro Lote ${batchCount}/${chunks.length} subido.`);
+
+        // --- B. LÓGICA CLOUD (ATÓMICA) ---
+        if (navigator.onLine) {
+            const inventoryRef = doc(db, `companies/${user.companyId}/branches/${targetBranchId}/inventory`, productId);
+            const movementRef = doc(collection(db, `companies/${user.companyId}/branches/${targetBranchId}/movements`));
+
+            const batch = writeBatch(db);
+
+            batch.set(inventoryRef, {
+                stock: increment(qty),
+                productId: productId,
+                updatedAt: serverTimestamp()
+            }, { merge: true });
+
+            batch.set(movementRef, {
+                productId,
+                type: qty > 0 ? 'STOCK_IN' : 'STOCK_OUT',
+                amount: Math.abs(qty),
+                user: userName,
+                date: serverTimestamp()
+            });
+
+            batch.commit().catch(err => {
+                console.error("🔴 Error crítico sincronizando stock a Nube:", err);
+            });
+        }
+    },
+
+    // ==========================================
+    // ☁️ HELPERS PARA SYNC SERVICE
+    // ==========================================
+
+    async getPendingSync() {
+        const dbLocal = await getDB();
+        return await dbLocal.products
+            .where('syncStatus').anyOf('pending', 'pending_stock')
+            .toArray();
+    },
+
+    async markAsSynced(ids) {
+        const dbLocal = await getDB();
+        await dbLocal.products.bulkUpdate(
+            ids.map(id => ({ key: id, changes: { syncStatus: 'synced' } }))
+        );
+    },
+
+    // ==========================================
+    // 🗑️ SOFT DELETE (Global)
+    // ==========================================
+    async delete(id) {
+        const dbLocal = await getDB();
+        const { user } = useAuthStore.getState();
+
+        // Local
+        await dbLocal.products.update(id, { deleted: true });
+
+        // Cloud
+        if (navigator.onLine && user?.companyId) {
+            const docRef = doc(db, `companies/${user.companyId}/products`, id);
+            updateDoc(docRef, { 
+                deleted: true, 
+                updatedAt: serverTimestamp() 
+            }).catch(console.error);
+        }
+    },
+
+    // ==========================================
+    // ✍️ IMPORTACIÓN MASIVA
+    // ==========================================
+    async saveAll(products) {
+        const dbLocal = await getDB();
+        const productsToSave = products.map(p => ({
+            ...p,
+            syncStatus: 'pending' 
+        }));
+        await dbLocal.products.bulkPut(productsToSave);
     }
-    return true;
-  }
 };

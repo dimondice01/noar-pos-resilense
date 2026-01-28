@@ -18,8 +18,9 @@ export const syncService = {
   _unsubscribes: [],
 
   // =================================================================
-  // 🧼 SANITIZADORES
+  // 🧼 SANITIZADORES (Defensa de Datos)
   // =================================================================
+  // Limpian los objetos antes de entrar a la DB para evitar errores de Firebase
 
   _deepSanitize(obj) {
     if (obj === undefined) return null;
@@ -38,7 +39,7 @@ export const syncService = {
     return obj;
   },
 
-  // 1. PRODUCTOS
+  // 1. PRODUCTOS (Entrada Nube -> Local)
   _sanitizeCloudProduct(data, id) {
       return {
           id: id, 
@@ -46,7 +47,9 @@ export const syncService = {
           name: data.name || 'Producto Sin Nombre',
           price: parseFloat(data.price) || 0,
           cost: parseFloat(data.cost) || 0,
-          stock: parseFloat(data.stock) || 0,
+          // Nota: El stock que viene del Maestro es referencial (o 0). 
+          // El stock real viene de la colección 'inventory'.
+          stock: parseFloat(data.stock) || 0, 
           categoryId: data.categoryId || 'uncategorized',
           category: data.category || '', 
           brand: data.brand || '',       
@@ -174,7 +177,8 @@ export const syncService = {
                   localDb.config.clear(),
                   localDb.cash_movements.clear(),
                   localDb.shifts.clear(), 
-                  localDb.movements.clear() 
+                  localDb.movements.clear(),
+                  localDb.inventory.clear() // Limpiamos inventario también
               ]);
           } catch (error) { console.error(error); }
       }
@@ -182,7 +186,7 @@ export const syncService = {
   },
 
   // =================================================================
-  // 📡 LISTENERS
+  // 📡 LISTENERS (Bajada de Datos en Tiempo Real)
   // =================================================================
   
   async startRealTimeListeners(companyIdArg = null) {
@@ -208,7 +212,7 @@ export const syncService = {
       } catch (e) { console.error("Error config:", e); }
     }));
 
-    // 2. PRODUCTOS
+    // 2. PRODUCTOS (Maestros)
     const productsQuery = query(collection(db, 'companies', companyId, 'products'));
     this._unsubscribes.push(onSnapshot(productsQuery, async (snapshot) => {
       if (snapshot.empty) return;
@@ -299,25 +303,7 @@ export const syncService = {
         }));
     } catch (e) { console.warn("Listener Cash Movs off:", e); }
 
-// ... dentro de startRealTimeListeners ...
-
-    // 8. SUCURSALES (Vital para Multi-Branch)
-    const branchesQuery = query(collection(db, 'companies', companyId, 'branches'));
-    this._unsubscribes.push(onSnapshot(branchesQuery, async (snapshot) => {
-        const branchesToPut = [];
-        snapshot.docChanges().forEach(change => {
-            if (change.type === 'added' || change.type === 'modified') {
-                branchesToPut.push({ id: change.doc.id, ...change.doc.data(), syncStatus: 'synced' });
-            }
-        });
-        if (branchesToPut.length > 0) {
-            const localDb = await getDB();
-            await localDb.branches.bulkPut(branchesToPut);
-            console.log(`🏢 Sucursales sincronizadas: ${branchesToPut.length}`);
-        }
-    }));
-     
-    // 7. MAESTROS
+    // 7. MAESTROS (Categorias, Marcas...)
     const masterCollections = ['categories', 'brands', 'clients', 'suppliers'];
     masterCollections.forEach(collectionName => {
         const q = query(collection(db, 'companies', companyId, collectionName));
@@ -336,13 +322,31 @@ export const syncService = {
             if (itemsToPut.length > 0) { try { await localDb.table(collectionName).bulkPut(itemsToPut); } catch(e){} }
         }));
     });
+
+    // 8. SUCURSALES (Vital para Multi-Branch)
+    const branchesQuery = query(collection(db, 'companies', companyId, 'branches'));
+    this._unsubscribes.push(onSnapshot(branchesQuery, async (snapshot) => {
+        const branchesToPut = [];
+        snapshot.docChanges().forEach(change => {
+            if (change.type === 'added' || change.type === 'modified') {
+                branchesToPut.push({ id: change.doc.id, ...change.doc.data(), syncStatus: 'synced' });
+            }
+        });
+        if (branchesToPut.length > 0) {
+            const localDb = await getDB();
+            await localDb.branches.bulkPut(branchesToPut);
+            // console.log(`🏢 Sucursales sincronizadas: ${branchesToPut.length}`);
+        }
+    }));
   },
 
+  // Helper para aplicar cambios de productos de forma segura
   async _applyProductChangesStrict(itemsToPut, idsToDelete) {
       const localDb = await getDB();
       try {
           await localDb.transaction('rw', localDb.products, async () => {
               if (idsToDelete.length > 0) await localDb.products.bulkDelete(idsToDelete);
+              
               if (itemsToPut.length > 0) {
                   const finalItems = [];
                   const idsToKillLocal = []; 
@@ -355,17 +359,28 @@ export const syncService = {
                   for (const incoming of itemsToPut) {
                       const code = String(incoming.code);
                       const localMatch = conflictsMap.get(code);
+                      
                       if (localMatch) {
                           const localId = String(localMatch.id);
                           const incomingId = String(incoming.id);
-                          if (localId === incomingId) { finalItems.push(incoming); } 
-                          else {
+                          
+                          if (localId === incomingId) { 
+                              // Actualización normal
+                              finalItems.push(incoming); 
+                          } else {
+                              // Conflicto de código duplicado: Gana el de la nube si el local es "legacy"
                               const isIncomingLegacy = incomingId.length < 20; 
                               const isLocalLegacy = localId.length < 20;
-                              if (isIncomingLegacy && !isLocalLegacy) { idsToKillLocal.push(localMatch.id); finalItems.push(incoming); } 
+                              if (isIncomingLegacy && !isLocalLegacy) { 
+                                  idsToKillLocal.push(localMatch.id); 
+                                  finalItems.push(incoming); 
+                              } 
                           }
-                      } else { finalItems.push(incoming); }
+                      } else { 
+                          finalItems.push(incoming); 
+                      }
                   }
+                  
                   if (idsToKillLocal.length > 0) await localDb.products.bulkDelete(idsToKillLocal);
                   if (finalItems.length > 0) await localDb.products.bulkPut(finalItems);
               }
@@ -379,8 +394,13 @@ export const syncService = {
   },
 
   // =================================================================
-  // 🚀 SUBIDA (LOCAL -> NUBE)
+  // 🚀 SUBIDA (LOCAL -> NUBE) - ENTERPRISE LOGIC
   // =================================================================
+
+  // Alias para useAutoSync
+  async syncPending() {
+      return this.syncAll();
+  },
 
   async syncUp() { return this.syncAll(); },
 
@@ -390,57 +410,77 @@ export const syncService = {
     if (!companyId) return { sales: 0, products: 0 };
 
     try {
-        const salesRes = await this.syncPendingSales(companyId);
-        const prodRes = await this.syncPendingProducts(companyId);
-        await this.syncPendingMasters(companyId); 
-        return { sales: salesRes.synced, products: prodRes.synced };
+        // Ejecución en paralelo para máxima eficiencia
+        const [salesRes, prodRes, mastersRes] = await Promise.all([
+            this.syncPendingSales(companyId),
+            this.syncPendingProducts(companyId),
+            this.syncPendingMasters(companyId) 
+        ]);
+
+        const totalUploaded = salesRes.synced + prodRes.synced + (mastersRes?.synced || 0);
+        return { uploaded: totalUploaded, errors: 0 };
     } catch (error) {
         console.error("❌ Error Sync Up:", error);
-        return { sales: 0, products: 0 };
+        return { uploaded: 0, errors: 1 };
     }
   },
 
+  // A. SUBIDA DE MAESTROS (Categorías, Marcas...)
   async syncPendingMasters(companyId) {
       const localDb = await getDB();
       const masterCollections = ['categories', 'brands', 'suppliers', 'clients'];
+      let totalSynced = 0;
+
       for (const collectionName of masterCollections) {
           try {
               const pendingItems = await localDb.table(collectionName).where('syncStatus').equals('pending').toArray();
               if (pendingItems.length === 0) continue;
+
               const batch = writeBatch(db);
               const colRef = collection(db, 'companies', companyId, collectionName);
+              const syncedIds = [];
+
               for (const item of pendingItems) {
-                  // 🔥 FIX: Validar que el ID no sea vacío
-                  if (!item.id) continue; 
+                  if (!item.id) continue;
                   const docRef = doc(colRef, String(item.id));
                   const { syncStatus, ...cleanItem } = item;
                   batch.set(docRef, this._deepSanitize(cleanItem), { merge: true });
+                  syncedIds.push(item.id);
               }
+
               await batch.commit();
-              await localDb.table(collectionName).bulkPut(pendingItems.map(i => ({ ...i, id: i.id, syncStatus: 'synced' })));
+              
+              await localDb.table(collectionName).bulkUpdate(
+                  syncedIds.map(id => ({ key: id, changes: { syncStatus: 'synced' } }))
+              );
+              totalSynced += syncedIds.length;
           } catch(e) { console.warn(`Error syncing masters (${collectionName}):`, e); }
       }
+      return { synced: totalSynced };
   },
 
+  // B. SUBIDA DE VENTAS
   async syncPendingSales(companyId) {
     const localDb = await getDB();
-    const allSales = await salesRepository.getTodaySales(); 
-    const pendingSales = allSales.filter(s => s.syncStatus === 'pending');
+    const pendingSales = await localDb.sales.where('syncStatus').equals('pending').toArray();
+    
     if (pendingSales.length === 0) return { synced: 0 };
 
     const chunks = this.chunkArray(pendingSales, 400); 
     let totalSynced = 0;
+
     for (const batchSales of chunks) {
         const batch = writeBatch(db);
         const salesCollection = collection(db, 'companies', companyId, 'sales');
         const syncedIds = [];
+
         for (const sale of batchSales) {
-            // 🔥 FIX: Validar ID
             const safeId = sale.firestoreId || sale.localId;
             if (!safeId) continue;
 
             const docRef = doc(salesCollection, String(safeId)); 
             const { localId, syncStatus, ...cleanSale } = sale;
+
             batch.set(docRef, {
                 ...this._deepSanitize(cleanSale),
                 date: new Date(cleanSale.date).toISOString(), 
@@ -448,42 +488,51 @@ export const syncService = {
                 syncedAt: new Date().toISOString(),
                 origin: 'POS_WEB' 
             }, { merge: true });
-            syncedIds.push(sale.localId);
+            
+            syncedIds.push(sale.localId || sale.id);
         }
+
         await batch.commit();
-        const tx = localDb.transaction('rw', localDb.sales, async () => {
-             for (const id of syncedIds) { await localDb.sales.update(id, { syncStatus: 'synced' }); }
-        });
-        await tx;
+        
+        await localDb.sales.bulkUpdate(
+             syncedIds.map(id => ({ key: id, changes: { syncStatus: 'synced' } }))
+        );
         totalSynced += batchSales.length;
     }
     return { synced: totalSynced };
   },
 
+  // C. SUBIDA DE PRODUCTOS (MAESTROS)
+  // 🔥 CRÍTICO: Filtramos stock y batches para respetar arquitectura distribuida
   async syncPendingProducts(companyId) {
     const pendingProducts = await productRepository.getPendingSync();
     if (pendingProducts.length === 0) return { synced: 0 };
+
     const chunks = this.chunkArray(pendingProducts, 400); 
     let totalSynced = 0;
+
     for (const chunk of chunks) {
         const batch = writeBatch(db);
         const productsCollection = collection(db, 'companies', companyId, 'products');
         const syncedIds = [];
+
         for (const product of chunk) {
-            // 🔥 FIX: Validar ID antes de llamar a doc()
             if (!product.id) continue;
-            
             const docRef = doc(productsCollection, String(product.id));
-            const { syncStatus, ...dataToUpload } = product;
+            
+            // 🛑 SEPARACIÓN DE PODERES:
+            // Eliminamos 'stock' y 'batches' del objeto maestro.
+            // El stock se maneja exclusivamente en 'branches/{id}/inventory'.
+            const { syncStatus, stock, batches, ...dataToUpload } = product;
+
             batch.set(docRef, {
                  ...this._deepSanitize(dataToUpload),
-                 category: dataToUpload.category || '',
-                 brand: dataToUpload.brand || '',
-                 supplier: dataToUpload.supplier || '',
                  lastUpdated: new Date().toISOString()
-            }, { merge: true });
+            }, { merge: true }); 
+
             syncedIds.push(product.id);
         }
+
         await batch.commit();
         await productRepository.markAsSynced(syncedIds);
         totalSynced += chunk.length;

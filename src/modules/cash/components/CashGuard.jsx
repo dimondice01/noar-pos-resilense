@@ -1,50 +1,55 @@
 import React, { useEffect, useState } from 'react';
-import { Lock, ArrowRight, Wallet, UserCircle } from 'lucide-react';
+import { Lock, ArrowRight, Wallet, UserCircle, Loader2, AlertCircle } from 'lucide-react';
 import { shiftRepository } from '../repositories/shiftRepository';
+import { cashRepository } from '../repositories/cashRepository';
 import { securityService } from '../../security/services/securityService';
 import { PinPad } from '../../security/components/PinPad';
 import { Button } from '../../../core/ui/Button';
-import { cn } from '../../../core/utils/cn';
-// 👇 Importamos el store nuevo
 import { useShiftStore } from '../store/useShiftStore';
+import { useAuthStore } from '../../auth/store/useAuthStore';
 
 export const CashGuard = ({ children }) => {
   const [loading, setLoading] = useState(true);
   
-  // Usamos el store global en lugar de estado local para la sesión activa
+  // Stores Globales
   const { currentShift, setSession } = useShiftStore(); 
+  const { user } = useAuthStore();
 
-  // Formulario local
-  const [step, setStep] = useState('LOGIN'); 
+  // Estados Locales
+  const [step, setStep] = useState('CHECKING'); // CHECKING | LOGIN | AMOUNT
   const [pin, setPin] = useState('');
-  const [tempUser, setTempUser] = useState(null); // Usuario temporal mientras se loguea
+  const [tempUser, setTempUser] = useState(null); 
   const [initialAmount, setInitialAmount] = useState('');
   const [error, setError] = useState('');
 
+  // 1. Verificación Inicial (Al montar)
   useEffect(() => {
-    checkShift();
-  }, []);
-
-  const checkShift = async () => {
-    try {
-      const shift = await shiftRepository.getCurrentShift();
-      if (shift) {
-        // 🔥 Si hay turno, recuperamos el usuario (MOCK por ahora)
-        // En producción, buscaríamos el usuario en DB por shift.userId
-        const user = shift.userId === 'u_admin' 
-            ? { name: 'Gerente General', role: 'MANAGER' } 
-            : { name: 'Cajero', role: 'CASHIER' };
-            
-        setSession(user, shift); // Guardamos en global
+    const initGuard = async () => {
+      try {
+        setLoading(true);
+        // Intentar recuperar turno existente
+        const shift = await cashRepository.getCurrentShift();
+        
+        if (shift) {
+          // Si hay turno abierto, restauramos sesión y dejamos pasar
+          setSession(user, shift); 
+        } else {
+          // Si no hay turno, pedimos login/apertura
+          setStep('LOGIN');
+        }
+      } catch (e) {
+        console.error("Error verificando turno:", e);
+        setError("Error de conexión. Reintente.");
+      } finally {
+        setLoading(false);
       }
-    } catch (e) {
-      console.error("Error verificando turno:", e);
-    } finally {
-      setLoading(false);
-    }
-  };
+    };
+    initGuard();
+  }, [user, setSession]);
 
+  // 2. Manejo del PIN Pad
   const handlePinInput = (num) => {
+    if (loading) return;
     const newPin = pin + num;
     setPin(newPin);
     setError('');
@@ -54,27 +59,35 @@ export const CashGuard = ({ children }) => {
   const validateUser = async (inputPin) => {
     setLoading(true);
     try {
+      // Validamos contra el servicio de seguridad
       const validUser = await securityService.login(inputPin);
-      setTempUser(validUser); // Usuario validado pero aun no abre caja
+      
+      if (!validUser) throw new Error("Credenciales inválidas");
+      
+      setTempUser(validUser);
       setPin('');
-      setStep('AMOUNT');
+      setStep('AMOUNT'); // Pasamos a pantalla de fondo inicial
     } catch (err) {
       setError('PIN Incorrecto');
       setPin('');
+      // Vibración en móviles si es posible
+      if (navigator.vibrate) navigator.vibrate(200);
     } finally {
       setLoading(false);
     }
   };
 
+  // 3. Apertura de Caja
   const handleOpenShift = async (e) => {
     e.preventDefault();
     if (!initialAmount) return;
 
     setLoading(true);
     try {
-      // Abrimos caja real
-      const newShift = await shiftRepository.openShift(tempUser.id, parseFloat(initialAmount));
-      // Guardamos sesión global y desbloqueamos
+      // Abrimos caja real usando el repositorio robusto
+      const newShift = await cashRepository.openShift(parseFloat(initialAmount), tempUser.name);
+      
+      // Guardamos en store global y desbloqueamos UI
       setSession(tempUser, newShift);
     } catch (err) {
       setError(err.message);
@@ -83,72 +96,107 @@ export const CashGuard = ({ children }) => {
     }
   };
 
-  // ... (El resto del renderizado es IGUAL, solo cambia que usamos currentShift del store)
-  
-  if (loading && !tempUser && !currentShift) {
-    return (
-      <div className="h-screen w-full flex items-center justify-center bg-sys-50">
-        <div className="animate-spin rounded-full h-12 w-12 border-4 border-sys-200 border-t-brand"></div>
-      </div>
-    );
-  }
+  // --- RENDERIZADO ---
 
+  // Si hay turno validado, mostramos la app
   if (currentShift) {
     return <>{children}</>;
   }
 
-  // RENDER PANTALLA DE BLOQUEO (Igual que antes, usando tempUser en lugar de user)
+  // Loader inicial
+  if (loading && step === 'CHECKING') {
+    return (
+      <div className="h-screen w-full flex flex-col gap-4 items-center justify-center bg-sys-50">
+        <Loader2 className="animate-spin text-brand" size={48} />
+        <p className="text-sys-500 font-medium animate-pulse">Verificando sistema de caja...</p>
+      </div>
+    );
+  }
+
+  // PANTALLA DE BLOQUEO (LOGIN / APERTURA)
   return (
-    <div className="fixed inset-0 z-[100] bg-sys-100 flex items-center justify-center p-4">
-      <div className="bg-white w-full max-w-md rounded-3xl shadow-2xl overflow-hidden flex flex-col relative animate-in zoom-in-95 duration-300">
-        <div className="h-2 bg-gradient-to-r from-brand to-purple-500"></div>
-        <div className="p-8 pb-6 text-center">
-          <div className="w-16 h-16 bg-sys-50 rounded-full flex items-center justify-center mx-auto mb-4 text-brand border border-sys-100 shadow-sm">
-            {step === 'LOGIN' ? <Lock size={32} /> : <Wallet size={32} />}
+    <div className="fixed inset-0 z-[100] bg-sys-100/90 backdrop-blur-md flex items-center justify-center p-4">
+      <div className="bg-white w-full max-w-md rounded-3xl shadow-2xl overflow-hidden flex flex-col relative animate-in zoom-in-95 duration-300 ring-1 ring-black/5">
+        
+        {/* Barra superior decorativa */}
+        <div className="h-2 bg-gradient-to-r from-brand to-purple-600"></div>
+        
+        <div className="p-8 pb-4 text-center">
+          <div className="w-20 h-20 bg-sys-50 rounded-full flex items-center justify-center mx-auto mb-4 text-brand border border-sys-100 shadow-inner">
+            {step === 'LOGIN' ? <Lock size={36} strokeWidth={1.5} /> : <Wallet size={36} strokeWidth={1.5} />}
           </div>
-          <h2 className="text-2xl font-bold text-sys-900">
-            {step === 'LOGIN' ? 'Sistema Bloqueado' : `Hola, ${tempUser?.name}`}
+          
+          <h2 className="text-2xl font-black text-sys-900 tracking-tight">
+            {step === 'LOGIN' ? 'Terminal Bloqueada' : `Hola, ${tempUser?.name?.split(' ')[0]}`}
           </h2>
-          <p className="text-sys-500 text-sm mt-1">
-            {step === 'LOGIN' ? 'Ingresa tu PIN de operador.' : 'Ingresa el fondo de caja inicial.'}
+          
+          <p className="text-sys-500 text-sm mt-2 font-medium">
+            {step === 'LOGIN' ? 'Ingrese su PIN de operador para acceder.' : 'Indique el fondo inicial para abrir caja.'}
           </p>
         </div>
 
         {error && (
-          <div className="mx-8 p-3 bg-red-50 border border-red-100 text-red-600 text-xs font-bold text-center rounded-xl animate-in slide-in-from-top-2">
-            {error}
+          <div className="mx-8 p-3 bg-red-50 border border-red-100 text-red-600 text-xs font-bold text-center rounded-xl flex items-center justify-center gap-2 animate-in slide-in-from-top-2">
+            <AlertCircle size={16} /> {error}
           </div>
         )}
 
-        <div className="p-8 pt-2">
+        <div className="p-8 pt-4">
+          
+          {/* PASO 1: LOGIN PIN */}
           {step === 'LOGIN' && (
             <PinPad 
               value={pin}
               onInput={handlePinInput}
               onClear={() => setPin(prev => prev.slice(0, -1))}
-              loading={loading}
+              disabled={loading}
             />
           )}
 
+          {/* PASO 2: FONDO INICIAL */}
           {step === 'AMOUNT' && (
-            <form onSubmit={handleOpenShift} className="space-y-6 animate-in slide-in-from-right-8">
-              <div className="bg-sys-50 p-4 rounded-xl border border-sys-200 flex items-center gap-3">
-                <UserCircle size={24} className="text-sys-400" />
+            <form onSubmit={handleOpenShift} className="space-y-6 animate-in slide-in-from-right-8 duration-300">
+              
+              {/* Tarjeta de Usuario */}
+              <div className="bg-sys-50 p-4 rounded-xl border border-sys-200 flex items-center gap-4">
+                <div className="bg-white p-2 rounded-full shadow-sm">
+                    <UserCircle size={24} className="text-sys-400" />
+                </div>
                 <div className="flex-1">
-                  <p className="text-xs text-sys-500 font-bold uppercase">Operador</p>
-                  <p className="text-sm font-medium text-sys-900">{tempUser?.name}</p>
+                  <p className="text-[10px] text-sys-500 font-black uppercase tracking-wider">Operador</p>
+                  <p className="text-sm font-bold text-sys-900">{tempUser?.name}</p>
                 </div>
-                <button type="button" onClick={() => { setStep('LOGIN'); setTempUser(null); setPin(''); }} className="text-xs text-brand font-bold hover:underline">Cambiar</button>
+                <button 
+                    type="button" 
+                    onClick={() => { setStep('LOGIN'); setTempUser(null); setPin(''); }} 
+                    className="text-xs text-brand font-bold hover:underline px-2 py-1 hover:bg-brand/5 rounded transition-colors"
+                >
+                    Cambiar
+                </button>
               </div>
+
               <div>
-                <label className="block text-xs font-bold text-sys-500 uppercase mb-2 ml-1">Fondo de Cambio ($)</label>
-                <div className="relative">
-                  <span className="absolute left-4 top-1/2 -translate-y-1/2 text-sys-400 text-lg font-bold">$</span>
-                  <input type="number" autoFocus placeholder="0.00" className="w-full pl-10 pr-4 py-4 text-2xl font-bold bg-white border-2 border-sys-200 rounded-xl focus:border-brand outline-none transition-all placeholder:text-sys-200" value={initialAmount} onChange={(e) => setInitialAmount(e.target.value)} />
+                <label className="block text-xs font-bold text-sys-500 uppercase mb-2 ml-1 tracking-wide">Fondo de Cambio</label>
+                <div className="relative group">
+                  <span className="absolute left-5 top-1/2 -translate-y-1/2 text-sys-400 text-xl font-bold group-focus-within:text-brand transition-colors">$</span>
+                  <input 
+                    type="number" 
+                    autoFocus 
+                    placeholder="0.00" 
+                    className="w-full pl-12 pr-4 py-4 text-3xl font-black bg-white border-2 border-sys-200 rounded-2xl focus:border-brand focus:ring-4 focus:ring-brand/10 outline-none transition-all placeholder:text-sys-200 text-sys-900" 
+                    value={initialAmount} 
+                    onChange={(e) => setInitialAmount(e.target.value)} 
+                  />
                 </div>
               </div>
-              <Button type="submit" className="w-full py-4 text-lg shadow-xl shadow-brand/20" disabled={!initialAmount || loading}>
-                {loading ? 'Abriendo...' : 'Abrir Caja'} <ArrowRight className="ml-2" />
+
+              <Button 
+                type="submit" 
+                className="w-full py-4 text-lg h-14 shadow-xl shadow-brand/20 rounded-xl" 
+                disabled={!initialAmount || loading}
+              >
+                {loading ? <Loader2 className="animate-spin" /> : <ArrowRight className="ml-2" />} 
+                {loading ? 'Iniciando...' : 'Abrir Caja'}
               </Button>
             </form>
           )}

@@ -2,7 +2,7 @@ import React, { useEffect, useState, useMemo } from 'react';
 import { 
     FileText, CheckCircle, AlertCircle, Printer, RefreshCw, Search, 
     ArrowDownLeft, ShoppingBag, XCircle, RotateCcw, Calendar, User,
-    ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight
+    ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Store
 } from 'lucide-react';
 import { billingService } from '../../billing/services/billingService';
 import { Card } from '../../../core/ui/Card';
@@ -22,8 +22,8 @@ const toInputDate = (date) => {
 };
 
 export const SalesPage = () => {
-  const { user } = useAuthStore(); 
-  const isAdmin = user?.role === 'ADMIN'; 
+  const { user, activeBranchId } = useAuthStore(); 
+  const isAdmin = user?.role === 'ADMIN' || user?.role === 'OWNER'; 
 
   // Estado de Datos
   const [operations, setOperations] = useState([]); 
@@ -139,16 +139,19 @@ export const SalesPage = () => {
   // 3. FILTRADO (LÓGICA CORREGIDA)
   const visibleOperations = useMemo(() => {
       return operations.filter(op => {
-          // A. Filtro Tipo
+          
+          // A. Filtro Sucursal (Si no es Admin global o si Admin eligió una)
+          if (activeBranchId && op.branchId !== activeBranchId) return false;
+
+          // B. Filtro Tipo
           if (filterType === 'SALE' && op.type === 'RECEIPT') return false;
           if (filterType === 'RECEIPT' && op.type !== 'RECEIPT') return false;
 
-          // B. Filtro Cajero (CORREGIDO)
+          // C. Filtro Cajero
           if (filterCashier !== 'ALL') {
              // filterCashier es el EMAIL del usuario seleccionado en el dropdown
              const selectedUser = cashiersList.find(u => u.email === filterCashier);
              
-             // Si no encontramos al usuario seleccionado en la lista, algo raro pasa, no mostramos nada
              if (!selectedUser) return false;
 
              // Comparamos contra UID
@@ -165,22 +168,24 @@ export const SalesPage = () => {
              return false;
           }
 
-          // C. Búsqueda Texto
+          // D. Búsqueda Texto
           if (searchTerm) {
               const search = searchTerm.toLowerCase();
               const clientName = (op.client?.name || '').toLowerCase();
               const totalStr = (op.total || '').toString();
               const docNum = (op.afip?.cbteNumero || '').toString();
+              const ticketNum = (op.number || '').toLowerCase();
               const cashierName = resolveCashierName(op).toLowerCase();
               
               return clientName.includes(search) || 
                      totalStr.includes(search) || 
                      docNum.includes(search) ||
+                     ticketNum.includes(search) ||
                      cashierName.includes(search);
           }
           return true;
       });
-  }, [operations, filterType, filterCashier, searchTerm, cashiersList]);
+  }, [operations, filterType, filterCashier, searchTerm, cashiersList, activeBranchId]);
 
   // 🔥 4. LÓGICA DE PAGINACIÓN
   const totalPages = Math.ceil(visibleOperations.length / itemsPerPage);
@@ -242,7 +247,7 @@ export const SalesPage = () => {
   };
 
   return (
-    <div className="space-y-6 pb-20 p-4 md:p-6 max-w-[1600px] mx-auto">
+    <div className="space-y-6 pb-20 p-4 md:p-6 max-w-[1600px] mx-auto animate-in fade-in duration-500">
       
       {/* HEADER */}
       <div className="flex flex-col gap-6">
@@ -275,7 +280,7 @@ export const SalesPage = () => {
           {/* BARRA DE HERRAMIENTAS */}
           <Card className="p-2 flex flex-col xl:flex-row gap-3 items-center bg-sys-50 border-sys-200">
               
-              <div className="flex bg-white rounded-lg border border-sys-200 p-1 shadow-sm w-full xl:w-auto overflow-x-auto">
+              <div className="flex bg-white rounded-lg border border-sys-200 p-1 shadow-sm w-full xl:w-auto overflow-x-auto no-scrollbar">
                   {[{ id: 'today', label: 'Hoy' }, { id: 'yesterday', label: 'Ayer' }, { id: 'week', label: 'Semana' }, { id: 'month', label: 'Mes' }, { id: 'custom', label: 'Custom', icon: Calendar }].map(p => (
                       <button key={p.id} onClick={() => setFilterPeriod(p.id)} className={cn("px-3 py-1.5 rounded-md text-xs font-bold transition-all whitespace-nowrap flex items-center gap-1", filterPeriod === p.id ? "bg-sys-900 text-white shadow-md" : "text-sys-500 hover:bg-sys-50 hover:text-sys-900")}>
                           {p.icon && <p.icon size={12}/>} {p.label}
@@ -318,7 +323,7 @@ export const SalesPage = () => {
 
                   <div className="relative flex-1 xl:w-64">
                       <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-sys-400"/>
-                      <input type="text" placeholder="Buscar cliente, monto..." className="w-full pl-9 pr-3 py-2 text-sm bg-white border border-sys-200 rounded-lg outline-none focus:border-brand transition-all" value={searchTerm} onChange={e => setSearchTerm(e.target.value)}/>
+                      <input type="text" placeholder="Buscar ticket, cliente..." className="w-full pl-9 pr-3 py-2 text-sm bg-white border border-sys-200 rounded-lg outline-none focus:border-brand transition-all" value={searchTerm} onChange={e => setSearchTerm(e.target.value)}/>
                   </div>
               </div>
           </Card>
@@ -330,7 +335,7 @@ export const SalesPage = () => {
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className="bg-sys-50/80 text-sys-500 text-xs uppercase tracking-wider border-b border-sys-100 backdrop-blur-sm sticky top-0 z-10">
-                <th className="p-4 font-semibold whitespace-nowrap">Fecha / Cajero</th>
+                <th className="p-4 font-semibold whitespace-nowrap">Fecha / N° Ticket</th>
                 <th className="p-4 font-semibold whitespace-nowrap">Tipo</th>
                 <th className="p-4 font-semibold whitespace-nowrap">Cliente / Detalle</th>
                 <th className="p-4 font-semibold whitespace-nowrap text-right">Monto</th>
@@ -359,13 +364,14 @@ export const SalesPage = () => {
                     const isLoading = loadingMap[op.localId];
                     const paymentMethod = op.payment?.method || op.paymentMethod || 'cash';
                     
-                    // Usamos el helper de resolución
                     const cajeroName = resolveCashierName(op);
 
                     return (
                       <tr key={op.localId} className={cn("transition-colors group", isAnulado ? "bg-red-50/30 opacity-60" : "hover:bg-sys-50/40")}>
                         <td className="p-4 text-sys-600 font-mono text-xs whitespace-nowrap">
                           <div className="font-bold text-sys-800">{new Date(op.date).toLocaleDateString()} {new Date(op.date).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</div>
+                          {/* 🔥 AQUI MOSTRAMOS EL NÚMERO DE TICKET REAL */}
+                          <div className="text-[11px] font-bold text-brand mt-0.5">{op.number || '---'}</div>
                           <div className="flex items-center gap-1 text-[10px] text-sys-400 mt-0.5">
                               <User size={10}/> {cajeroName}
                           </div>
@@ -482,10 +488,10 @@ export const SalesPage = () => {
       </Card>
 
       <TicketModal 
-         isOpen={!!selectedOpForTicket}
-         sale={selectedOpForTicket?.type !== 'RECEIPT' ? selectedOpForTicket : null}
-         receipt={selectedOpForTicket?.type === 'RECEIPT' ? selectedOpForTicket : null}
-         onClose={() => setSelectedOpForTicket(null)}
+          isOpen={!!selectedOpForTicket}
+          sale={selectedOpForTicket?.type !== 'RECEIPT' ? selectedOpForTicket : null}
+          receipt={selectedOpForTicket?.type === 'RECEIPT' ? selectedOpForTicket : null}
+          onClose={() => setSelectedOpForTicket(null)}
       />
     </div>
   );

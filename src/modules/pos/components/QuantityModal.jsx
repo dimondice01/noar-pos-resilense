@@ -1,44 +1,38 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { X, Scale, DollarSign, Package, Minus, Plus } from 'lucide-react';
+import { X, Scale, DollarSign, Minus, Plus } from 'lucide-react';
 import { Button } from '../../../core/ui/Button';
 import { cn } from '../../../core/utils/cn';
 
 export const QuantityModal = ({ product, isOpen, onClose, onConfirm }) => {
   const inputRef = useRef(null);
   
-  // Estado
-  // 'amount' es el default para pesables (Cobrar por plata)
-  // 'unit' para unitarios
+  // Estado: 'amount' (cobrar por $) o 'weight' (cobrar por KG) o 'unit' (unidades)
   const [mode, setMode] = useState('amount'); 
   const [value, setValue] = useState(''); 
 
-  // Efecto: Cuando abre, resetea y enfoca
   useEffect(() => {
     if (isOpen && product) {
       setMode(product.isWeighable ? 'amount' : 'unit');
-      setValue(''); // Empezar vacío
+      setValue(''); // Reset
       setTimeout(() => inputRef.current?.focus(), 100);
     }
   }, [isOpen, product]);
 
   if (!isOpen || !product) return null;
 
-  // LÓGICA DE CÁLCULO (Vista Previa)
+  // CÁLCULO EN TIEMPO REAL
   let finalQuantity = 0;
   let finalTotal = 0;
 
   if (product.isWeighable) {
     if (mode === 'weight') {
-      // Input es Kilos
       finalQuantity = parseFloat(value || 0);
       finalTotal = finalQuantity * product.price;
-    } else {
-      // Input es Dinero ($)
+    } else { // mode === 'amount'
       finalTotal = parseFloat(value || 0);
       finalQuantity = product.price > 0 ? finalTotal / product.price : 0;
     }
   } else {
-    // Modo Unitario
     finalQuantity = parseInt(value || 1); 
     finalTotal = finalQuantity * product.price;
   }
@@ -50,50 +44,28 @@ export const QuantityModal = ({ product, isOpen, onClose, onConfirm }) => {
     onClose();
   };
 
-  // 🔥 LÓGICA DE FLECHAS (MATEMÁTICA EXACTA)
   const handleKeyDown = (e) => {
     if (e.key === 'Enter') {
         e.preventDefault();
         handleSubmit();
     }
     if (e.key === 'Escape') onClose();
-
-    if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+    if (e.key === 'ArrowUp') {
         e.preventDefault();
-        const direction = e.key === 'ArrowUp' ? 1 : -1;
-        const currentVal = parseFloat(value) || 0;
-        
-        // Definir el paso según el modo
-        let step = 1; 
-        if (mode === 'weight') step = 0.1; // 100g para peso
-        
-        let next = currentVal + (step * direction);
-        
-        // Bloqueo de negativos
-        if (next < 0) next = 0;
-
-        // Formateo para evitar errores de punto flotante (ej: 0.3000004)
-        if (mode === 'weight') {
-            setValue(next.toFixed(3));
-        } else {
-            setValue(next.toFixed(0)); // Enteros para $ y Unidades
-        }
+        adjustValue(1);
+    }
+    if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        adjustValue(-1);
     }
   };
 
-  // Helpers para botones visuales +/-
   const adjustValue = (delta) => {
-      // Simulamos lógica de flechas
       const currentVal = parseFloat(value) || 0;
-      let step = 1;
-      if (mode === 'weight') step = 0.1;
+      let step = mode === 'weight' ? 0.1 : 1;
+      let next = Math.max(0, currentVal + (step * delta));
       
-      let next = currentVal + (step * delta);
-      if (next < 0) next = 0;
-
-      if (mode === 'weight') setValue(next.toFixed(3));
-      else setValue(next.toFixed(0));
-      
+      setValue(mode === 'weight' ? next.toFixed(3) : next.toFixed(0));
       inputRef.current?.focus();
   };
 
@@ -121,7 +93,7 @@ export const QuantityModal = ({ product, isOpen, onClose, onConfirm }) => {
 
         <div className="p-6 space-y-8">
           
-          {/* SECCIÓN 1: Selector de Modo (Solo para Pesables) */}
+          {/* TABS (Solo pesables) */}
           {product.isWeighable && (
             <div className="bg-sys-100 p-1.5 rounded-2xl flex relative">
               <button
@@ -151,27 +123,23 @@ export const QuantityModal = ({ product, isOpen, onClose, onConfirm }) => {
             </div>
           )}
 
-          {/* SECCIÓN 2: Input Gigante con Botones */}
+          {/* INPUT GIGANTE */}
           <div className="relative flex items-center justify-center gap-4">
-            
-            <button type="button" onClick={() => adjustValue(-1)} className="w-14 h-14 rounded-2xl bg-sys-50 border border-sys-200 hover:bg-sys-100 hover:border-sys-300 flex items-center justify-center text-sys-500 active:scale-95 transition-all">
+            <button type="button" onClick={() => adjustValue(-1)} className="w-14 h-14 rounded-2xl bg-sys-50 border border-sys-200 hover:bg-sys-100 flex items-center justify-center text-sys-500 active:scale-95 transition-all">
                 <Minus size={24} />
             </button>
 
             <div className="relative w-full max-w-[200px] group">
-                {/* Signo pesos si es modo monto */}
                 {mode === 'amount' && (
-                    <span className="absolute left-0 top-1/2 -translate-y-1/2 text-sys-300 text-4xl font-black transition-colors group-focus-within:text-green-500/50">$</span>
+                    <span className="absolute left-0 top-1/2 -translate-y-1/2 text-sys-300 text-4xl font-black transition-colors">$</span>
                 )}
                 
                 <input
                     ref={inputRef}
                     type="number"
-                    // Si es monto o unitario, step 1. Si es peso, step 0.1
                     step={mode === 'weight' ? "0.1" : "1"}
                     value={value}
                     onChange={(e) => {
-                        // Permitir vacío o positivos
                         if (e.target.value === '' || parseFloat(e.target.value) >= 0) {
                             setValue(e.target.value);
                         }
@@ -179,13 +147,11 @@ export const QuantityModal = ({ product, isOpen, onClose, onConfirm }) => {
                     onKeyDown={handleKeyDown}
                     className={cn(
                         "w-full text-6xl font-black text-center border-b-2 border-sys-200 outline-none py-2 bg-transparent placeholder-sys-200 transition-all",
-                        mode === 'amount' ? "focus:border-green-500 text-sys-900" : "focus:border-brand text-sys-900",
-                        mode === 'amount' ? "pl-6" : "" // Ajuste visual
+                        mode === 'amount' ? "focus:border-green-500 text-sys-900 pl-6" : "focus:border-brand text-sys-900"
                     )}
                     placeholder="0"
                 />
                 
-                {/* Sufijo KG si es modo peso */}
                 {mode === 'weight' && (
                     <span className="absolute right-0 top-1/2 -translate-y-1/2 text-sys-300 text-lg font-bold">kg</span>
                 )}
@@ -203,7 +169,7 @@ export const QuantityModal = ({ product, isOpen, onClose, onConfirm }) => {
               }
           </div>
 
-          {/* SECCIÓN 3: Resumen Inteligente */}
+          {/* RESUMEN */}
           <div className={cn(
               "rounded-2xl p-5 border transition-colors flex items-center justify-between",
               mode === 'amount' ? "bg-green-50/50 border-green-100" : "bg-sys-50 border-sys-100"
@@ -215,7 +181,6 @@ export const QuantityModal = ({ product, isOpen, onClose, onConfirm }) => {
                 </p>
               </div>
               
-              {/* Si es pesable y estoy poniendo plata, muéstrame cuánto peso es */}
               {product.isWeighable && mode === 'amount' && (
                 <div className="text-right">
                     <p className="text-sys-500 text-xs font-bold uppercase tracking-wider mb-1">Peso Calc.</p>

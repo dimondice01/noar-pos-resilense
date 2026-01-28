@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, Search, User, Check, Plus, ArrowLeft, FileText, UserPlus } from 'lucide-react';
+import { X, Search, User, Check, Plus, ArrowLeft, FileText, Loader2 } from 'lucide-react';
 import { clientRepository } from '../../clients/repositories/clientRepository'; 
 import { Button } from '../../../core/ui/Button';
 import { cn } from '../../../core/utils/cn';
@@ -20,11 +20,11 @@ export const ClientSelectionModal = ({ isOpen, onClose, onSelect }) => {
       docType: '80', // Por defecto CUIT
       docNumber: '',
       name: '',
-      address: '-' // AFIP a veces pide dirección, ponemos guion por defecto para agilizar
+      address: '-'
   });
 
   // ==========================================
-  // LÓGICA DE BÚSQUEDA (Existente)
+  // LÓGICA DE BÚSQUEDA
   // ==========================================
   useEffect(() => {
     if (!isOpen) return;
@@ -32,49 +32,47 @@ export const ClientSelectionModal = ({ isOpen, onClose, onSelect }) => {
     // Resetear al abrir
     if (view === 'create') setView('search');
     
-    // Carga inicial (top 10)
-    if (!searchTerm) {
-        clientRepository.getAll().then(all => setResults(all.slice(0, 10)));
-        return;
-    }
+    const fetchClients = async () => {
+        setLoading(true);
+        try {
+            if (!searchTerm) {
+                // Carga inicial (top 10)
+                const all = await clientRepository.getAll();
+                setResults(all.slice(0, 10));
+            } else {
+                // Búsqueda real
+                const data = await clientRepository.search(searchTerm);
+                setResults(data.slice(0, 50)); 
+            }
+        } catch (error) {
+            console.error("Error buscando clientes:", error);
+        } finally {
+            setLoading(false);
+        }
+    };
 
-    const timer = setTimeout(async () => {
-      setLoading(true);
-      try {
-        const data = await clientRepository.search(searchTerm);
-        setResults(data.slice(0, 50)); 
-      } catch (error) {
-        console.error(error);
-      } finally {
-        setLoading(false);
-      }
-    }, 300);
-
+    const timer = setTimeout(fetchClients, 300); // Debounce 300ms
     return () => clearTimeout(timer);
-  }, [searchTerm, isOpen]);
+  }, [searchTerm, isOpen, view]);
 
   // ==========================================
   // HANDLERS
   // ==========================================
   const handleSelectTemp = () => {
-      // Validaciones simples
       if (!tempClient.docNumber || tempClient.docNumber.length < 7) return alert("Ingrese un número de documento válido.");
       if (!tempClient.name || tempClient.name.length < 3) return alert("Ingrese el nombre o razón social.");
 
-      // Creamos un objeto cliente "al vuelo"
       const casualClient = {
-          id: `temp_${Date.now()}`, // ID temporal para que React no llore con las keys
+          id: `temp_${Date.now()}`, 
           name: tempClient.name.toUpperCase(),
           docType: tempClient.docType,
           docNumber: tempClient.docNumber,
           address: tempClient.address,
-          isGuest: true // Flag útil para saber que no está en la DB
+          isGuest: true 
       };
 
       onSelect(casualClient);
       onClose();
-      
-      // Limpiamos form
       setTempClient({ docType: '80', docNumber: '', name: '', address: '-' });
   };
 
@@ -99,9 +97,7 @@ export const ClientSelectionModal = ({ isOpen, onClose, onSelect }) => {
           <button onClick={onClose} className="p-2 hover:bg-sys-200 rounded-full text-sys-500"><X size={20}/></button>
         </div>
 
-        {/* ========================================== */}
-        {/* VISTA 1: BUSCADOR (Default)                */}
-        {/* ========================================== */}
+        {/* VISTA 1: BUSCADOR */}
         {view === 'search' && (
             <>
                 <div className="p-4 border-b border-sys-100 bg-white shrink-0">
@@ -120,7 +116,7 @@ export const ClientSelectionModal = ({ isOpen, onClose, onSelect }) => {
 
                 <div className="flex-1 overflow-y-auto p-2 space-y-1 custom-scrollbar">
                     {loading ? (
-                        <div className="py-10 text-center text-sys-400 text-xs">Buscando...</div>
+                        <div className="py-10 flex justify-center text-sys-400"><Loader2 className="animate-spin" /></div>
                     ) : results.length === 0 ? (
                         <div className="py-10 text-center text-sys-400">
                             <User size={32} className="mx-auto mb-2 opacity-50"/>
@@ -131,7 +127,7 @@ export const ClientSelectionModal = ({ isOpen, onClose, onSelect }) => {
                             <button 
                                 key={client.id}
                                 onClick={() => { onSelect(client); onClose(); }}
-                                className="w-full text-left p-3 hover:bg-brand-light/20 rounded-xl transition-colors group border border-transparent hover:border-brand/10 flex justify-between items-center"
+                                className="w-full text-left p-3 hover:bg-brand-light/10 rounded-xl transition-colors group border border-transparent hover:border-brand/20 flex justify-between items-center"
                             >
                                 <div>
                                     <p className="font-bold text-sys-800 text-sm">{client.name}</p>
@@ -167,9 +163,7 @@ export const ClientSelectionModal = ({ isOpen, onClose, onSelect }) => {
             </>
         )}
 
-        {/* ========================================== */}
-        {/* VISTA 2: FORMULARIO EVENTUAL (Manual)      */}
-        {/* ========================================== */}
+        {/* VISTA 2: FORMULARIO EVENTUAL */}
         {view === 'create' && (
             <div className="flex-1 flex flex-col p-6 animate-in slide-in-from-right-10 duration-200">
                 <div className="flex-1 space-y-4">

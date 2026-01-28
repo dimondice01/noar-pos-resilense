@@ -1,13 +1,19 @@
 import { 
+    createUserWithEmailAndPassword, 
     signInWithEmailAndPassword, 
     signOut, 
     onAuthStateChanged 
 } from 'firebase/auth';
-import { doc, getDoc } from 'firebase/firestore';
+import { 
+    doc, 
+    getDoc, 
+    writeBatch, 
+    serverTimestamp 
+} from 'firebase/firestore';
 import { auth, db } from '../../../database/firebase';
-import { getDB } from '../../../database/db'; // Importamos la nueva DB Dexie
+import { db as localDb } from '../../../database/db'; // Importamos la instancia directa de Dexie
 
-// 🌍 URL de Producción (Asegúrate que esta sea la correcta de tu deploy actual)
+// 🌍 URL de Producción
 const API_URL = import.meta.env.VITE_API_URL || "https://api-ps25yq7qaq-uc.a.run.app";
 
 export const authService = {
@@ -31,7 +37,7 @@ export const authService = {
 
             // 3. Si no hay datos en Firestore (caso raro), usar básicos
             if (!userData) {
-                // Caso especial Admin Master (Hardcoded)
+                // Caso especial Admin Master (Hardcoded por seguridad)
                 if (email.toLowerCase().includes('admin')) {
                     userData = {
                         uid: firebaseUser.uid,
@@ -71,13 +77,89 @@ export const authService = {
     },
 
     // ==========================================
+    // 🔥 REGISTRO ATÓMICO CON SUCURSALES DINÁMICAS
+    // ==========================================
+    async register({ email, password, name, companyName, branchCount }) {
+        try {
+            // 1. Crear Auth User
+            const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+            const { uid } = userCredential.user;
+            const companyId = crypto.randomUUID(); // Generamos ID manualmente para usarlo en batch
+
+            // 2. Preparar Batch (Escritura Atómica)
+            // Esto asegura que se cree TODO (Usuario + Empresa + Sucursales) o NADA.
+            const batch = writeBatch(db);
+
+            // Referencias Base
+            const userRef = doc(db, 'users', uid);
+            const companyRef = doc(db, 'companies', companyId);
+            
+            // --- A. Crear Usuario Owner ---
+            batch.set(userRef, {
+                name,
+                email,
+                role: 'OWNER',
+                companyId,
+                branchId: null, // Owner ve todo
+                active: true,
+                createdAt: serverTimestamp()
+            });
+
+            // --- B. Crear Empresa ---
+            batch.set(companyRef, {
+                name: companyName,
+                plan: 'trial',
+                createdAt: serverTimestamp(),
+                ownerUid: uid,
+                isActive: true,
+                branchCount: parseInt(branchCount) || 1 // Guardamos cuántas contrató
+            });
+
+            // --- C. Crear Sucursales Dinámicamente (Loop) ---
+            // Si el usuario pidió 3 sucursales, el loop corre 3 veces.
+            const totalBranches = parseInt(branchCount) || 1;
+
+            for (let i = 1; i <= totalBranches; i++) {
+                // Generamos ID ordenado: suc-01, suc-02...
+                const branchId = `suc-${i.toString().padStart(2, '0')}`;
+                
+                // Nombre amigable: "Sucursal 1", "Sucursal 2"
+                // Opcional: Si es la 1, le agregamos "(Principal)"
+                const branchName = i === 1 ? `Sucursal ${i} (Principal)` : `Sucursal ${i}`;
+
+                const branchRef = doc(db, 'companies', companyId, 'branches', branchId);
+
+                batch.set(branchRef, {
+                    name: branchName,
+                    number: i, // Número de sucursal para ordenamiento
+                    address: '',
+                    type: 'physical',
+                    active: true,
+                    createdAt: serverTimestamp()
+                });
+            }
+
+            // 3. Ejecutar Transacción (Commit)
+            await batch.commit();
+
+            return userCredential.user;
+
+        } catch (error) {
+            console.error("Error crítico en registro:", error);
+            // Nota: Firebase Auth crea el usuario igual, pero Firestore falló.
+            // En un sistema perfecto, deberíamos borrar el usuario de Auth aquí para limpiar.
+            throw error;
+        }
+    },
+
+    // ==========================================
     // 🚪 LOGOUT
     // ==========================================
     async logout() {
         try {
             await signOut(auth);
-            // Opcional: ¿Borrar usuario local al salir? 
-            // await this._clearLocalUser(); 
+            // Opcional: Limpiar datos sensibles locales
+            // await localDb.users.clear(); 
         } catch (error) {
             console.error("Error Logout:", error);
         }
@@ -95,12 +177,12 @@ export const authService = {
                     let userProfile = await this._getFirestoreProfile(firebaseUser.uid);
                     
                     if (!userProfile) {
-                         // Fallback a Local Dexie si Firestore falla
+                         // Fallback a Local Dexie si Firestore falla o está lento
                         const localUser = await this._getLocalUser(firebaseUser.email);
                         if (localUser) {
                              userProfile = { ...localUser, uid: firebaseUser.uid, mode: 'OFFLINE_SYNC' };
                         } else {
-                             // Perfil básico
+                             // Perfil básico de emergencia
                              userProfile = {
                                  uid: firebaseUser.uid,
                                  email: firebaseUser.email,
@@ -114,8 +196,8 @@ export const authService = {
                         userProfile.mode = 'ONLINE';
                     }
 
-                    // Guardamos sesión actualizada
-                    await this._saveLocalUser({ ...userProfile, password: '***' }); // No guardamos pass real aquí
+                    // Guardamos sesión actualizada en local (sin pisar password si no viene)
+                    await this._saveLocalUser({ ...userProfile, password: '***' }); 
                     
                     callback(userProfile);
 
@@ -200,7 +282,8 @@ export const authService = {
                     email: data.email,
                     name: data.name,
                     role: data.role,
-                    companyId: data.companyId 
+                    companyId: data.companyId,
+                    branchId: data.branchId // Importante para redirección
                 };
             }
             return null;
@@ -210,23 +293,29 @@ export const authService = {
         }
     },
 
-    // 🔥 FIX: Adaptado para Dexie
+    // 🔥 FIX: Adaptado para Dexie (db.users.put)
     async _saveLocalUser(user) {
         try {
-            const dbLocal = await getDB();
-            
-            // Lógica de contraseña segura
+            // Lógica de contraseña segura para no sobreescribir con '***'
             let passwordToSave = user.password;
+            
+            // Si la password es dummy ('***') o vacía, intentamos rescatar la vieja
             if (passwordToSave === '***' || !passwordToSave) {
-                 const existing = await dbLocal.users.get(user.email);
+                 const existing = await localDb.users.get(user.email);
                  if (existing?.password) passwordToSave = existing.password;
             } else {
-                 passwordToSave = btoa(passwordToSave); 
+                 // Si es nueva, la encriptamos simple
+                 try {
+                    // Evitar doble encriptación si ya viene en base64
+                    if (!passwordToSave.endsWith('=')) { 
+                        passwordToSave = btoa(passwordToSave); 
+                    }
+                 } catch (e) {}
             }
 
-            // Dexie usa db.tabla.put
-            await dbLocal.users.put({
-                email: user.email,
+            // Guardado en Dexie
+            await localDb.users.put({
+                email: user.email, // Key path
                 password: passwordToSave,
                 uid: user.uid,
                 role: user.role || 'CASHIER',
@@ -239,13 +328,11 @@ export const authService = {
         }
     },
 
-    // 🔥 FIX: Adaptado para Dexie
+    // 🔥 FIX: Adaptado para Dexie (db.users.get)
     async _getLocalUser(email) {
         if (!email) return null;
         try {
-            const dbLocal = await getDB();
-            // Dexie usa db.tabla.get
-            return await dbLocal.users.get(email);
+            return await localDb.users.get(email);
         } catch (e) {
             console.error("Error leyendo usuario local:", e);
             return null;
@@ -258,7 +345,10 @@ export const authService = {
         
         let storedPassword = localUser.password;
         try {
-            if (!storedPassword.includes(' ')) storedPassword = atob(storedPassword);
+            // Decodificar si parece base64
+            if (storedPassword && !storedPassword.includes(' ')) {
+                storedPassword = atob(storedPassword);
+            }
         } catch(e) {}
 
         if (storedPassword === password) {

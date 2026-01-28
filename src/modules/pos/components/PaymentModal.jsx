@@ -1,16 +1,15 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
-    X, Banknote, QrCode, LayoutGrid, Loader2, CheckCircle2, 
+    X, Banknote, QrCode, Loader2, CheckCircle2, 
     AlertCircle, FileText, Wallet, ArrowRight, CreditCard, Landmark, Terminal 
 } from 'lucide-react';
-// 🗑️ ELIMINAMOS: Imports de Firestore (ya no leemos config de la nube aquí)
 import { Button } from '../../../core/ui/Button';
 import { Switch } from '../../../core/ui/Switch';
 import { cn } from '../../../core/utils/cn';
 import { paymentService } from '../../payments/services/paymentService';
 import { useAuthStore } from '../../auth/store/useAuthStore'; 
 
-// 🔥 URL DEL BACKEND
+// URL del Backend (Cloud Functions)
 const API_URL = import.meta.env.VITE_API_URL || "https://us-central1-salvadorpos1.cloudfunctions.net/api";
 
 export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disableAfip = false }) => {
@@ -21,12 +20,13 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
     const [amountToPay, setAmountToPay] = useState(''); 
     const [reference, setReference] = useState(''); 
     
-    // 🟢 CAMBIO CLAVE: Configuración LOCAL (Del navegador, no de la DB)
+    // Configuración Local de Terminales (QR / Point / Clover)
     const [localTerminal, setLocalTerminal] = useState({ qrId: null, pointId: null });
 
-    // 🔥 ESTADOS PARA EL FLUJO DIGITAL (Polling / Clover)
-    const [digitalState, setDigitalState] = useState('idle'); 
+    // Estado del Flujo Digital
+    const [digitalState, setDigitalState] = useState('idle'); // idle | creating | waiting | approved | error
     const [paymentReference, setPaymentReference] = useState(null);
+    const [errorMessage, setErrorMessage] = useState(null);
     
     // Refs
     const pollingRef = useRef(null);
@@ -39,108 +39,113 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
     // Estado AFIP
     const [withAfip, setWithAfip] = useState(false);
 
-    // Datos Cuenta para Transferencia
+    // Datos Cuenta para Transferencia (Hardcoded o desde Config Global)
     const ACCOUNT_DATA = {
         alias: "MAXIKIOSCO.ESQUINA",
         bank: "MercadoPago / Naranja X"
     };
 
     // ==========================================
-    // CÁLCULOS
+    // CÁLCULOS FINANCIEROS
     // ==========================================
     const payValue = parseFloat(amountToPay || 0); 
     const difference = total - payValue; 
+    
+    // Si paga de menos, es deuda (cta cte). Si paga de más, es vuelto.
     const debtValue = difference > 0.5 ? difference : 0; 
-    const changeValue = difference < 0 ? Math.abs(difference) : 0;
+    const changeValue = difference < -0.5 ? Math.abs(difference) : 0; // Tolerancia de 50 centavos
+    
     const isPartialPayment = debtValue > 0;
     const isClientRegistered = client && client.id; 
     
-    // Validaciones
-    const hasError = isPartialPayment && !isClientRegistered;
+    // Validaciones de Negocio
+    const hasError = isPartialPayment && !isClientRegistered; // No se puede fiar a anónimos
     const canConfirm = !hasError && payValue >= 0 && amountToPay !== ''; 
 
     // ==========================================
-    // HANDLERS & EFFECTS
+    // EFECTOS Y LÓGICA
     // ==========================================
     
     const handleAfipChange = (checked) => {
         setWithAfip(checked);
     };
 
-    // 1. 🟢 CARGA DE CONFIGURACIÓN LOCAL AL ABRIR
-    // (Reemplaza a la carga de Firestore)
+    // 1. Cargar Configuración Local al Abrir
     useEffect(() => {
         if (isOpen) {
             try {
-                // Leemos lo que guardó la página de Integraciones en ESTE navegador
                 const savedConfig = localStorage.getItem('NOAR_TERMINAL_CONFIG');
                 if (savedConfig) {
-                    setLocalTerminal(JSON.parse(savedConfig));
+                    const parsed = JSON.parse(savedConfig);
+                    if (parsed && typeof parsed === 'object') {
+                        setLocalTerminal(parsed);
+                    }
                 } else {
                     console.warn("⚠️ No hay caja configurada en este navegador.");
                 }
             } catch (e) {
-                console.error("Error leyendo localStorage:", e);
+                console.error("Error leyendo configuración de terminal:", e);
             }
         }
     }, [isOpen]);
 
-    // 2. Inicialización y Limpieza
+    // 2. Reset de Estado al Abrir/Cerrar
     useEffect(() => {
         if (isOpen) {
             setMethod('cash');
             setAmountToPay(Math.round(total).toString());
             setReference('');
             
-            // 🔥 RESET ABSOLUTO DEL ESTADO DIGITAL
+            // Reset Digital
             setDigitalState('idle');
             setPaymentReference(null);
+            setErrorMessage(null);
             if (pollingRef.current) clearInterval(pollingRef.current);
 
             setWithAfip(false);
             
+            // Auto-foco en efectivo
             setTimeout(() => {
                 if (cashInputRef.current) {
                     cashInputRef.current.focus();
                     cashInputRef.current.select();
                 }
-            }, 50);
+            }, 100);
         } else {
+            // Limpieza al cerrar
             if (pollingRef.current) clearInterval(pollingRef.current);
             setDigitalState('idle'); 
         }
     }, [isOpen, total]);
 
-    // 3. INICIO DE TRANSACCIÓN DIGITAL (MP / Point / Clover)
+    // 3. Inicio de Transacción Digital (MP / Point / Clover)
     useEffect(() => {
         if (isOpen) {
             if (method === 'mercadopago' || method === 'point') {
                 const startTransaction = async () => {
                     setDigitalState('creating');
+                    setErrorMessage(null);
+                    
                     try {
-                        // 🟢 SELECCIÓN DINÁMICA DE ID (LOCAL)
-                        // Usamos la variable 'localTerminal' en vez de 'mpConfig'
                         const targetDeviceId = method === 'point' 
                             ? localTerminal.pointId 
                             : localTerminal.qrId;
 
                         if (!targetDeviceId) {
                             throw new Error(method === 'point' 
-                                ? "❌ Falta configurar Terminal Point en este equipo." 
-                                : "❌ Falta configurar Caja QR en este equipo.");
+                                ? "Falta configurar Terminal Point en este equipo." 
+                                : "Falta configurar Caja QR en este equipo.");
                         }
 
-                        // Enviamos deviceId en AMBOS CASOS (QR y Point) para que el backend sepa cual usar
                         const res = await paymentService.initTransaction(method, total, targetDeviceId);
                         
                         setPaymentReference(res.reference);
                         setDigitalState('waiting'); 
+
                     } catch (error) {
                         console.error(`Error iniciando ${method}:`, error);
                         setDigitalState('error');
-                        // Mostramos el error en consola o un toast si fuera necesario
-                        alert(error.message || "Error iniciando pago");
-                        setMethod('cash'); // Fallback a efectivo
+                        setErrorMessage(error.message || "Error de conexión");
                     }
                 };
                 startTransaction();
@@ -148,6 +153,8 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
             else if (method === 'clover') {
                 const handleCloverPayment = async () => {
                     setDigitalState('creating');
+                    setErrorMessage(null);
+                    
                     try {
                         const externalId = `pos-${Date.now()}`;
                         const response = await fetch(`${API_URL}/create-clover-order`, {
@@ -175,62 +182,75 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
                                 });
                             }, 1500);
                         } else {
-                            console.error("Clover Error Response:", result);
+                            console.error("Clover Error:", result);
                             setDigitalState('error');
+                            setErrorMessage(result.error || "Clover rechazó la operación");
                         }
                     } catch (error) {
                         console.error("Error Conexión Clover:", error);
                         setDigitalState('error');
+                        setErrorMessage("No se pudo conectar con Clover");
                     }
                 };
                 handleCloverPayment();
             } 
             else {
+                // Si cambiamos a efectivo/transferencia, matamos el polling anterior
                 if (pollingRef.current) clearInterval(pollingRef.current);
             }
         }
-    }, [isOpen, method, total, user, localTerminal]); // 🔥 Dependencia actualizada a localTerminal
+    }, [method, isOpen, total, user, localTerminal]); 
 
-    // 4. POLLING
+    // 4. Polling de Estado (Solo para MP/Point)
     useEffect(() => {
         if (digitalState === 'waiting' && paymentReference && (method === 'mercadopago' || method === 'point')) {
             const checkPayment = async () => {
                 try {
                     const res = await paymentService.checkStatus(paymentReference, method);
+                    
                     if (res.status === 'approved') {
                         setDigitalState('approved');
                         clearInterval(pollingRef.current);
+                        
                         setTimeout(() => {
-                            onConfirm({ method, totalSale: total, amountPaid: total, amountDebt: 0, withAfip });
+                            onConfirm({ 
+                                method, 
+                                totalSale: total, 
+                                amountPaid: total, 
+                                amountDebt: 0, 
+                                withAfip 
+                            });
                         }, 1500);
                     } else if (res.status === 'error' || res.status === 'rejected' || res.status === 'canceled') {
-                        if (res.status !== 'error') { 
+                        if (res.status !== 'error') { // Ignorar errores transitorios de red
                             setDigitalState('error');
+                            setErrorMessage("Pago rechazado o cancelado");
                             clearInterval(pollingRef.current);
                         }
                     }
-                } catch (e) { console.error(e); }
+                } catch (e) { console.error("Polling error:", e); }
             };
+            
             pollingRef.current = setInterval(checkPayment, 3000);
             return () => clearInterval(pollingRef.current);
         }
     }, [digitalState, paymentReference, method, total, withAfip, onConfirm]);
 
-    // 5. CIERRE SEGURO
+    // 5. Handlers de Cierre
     const handleCloseAttempt = () => {
         if (digitalState === 'waiting' || digitalState === 'creating') {
             const confirmCancel = window.confirm(
                 "⚠️ ¿CANCELAR PAGO EN PROCESO?\n\n" +
-                "Se está esperando respuesta de la terminal/QR.\n" +
-                "Si cancela aquí, asegúrese de que el cliente NO haya pagado.\n\n" +
-                "¿Desea cancelar la operación y volver?"
+                "Se está esperando respuesta de la terminal.\n" +
+                "Asegúrese de que el cliente NO haya pagado antes de cancelar.\n\n" +
+                "¿Desea abortar la operación?"
             );
 
             if (confirmCancel) {
                 if (pollingRef.current) clearInterval(pollingRef.current);
                 setDigitalState('idle'); 
                 setMethod('cash'); 
-                onClose();
+                // No cerramos el modal, solo volvemos a efectivo para permitir reintentar
             }
         } else {
             onClose();
@@ -259,6 +279,7 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
 
     if (!isOpen) return null;
 
+    // Componente Botón Método
     const PaymentOption = ({ id, label, icon: Icon, colorClass, shortcut }) => (
         <button 
             onClick={() => setMethod(id)} 
@@ -279,7 +300,7 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-sys-900/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
             <div className="bg-white rounded-3xl shadow-2xl w-full max-w-4xl overflow-hidden flex flex-col md:flex-row min-h-[500px]">
                 
-                {/* COLUMNA IZQUIERDA: RESUMEN */}
+                {/* 🟢 COLUMNA IZQUIERDA: RESUMEN FINANCIERO */}
                 <div className="w-full md:w-1/3 bg-sys-50 p-6 flex flex-col justify-between border-r border-sys-200">
                     <div>
                         <h3 className="font-bold text-sys-800 text-lg mb-1">
@@ -289,7 +310,7 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
                     </div>
 
                     <div className="space-y-4 flex-1 mt-6">
-                        {/* Total */}
+                        {/* Tarjeta de Total */}
                         <div className="bg-white p-4 rounded-xl border border-sys-200 shadow-sm">
                             <p className="text-xs text-sys-500 uppercase font-bold">
                                 {disableAfip ? "Monto a Saldar" : "Total Venta"}
@@ -297,7 +318,7 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
                             <p className="text-3xl font-black text-sys-900 tracking-tight">$ {total.toLocaleString('es-AR', {minimumFractionDigits: 0})}</p>
                         </div>
 
-                        {/* INPUT MONTO */}
+                        {/* Input de Efectivo / Transferencia */}
                         {(method === 'cash' || method === 'transfer' || digitalState === 'error') && (
                             <div className={cn("p-4 rounded-xl border transition-colors ring-offset-2 animate-in slide-in-from-bottom-2", 
                                 isPartialPayment ? "bg-orange-50 border-orange-300 ring-orange-100" : 
@@ -338,7 +359,7 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
                                         {!isClientRegistered && (
                                             <div className="mt-3 text-[10px] text-red-600 font-bold bg-white/60 p-2 rounded border border-red-100 flex gap-2 items-start leading-tight">
                                                 <AlertCircle size={14} className="shrink-0 mt-0.5" />
-                                                <span>ERROR: Consumidor Final no puede tener deuda.</span>
+                                                <span>ERROR: Consumidor Final no puede tener deuda. Seleccione un cliente.</span>
                                             </div>
                                         )}
                                     </div>
@@ -353,7 +374,7 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
                     </div>
                 </div>
 
-                {/* COLUMNA DERECHA: MÉTODOS */}
+                {/* 🔵 COLUMNA DERECHA: SELECCIÓN DE MÉTODO */}
                 <div className="flex-1 p-8 flex flex-col bg-white">
                     <div className="flex justify-between items-center mb-6">
                         <div>
@@ -379,6 +400,7 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
                         <PaymentOption id="clover" label="Clover" icon={Terminal} colorClass="green-600" /> 
                     </div>
 
+                    {/* ÁREA DE CONTENIDO DINÁMICO */}
                     <div className="flex-1 flex flex-col justify-center items-center text-center min-h-[150px]">
                         
                         {/* --- MODO TRANSFERENCIA --- */}
@@ -401,7 +423,7 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
                             </div>
                         )}
 
-                        {/* --- ESTADOS DIGITALES --- */}
+                        {/* --- ESTADOS DIGITALES (LOADING / ERROR / SUCCESS) --- */}
                         {(method === 'mercadopago' || method === 'clover' || method === 'point') && (
                             <div className="w-full max-w-xs animate-in fade-in">
                                 
@@ -455,8 +477,7 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
                                         <AlertCircle size={48} className="mx-auto mb-2"/>
                                         <p className="font-bold text-lg">Error de Conexión</p>
                                         <p className="text-sm opacity-80 mb-4">
-                                            {method === 'point' ? 'Terminal no responde o rechazada.' : 
-                                             method === 'clover' ? 'Clover no respondió o fue cancelado.' : 'No se pudo conectar con el proveedor.'}
+                                            {errorMessage || "No se pudo conectar con el proveedor."}
                                         </p>
                                         <Button variant="ghost" size="sm" onClick={() => setMethod('cash')} className="bg-white border border-red-200 text-red-700 hover:bg-red-50">
                                             Cambiar a Efectivo

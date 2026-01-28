@@ -2,20 +2,21 @@ import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { 
     Store, Zap, ArrowRight, CheckCircle2, Loader2, Package, 
-    ShoppingBag, Coffee, AlertCircle, Upload, Image as ImageIcon, ShieldCheck,
+    ShoppingBag, AlertCircle, Upload, Image as ImageIcon, ShieldCheck,
     PartyPopper, UserCheck, LayoutGrid
 } from 'lucide-react';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { doc, updateDoc } from 'firebase/firestore';
 import { storage, db } from '../../../database/firebase'; 
+
+// 🔥 SERVICIOS Y STORES
+import { authService } from '../services/authService'; // Tu nuevo servicio atómico
 import { useAuthStore } from '../store/useAuthStore';
 import { useDbSeeder } from '../../../core/hooks/useDbSeeder';
+
 import { Button } from '../../../core/ui/Button';
 import { cn } from '../../../core/utils/cn';
 import confetti from 'canvas-confetti'; 
-
-// 🔥 URL DE TUS CLOUD FUNCTIONS
-const API_URL = import.meta.env.VITE_API_URL || "https://us-central1-salvadorpos1.cloudfunctions.net/api";
 
 // 🏢 PLANES DE NEGOCIO
 const PLAN_OPTIONS = [
@@ -32,7 +33,8 @@ const CATALOG_OPTIONS = [
 
 export const ValeriaRegisterPage = () => {
     const navigate = useNavigate();
-    const { login } = useAuthStore();
+    // Usamos el login del store para actualizar el estado global tras el registro
+    const { login: storeLogin } = useAuthStore();
     const { seedFromUrl, loadingMsg, isSeeding } = useDbSeeder();
 
     const [step, setStep] = useState(1);
@@ -95,11 +97,12 @@ export const ValeriaRegisterPage = () => {
         setFormData({
             ...formData,
             planType: plan.id,
-            branchesCount: plan.id === 'single' ? 1 : 3 // Si es Multi, sugerimos 3 de entrada
+            // Si elige Multi, sugerimos 3 sucursales, si no 1.
+            branchesCount: plan.id === 'single' ? 1 : 3 
         });
     };
 
-    // --- PASO 1: CREAR CUENTA ---
+    // --- PASO 1: CREAR CUENTA (CON NUEVO ARCHITECTURE) ---
     const handleRegister = async (e) => {
         e.preventDefault();
         setError('');
@@ -108,6 +111,7 @@ export const ValeriaRegisterPage = () => {
         if (formData.password !== formData.confirmPassword) return setError("Las contraseñas no coinciden.");
         if (formData.password.length < 6) return setError("La contraseña debe tener al menos 6 caracteres.");
         if (parseInt(formData.captcha) !== realAnswer) return setError("La verificación anti-robot es incorrecta.");
+        
         if (formData.planType === 'multi' && (formData.branchesCount < 2 || formData.branchesCount > 10)) {
             return setError("El plan Enterprise requiere entre 2 y 10 sucursales.");
         }
@@ -115,48 +119,54 @@ export const ValeriaRegisterPage = () => {
         setLoading(true);
 
         try {
-            // 1. Crear Tenant (Inyectando metadata de vendedor y plan)
-            const res = await fetch(`${API_URL}/create-tenant`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    businessName: formData.businessName,
-                    email: formData.email,
-                    password: formData.password,
-                    ownerName: formData.ownerName,
-                    // 🔥 Metadata crítica para Multi-Sucursal
-                    metadata: {
-                        source: 'presencial',
-                        representative: 'Valeria Gaitan',
-                        plan: formData.planType,
-                        initialBranches: formData.branchesCount
-                    }
-                })
+            // 1. REGISTRO ATÓMICO EN FIREBASE (User + Company + Branches)
+            // Usamos el servicio directo, no la Cloud Function
+            await authService.register({
+                email: formData.email,
+                password: formData.password,
+                name: formData.ownerName,
+                companyName: formData.businessName,
+                branchCount: formData.branchesCount // 🔥 Aquí pasamos la cantidad elegida
             });
 
-            const data = await res.json();
-            if (!res.ok) throw new Error(data.error || "Error al crear cuenta");
+            // 2. AUTO-LOGIN INMEDIATO
+            // Esto recupera el perfil completo (incluyendo el companyId generado)
+            const userProfile = await authService.login(formData.email, formData.password);
+            
+            // Actualizar estado global de la app
+            if (userProfile) {
+                // Forzamos update en el store de Zustand
+                // Nota: `storeLogin` en tu store actual solo toma email/pass, 
+                // pero como ya hicimos login con el servicio, el listener del store lo captará.
+                // Sin embargo, para obtener el ID de empresa YA MISMO para el logo, usamos userProfile.
+                
+                const newCompanyId = userProfile.companyId;
 
-            const newCompanyId = data.companyId;
-
-            // 2. Auto-Login
-            await login(formData.email, formData.password);
-
-            // 3. Subir Logo (Opcional)
-            if (logoFile && newCompanyId) {
-                try {
-                    const storageRef = ref(storage, `companies/${newCompanyId}/logo/brand_logo`);
-                    await uploadBytes(storageRef, logoFile);
-                    const logoUrl = await getDownloadURL(storageRef);
-                    await updateDoc(doc(db, 'companies', newCompanyId), { logoUrl });
-                } catch (logoErr) { console.error("Error subiendo logo:", logoErr); }
+                // 3. SUBIR LOGO (Si existe)
+                if (logoFile && newCompanyId) {
+                    try {
+                        const storageRef = ref(storage, `companies/${newCompanyId}/logo/brand_logo`);
+                        await uploadBytes(storageRef, logoFile);
+                        const logoUrl = await getDownloadURL(storageRef);
+                        // Actualizamos el documento de la empresa con la URL del logo
+                        await updateDoc(doc(db, 'companies', newCompanyId), { logoUrl });
+                    } catch (logoErr) { 
+                        console.error("Error subiendo logo (no bloqueante):", logoErr); 
+                    }
+                }
             }
 
+            // Todo éxito -> Siguiente paso
             setStep(2);
 
         } catch (err) {
             console.error(err);
-            setError(err.message);
+            // Mensajes de error amigables
+            if (err.code === 'auth/email-already-in-use') {
+                setError("Este correo electrónico ya está registrado.");
+            } else {
+                setError("Error al crear la cuenta: " + err.message);
+            }
         } finally {
             setLoading(false);
         }
@@ -168,14 +178,19 @@ export const ValeriaRegisterPage = () => {
         
         try {
             // Si eligió una plantilla predefinida (ej. Kiosco), la cargamos ahora
-            // Si eligió "Custom Excel" u "Otro", no cargamos nada aquí, se hará en el dashboard
             if (selectedOption.file) {
+                // Recuperamos el usuario actual del store (ya debe estar logueado)
                 const currentUser = useAuthStore.getState().user;
-                if (!currentUser?.companyId) throw new Error("Error de sesión. Recarga la página.");
+                
+                if (!currentUser?.companyId) {
+                    throw new Error("No se detectó la sesión activa. Por favor recarga.");
+                }
+                
+                // Ejecutamos el Seeder
                 await seedFromUrl(currentUser.companyId, selectedOption.file);
             }
             
-            // 🔥 ÉXITO: PASAMOS AL PASO 3
+            // 🔥 ÉXITO FINAL
             setStep(3);
             triggerCelebration(); 
 
@@ -222,7 +237,7 @@ export const ValeriaRegisterPage = () => {
                 </div>
 
                 <div className="text-xs text-slate-500 z-10 flex justify-between items-center border-t border-white/5 pt-4">
-                    <span>© 2025 Noar Technology.</span>
+                    <span>© 2026 Noar Technology.</span>
                     <span className="font-mono text-white/20">ID: VG-REP-001</span>
                 </div>
             </div>
@@ -285,7 +300,7 @@ export const ValeriaRegisterPage = () => {
                                             className="w-full accent-brand h-2 bg-blue-200 rounded-lg appearance-none cursor-pointer"
                                         />
                                         <p className="text-[10px] text-blue-500 mt-2 text-center">
-                                            Se crearán {formData.branchesCount} sucursales y 1 depósito central.
+                                            Se crearán automáticamente {formData.branchesCount} sucursales (S1, S2...)
                                         </p>
                                     </div>
                                 )}
