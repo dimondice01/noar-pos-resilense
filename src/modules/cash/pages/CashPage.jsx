@@ -1,13 +1,14 @@
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { 
     Wallet, Lock, Unlock, FileText, AlertTriangle, Search, Eye, 
-    ArrowRight, ShieldCheck, User, RefreshCw, ChevronLeft, ChevronRight 
+    ArrowRight, ShieldCheck, User, RefreshCw, ChevronLeft, ChevronRight,
+    Printer, CheckCircle, Filter, Hash, TrendingUp,
+    History as HistoryIcon
 } from 'lucide-react';
 
-// Repositorios
-import { cashRepository } from '../repositories/cashRepository'; 
-import { shiftRepository } from '../repositories/shiftRepository'; 
+// 🔥 REPOSITORIO ÚNICO DE VERDAD
+import { cashRepository } from '../../cash/repositories/cashRepository'; 
 
 // Stores & UI
 import { useAuthStore } from '../../auth/store/useAuthStore';
@@ -15,8 +16,9 @@ import { Card } from '../../../core/ui/Card';
 import { Button } from '../../../core/ui/Button';
 import { cn } from '../../../core/utils/cn';
 import { CashClosingModal } from '../components/CashClosingModal'; 
+import { TicketZModal } from '../../reports/components/TicketZModal'; 
 
-// Firebase Imports
+// Firebase
 import { collection, query, where, getDocs } from 'firebase/firestore';
 import { db as firestoreDB } from '../../../database/firebase';
 
@@ -26,7 +28,7 @@ const formatCurrency = (amount) => `$ ${Number(amount || 0).toLocaleString('es-A
 // 🧠 HELPER MAESTRO: LECTURA INTELIGENTE DE VALORES
 // ============================================================================
 const getShiftValues = (shift, calculatedDetails = null) => {
-    if (!shift) return { expected: 0, declared: 0, diff: 0, initial: 0 };
+    if (!shift) return { expected: 0, declared: 0, diff: 0, initial: 0, left: 0 };
 
     const isValid = (val) => val !== undefined && val !== null;
 
@@ -34,28 +36,25 @@ const getShiftValues = (shift, calculatedDetails = null) => {
     let expected = 0;
     if (calculatedDetails && isValid(calculatedDetails.totalCash)) {
         expected = Number(calculatedDetails.totalCash);
-    } else if (isValid(shift.systemAmount)) {
-        expected = Number(shift.systemAmount);
-    } else if (isValid(shift.stats?.expectedTotal)) {
-        expected = Number(shift.stats.expectedTotal);
     } else if (isValid(shift.expectedCash)) {
         expected = Number(shift.expectedCash);
+    } else if (isValid(shift.systemAmount)) {
+        expected = Number(shift.systemAmount);
     }
 
     // 2. Real/Declarado
     let declared = 0;
-    if (isValid(shift.finalAmount)) {
-        declared = Number(shift.finalAmount);
-    } else if (isValid(shift.stats?.declaredCash)) {
-        declared = Number(shift.stats.declaredCash);
-    } else if (isValid(shift.finalCash)) {
+    if (isValid(shift.finalCash)) {
         declared = Number(shift.finalCash);
+    } else if (isValid(shift.finalAmount)) {
+        declared = Number(shift.finalAmount);
     }
 
     const initial = Number(shift.initialAmount) || 0;
+    const left = Number(shift.leftInCash) || 0; 
     const diff = declared - expected;
 
-    return { expected, declared, diff, initial };
+    return { expected, declared, diff, initial, left };
 };
 
 const getMovementProps = (mov) => {
@@ -94,7 +93,7 @@ const getMovementProps = (mov) => {
 // ============================================================================
 // SUB-COMPONENTE: DETALLE DE AUDITORÍA (MODAL)
 // ============================================================================
-const AuditDetailModal = ({ shift, onClose }) => {
+const AuditDetailModal = ({ shift, onClose, resolveName }) => {
     const [details, setDetails] = useState(null);
     const [loadingDetails, setLoadingDetails] = useState(true);
     const [currentPage, setCurrentPage] = useState(1);
@@ -104,6 +103,7 @@ const AuditDetailModal = ({ shift, onClose }) => {
         if (shift) {
             setLoadingDetails(true);
             setCurrentPage(1); 
+            // Usamos cashRepository para obtener el balance
             cashRepository.getShiftBalance(shift.id).then(bal => {
                 setDetails(bal);
             }).catch(err => {
@@ -130,7 +130,7 @@ const AuditDetailModal = ({ shift, onClose }) => {
     
     const safeDetails = details || { totalCash: 0, movements: [], totalDigital: 0 };
     const allMovements = Array.isArray(safeDetails.movements) ? safeDetails.movements : [];
-    const { expected, declared, diff, initial } = getShiftValues(shift, safeDetails);
+    const { expected, declared, diff, initial, left } = getShiftValues(shift, safeDetails);
     const isPerfect = Math.abs(diff) < 50; 
 
     // Paginación
@@ -178,13 +178,9 @@ const AuditDetailModal = ({ shift, onClose }) => {
                                 {diff > 0 ? '+' : ''} {formatCurrency(diff)}
                             </p>
                         </div>
-                        <div className={cn("p-4 rounded-xl border text-center flex flex-col justify-center shadow-sm", 
-                            shift.audited ? "bg-blue-50 border-blue-200" : "bg-orange-50 border-orange-200"
-                        )}>
-                            <p className="text-xs uppercase font-bold text-sys-500 mb-1">Estado</p>
-                            <p className={cn("text-lg font-black", shift.audited ? "text-blue-700" : "text-orange-700")}>
-                                {shift.audited ? 'AUDITADO' : 'PENDIENTE'}
-                            </p>
+                        <div className="p-4 bg-brand/5 rounded-xl border border-brand/20 text-center shadow-sm flex flex-col justify-center">
+                            <p className="text-xs uppercase font-bold text-brand mb-1">Dejado en Caja</p>
+                            <p className="text-xl font-black text-sys-900">{formatCurrency(left)}</p>
                         </div>
                     </div>
 
@@ -240,190 +236,180 @@ const AuditDetailModal = ({ shift, onClose }) => {
 // ============================================================================
 export const CashPage = () => {
     const navigate = useNavigate();
-    const { user } = useAuthStore();
+    
+    // 🔥 FIX DE REACTIVIDAD: Extraemos activeBranchId para que el componente se suscriba
+    const { user, activeBranchId } = useAuthStore(); 
     
     const [activeTab, setActiveTab] = useState('active'); 
     const [allShifts, setAllShifts] = useState([]);
     const [cashiersList, setCashiersList] = useState([]); 
     const [loading, setLoading] = useState(true);
+    const [searchTerm, setSearchTerm] = useState('');
     
-    // Estado de Paginación Principal (Historial)
+    // Paginación
     const [historyPage, setHistoryPage] = useState(1);
     const HISTORY_PAGE_SIZE = 10;
     
+    // Modales
     const [selectedShiftForAudit, setSelectedShiftForAudit] = useState(null);
     const [shiftToClose, setShiftToClose] = useState(null);
+    const [isZReportOpen, setIsZReportOpen] = useState(false);
+    const [zReportData, setZReportData] = useState(null);
 
-    // 1. CARGA INICIAL ROBUSTA (PARALELA)
+    // 1. CARGA DE DATOS (USANDO SOLO CASHREPOSITORY)
     const loadInitialData = async () => {
         setLoading(true);
         try {
-            // Cargar usuarios y turnos en paralelo para velocidad
             const usersPromise = user?.companyId ? (async () => {
                 const q = query(collection(firestoreDB, 'users'), where('companyId', '==', user.companyId));
                 const snap = await getDocs(q);
                 return snap.docs.map(doc => ({ uid: doc.id, ...doc.data() }));
             })() : Promise.resolve([]);
 
-            const shiftsPromise = shiftRepository.getAllShifts();
-
+            // 🔥 ÚNICA FUENTE DE VERDAD: cashRepository
+            // Gracias al fix de reactividad, esto ahora filtrará con el branchId correcto
+            const shiftsPromise = cashRepository.getAllShifts(); 
+            
             const [users, shifts] = await Promise.all([usersPromise, shiftsPromise]);
 
             setCashiersList(users);
             
             // Ordenar por fecha (más reciente primero)
-            setAllShifts(shifts.sort((a, b) => {
+            const sortedShifts = shifts.sort((a, b) => {
                 const dateA = new Date(a.closedAt || a.openedAt || 0);
                 const dateB = new Date(b.closedAt || b.openedAt || 0);
                 return dateB - dateA;
-            }));
-
+            });
+            
+            setAllShifts(sortedShifts);
         } catch (error) {
-            console.error("Error cargando tesorería:", error);
+            console.error("Error Tesorería:", error);
         } finally {
             setLoading(false);
         }
     };
 
-    useEffect(() => { loadInitialData(); }, [user?.companyId]);
+    // 🔥🔥 FIX FINAL: Recarga cuando user.companyId O activeBranchId cambian
+    useEffect(() => { 
+        if (user?.companyId) {
+            loadInitialData(); 
+        }
+    }, [user?.companyId, activeBranchId]); 
 
     // Helper Nombre
     const resolveCashierName = (shiftUserId, shiftUserName) => {
         const matchedUser = cashiersList.find(u => u.uid === shiftUserId || u.email === shiftUserId);
         if (matchedUser) return matchedUser.name || matchedUser.email.split('@')[0];
-        if (shiftUserName && shiftUserName !== 'Cajero') return shiftUserName;
-        return "Cajero";
+        return shiftUserName || "Cajero";
     };
 
-    // 3. CERRAR CAJA (OPTIMISTIC UPDATE)
-    const handleCloseShift = async (closingData) => {
-        if (!shiftToClose) return;
+    // 2. BUSCADOR INTELIGENTE
+    const filteredShifts = useMemo(() => {
+        if (!searchTerm) return allShifts;
+        const search = searchTerm.toLowerCase();
         
-        // Optimistic UI: Marcar como cerrada visualmente antes de recargar
-        const closedShiftId = shiftToClose.id;
-        
+        return allShifts.filter(s => {
+            const name = resolveCashierName(s.userId, s.userName).toLowerCase();
+            const shiftId = (s.id || '').toLowerCase();
+            const status = (s.status || '').toLowerCase();
+            return name.includes(search) || shiftId.includes(search) || status.includes(search);
+        });
+    }, [allShifts, searchTerm, cashiersList]);
+
+    const activeShifts = filteredShifts.filter(s => s.status === 'OPEN');
+    const closedShifts = filteredShifts.filter(s => s.status === 'CLOSED');
+
+    const totalHistoryPages = Math.ceil(closedShifts.length / HISTORY_PAGE_SIZE);
+    const paginatedHistory = closedShifts.slice((historyPage - 1) * HISTORY_PAGE_SIZE, historyPage * HISTORY_PAGE_SIZE);
+
+    // 3. ACCIONES DE REPORTE Z
+    const handleOpenZReport = async (shift) => {
         try {
-            const balance = await cashRepository.getShiftBalance(closedShiftId);
-            const declaredAmount = parseFloat(closingData.declaredCash || 0);
-            
-            const stats = {
-                ...closingData,
-                declaredCash: declaredAmount, 
-                expectedTotal: balance.totalCash, 
-                expectedCash: balance.totalCash
-            };
-            
-            await shiftRepository.closeShift(closedShiftId, declaredAmount, stats);
-            
-            // Éxito visual inmediato
-            alert("✅ Turno cerrado correctamente.");
-            setShiftToClose(null);
-            
-            // Recarga real
-            loadInitialData(); 
-        } catch (error) {
-            alert("Error: " + error.message);
+            const auditData = await cashRepository.getShiftAuditData(shift.id);
+            setZReportData(auditData);
+            setIsZReportOpen(true);
+        } catch (e) {
+            alert("No se pudo generar el reporte Z: " + e.message);
         }
     };
 
+    const handleCloseShift = async (closingData) => {
+        try {
+            await cashRepository.closeShift(shiftToClose.id, closingData);
+            alert("✅ Caja cerrada con éxito.");
+            setShiftToClose(null);
+            loadInitialData();
+        } catch (e) { alert(e.message); }
+    };
+
     if (loading) return (
-        <div className="h-full flex items-center justify-center flex-col gap-4 text-sys-400">
+        <div className="h-[60vh] flex flex-col items-center justify-center gap-4">
             <RefreshCw className="animate-spin text-brand" size={48} />
-            <p className="animate-pulse font-medium">Sincronizando Tesorería...</p>
+            <p className="text-sys-400 font-bold animate-pulse">Sincronizando Tesorería...</p>
         </div>
     );
 
-    const activeShifts = allShifts.filter(s => s.status === 'OPEN');
-    const closedShifts = allShifts.filter(s => s.status === 'CLOSED');
-
-    const totalHistoryPages = Math.ceil(closedShifts.length / HISTORY_PAGE_SIZE);
-    const paginatedHistory = closedShifts.slice(
-        (historyPage - 1) * HISTORY_PAGE_SIZE,
-        historyPage * HISTORY_PAGE_SIZE
-    );
-
     return (
-        <div className="space-y-6 pb-20 animate-in fade-in duration-500">
+        <div className="space-y-6 pb-20 animate-in fade-in">
             
             {/* Header */}
-            <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-4">
+            <div className="flex flex-col md:flex-row justify-between items-center gap-4">
                 <div>
                     <h2 className="text-2xl font-black text-sys-900 flex items-center gap-2">
-                        <Wallet className="text-brand" size={28} /> Tesorería & Control
+                        <Wallet className="text-brand" size={32} /> Tesorería & Auditoría
                     </h2>
-                    <p className="text-sys-500 text-sm mt-1">Supervisión en tiempo real de cajas y auditoría de cierres.</p>
+                    <p className="text-sys-500 text-sm">Control centralizado de flujos de efectivo y cierres Z.</p>
+                </div>
+                
+                <div className="relative w-full md:w-80">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-sys-400" size={18} />
+                    <input 
+                        type="text" 
+                        placeholder="Buscar cajero, ID turno..." 
+                        className="w-full pl-10 pr-4 py-2.5 bg-white border border-sys-200 rounded-2xl outline-none focus:border-brand shadow-sm transition-all text-sm font-medium"
+                        value={searchTerm}
+                        onChange={(e) => setSearchTerm(e.target.value)}
+                    />
                 </div>
             </div>
 
             {/* Tabs */}
-            <div className="flex gap-1 border-b border-sys-200 bg-white p-1 rounded-t-xl w-fit shadow-sm">
-                <button 
-                    onClick={() => setActiveTab('active')}
-                    className={cn("px-6 py-2 text-sm font-bold rounded-lg transition-all", 
-                        activeTab === 'active' ? "bg-brand text-white shadow-md" : "text-sys-500 hover:bg-sys-50"
-                    )}
-                >
-                    Cajas Activas ({activeShifts.length})
+            <div className="flex bg-white p-1.5 rounded-2xl shadow-sm border border-sys-100 w-fit">
+                <button onClick={() => setActiveTab('active')} className={cn("px-6 py-2 text-xs font-bold rounded-xl transition-all flex items-center gap-2", activeTab === 'active' ? "bg-sys-900 text-white shadow-lg" : "text-sys-500 hover:bg-sys-50")}>
+                    <Unlock size={14}/> Activas ({activeShifts.length})
                 </button>
-                <button 
-                    onClick={() => setActiveTab('history')}
-                    className={cn("px-6 py-2 text-sm font-bold rounded-lg transition-all", 
-                        activeTab === 'history' ? "bg-brand text-white shadow-md" : "text-sys-500 hover:bg-sys-50"
-                    )}
-                >
-                    Historial de Cierres
+                <button onClick={() => setActiveTab('history')} className={cn("px-6 py-2 text-xs font-bold rounded-xl transition-all flex items-center gap-2", activeTab === 'history' ? "bg-sys-900 text-white shadow-lg" : "text-sys-500 hover:bg-sys-50")}>
+                    <HistoryIcon size={14}/> Historial ({closedShifts.length})
                 </button>
             </div>
 
             {/* VISTA 1: CAJAS ACTIVAS */}
             {activeTab === 'active' && (
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 animate-in slide-in-from-bottom-4 duration-300">
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                     {activeShifts.length === 0 ? (
-                        <div className="col-span-full py-16 text-center text-sys-400 bg-white rounded-3xl border-2 border-dashed border-sys-200 flex flex-col items-center">
-                            <div className="w-20 h-20 bg-sys-50 rounded-full flex items-center justify-center mb-4">
-                                <Lock size={40} className="text-sys-300" />
-                            </div>
-                            <p className="font-bold text-lg text-sys-600">Todo cerrado por aquí</p>
-                            <p className="text-sm">No hay cajas operando en este momento.</p>
-                        </div>
+                        <Card className="col-span-full py-20 text-center border-dashed border-2 flex flex-col items-center gap-4 opacity-50 bg-transparent shadow-none">
+                            <Lock size={48} className="text-sys-300" />
+                            <p className="font-bold text-sys-500">No hay cajas abiertas en este momento</p>
+                        </Card>
                     ) : (
                         activeShifts.map(shift => (
-                            <Card key={shift.id} className="relative overflow-hidden group border-0 shadow-lg hover:shadow-xl transition-all duration-300 bg-white">
-                                <div className="absolute top-0 left-0 w-1.5 h-full bg-green-500"></div>
+                            <Card key={shift.id} className="relative overflow-hidden border-0 shadow-xl bg-white group hover:scale-[1.01] transition-all">
+                                <div className="absolute top-0 left-0 w-2 h-full bg-emerald-500"></div>
                                 <div className="p-6">
                                     <div className="flex justify-between items-start mb-6">
                                         <div>
-                                            <div className="flex items-center gap-2 mb-2">
-                                                <span className="bg-green-100 text-green-700 text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider flex items-center gap-1">
-                                                    <span className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse"></span> Abierta
-                                                </span>
-                                                <span className="text-xs text-sys-400 font-mono">#{shift.id.slice(-4)}</span>
-                                            </div>
-                                            <h3 className="font-bold text-sys-900 text-xl flex items-center gap-2">
-                                                <User size={20} className="text-sys-400" /> 
-                                                {resolveCashierName(shift.userId, shift.userName)}
-                                            </h3>
+                                            <span className="text-[10px] font-black uppercase text-emerald-600 bg-emerald-50 px-2 py-1 rounded-lg">Operativo</span>
+                                            <h3 className="text-xl font-black text-sys-900 mt-2">{resolveCashierName(shift.userId, shift.userName)}</h3>
+                                            <p className="text-xs text-sys-400 font-mono mt-1">ID: {shift.id.slice(-6)}</p>
                                         </div>
-                                        <div className="p-3 bg-green-50 text-green-600 rounded-2xl shadow-sm">
-                                            <Unlock size={24} strokeWidth={2.5} />
-                                        </div>
+                                        <div className="p-3 bg-emerald-50 rounded-2xl text-emerald-500"><Unlock size={24} /></div>
                                     </div>
-                                    
-                                    <div className="space-y-3 mb-8 bg-sys-50 p-4 rounded-xl border border-sys-100">
-                                        <div className="flex justify-between text-sm items-center">
-                                            <span className="text-sys-500 font-medium">Inicio de Turno</span>
-                                            <span className="font-mono font-bold text-sys-700 bg-white px-2 py-0.5 rounded border border-sys-100">
-                                                {new Date(shift.openedAt).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
-                                            </span>
-                                        </div>
-                                        <div className="flex justify-between text-sm items-center">
-                                            <span className="text-sys-500 font-medium">Fondo Inicial</span>
-                                            <span className="font-mono font-bold text-sys-900">{formatCurrency(shift.initialAmount)}</span>
-                                        </div>
+                                    <div className="grid grid-cols-2 gap-2 mb-6">
+                                        <div className="bg-sys-50 p-3 rounded-xl"><p className="text-[9px] font-bold text-sys-400 uppercase">Inicio</p><p className="font-bold text-sys-800 text-sm">{new Date(shift.openedAt).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</p></div>
+                                        <div className="bg-sys-50 p-3 rounded-xl"><p className="text-[9px] font-bold text-sys-400 uppercase">Fondo</p><p className="font-bold text-sys-800 text-sm">{formatCurrency(shift.initialAmount)}</p></div>
                                     </div>
-
-                                    <Button onClick={() => setShiftToClose(shift)} className="w-full bg-red-50 text-red-600 border border-red-100 hover:bg-red-600 hover:text-white hover:border-red-600 shadow-none font-bold py-3 rounded-xl transition-all">
-                                        Forzar Cierre Z
+                                    <Button onClick={() => setShiftToClose(shift)} className="w-full bg-rose-500 hover:bg-rose-600 text-white border-none shadow-lg shadow-rose-200 py-3 font-bold rounded-xl">
+                                        Efectuar Cierre Z
                                     </Button>
                                 </div>
                             </Card>
@@ -434,62 +420,66 @@ export const CashPage = () => {
 
             {/* VISTA 2: HISTORIAL */}
             {activeTab === 'history' && (
-                <Card className="p-0 overflow-hidden animate-in slide-in-from-right-4 duration-300 flex flex-col min-h-[400px] shadow-lg border-0">
+                <Card className="p-0 overflow-hidden border-0 shadow-2xl rounded-3xl bg-white flex flex-col min-h-[500px]">
                     <div className="overflow-x-auto flex-1">
                         <table className="w-full text-left text-sm">
-                            <thead className="bg-sys-50 text-sys-500 text-xs uppercase font-bold tracking-wider border-b border-sys-200">
+                            <thead className="bg-sys-900 text-white text-[10px] font-black uppercase tracking-widest sticky top-0 z-10">
                                 <tr>
-                                    <th className="p-5 w-2/12">Fecha</th>
-                                    <th className="p-5 w-2/12">Cajero</th>
-                                    <th className="p-5 w-2/12 text-right">Sistema</th>
-                                    <th className="p-5 w-2/12 text-right">Real</th>
-                                    <th className="p-5 w-1/12 text-center">Desvío</th>
-                                    <th className="p-5 w-1/12 text-center">Estado</th>
-                                    <th className="p-5 w-1/12 text-right">Acción</th>
+                                    <th className="p-5">Fecha Cierre</th>
+                                    <th className="p-5">Cajero</th>
+                                    <th className="p-5 text-right">Teórico</th>
+                                    <th className="p-5 text-right">Real</th>
+                                    <th className="p-5 text-right">Dejado</th>
+                                    <th className="p-5 text-center">Desvío</th>
+                                    <th className="p-5 text-center">Estado</th>
+                                    <th className="p-5 text-right">Acciones</th>
                                 </tr>
                             </thead>
-                            <tbody className="divide-y divide-sys-100">
+                            <tbody className="divide-y divide-sys-50">
                                 {paginatedHistory.length === 0 ? (
-                                    <tr><td colSpan="7" className="p-16 text-center text-sys-400 font-medium bg-white">No hay historial disponible.</td></tr>
+                                    <tr><td colSpan="8" className="p-20 text-center text-sys-400 italic">No se encontraron registros.</td></tr>
                                 ) : (
                                     paginatedHistory.map(shift => {
-                                        const { expected, declared, diff } = getShiftValues(shift);
-                                        const isPerfect = Math.abs(diff) < 50; 
-
+                                        const { expected, declared, diff, left } = getShiftValues(shift);
+                                        const isPerfect = Math.abs(diff) < 50;
                                         return (
-                                            <tr key={shift.id} className="hover:bg-sys-50 transition-colors group bg-white">
+                                            <tr key={shift.id} className="hover:bg-sys-50 transition-colors">
                                                 <td className="p-5">
                                                     <div className="font-bold text-sys-800">{new Date(shift.closedAt).toLocaleDateString()}</div>
-                                                    <div className="text-[10px] text-sys-400 font-mono font-medium">{new Date(shift.closedAt).toLocaleTimeString()}</div>
+                                                    <div className="text-[10px] text-sys-400 font-mono">{new Date(shift.closedAt).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</div>
                                                 </td>
-                                                <td className="p-5">
-                                                    <div className="flex items-center gap-3">
-                                                        <div className="w-8 h-8 rounded-full bg-brand/5 text-brand flex items-center justify-center text-xs font-black border border-brand/10">
-                                                            {(resolveCashierName(shift.userId, shift.userName) || 'U').charAt(0).toUpperCase()}
+                                                <td className="p-5 font-bold text-sys-700">
+                                                    <div className="flex items-center gap-2">
+                                                        <div className="w-6 h-6 rounded-full bg-brand/10 text-brand flex items-center justify-center text-[10px] font-black">
+                                                            {resolveCashierName(shift.userId, shift.userName).charAt(0)}
                                                         </div>
-                                                        <span className="text-sys-700 font-bold text-sm">{resolveCashierName(shift.userId, shift.userName)}</span>
+                                                        {resolveCashierName(shift.userId, shift.userName)}
                                                     </div>
                                                 </td>
-                                                <td className="p-5 text-right font-mono font-medium text-sys-500">{formatCurrency(expected)}</td>
-                                                <td className="p-5 text-right font-mono font-bold text-sys-900 bg-sys-50/30">{formatCurrency(declared)}</td>
+                                                <td className="p-5 text-right font-mono text-sys-500">{formatCurrency(expected)}</td>
+                                                <td className="p-5 text-right font-mono font-bold text-sys-900 bg-sys-50/30 rounded-lg">{formatCurrency(declared)}</td>
+                                                <td className="p-5 text-right font-mono font-bold text-brand">{formatCurrency(left)}</td>
                                                 <td className="p-5 text-center">
-                                                    <span className={cn("px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-wide border", 
-                                                        isPerfect ? "bg-green-50 text-green-700 border-green-200" : "bg-red-50 text-red-700 border-red-200"
-                                                    )}>
-                                                        {isPerfect ? 'OK' : `${diff > 0 ? '+' : ''}${formatCurrency(diff)}`}
+                                                    <span className={cn("px-2.5 py-1 rounded-lg text-[10px] font-black border uppercase", isPerfect ? "bg-emerald-50 text-emerald-700 border-emerald-100" : "bg-rose-50 text-rose-700 border-rose-100")}>
+                                                        {isPerfect ? 'OK' : diff > 0 ? `+${formatCurrency(diff)}` : formatCurrency(diff)}
                                                     </span>
                                                 </td>
                                                 <td className="p-5 text-center">
-                                                    <span className={cn("px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-wide border", 
-                                                        shift.audited ? "bg-blue-50 text-blue-700 border-blue-200" : "bg-orange-50 text-orange-700 border-orange-200"
-                                                    )}>
-                                                        {shift.audited ? 'FINAL' : 'PENDIENTE'}
-                                                    </span>
+                                                    {shift.audited ? (
+                                                        <span className="text-[10px] font-bold text-blue-600 bg-blue-50 px-2 py-1 rounded-full border border-blue-100">AUDITADO</span>
+                                                    ) : (
+                                                        <span className="text-[10px] font-bold text-orange-600 bg-orange-50 px-2 py-1 rounded-full border border-orange-100">PENDIENTE</span>
+                                                    )}
                                                 </td>
                                                 <td className="p-5 text-right">
-                                                    <button onClick={() => setSelectedShiftForAudit(shift)} className="p-2.5 hover:bg-white hover:shadow-md rounded-xl text-sys-400 hover:text-brand transition-all border border-transparent hover:border-sys-200" title="Ver Detalle">
-                                                        <Eye size={20} />
-                                                    </button>
+                                                    <div className="flex justify-end gap-2">
+                                                        <button onClick={() => setSelectedShiftForAudit(shift)} className="p-2 bg-white border border-sys-200 text-sys-600 rounded-xl hover:bg-sys-50 transition-all shadow-sm" title="Detalle Técnico">
+                                                            <Eye size={16} />
+                                                        </button>
+                                                        <button onClick={() => handleOpenZReport(shift)} className="p-2 bg-brand text-white rounded-xl hover:bg-brand-hover transition-all shadow-md shadow-brand/20" title="Imprimir Ticket Z">
+                                                            <Printer size={16} />
+                                                        </button>
+                                                    </div>
                                                 </td>
                                             </tr>
                                         );
@@ -499,26 +489,36 @@ export const CashPage = () => {
                         </table>
                     </div>
                     
+                    {/* Footer Paginación */}
                     {totalHistoryPages > 1 && (
-                        <div className="p-4 border-t border-sys-100 bg-sys-50/50 flex justify-between items-center px-6">
-                            <span className="text-xs text-sys-500 font-medium">
-                                Mostrando página <b>{historyPage}</b> de <b>{totalHistoryPages}</b>
-                            </span>
+                        <div className="p-4 border-t border-sys-100 bg-sys-50 flex justify-between items-center px-6">
+                            <span className="text-xs text-sys-500 font-medium">Página <b>{historyPage}</b> de <b>{totalHistoryPages}</b></span>
                             <div className="flex gap-2">
-                                <Button variant="ghost" size="sm" disabled={historyPage === 1} onClick={() => setHistoryPage(p => Math.max(1, p - 1))} className="text-sys-500 hover:text-sys-900"><ChevronLeft size={16}/> Anterior</Button>
-                                <Button variant="ghost" size="sm" disabled={historyPage === totalHistoryPages} onClick={() => setHistoryPage(p => Math.min(totalHistoryPages, p + 1))} className="text-sys-500 hover:text-sys-900">Siguiente <ChevronRight size={16}/></Button>
+                                <Button variant="ghost" size="sm" disabled={historyPage === 1} onClick={() => setHistoryPage(p => Math.max(1, p - 1))} className="text-sys-500 hover:text-sys-900"><ChevronLeft size={16}/></Button>
+                                <Button variant="ghost" size="sm" disabled={historyPage === totalHistoryPages} onClick={() => setHistoryPage(p => Math.min(totalHistoryPages, p + 1))} className="text-sys-500 hover:text-sys-900"><ChevronRight size={16}/></Button>
                             </div>
                         </div>
                     )}
                 </Card>
             )}
 
-            {/* Modales */}
-            <AuditDetailModal shift={selectedShiftForAudit} onClose={() => setSelectedShiftForAudit(null)} />
-            
+            {/* MODALES */}
+            <AuditDetailModal 
+                shift={selectedShiftForAudit} 
+                onClose={() => setSelectedShiftForAudit(null)} 
+                resolveName={resolveCashierName}
+            />
+
+            {isZReportOpen && (
+                <TicketZModal 
+                    isOpen={isZReportOpen} 
+                    onClose={() => setIsZReportOpen(false)} 
+                    reportData={zReportData} 
+                />
+            )}
+
             {shiftToClose && (
                 <CashClosingModalWrapper 
-                    isOpen={true}
                     shift={shiftToClose}
                     onClose={() => setShiftToClose(null)}
                     onConfirm={handleCloseShift}
@@ -528,18 +528,17 @@ export const CashPage = () => {
     );
 };
 
-// Wrapper auxiliar
-const CashClosingModalWrapper = ({ isOpen, shift, onClose, onConfirm }) => {
+// Wrapper para inyectar balances al modal de cierre
+const CashClosingModalWrapper = ({ shift, onClose, onConfirm }) => {
     const [totals, setTotals] = useState(null);
-    
     useEffect(() => {
         let mounted = true;
         cashRepository.getShiftBalance(shift.id).then(bal => {
-            if(mounted) setTotals({ totalCash: bal.totalCash, totalDigital: bal.totalDigital });
+            if (mounted) setTotals({ totalCash: bal.totalCash, totalDigital: bal.totalDigital });
         });
         return () => { mounted = false; };
     }, [shift]);
 
     if (!totals) return null;
-    return <CashClosingModal isOpen={isOpen} onClose={onClose} systemTotals={totals} onConfirm={onConfirm} />;
+    return <CashClosingModal isOpen={true} onClose={onClose} systemTotals={totals} onConfirm={onConfirm} />;
 };

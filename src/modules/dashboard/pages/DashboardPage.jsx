@@ -13,7 +13,6 @@ import { useAuthStore } from '../../auth/store/useAuthStore';
 import { productRepository } from '../../inventory/repositories/productRepository';
 import { cashRepository } from '../../cash/repositories/cashRepository';
 import { salesRepository } from '../../sales/repositories/salesRepository';
-import { shiftRepository } from '../../cash/repositories/shiftRepository'; 
 
 // Servicios & Hooks
 import { securityService } from '../../security/services/securityService';

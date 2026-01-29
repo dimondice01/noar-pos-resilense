@@ -1,24 +1,22 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { NavLink, useNavigate, useLocation, useParams } from 'react-router-dom'; 
 import { 
-  LayoutDashboard, ShoppingCart, Package, Settings, 
-  FileText, Cloud, RefreshCw, LogOut, User, ShieldCheck, Wallet,
-  Users, Lock, ArrowRight, X, Loader2, Plug, 
-  Building, Truck, Unlock, WifiOff
+    LayoutDashboard, ShoppingCart, Package, Settings, 
+    FileText, Cloud, RefreshCw, LogOut, User, ShieldCheck, Wallet,
+    Users, Lock, ArrowRight, X, Loader2, Plug, 
+    Building, Truck, Unlock, WifiOff
 } from 'lucide-react';
 import { doc, onSnapshot } from 'firebase/firestore'; 
 
-// 🔥 RUTAS CORREGIDAS
 import { cn } from '../core/utils/cn'; 
 import { useAutoSync } from '../core/hooks/useAutoSync';
 import { useAuthStore } from '../modules/auth/store/useAuthStore';
 import { securityService } from '../modules/security/services/securityService';
 import { db } from '../database/firebase'; 
 
-// Imports del Módulo de Caja
+// 🔥 CORRECCIÓN: Usamos SOLO cashRepository (Fuente única de verdad)
 import { CashClosingModal } from '../modules/cash/components/CashClosingModal'; 
 import { cashRepository } from '../modules/cash/repositories/cashRepository';
-import { shiftRepository } from '../modules/cash/repositories/shiftRepository';
 
 import defaultLogo from '../assets/logo.png'; 
 
@@ -26,42 +24,42 @@ import defaultLogo from '../assets/logo.png';
 // 1. COMPONENTE HELPER: ENLACE DE MENÚ
 // ============================================================================
 const MenuLink = ({ to, icon: Icon, label, onClick, isRestricted }) => {
-  const location = useLocation();
-  const isActiveRoute = location.pathname === to;
+    const location = useLocation();
+    const isActiveRoute = location.pathname === to;
 
-  const baseClasses = cn(
-    "w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 group relative text-left outline-none focus:ring-2 focus:ring-brand/20",
-    isActiveRoute 
-      ? "bg-brand-light text-brand font-semibold shadow-sm" 
-      : "text-sys-500 hover:bg-sys-100 hover:text-sys-900"
-  );
-
-  const content = (
-    <>
-      <Icon className="w-5 h-5" />
-      <span className="flex-1">{label}</span>
-      {isActiveRoute && (
-        <div className="absolute right-2 w-1.5 h-1.5 rounded-full bg-brand" />
-      )}
-      {isRestricted && !isActiveRoute && (
-        <Lock size={14} className="text-sys-300 group-hover:text-sys-400 transition-colors" />
-      )}
-    </>
-  );
-
-  if (onClick) {
-    return (
-      <button onClick={onClick} className={baseClasses}>
-        {content}
-      </button>
+    const baseClasses = cn(
+        "w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 group relative text-left outline-none focus:ring-2 focus:ring-brand/20",
+        isActiveRoute 
+            ? "bg-brand-light text-brand font-semibold shadow-sm" 
+            : "text-sys-500 hover:bg-sys-100 hover:text-sys-900"
     );
-  }
 
-  return (
-    <NavLink to={to} className={({ isActive }) => cn(baseClasses, isActive ? "" : "")}>
-      {content}
-    </NavLink>
-  );
+    const content = (
+        <>
+            <Icon className="w-5 h-5" />
+            <span className="flex-1">{label}</span>
+            {isActiveRoute && (
+                <div className="absolute right-2 w-1.5 h-1.5 rounded-full bg-brand" />
+            )}
+            {isRestricted && !isActiveRoute && (
+                <Lock size={14} className="text-sys-300 group-hover:text-sys-400 transition-colors" />
+            )}
+        </>
+    );
+
+    if (onClick) {
+        return (
+            <button onClick={onClick} className={baseClasses}>
+                {content}
+            </button>
+        );
+    }
+
+    return (
+        <NavLink to={to} className={({ isActive }) => cn(baseClasses, isActive ? "" : "")}>
+            {content}
+        </NavLink>
+    );
 };
 
 // ============================================================================
@@ -166,8 +164,8 @@ const CloseShiftModalWrapper = ({ isOpen, onClose, onShiftClosed }) => {
             const fetchShiftData = async () => {
                 setLoading(true);
                 try {
-                    // 1. Obtener Turno Actual (Misma lógica que CashPage)
-                    const currentShift = await shiftRepository.getCurrentShift(); 
+                    // 1. Obtener Turno Actual (USANDO CASH REPOSITORY)
+                    const currentShift = await cashRepository.getCurrentShift(); 
                     
                     if (currentShift) {
                         setShift(currentShift);
@@ -196,18 +194,11 @@ const CloseShiftModalWrapper = ({ isOpen, onClose, onShiftClosed }) => {
         
         setProcessing(true); 
         try {
-            // 🔥 Aseguramos la lectura correcta del valor declarado
-            // El modal puede devolverlo como 'declaredCash' o 'finalAmount'
-            const declaredAmount = parseFloat(data.declaredCash !== undefined ? data.declaredCash : (data.finalAmount || 0));
-            
-            const stats = {
-                ...data,
-                expectedTotal: balance.totalCash, 
-                expectedCash: balance.totalCash
-            };
+            // 🔥 El objeto 'data' ya viene completo desde CashClosingModal
+            // con: declaredCash, expectedCash, leftInCash, etc.
             
             // 3. Cerrar Turno (Await estricto)
-            await shiftRepository.closeShift(shift.id, declaredAmount, stats);
+            await cashRepository.closeShift(shift.id, data);
             
             alert("✅ Turno Cerrado Correctamente.");
             onClose();
@@ -215,7 +206,7 @@ const CloseShiftModalWrapper = ({ isOpen, onClose, onShiftClosed }) => {
             // 🔥 RETRASO DE SEGURIDAD PARA EVITAR RACE CONDITIONS CON FIREBASE/SYNC
             setTimeout(() => {
                 if (onShiftClosed) onShiftClosed(); 
-            }, 1000); // 1 segundo completo para que la BD asiente el cambio
+            }, 1000); 
             
         } catch (e) {
             console.error("Error closing shift from sidebar:", e);
@@ -257,255 +248,256 @@ const CloseShiftModalWrapper = ({ isOpen, onClose, onShiftClosed }) => {
 // 4. COMPONENTE PRINCIPAL: SIDEBAR
 // ============================================================================
 export const Sidebar = () => {
-  const { isSyncing } = useAutoSync(15000);
-  const [isOnline, setIsOnline] = useState(navigator.onLine);
-  
-  const [hasActiveShift, setHasActiveShift] = useState(false);
-  const [checkingShift, setCheckingShift] = useState(true);
+    const { isSyncing } = useAutoSync(15000);
+    const [isOnline, setIsOnline] = useState(navigator.onLine);
+    
+    const [hasActiveShift, setHasActiveShift] = useState(false);
+    const [checkingShift, setCheckingShift] = useState(true);
 
-  const [isCloseModalOpen, setIsCloseModalOpen] = useState(false);
-  const [isPinModalOpen, setIsPinModalOpen] = useState(false);
-  const [pendingRoute, setPendingRoute] = useState(null);
+    const [isCloseModalOpen, setIsCloseModalOpen] = useState(false);
+    const [isPinModalOpen, setIsPinModalOpen] = useState(false);
+    const [pendingRoute, setPendingRoute] = useState(null);
 
-  const { user, logout } = useAuthStore();
-  const navigate = useNavigate();
-  const { companySlug } = useParams(); 
-  
-  const isAdmin = user?.role?.toUpperCase() === 'ADMIN';
+    const { user, logout } = useAuthStore();
+    const navigate = useNavigate();
+    const { companySlug } = useParams(); 
+    
+    const isAdmin = user?.role?.toUpperCase() === 'ADMIN' || user?.role === 'OWNER';
 
-  const [companyInfo, setCompanyInfo] = useState({ name: 'MAXI KIOSCO', logo: defaultLogo });
+    const [companyInfo, setCompanyInfo] = useState({ name: 'MAXI KIOSCO', logo: defaultLogo });
 
-  const getLink = (path) => {
-      const root = companySlug || user?.companyId; 
-      if (!path) return `/${root}`; 
-      return `/${root}/${path}`;
-  };
-
-  const handleLogout = async () => {
-      const redirectSlug = companySlug || user?.companyId;
-      await logout();
-      navigate(`/login/${redirectSlug}`);
-  };
-
-  const checkShiftStatus = async () => {
-      if (!user) return;
-      try {
-          const current = await shiftRepository.getCurrentShift();
-          setHasActiveShift(!!current);
-      } catch (e) { 
-          console.error("Error checking shift status:", e); 
-          setHasActiveShift(false);
-      } finally {
-          setCheckingShift(false);
-      }
-  };
-
-  useEffect(() => {
-      checkShiftStatus();
-      const interval = setInterval(checkShiftStatus, 10000); 
-      return () => clearInterval(interval);
-  }, [user]); 
-
-  const handleOpenShiftDirectly = async () => {
-      const input = prompt("Monto inicial en caja:", "1000");
-      if (input === null) return;
-      const amount = parseFloat(input);
-      if (isNaN(amount) || amount < 0) return alert("Monto inválido");
-      
-      try {
-          await cashRepository.openShift(amount, user?.name); 
-          alert("✅ Caja abierta correctamente.");
-          
-          // Recarga segura
-          setTimeout(async () => {
-              await checkShiftStatus(); 
-              window.location.reload(); 
-          }, 800);
-          
-      } catch (e) { alert(e.message); }
-  };
-
-  useEffect(() => {
-      if (user?.companyId) {
-          const unsub = onSnapshot(doc(db, 'companies', user.companyId), (docSnap) => {
-              if (docSnap.exists()) {
-                  const data = docSnap.data();
-                  setCompanyInfo({
-                      name: data.name || 'MI NEGOCIO',
-                      logo: data.logoUrl || defaultLogo
-                  });
-              }
-          });
-          return () => unsub();
-      }
-  }, [user]);
-
-  useEffect(() => {
-    const handleStatus = () => setIsOnline(navigator.onLine);
-    window.addEventListener('online', handleStatus);
-    window.addEventListener('offline', handleStatus);
-    return () => {
-      window.removeEventListener('online', handleStatus);
-      window.removeEventListener('offline', handleStatus);
+    const getLink = (path) => {
+        const root = companySlug || user?.companyId; 
+        if (!path) return `/${root}`; 
+        return `/${root}/${path}`;
     };
-  }, []);
 
-  const handleRestrictedNavigation = (route) => {
-      if (isAdmin) {
-          navigate(route);
-      } else {
-          setPendingRoute(route);
-          setIsPinModalOpen(true);
-      }
-  };
+    const handleLogout = async () => {
+        const redirectSlug = companySlug || user?.companyId;
+        await logout();
+        navigate(`/login/${redirectSlug}`);
+    };
 
-  const handlePinSuccess = () => {
-      setIsPinModalOpen(false);
-      if (pendingRoute) {
-          navigate(pendingRoute);
-          setPendingRoute(null);
-      }
-  };
+    const checkShiftStatus = async () => {
+        if (!user) return;
+        try {
+            // 🔥 USAMOS CASH REPOSITORY
+            const current = await cashRepository.getCurrentShift();
+            setHasActiveShift(!!current);
+        } catch (e) { 
+            console.error("Error checking shift status:", e); 
+            setHasActiveShift(false);
+        } finally {
+            setCheckingShift(false);
+        }
+    };
 
-  return (
-    <>
-      <aside className="w-64 h-screen bg-white border-r border-sys-200 flex flex-col fixed left-0 top-0 z-20 hidden md:flex shadow-[4px_0_24px_rgba(0,0,0,0.02)]">
+    useEffect(() => {
+        checkShiftStatus();
+        const interval = setInterval(checkShiftStatus, 10000); 
+        return () => clearInterval(interval);
+    }, [user]); 
+
+    const handleOpenShiftDirectly = async () => {
+        const input = prompt("Monto inicial en caja:", "1000");
+        if (input === null) return;
+        const amount = parseFloat(input);
+        if (isNaN(amount) || amount < 0) return alert("Monto inválido");
         
-        {/* Header */}
-        <div className="p-6 border-b border-sys-100 flex flex-col items-center text-center">
-          <div className="w-20 h-20 mb-3 bg-white rounded-full flex items-center justify-center overflow-hidden border border-sys-100 shadow-sm p-2 relative">
-              <img 
-                  src={companyInfo.logo} 
-                  alt="Logo" 
-                  className="w-full h-full object-contain"
-                  onError={(e) => { e.target.src = defaultLogo; }} 
-              />
-          </div>
-
-          <div className="flex flex-col gap-0.5 w-full">
-            <h1 className="text-lg font-black text-sys-900 tracking-tight leading-none uppercase truncate px-2">
-                {companyInfo.name}
-            </h1>
-            <p className="text-xs font-bold text-blue-600 font-serif italic tracking-wide">
-                Sistema POS
-            </p>
-          </div>
-
-          {/* User Card */}
-          <div className="w-full text-left flex items-center gap-2.5 bg-sys-50 p-2 rounded-xl border border-sys-200 mt-5">
-              <div className={cn("w-7 h-7 rounded-full flex items-center justify-center text-white shadow-sm shrink-0", isAdmin ? "bg-sys-900" : "bg-brand")}>
-                  {isAdmin ? <ShieldCheck size={14} /> : <User size={14} />}
-              </div>
-              <div className="flex-1 min-w-0">
-                  <p className="text-[11px] font-bold text-sys-800 truncate leading-tight">{user?.name || user?.email}</p>
-                  <p className="text-[9px] text-sys-500 truncate font-mono uppercase leading-tight">{user?.role || 'Cajero'}</p>
-              </div>
-              <button onClick={handleLogout} className="text-sys-400 hover:text-red-500 transition-colors p-1 rounded-lg hover:bg-sys-200" title="Cerrar Sesión">
-                  <LogOut size={14} />
-              </button>
-          </div>
-        </div>
-
-        {/* Navigation */}
-        <nav className="flex-1 p-4 space-y-1 overflow-y-auto no-scrollbar">
-          
-          <div className="px-4 py-2 text-xs font-semibold text-sys-400 uppercase tracking-wider mb-1">Operación</div>
-          
-          <MenuLink to={getLink('')} icon={LayoutDashboard} label="Dashboard" />
-          <MenuLink to={getLink('pos')} icon={ShoppingCart} label="Punto de Venta" />
-          <MenuLink to={getLink('sales')} icon={FileText} label="Ventas" />
-          <MenuLink to={getLink('clients')} icon={Users} label="Clientes" />
-          <MenuLink to={getLink('suppliers')} icon={Truck} label="Proveedores" />
-
-          {/* Gestión */}
-          <div className="mt-6 mb-1">
-             <div className="px-4 py-2 text-xs font-semibold text-sys-400 uppercase tracking-wider">
-               Gestión
-             </div>
-             
-             <MenuLink 
-                to={getLink('inventory')}
-                label="Inventario" 
-                icon={Package} 
-                onClick={() => handleRestrictedNavigation(getLink('inventory'))}
-                isRestricted={!isAdmin} 
-             />
-
-             {isAdmin && (
-                <div className="animate-in slide-in-from-left-4 fade-in duration-300 space-y-1 mt-1">
-                    <MenuLink to={getLink('cash')} icon={Wallet} label="Control de Caja" />
-                    <MenuLink to={getLink('settings/integrations')} icon={Plug} label="Integraciones" />
-                    <MenuLink to={getLink('settings/company')} icon={Building} label="Mi Empresa" />
-                    <MenuLink to={getLink('settings')} icon={Settings} label="Configuración" />
-                </div>
-             )}
-          </div>
-        </nav>
-
-        {/* Footer: Smart Button */}
-        <div className="p-4 border-t border-sys-100 bg-sys-50/50 space-y-3">
-          
-          {checkingShift ? (
-              <div className="w-full h-10 bg-sys-100 animate-pulse rounded-xl" />
-          ) : hasActiveShift ? (
-              
-              // 🔥 MODIFICADO: BOTÓN DE CIERRE CON BLOQUEO OFFLINE
-              <button 
-                onClick={() => {
-                    if (isOnline) setIsCloseModalOpen(true);
-                    else alert("⚠️ DEBE ESTAR ONLINE\n\nEl cierre de caja requiere conexión a internet para sincronizar los datos y evitar errores.");
-                }}
-                disabled={!isOnline}
-                className={cn(
-                    "w-full flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-bold transition-all shadow-sm group",
-                    isOnline 
-                        ? "bg-white border border-red-200 text-red-600 hover:bg-red-50 active:scale-95 cursor-pointer" 
-                        : "bg-sys-100 border border-sys-200 text-sys-400 cursor-not-allowed"
-                )}
-              >
-                 {isOnline ? (
-                     <><LogOut size={16} className="group-hover:text-red-700" /> Cerrar Turno</>
-                 ) : (
-                     <><WifiOff size={16} /> Cerrar (Requiere Red)</>
-                 )}
-              </button>
-
-          ) : (
-              <button 
-                onClick={handleOpenShiftDirectly}
-                className="w-full flex items-center justify-center gap-2 bg-green-600 border border-green-700 text-white hover:bg-green-700 py-2.5 rounded-xl text-sm font-bold transition-all shadow-md active:scale-95 group"
-              >
-                 <Unlock size={16} /> Abrir Turno
-              </button>
-          )}
-
-          <div className={cn("px-3 py-2 rounded-lg border flex items-center gap-2 text-xs transition-colors duration-300", !isOnline ? "bg-red-50 border-red-100 text-red-600" : "bg-white border-sys-200 text-sys-600")}>
-             <div className={cn("w-2 h-2 rounded-full", !isOnline ? "bg-red-500" : isSyncing ? "bg-blue-500 animate-pulse" : "bg-green-500")} />
-             <span className="font-medium truncate flex-1">
-                {!isOnline ? 'Offline' : isSyncing ? 'Sincronizando...' : 'Sistema Online'}
-             </span>
-             {isSyncing ? <RefreshCw size={12} className="animate-spin text-brand"/> : <Cloud size={12}/>}
-          </div>
-        </div>
-      </aside>
-
-      <PinRequestModal 
-        isOpen={isPinModalOpen} 
-        onClose={() => { setIsPinModalOpen(false); setPendingRoute(null); }}
-        onSuccess={handlePinSuccess}
-      />
-
-      <CloseShiftModalWrapper 
-        isOpen={isCloseModalOpen} 
-        onClose={() => setIsCloseModalOpen(false)} 
-        onShiftClosed={() => {
-            // 🔥 RECARGA DEMORADA (1s) PARA EVITAR DUPLICADOS POR RACE CONDITION
-            setTimeout(() => {
-                checkShiftStatus(); 
+        try {
+            // 🔥 USAMOS CASH REPOSITORY
+            await cashRepository.openShift(amount, user?.name); 
+            alert("✅ Caja abierta correctamente.");
+            
+            // Recarga segura
+            setTimeout(async () => {
+                await checkShiftStatus(); 
                 window.location.reload(); 
-            }, 1000);
-        }}
-      />
-    </>
-  );
+            }, 800);
+            
+        } catch (e) { alert(e.message); }
+    };
+
+    useEffect(() => {
+        if (user?.companyId) {
+            const unsub = onSnapshot(doc(db, 'companies', user.companyId), (docSnap) => {
+                if (docSnap.exists()) {
+                    const data = docSnap.data();
+                    setCompanyInfo({
+                        name: data.name || 'MI NEGOCIO',
+                        logo: data.logoUrl || defaultLogo
+                    });
+                }
+            });
+            return () => unsub();
+        }
+    }, [user]);
+
+    useEffect(() => {
+        const handleStatus = () => setIsOnline(navigator.onLine);
+        window.addEventListener('online', handleStatus);
+        window.addEventListener('offline', handleStatus);
+        return () => {
+            window.removeEventListener('online', handleStatus);
+            window.removeEventListener('offline', handleStatus);
+        };
+    }, []);
+
+    const handleRestrictedNavigation = (route) => {
+        if (isAdmin) {
+            navigate(route);
+        } else {
+            setPendingRoute(route);
+            setIsPinModalOpen(true);
+        }
+    };
+
+    const handlePinSuccess = () => {
+        setIsPinModalOpen(false);
+        if (pendingRoute) {
+            navigate(pendingRoute);
+            setPendingRoute(null);
+        }
+    };
+
+    return (
+        <>
+            <aside className="w-64 h-screen bg-white border-r border-sys-200 flex flex-col fixed left-0 top-0 z-20 hidden md:flex shadow-[4px_0_24px_rgba(0,0,0,0.02)]">
+                
+                {/* Header */}
+                <div className="p-6 border-b border-sys-100 flex flex-col items-center text-center">
+                    <div className="w-20 h-20 mb-3 bg-white rounded-full flex items-center justify-center overflow-hidden border border-sys-100 shadow-sm p-2 relative">
+                        <img 
+                            src={companyInfo.logo} 
+                            alt="Logo" 
+                            className="w-full h-full object-contain"
+                            onError={(e) => { e.target.src = defaultLogo; }} 
+                        />
+                    </div>
+
+                    <div className="flex flex-col gap-0.5 w-full">
+                        <h1 className="text-lg font-black text-sys-900 tracking-tight leading-none uppercase truncate px-2">
+                            {companyInfo.name}
+                        </h1>
+                        <p className="text-xs font-bold text-blue-600 font-serif italic tracking-wide">
+                            Sistema POS
+                        </p>
+                    </div>
+
+                    {/* User Card */}
+                    <div className="w-full text-left flex items-center gap-2.5 bg-sys-50 p-2 rounded-xl border border-sys-200 mt-5">
+                        <div className={cn("w-7 h-7 rounded-full flex items-center justify-center text-white shadow-sm shrink-0", isAdmin ? "bg-sys-900" : "bg-brand")}>
+                            {isAdmin ? <ShieldCheck size={14} /> : <User size={14} />}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                            <p className="text-[11px] font-bold text-sys-800 truncate leading-tight">{user?.name || user?.email}</p>
+                            <p className="text-[9px] text-sys-500 truncate font-mono uppercase leading-tight">{user?.role || 'Cajero'}</p>
+                        </div>
+                        <button onClick={handleLogout} className="text-sys-400 hover:text-red-500 transition-colors p-1 rounded-lg hover:bg-sys-200" title="Cerrar Sesión">
+                            <LogOut size={14} />
+                        </button>
+                    </div>
+                </div>
+
+                {/* Navigation */}
+                <nav className="flex-1 p-4 space-y-1 overflow-y-auto no-scrollbar">
+                    
+                    <div className="px-4 py-2 text-xs font-semibold text-sys-400 uppercase tracking-wider mb-1">Operación</div>
+                    
+                    <MenuLink to={getLink('')} icon={LayoutDashboard} label="Dashboard" />
+                    <MenuLink to={getLink('pos')} icon={ShoppingCart} label="Punto de Venta" />
+                    <MenuLink to={getLink('sales')} icon={FileText} label="Ventas" />
+                    <MenuLink to={getLink('clients')} icon={Users} label="Clientes" />
+                    <MenuLink to={getLink('suppliers')} icon={Truck} label="Proveedores" />
+
+                    {/* Gestión */}
+                    <div className="mt-6 mb-1">
+                        <div className="px-4 py-2 text-xs font-semibold text-sys-400 uppercase tracking-wider">
+                            Gestión
+                        </div>
+                        
+                        <MenuLink 
+                            to={getLink('inventory')}
+                            label="Inventario" 
+                            icon={Package} 
+                            onClick={() => handleRestrictedNavigation(getLink('inventory'))}
+                            isRestricted={!isAdmin} 
+                        />
+
+                        {isAdmin && (
+                            <div className="animate-in slide-in-from-left-4 fade-in duration-300 space-y-1 mt-1">
+                                <MenuLink to={getLink('cash')} icon={Wallet} label="Control de Caja" />
+                                <MenuLink to={getLink('settings/integrations')} icon={Plug} label="Integraciones" />
+                                <MenuLink to={getLink('settings/company')} icon={Building} label="Mi Empresa" />
+                                <MenuLink to={getLink('settings')} icon={Settings} label="Configuración" />
+                            </div>
+                        )}
+                    </div>
+                </nav>
+
+                {/* Footer: Smart Button */}
+                <div className="p-4 border-t border-sys-100 bg-sys-50/50 space-y-3">
+                    
+                    {checkingShift ? (
+                        <div className="w-full h-10 bg-sys-100 animate-pulse rounded-xl" />
+                    ) : hasActiveShift ? (
+                        
+                        // 🔥 BOTÓN DE CIERRE CON BLOQUEO OFFLINE
+                        <button 
+                            onClick={() => {
+                                if (isOnline) setIsCloseModalOpen(true);
+                                else alert("⚠️ DEBE ESTAR ONLINE\n\nEl cierre de caja requiere conexión a internet para sincronizar los datos y evitar errores.");
+                            }}
+                            disabled={!isOnline}
+                            className={cn(
+                                "w-full flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-bold transition-all shadow-sm group",
+                                isOnline 
+                                    ? "bg-white border border-red-200 text-red-600 hover:bg-red-50 active:scale-95 cursor-pointer" 
+                                    : "bg-sys-100 border border-sys-200 text-sys-400 cursor-not-allowed"
+                            )}
+                        >
+                            {isOnline ? (
+                                <><LogOut size={16} className="group-hover:text-red-700" /> Cerrar Turno</>
+                            ) : (
+                                <><WifiOff size={16} /> Cerrar (Requiere Red)</>
+                            )}
+                        </button>
+
+                    ) : (
+                        <button 
+                            onClick={handleOpenShiftDirectly}
+                            className="w-full flex items-center justify-center gap-2 bg-green-600 border border-green-700 text-white hover:bg-green-700 py-2.5 rounded-xl text-sm font-bold transition-all shadow-md active:scale-95 group"
+                        >
+                            <Unlock size={16} /> Abrir Turno
+                        </button>
+                    )}
+
+                    <div className={cn("px-3 py-2 rounded-lg border flex items-center gap-2 text-xs transition-colors duration-300", !isOnline ? "bg-red-50 border-red-100 text-red-600" : "bg-white border-sys-200 text-sys-600")}>
+                        <div className={cn("w-2 h-2 rounded-full", !isOnline ? "bg-red-500" : isSyncing ? "bg-blue-500 animate-pulse" : "bg-green-500")} />
+                        <span className="font-medium truncate flex-1">
+                            {!isOnline ? 'Offline' : isSyncing ? 'Sincronizando...' : 'Sistema Online'}
+                        </span>
+                        {isSyncing ? <RefreshCw size={12} className="animate-spin text-brand"/> : <Cloud size={12}/>}
+                    </div>
+                </div>
+            </aside>
+
+            <PinRequestModal 
+                isOpen={isPinModalOpen} 
+                onClose={() => { setIsPinModalOpen(false); setPendingRoute(null); }}
+                onSuccess={handlePinSuccess}
+            />
+
+            <CloseShiftModalWrapper 
+                isOpen={isCloseModalOpen} 
+                onClose={() => setIsCloseModalOpen(false)} 
+                onShiftClosed={() => {
+                    setTimeout(() => {
+                        checkShiftStatus(); 
+                        window.location.reload(); 
+                    }, 1000);
+                }}
+            />
+        </>
+    );
 };

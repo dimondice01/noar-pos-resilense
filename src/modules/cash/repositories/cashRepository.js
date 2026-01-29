@@ -1,6 +1,6 @@
 import { getDB } from '../../../database/db';
 import { db } from '../../../database/firebase';
-import { doc, setDoc } from 'firebase/firestore';
+import { doc, setDoc, collection, query, where, getDocs, orderBy, limit } from 'firebase/firestore';
 import { useAuthStore } from '../../auth/store/useAuthStore'; 
 
 // Helper para IDs únicos consistentes
@@ -9,17 +9,13 @@ const generateId = (prefix) => `${prefix}_${Date.now()}_${Math.random().toString
 export const cashRepository = {
     
     // =========================================
-    // 🛠️ HELPER DE CONTEXTO (CLAVE DEL FIX)
+    // 🛠️ HELPER DE CONTEXTO
     // =========================================
-    // Normaliza qué sucursal se está usando para evitar inconsistencias
     _getContext() {
         const { user, activeBranchId } = useAuthStore.getState();
         if (!user) throw new Error("No hay usuario autenticado");
 
-        // Prioridad: 
-        // 1. Selector Manual (Admin cambiando de sucursal)
-        // 2. Sucursal asignada al usuario (Cajero fijo)
-        // 3. 'main' (Fallback)
+        // Prioridad: Selector Manual > Asignación Usuario > Fallback
         let targetBranch = activeBranchId;
         
         if (!targetBranch) {
@@ -30,30 +26,64 @@ export const cashRepository = {
     },
 
     // =========================================
+    // ☁️ SYNC: RECUPERACIÓN DE HISTORIAL (FIX CRÍTICO)
+    // =========================================
+    // Esta función permite bajar datos antiguos si el PC es nuevo o se borró el caché
+    async _fetchHistoryFromCloud(dbLocal, user) {
+        if (!navigator.onLine) return;
+
+        try {
+            // console.log("☁️ Sincronizando historial desde Firebase...");
+            const shiftsRef = collection(db, `companies/${user.companyId}/shifts`);
+            let q;
+
+            if (user.role === 'ADMIN' || user.role === 'OWNER') {
+                // Admin: Traer últimos 50 turnos de TODA la empresa para llenar la tabla
+                q = query(shiftsRef, orderBy('openedAt', 'desc'), limit(50));
+            } else {
+                // Cajero: Traer solo sus últimos 20 turnos
+                q = query(shiftsRef, where('userId', '==', user.uid), orderBy('openedAt', 'desc'), limit(20));
+            }
+
+            const snapshot = await getDocs(q);
+            const cloudShifts = snapshot.docs.map(d => ({ 
+                ...d.data(), 
+                id: d.id, 
+                syncStatus: 'synced',
+                // Si el dato viene viejo de la nube sin branch, le ponemos 'main' para que se vea
+                branchId: d.data().branchId || 'main' 
+            }));
+
+            if (cloudShifts.length > 0) {
+                await dbLocal.shifts.bulkPut(cloudShifts);
+            }
+        } catch (e) {
+            console.error("⚠️ Error sync historial:", e);
+        }
+    },
+
+    // =========================================
     // 🟢 GESTIÓN DE TURNO (APERTURA)
     // =========================================
     async openShift(initialAmount, userName) {
         const { user, branchId } = this._getContext();
         const dbLocal = await getDB();
         
-        // 1. Verificar si ya tiene turno abierto (EN ESTA SUCURSAL)
+        // Verificar si ya tiene turno abierto
         const active = await dbLocal.shifts
             .where('status').equals('OPEN')
-            .filter(s => s.userId === user.uid && s.branchId === branchId)
+            .filter(s => s.userId === user.uid)
             .first();
 
-        // Si ya existe, lo devolvemos (Idempotencia) en vez de error, 
-        // o lanzamos error si queremos ser estrictos.
         if (active) return active; 
 
-        // 2. Crear Objeto Turno
         const shift = {
             id: generateId('shift'),
             userId: user.uid,
             userEmail: user.email,
             userName: userName || user.name || 'Cajero',
             companyId: user.companyId,
-            branchId: branchId, // 🔥 USAMOS EL ID NORMALIZADO
+            branchId: branchId, // 🔥 Se guarda con la sucursal actual
             status: 'OPEN',
             openedAt: new Date().toISOString(),
             initialAmount: parseFloat(initialAmount),
@@ -66,7 +96,6 @@ export const cashRepository = {
             syncStatus: 'pending' 
         };
 
-        // 3. Transacción Atómica
         await dbLocal.transaction('rw', [dbLocal.shifts, dbLocal.cash_movements], async () => {
             await dbLocal.shifts.put(shift);
             
@@ -93,7 +122,8 @@ export const cashRepository = {
         if (!shift) throw new Error("Turno no encontrado");
 
         const { user } = useAuthStore.getState();
-        // Permitimos cerrar si es el dueño del turno O si es Admin
+        
+        // Permisos
         if (shift.userId !== user?.uid && user?.role !== 'ADMIN' && user?.role !== 'OWNER') {
              throw new Error("No puedes cerrar la caja de otro usuario.");
         }
@@ -102,8 +132,6 @@ export const cashRepository = {
         const expected = parseFloat(closingData.expectedCash); 
         const left = parseFloat(closingData.leftInCash || 0); 
         
-        // Cálculo de retiro: Lo que tengo - Lo que dejo
-        // Usamos Math.max para evitar negativos si el cajero se equivocó
         const withdrawn = Math.max(0, declared - left); 
         const difference = declared - expected;
 
@@ -124,7 +152,6 @@ export const cashRepository = {
         await dbLocal.transaction('rw', [dbLocal.shifts, dbLocal.cash_movements], async () => {
             await dbLocal.shifts.put(closedShift);
 
-            // Solo registramos retiro si efectivamente se retiró dinero
             if (withdrawn > 0) {
                 await this._addMovementLocal(dbLocal, {
                     shiftId: shift.id,
@@ -142,35 +169,30 @@ export const cashRepository = {
     },
     
     // =========================================
-    // 🔥 GET CURRENT SHIFT (EL CORAZÓN DEL PROBLEMA)
+    // 🔥 GET CURRENT SHIFT (Auto-Healing)
     // =========================================
     async getCurrentShift() {
         const dbLocal = await getDB();
-        
+        const { user, branchId } = this._getContext();
+
         try {
-            const { user, branchId } = this._getContext();
-
-            // 1. Búsqueda Exacta (Ideal)
-            const exactShift = await dbLocal.shifts
-                .where('status').equals('OPEN')
-                .filter(s => s.userId === user.uid && s.branchId === branchId)
-                .first();
-
-            if (exactShift) return exactShift;
-
-            // 2. Fallback de Emergencia (Auto-Healing)
-            // Si el usuario tiene un turno abierto pero con OTRO branchId (por error de migración o config),
-            // lo recuperamos igual para no bloquear la venta, pero hacemos console.warn
-            const looseShift = await dbLocal.shifts
+            // Buscamos cualquier turno abierto del usuario, sin importar branchId primero
+            // Esto es para detectar inconsistencias
+            const openShift = await dbLocal.shifts
                 .where('status').equals('OPEN')
                 .filter(s => s.userId === user.uid)
                 .first();
 
-            if (looseShift) {
-                console.warn(`⚠️ Recuperado turno de sucursal cruzada: ${looseShift.branchId} (Actual: ${branchId})`);
-                return looseShift; 
+            if (openShift) {
+                // Si el turno no tiene branchId (Legacy) o está null, lo reparamos
+                if (!openShift.branchId) {
+                    // console.warn("⚠️ Reparando turno activo sin sucursal...");
+                    const fixed = { ...openShift, branchId: branchId };
+                    await dbLocal.shifts.put(fixed); // Guardamos la corrección
+                    return fixed;
+                }
+                return openShift;
             }
-
             return null;
 
         } catch (e) {
@@ -188,24 +210,39 @@ export const cashRepository = {
     },
 
     // =========================================
-    // 📊 HISTORIAL
+    // 📊 HISTORIAL (FIX: Carga Híbrida)
     // =========================================
     async getAllShifts() {
-        const { user, branchId } = this._getContext();
+        const { user } = useAuthStore.getState();
         const dbLocal = await getDB();
 
-        if (user.role === 'ADMIN' || user.role === 'OWNER') {
-            return await dbLocal.shifts
-                .filter(s => s.branchId === branchId)
-                .reverse()
-                .toArray();
-        } else {
-            return await dbLocal.shifts
-                .where('userId').equals(user.uid)
-                .filter(s => s.branchId === branchId)
-                .reverse()
-                .toArray();
+        // 1. Intentar leer de base de datos local
+        let shifts = await dbLocal.shifts.toArray();
+
+        // 2. Si hay muy pocos datos (cache vacío) y hay internet, hidratamos desde Firebase
+        // Esto soluciona que el admin no vea nada en una PC limpia
+        if (shifts.length < 5 && navigator.onLine) {
+             await this._fetchHistoryFromCloud(dbLocal, user);
+             shifts = await dbLocal.shifts.toArray(); // Recargamos
         }
+
+        // 3. Filtrado Lógico (Sin ser estricto con branchId para no ocultar Legacy)
+        let filteredShifts = [];
+
+        if (user.role === 'ADMIN' || user.role === 'OWNER') {
+            // Admin ve TODO. No filtramos por branchId para asegurar que vea datos viejos o de otras sucursales.
+            filteredShifts = shifts; 
+        } else {
+            // Cajero ve solo SUS turnos
+            filteredShifts = shifts.filter(s => s.userId === user.uid);
+        }
+
+        // 4. Ordenamiento final
+        return filteredShifts.sort((a, b) => {
+            const dateA = new Date(a.closedAt || a.openedAt || 0);
+            const dateB = new Date(b.closedAt || b.openedAt || 0);
+            return dateB - dateA;
+        });
     },
 
     async getAllActiveShifts() {
@@ -234,7 +271,7 @@ export const cashRepository = {
     },
 
     async addMovement(movement) {
-        const { user } = useAuthStore.getState(); // Aquí no necesitamos branch forzado, usamos el del turno
+        const { user } = useAuthStore.getState();
         const dbLocal = await getDB();
         return this._addMovementLocal(dbLocal, movement, user);
     },
@@ -310,7 +347,7 @@ export const cashRepository = {
     },
 
     // =========================================
-    // ⚖️ BALANCE
+    // ⚖️ BALANCE Y AUDITORÍA
     // =========================================
     async getShiftBalance(shiftId) {
         const dbLocal = await getDB();
@@ -319,13 +356,9 @@ export const cashRepository = {
         return await dbLocal.transaction('r', [dbLocal.cash_movements, dbLocal.shifts], async () => {
             const shift = await dbLocal.shifts.get(shiftId);
             
-            // Permiso laxo para admins o dueños
-            const isOwner = shift.userId === user?.uid;
-            const isAdmin = user?.role === 'ADMIN' || user?.role === 'OWNER';
-            
-            if (!isOwner && !isAdmin) {
-                 // return { totalCash: 0, movements: [] }; // Opcional: Bloquear acceso
-            }
+            // Si el turno no está en local (puede pasar en modo admin remoto), intentamos no explotar
+            // Idealmente deberíamos hidratar aquí también, pero para no bloquear UI devolvemos vacío
+            if (!shift) return { totalCash: 0, movements: [], salesCash: 0, salesDigital: 0 };
 
             const allMovements = await dbLocal.cash_movements
                 .where('shiftId').equals(shiftId)
@@ -386,9 +419,6 @@ export const cashRepository = {
         });
     },
     
-    // =========================================
-    // 📊 AUDITORÍA (FIXED: Encuentra las ventas)
-    // =========================================
     async getShiftAuditData(shiftId) {
         const dbLocal = await getDB();
         
@@ -396,24 +426,21 @@ export const cashRepository = {
             const shift = await dbLocal.shifts.get(shiftId);
             if (!shift) throw new Error("Turno no encontrado");
 
-            // Rango de Tiempo
             const openedAt = new Date(shift.openedAt).toISOString();
             const closedAt = shift.closedAt ? new Date(shift.closedAt).toISOString() : new Date().toISOString();
 
-            // 🔥 ESTRATEGIA HÍBRIDA DE BÚSQUEDA DE VENTAS
-            // Buscamos por fecha Y (usuario O branch)
-            // Esto arregla el problema de que "no aparecen las ventas" si el shiftId se perdió
+            // Buscar ventas asociadas por fecha (Robusto para legacy)
             const shiftSales = await dbLocal.sales
                 .where('date').between(openedAt, closedAt, true, true)
                 .filter(s => {
                     const isValidStatus = s.status !== 'CANCELLED';
                     const isSameUser = s.userId === shift.userId;
-                    const isSameBranch = s.branchId === shift.branchId;
+                    // Solo filtramos por branch si el turno tiene branch
+                    const isSameBranch = shift.branchId ? s.branchId === shift.branchId : true;
                     return isValidStatus && (isSameUser || isSameBranch);
                 })
                 .toArray();
 
-            // Movimientos de Caja (Estos sí suelen tener el shiftId bien puesto)
             const allMovements = await dbLocal.cash_movements
                 .where('shiftId').equals(shiftId)
                 .toArray();
@@ -434,7 +461,6 @@ export const cashRepository = {
                 totalWithdrawals: 0,
                 expectedCash: Number(shift.initialAmount) || 0,
                 totalDigital: 0,
-                // 🔥 Aseguramos que se devuelva el dato crítico
                 leftInCash: Number(shift.leftInCash) || 0,
                 declaredCash: Number(shift.finalCash) || 0,
                 withdrawn: Number(shift.withdrawn) || 0
@@ -462,16 +488,15 @@ export const cashRepository = {
             
             audit.totalDigital = audit.salesByMethod.mercadopago + audit.salesByMethod.clover + audit.salesByMethod.digitalOther;
 
-            // Procesar Movimientos para Calcular Caja Esperada
+            // Procesar Movimientos
             for (const m of allMovements) {
                 const amount = Number(m.amount) || 0;
                 const method = (m.method || 'unknown').toLowerCase();
                 const isCash = method === 'cash';
 
-                // Solo sumamos al "Efectivo Esperado" si el movimiento fue en efectivo
                 if (isCash) {
                     if (m.type === 'SALE' || m.type === 'IN') audit.expectedCash += amount;
-                    if (m.type === 'DEPOSIT' && m.description !== 'Fondo Inicial') audit.expectedCash += amount; // Fondo ya sumado
+                    if (m.type === 'DEPOSIT' && m.description !== 'Fondo Inicial de Caja') audit.expectedCash += amount; 
                     if (m.type === 'WITHDRAWAL' || m.type === 'EXPENSE') audit.expectedCash -= amount;
                 }
                 
@@ -483,7 +508,6 @@ export const cashRepository = {
             audit.totalSales = round2(audit.totalSales);
             audit.totalDigital = round2(audit.totalDigital);
             
-            // Si está abierta, Declarado = Esperado (provisional)
             if (shift.status === 'OPEN') {
                 audit.declaredCash = audit.expectedCash;
             }
