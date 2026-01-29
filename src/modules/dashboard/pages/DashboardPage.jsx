@@ -28,7 +28,6 @@ import { TicketZModal } from '../../reports/components/TicketZModal';
 // Modales Operativos
 import { ExpenseModal } from '../../cash/components/ExpenseModal';
 import { WithdrawalModal } from '../../cash/components/WithdrawalModal'; 
-// 🔥 IMPORTANTE: Importamos el Wizard de Cierre Nuevo
 import { CashClosingModal } from '../../cash/components/CashClosingModal';
 
 // Firestore
@@ -46,11 +45,9 @@ const getShiftValues = (shift, calculatedDetails = null) => {
     const isValid = (val) => val !== undefined && val !== null;
 
     let expected = 0;
-    // Prioridad 1: Cálculo en vivo (si se pasa)
     if (calculatedDetails && isValid(calculatedDetails.totalCash)) {
         expected = Number(calculatedDetails.totalCash);
     } 
-    // Prioridad 2: Guardado en turno
     else if (isValid(shift.systemAmount)) expected = Number(shift.systemAmount);
     else if (isValid(shift.stats?.expectedTotal)) expected = Number(shift.stats.expectedTotal);
     else if (isValid(shift.expectedCash)) expected = Number(shift.expectedCash);
@@ -81,38 +78,22 @@ const NoBranchesSetupView = ({ onFix }) => {
     return (
         <div className="w-full h-[80vh] flex flex-col items-center justify-center p-6 animate-in fade-in slide-in-from-bottom-8">
             <div className="bg-white p-8 rounded-3xl shadow-2xl text-center max-w-md border border-sys-100 relative overflow-hidden">
-                {/* Background Decor */}
                 <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-brand to-purple-500"></div>
-                
                 <div className="w-20 h-20 bg-brand/10 rounded-full flex items-center justify-center mx-auto mb-6">
                     <Building2 size={40} className="text-brand" />
                 </div>
-                
                 <h2 className="text-2xl font-black text-sys-900 mb-2">Configuración Inicial</h2>
                 <p className="text-sys-500 mb-8 text-sm">
                     Detectamos que tu empresa <b>no tiene sucursales configuradas</b>. 
                     Para comenzar a operar, necesitamos crear la estructura base.
                 </p>
-
-                <Button 
-                    onClick={handleFix} 
-                    disabled={isFixing}
-                    className="w-full h-12 text-base shadow-xl shadow-brand/20 hover:scale-[1.02] transition-transform"
-                >
+                <Button onClick={handleFix} disabled={isFixing} className="w-full h-12 text-base shadow-xl shadow-brand/20 hover:scale-[1.02] transition-transform">
                     {isFixing ? (
-                        <span className="flex items-center gap-2">
-                            <RefreshCw className="animate-spin" /> Creando Sucursales...
-                        </span>
+                        <span className="flex items-center gap-2"><RefreshCw className="animate-spin" /> Creando Sucursales...</span>
                     ) : (
-                        <span className="flex items-center gap-2">
-                            <Plus size={20} /> Generar Sucursales Default
-                        </span>
+                        <span className="flex items-center gap-2"><Plus size={20} /> Generar Sucursales Default</span>
                     )}
                 </Button>
-                
-                <p className="text-xs text-sys-300 mt-4">
-                    Esto creará: "Casa Central", "Sucursal Norte" y "Sucursal Sur".
-                </p>
             </div>
         </div>
     );
@@ -134,16 +115,9 @@ const StatCard = ({ title, value, subtext, icon: Icon, colorClass, borderClass }
     </div>
 );
 
-// 🔥 KPICard Actualizada con disparador de cierre real
 const KpiCard = ({ metrics, isAdmin, money, navigate, onTriggerClose, isCajeroActive, activeBranchName }) => (
-    <div className={cn(
-        "lg:col-span-2 relative overflow-hidden rounded-3xl p-6 text-white shadow-2xl transition-all border border-white/5",
-        isAdmin ? "bg-slate-900" : "bg-brand"
-    )}>
-        <div className="absolute top-0 right-0 p-12 opacity-5 pointer-events-none">
-            <Activity size={180} />
-        </div>
-        
+    <div className={cn("lg:col-span-2 relative overflow-hidden rounded-3xl p-6 text-white shadow-2xl transition-all border border-white/5", isAdmin ? "bg-slate-900" : "bg-brand")}>
+        <div className="absolute top-0 right-0 p-12 opacity-5 pointer-events-none"><Activity size={180} /></div>
         <div className="relative z-10 flex flex-col h-full justify-between gap-8">
             <div className="flex justify-between items-start">
                 <div>
@@ -169,19 +143,14 @@ const KpiCard = ({ metrics, isAdmin, money, navigate, onTriggerClose, isCajeroAc
                     {isAdmin ? <Monitor size={24} className="text-white" /> : <Wallet size={24} className="text-white" />}
                 </div>
             </div>
-
             <div className="flex items-center gap-4 bg-black/20 p-4 rounded-2xl backdrop-blur-md border border-white/5">
                 <div className="flex-1 border-r border-white/10 pr-4">
                     <p className="text-[10px] uppercase font-bold text-white/50 mb-1">Efectivo</p>
-                    <p className="text-lg font-bold font-mono tracking-tight text-white/90">
-                        {isAdmin ? `$ ${money(metrics.cashInHand)}` : '• • •'}
-                    </p>
+                    <p className="text-lg font-bold font-mono tracking-tight text-white/90">{isAdmin ? `$ ${money(metrics.cashInHand)}` : '• • •'}</p>
                 </div>
                 <div className="flex-1">
                     <p className="text-[10px] uppercase font-bold text-white/50 mb-1">Digital</p>
-                    <p className="text-lg font-bold font-mono tracking-tight text-white/90">
-                        {isAdmin ? `$ ${money(metrics.digitalSales)}` : '• • •'}
-                    </p>
+                    <p className="text-lg font-bold font-mono tracking-tight text-white/90">{isAdmin ? `$ ${money(metrics.digitalSales)}` : '• • •'}</p>
                 </div>
                 <div className="pl-4">
                     {isAdmin && (
@@ -189,16 +158,9 @@ const KpiCard = ({ metrics, isAdmin, money, navigate, onTriggerClose, isCajeroAc
                             <FileText size={14} className="mr-2" /> Historial
                         </Button>
                     )}
-                    {/* Botón de Cierre para Cajero */}
-                    {!isAdmin && isCajeroActive && (
+                    {isCajeroActive && (
                         <Button size="sm" className="bg-rose-500 hover:bg-rose-600 text-white border-none h-9 text-xs font-bold shadow-lg" onClick={onTriggerClose}>
                             <Lock size={14} className="mr-2"/> Cerrar Caja
-                        </Button>
-                    )}
-                    {/* Botón de Cierre para Admin operando */}
-                    {isAdmin && isCajeroActive && (
-                        <Button size="sm" className="bg-rose-500 hover:bg-rose-600 text-white border-none h-9 text-xs font-bold shadow-lg" onClick={onTriggerClose}>
-                            <Lock size={14} className="mr-2"/> Cerrar Mí Caja
                         </Button>
                     )}
                 </div>
@@ -210,10 +172,7 @@ const KpiCard = ({ metrics, isAdmin, money, navigate, onTriggerClose, isCajeroAc
 const MyShiftCard = ({ metrics, money, handleOpenShift }) => {
     const isCajeroActive = !!metrics.activeShift;
     return (
-        <div className={cn(
-            "p-5 border-l-4 transition-all shadow-sm hover:shadow-md relative overflow-hidden group bg-white rounded-2xl border border-slate-100", 
-            isCajeroActive ? "border-l-emerald-500" : "border-l-rose-500"
-        )}>
+        <div className={cn("p-5 border-l-4 transition-all shadow-sm hover:shadow-md relative overflow-hidden group bg-white rounded-2xl border border-slate-100", isCajeroActive ? "border-l-emerald-500" : "border-l-rose-500")}>
             <div className="flex justify-between items-center mb-4">
                 <div className="flex items-center gap-3">
                     <div className={cn("p-2.5 rounded-full shadow-sm", isCajeroActive ? "bg-emerald-50 text-emerald-600" : "bg-rose-50 text-rose-600")}>
@@ -227,7 +186,6 @@ const MyShiftCard = ({ metrics, money, handleOpenShift }) => {
                     </div>
                 </div>
             </div>
-
             {!isCajeroActive ? (
                 <div className="mt-2">
                     <p className="text-xs text-slate-500 mb-4 font-medium">La caja está cerrada. Inicie turno para operar.</p>
@@ -269,13 +227,11 @@ const ArcaMonitorCard = ({ stats, onManageClick }) => (
                 <Settings size={12} /> Panel
             </button>
         </div>
-
         <div className="p-5 grid grid-cols-3 gap-4 text-center divide-x divide-slate-100">
             <div><p className="text-[10px] uppercase font-bold text-slate-400 mb-1">Hoy</p><p className="text-2xl font-black text-slate-800">{stats.daily}</p></div>
             <div><p className="text-[10px] uppercase font-bold text-slate-400 mb-1">Semana</p><p className="text-xl font-bold text-slate-600">{stats.weekly}</p></div>
             <div><p className="text-[10px] uppercase font-bold text-slate-400 mb-1">Mes</p><p className="text-xl font-bold text-slate-600">{stats.monthly}</p></div>
         </div>
-
         <div className="bg-slate-50 p-2.5 px-4 border-t border-slate-100 flex justify-between items-center">
             <div className="flex-1 text-center">
                 {stats.daily === 0 ? (
@@ -289,7 +245,7 @@ const ArcaMonitorCard = ({ stats, onManageClick }) => (
 );
 
 // =================================================================
-// 🔎 PANEL DE AUDITORÍA (Admin)
+// 🔎 PANEL DE AUDITORÍA (Admin - FIX FUSIÓN DE DATOS)
 // =================================================================
 const AdminCashAuditPanel = ({ allShifts, loadIntelligence, navigate, resolveName, pendingShifts }) => {
     const [isReportModalOpen, setIsReportModalOpen] = useState(false);
@@ -297,35 +253,38 @@ const AdminCashAuditPanel = ({ allShifts, loadIntelligence, navigate, resolveNam
     const [loadingAudit, setLoadingAudit] = useState(false);
     const [auditTarget, setAuditTarget] = useState(null);
 
-    // Combinación de pendientes (Cloud + Local)
-    const shiftsToAudit = pendingShifts && pendingShifts.length > 0 
-        ? pendingShifts 
-        : allShifts.filter(s => s.status === 'CLOSED' && !s.audited);
+    // 🔥 FIX: FUSIÓN INTELIGENTE DE DATOS LOCALES Y NUBE
+    // 1. Obtenemos lo que está en memoria local (Recién cerrado)
+    const localClosedUnAudited = allShifts.filter(s => s.status === 'CLOSED' && !s.audited);
+    
+    // 2. Obtenemos lo que viene de la nube (si hay)
+    const cloudClosedUnAudited = Array.isArray(pendingShifts) ? pendingShifts : [];
+
+    // 3. Fusionamos priorizando LOCAL (porque es lo más reciente en Lazy Sync)
+    const combinedMap = new Map();
+    cloudClosedUnAudited.forEach(s => combinedMap.set(s.id, s));
+    localClosedUnAudited.forEach(s => combinedMap.set(s.id, s)); // Sobrescribe si existe, añade si es nuevo
+
+    // 4. Convertimos a Array y ordenamos
+    const shiftsToAudit = Array.from(combinedMap.values())
+        .sort((a, b) => new Date(b.closedAt || 0) - new Date(a.closedAt || 0));
 
     const openShifts = allShifts.filter(s => s.status === 'OPEN');
     const auditedShifts = allShifts.filter(s => s.status === 'CLOSED' && s.audited).sort((a, b) => new Date(b.closedAt) - new Date(a.closedAt));
 
-    // 🕵️ Preparar Reporte con TODOS los datos (incluyendo leftInCash)
     const prepareReportData = async (shift) => {
         const balance = await cashRepository.getShiftBalance(shift.id);
         const { expected, declared, diff, initial } = getShiftValues(shift, balance);
         
-        // 🔥 DEBUG PARA VERIFICAR QUE EL DATO LLEGA
-        // console.log("Datos Turno:", shift); 
-
         return {
             shiftName: resolveName(shift.userId, shift.userName),
             userName: resolveName(shift.userId, shift.userName),
             shiftId: shift.id,
-            
-            // Datos Económicos
             expectedCash: expected, 
             declaredCash: declared,
-            leftInCash: Number(shift.leftInCash) || 0, // 🔥 SI ESTO FALTA O ESTÁ MAL ESCRITO, SALDRÁ 0
+            leftInCash: Number(shift.leftInCash) || 0,
             deviation: diff, 
             initialAmount: initial,
-            
-            // Datos Operativos
             salesCount: balance.movements.filter(m => m.type === 'SALE').length,
             totalSales: balance.salesCash + balance.salesDigital,
             cashIn: balance.deposits, 
@@ -337,6 +296,7 @@ const AdminCashAuditPanel = ({ allShifts, loadIntelligence, navigate, resolveNam
             audited: shift.audited
         };
     };
+
     const handleStartAudit = async (shift) => {
         setLoadingAudit(true);
         try {
@@ -436,7 +396,6 @@ const AdminCashAuditPanel = ({ allShifts, loadIntelligence, navigate, resolveNam
     );
 };
 
-// ... (AdminSecurityPanel y QuickActionsPanel se mantienen igual)
 const AdminSecurityPanel = ({ onUpdatePin }) => {
     const [newPin, setNewPin] = useState('');
     return (
@@ -538,7 +497,7 @@ const AdminDashboardView = ({ metrics, money, navigate, loadIntelligence, handle
                                 <div className="flex items-center gap-3">
                                     <div className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-slate-500 border border-slate-200"><ShoppingBag size={14} /></div>
                                     <div>
-                                        <p className="font-bold text-slate-800">{sale.number}</p> {/* 🔥 MUESTRA EL ID SECUENCIAL REAL */}
+                                        <p className="font-bold text-slate-800">{sale.number}</p>
                                         <p className="text-[9px] text-slate-400">{sale.time} hs • {sale.items} un.</p>
                                     </div>
                                 </div>
@@ -583,7 +542,7 @@ const DashboardContent = () => {
 
     const [isExpenseModalOpen, setIsExpenseModalOpen] = useState(false);
     const [isWithdrawalModalOpen, setIsWithdrawalModalOpen] = useState(false); 
-    const [shiftToClose, setShiftToClose] = useState(null); // 🔥 ESTADO PARA EL MODAL DE CIERRE
+    const [shiftToClose, setShiftToClose] = useState(null); 
     const [cashiersList, setCashiersList] = useState([]); 
     const [dbStatus, setDbStatus] = useState({ checked: false, hasBranches: false });
 
@@ -593,7 +552,6 @@ const DashboardContent = () => {
     if (!user) return <div className="p-10 text-center text-slate-500">Error: Usuario no autenticado.</div>;
     const money = (val) => val ? val.toLocaleString('es-AR', {minimumFractionDigits: 2}) : '0.00';
 
-    // ... (Hooks de carga inicial, salud DB y usuarios se mantienen igual)
     useEffect(() => {
         const checkHealth = async () => {
             if (!isAdmin || !user?.companyId) { setDbStatus({ checked: true, hasBranches: true }); return; }
@@ -644,10 +602,10 @@ const DashboardContent = () => {
         if (isAdmin && !dbStatus.hasBranches) return;
         setLoading(true);
         try {
+            // 🔥 Obtenemos TODOS los turnos (incluyendo los que acabamos de cerrar localmente)
             const allShifts = await cashRepository.getAllShifts();
             const myActiveShift = allShifts.find(s => s.status === 'OPEN' && s.userId === user.uid);
             
-            // Cálculos rápidos locales para el cajero
             if (!isAdmin) {
                 const sales = await salesRepository.getTodaySales();
                 const mSales = sales.reduce((acc, s) => {
@@ -663,7 +621,7 @@ const DashboardContent = () => {
                     cashInHand: mSales.cash,
                     digitalSales: mSales.digital,
                     activeShift: myActiveShift,
-                    allShifts: allShifts
+                    allShifts: allShifts // Esto alimenta al panel de auditoría local
                 }));
             } else {
                  setMetrics(prev => ({ ...prev, activeShift: myActiveShift, allShifts }));
@@ -672,6 +630,7 @@ const DashboardContent = () => {
         setLoading(false);
     };
 
+    // Fusionamos métricas locales (inmediatas) con las de la nube
     const finalMetrics = isAdmin ? {
         ...metrics,
         todaySales: cloudStats.totalSales, 
@@ -681,7 +640,9 @@ const DashboardContent = () => {
         recentSales: cloudStats.recentSales,
         averageTicket: cloudStats.averageTicket || 0,
         topProducts: cloudStats.topProducts || [],
-        activeShiftsCount: cloudStats.activeShiftsCount || 0
+        activeShiftsCount: cloudStats.activeShiftsCount || 0,
+        // Mantener allShifts local que es el más fresco
+        allShifts: metrics.allShifts 
     } : metrics;
 
     const handleOpenShift = async () => {
@@ -692,21 +653,16 @@ const DashboardContent = () => {
         try { await cashRepository.openShift(amount, user?.name); await loadIntelligence(); alert("✅ Caja abierta!"); } catch (e) { alert(e.message); }
     };
     
-    // 🔥 TRIGGER PARA ABRIR MODAL (Reemplaza al prompt)
     const triggerCloseShift = () => {
         if (!metrics.activeShift) return alert("No hay turno abierto.");
         setShiftToClose(metrics.activeShift);
     };
 
-    // 🔥 MANEJADOR DE CIERRE REAL (Recibe todos los datos del Modal)
     const handleConfirmCloseShift = async (closingData) => {
         try {
             setLoading(true);
             const shiftId = shiftToClose.id;
-            
-            // ClosingData ya trae: { declaredCash, leftInCash, expectedCash... }
             await cashRepository.closeShift(shiftId, closingData);
-            
             alert("✅ Cierre registrado correctamente.");
             setShiftToClose(null);
             await loadIntelligence();
@@ -768,7 +724,6 @@ const DashboardContent = () => {
             <ExpenseModal isOpen={isExpenseModalOpen} onClose={() => setIsExpenseModalOpen(false)} onConfirm={handleRegisterExpense} />
             <WithdrawalModal isOpen={isWithdrawalModalOpen} onClose={() => setIsWithdrawalModalOpen(false)} onConfirm={handleRegisterWithdrawal} />
             
-            {/* 🔥 WRAPPER PARA EL MODAL DE CIERRE CON DATOS EN VIVO */}
             {shiftToClose && (
                 <CashClosingWrapper 
                     shift={shiftToClose} 
@@ -780,11 +735,8 @@ const DashboardContent = () => {
     );
 };
 
-// Componente auxiliar para cargar balances antes de abrir el modal
 const CashClosingWrapper = ({ shift, onClose, onConfirm }) => {
     const [totals, setTotals] = useState(null);
-    
-    // Cargamos el balance en tiempo real al abrir el modal
     useEffect(() => {
         let mounted = true;
         cashRepository.getShiftBalance(shift.id).then(bal => {

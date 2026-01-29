@@ -10,30 +10,29 @@ export const CashClosingModal = ({ isOpen, onClose, onConfirm, systemTotals }) =
     // ESTADOS
     const [step, setStep] = useState(1); // 1: Conteo, 2: Distribución, 3: Confirmación
     
-    // Paso 1: Cuánto hay en total en el cajón
+    // Paso 1: Cuánto hay en total en el cajón (Físico)
     const [declaredCash, setDeclaredCash] = useState(''); 
     
-    // Paso 2: Cuánto dejo para cambio
+    // Paso 2: Cuánto dejo para cambio (Remanente)
     const [leftInCash, setLeftInCash] = useState(''); 
 
     if (!isOpen) return null;
 
     // CÁLCULOS EN TIEMPO REAL
-    const totalDeclared = parseFloat(declaredCash) || 0;
-    const totalLeft = parseFloat(leftInCash) || 0;
+    // 🔥 IMPORTANTE: Si el campo está vacío, es 0 para el cálculo pero '' para el input
+    const valDeclared = declaredCash === '' ? 0 : parseFloat(declaredCash);
+    const valLeft = leftInCash === '' ? 0 : parseFloat(leftInCash);
     
     // Retiro = Total que tengo - Lo que dejo
-    const totalWithdrawal = Math.max(0, totalDeclared - totalLeft);
+    const totalWithdrawal = Math.max(0, valDeclared - valLeft);
     
-    // Diferencia con sistema (Auditoría previa visual opcional, o ciega)
-    // En cierre ciego NO mostramos esto al cajero, pero lo calculamos internamente si quisiéramos validar.
-
     const handleSubmit = () => {
+        // 🔥 ALINEACIÓN DE DATOS CON EL REPOSITORIO
         onConfirm({
-            declaredCash: totalDeclared,
-            leftInCash: totalLeft, // 🔥 NUEVO CAMPO CRÍTICO
-            expectedCash: systemTotals.totalCash, 
-            expectedDigital: systemTotals.totalDigital
+            declaredCash: valDeclared,  // Lo que contaste
+            leftInCash: valLeft,        // Lo que dejas
+            expectedCash: systemTotals?.totalCash || 0, // Lo que el sistema dice que debería haber
+            expectedDigital: systemTotals?.totalDigital || 0
         });
     };
 
@@ -55,12 +54,12 @@ export const CashClosingModal = ({ isOpen, onClose, onConfirm, systemTotals }) =
                 </div>
 
                 <div className="p-8 overflow-y-auto">
-                   
-                   {/* ================================================= */}
-                   {/* PASO 1: CONTEO TOTAL DE EFECTIVO                  */}
-                   {/* ================================================= */}
-                   {step === 1 && (
-                     <div className="space-y-6 animate-in slide-in-from-right-4 duration-300">
+                    
+                    {/* ================================================= */}
+                    {/* PASO 1: CONTEO TOTAL DE EFECTIVO                  */}
+                    {/* ================================================= */}
+                    {step === 1 && (
+                      <div className="space-y-6 animate-in slide-in-from-right-4 duration-300">
                         <div className="bg-blue-50 p-4 rounded-xl border border-blue-100 text-blue-800 text-sm flex gap-3">
                            <Calculator className="shrink-0 mt-0.5" size={20}/>
                            <div>
@@ -80,27 +79,27 @@ export const CashClosingModal = ({ isOpen, onClose, onConfirm, systemTotals }) =
                                 placeholder="0.00"
                                 value={declaredCash}
                                 onChange={e => setDeclaredCash(e.target.value)}
-                                onKeyDown={e => e.key === 'Enter' && declaredCash && setStep(2)}
+                                onKeyDown={e => e.key === 'Enter' && valDeclared >= 0 && setStep(2)}
                               />
                            </div>
                         </div>
 
                         <div className="pt-4">
-                           <Button onClick={() => setStep(2)} className="w-full py-4 text-lg shadow-xl" disabled={!declaredCash}>
+                           <Button onClick={() => setStep(2)} className="w-full py-4 text-lg shadow-xl" disabled={declaredCash === ''}>
                               Siguiente <ArrowRight className="ml-2" size={20}/>
                            </Button>
                         </div>
-                     </div>
-                   )}
+                      </div>
+                    )}
 
-                   {/* ================================================= */}
-                   {/* PASO 2: DISTRIBUCIÓN (FONDO PRÓXIMO TURNO)        */}
-                   {/* ================================================= */}
-                   {step === 2 && (
-                     <div className="space-y-6 animate-in slide-in-from-right-4 duration-300">
+                    {/* ================================================= */}
+                    {/* PASO 2: DISTRIBUCIÓN (FONDO PRÓXIMO TURNO)        */}
+                    {/* ================================================= */}
+                    {step === 2 && (
+                      <div className="space-y-6 animate-in slide-in-from-right-4 duration-300">
                         <div className="text-center pb-4 border-b border-sys-100">
                             <p className="text-xs text-sys-500 uppercase font-bold">Total Arqueado</p>
-                            <p className="text-3xl font-black text-sys-900">{formatMoney(totalDeclared)}</p>
+                            <p className="text-3xl font-black text-sys-900">{formatMoney(valDeclared)}</p>
                         </div>
 
                         <div>
@@ -127,18 +126,18 @@ export const CashClosingModal = ({ isOpen, onClose, onConfirm, systemTotals }) =
 
                         <div className="grid grid-cols-2 gap-3 pt-2">
                            <Button variant="ghost" onClick={() => setStep(1)}>Atrás</Button>
-                           <Button onClick={() => setStep(3)} className="shadow-lg" disabled={totalLeft > totalDeclared}>
+                           <Button onClick={() => setStep(3)} className="shadow-lg" disabled={valLeft > valDeclared}>
                               Revisar Cierre
                            </Button>
                         </div>
-                     </div>
-                   )}
+                      </div>
+                    )}
 
-                   {/* ================================================= */}
-                   {/* PASO 3: CONFIRMACIÓN FINAL                        */}
-                   {/* ================================================= */}
-                   {step === 3 && (
-                     <div className="text-center space-y-6 animate-in zoom-in-95 duration-300">
+                    {/* ================================================= */}
+                    {/* PASO 3: CONFIRMACIÓN FINAL                        */}
+                    {/* ================================================= */}
+                    {step === 3 && (
+                      <div className="text-center space-y-6 animate-in zoom-in-95 duration-300">
                         <div className="w-20 h-20 bg-red-50 rounded-full flex items-center justify-center mx-auto text-red-600 mb-2 border-4 border-red-100">
                            <Lock size={36} />
                         </div>
@@ -149,11 +148,11 @@ export const CashClosingModal = ({ isOpen, onClose, onConfirm, systemTotals }) =
                            <div className="bg-sys-50 rounded-xl p-4 text-sm space-y-2 border border-sys-200">
                                <div className="flex justify-between">
                                    <span className="text-sys-500">Total en Caja:</span>
-                                   <span className="font-bold">{formatMoney(totalDeclared)}</span>
+                                   <span className="font-bold">{formatMoney(valDeclared)}</span>
                                </div>
                                <div className="flex justify-between text-brand">
                                    <span>Se deja (Cambio):</span>
-                                   <span className="font-bold">-{formatMoney(totalLeft)}</span>
+                                   <span className="font-bold">-{formatMoney(valLeft)}</span>
                                </div>
                                <div className="border-t border-sys-200 pt-2 flex justify-between text-lg font-black text-sys-800">
                                    <span>A RETIRAR:</span>
@@ -172,8 +171,8 @@ export const CashClosingModal = ({ isOpen, onClose, onConfirm, systemTotals }) =
                                CONFIRMAR CIERRE Z
                            </Button>
                         </div>
-                     </div>
-                   )}
+                      </div>
+                    )}
 
                 </div>
             </div>

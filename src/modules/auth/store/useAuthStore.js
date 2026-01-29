@@ -12,7 +12,7 @@ export const useAuthStore = create(
       isLoading: true, 
       error: null,
       
-      // 🔥 ESTADOS PARA MULTI-SUCURSAL (Faltaban estos)
+      // Estado Global de Sucursal
       activeBranchId: null,
       activeBranchName: null,
 
@@ -30,7 +30,7 @@ export const useAuthStore = create(
       logout: async () => {
         try {
           await authService.logout();
-          localStorage.removeItem('NOAR_ACTIVE_BRANCH'); // Limpiar persistencia manual
+          localStorage.removeItem('NOAR_ACTIVE_BRANCH'); 
           set({ 
             user: null, 
             isAuthenticated: false, 
@@ -42,17 +42,30 @@ export const useAuthStore = create(
         }
       },
 
-      // 🔥 ESTA ES LA FUNCIÓN QUE FALTABA Y CAUSABA EL ERROR
       switchBranch: (branchId, branchName) => {
-        // Guardar en localStorage para recuperar tras F5
+        const currentUser = get().user;
+        // 🛡️ SEGURIDAD: Si el usuario está confinado, impedir cambio
+        if (currentUser?.branchId && currentUser.branchId !== branchId) {
+            console.warn("⛔ Cambio de sucursal bloqueado por perfil de usuario.");
+            return; 
+        }
+
+        // Guardar también en localStorage puro como respaldo
         localStorage.setItem('NOAR_ACTIVE_BRANCH', JSON.stringify({ id: branchId, name: branchName }));
-        // Actualizar estado global
         set({ activeBranchId: branchId, activeBranchName: branchName });
       },
 
       initAuthListener: () => {
         console.log("🔌 Inicializando Auth Listener...");
         
+        // 🔥 RED DE SEGURIDAD INMEDIATA (Auto-Repair en memoria)
+        // Si ya tenemos usuario cargado del disco pero perdió la sucursal, la restauramos YA.
+        const state = get();
+        if (state.user?.branchId && !state.activeBranchId) {
+            console.log("🔧 Auto-corrigiendo sucursal perdida para Cajero...");
+            set({ activeBranchId: state.user.branchId });
+        }
+
         const safetyTimeout = setTimeout(() => {
             if (get().isLoading) {
                 console.warn("⚠️ Firebase lento. Liberando carga por seguridad.");
@@ -65,33 +78,50 @@ export const useAuthStore = create(
           
           if (firebaseUser) {
             try {
+                // 1. Obtener datos frescos de Firestore
                 const userDocRef = doc(db, 'users', firebaseUser.uid);
                 const userSnap = await getDoc(userDocRef);
 
                 if (userSnap.exists()) {
                     const firestoreData = userSnap.data();
+                    
+                    // Fusionamos datos
                     const fullUserData = {
                         uid: firebaseUser.uid,
                         email: firebaseUser.email,
                         ...firestoreData 
                     };
 
-                    // 🧠 RECUPERAR SUCURSAL ACTIVA (Persistencia)
-                    let savedBranch = null;
-                    try {
-                        const stored = localStorage.getItem('NOAR_ACTIVE_BRANCH');
-                        if (stored) savedBranch = JSON.parse(stored);
-                    } catch (e) {}
+                    // 🧠 LÓGICA DE ASIGNACIÓN DE SUCURSAL
+                    let targetBranchId = get().activeBranchId; // Intentamos mantener la actual
+                    let targetBranchName = get().activeBranchName;
+
+                    // A. Si el usuario es CAJERO (tiene branchId fijo)
+                    if (firestoreData.branchId) {
+                        targetBranchId = firestoreData.branchId;
+                        targetBranchName = "Mi Sucursal"; // Nombre genérico temporal
+                    } 
+                    // B. Si es ADMIN y no tiene sucursal seleccionada (o viene null), buscar en localStorage
+                    else if (!targetBranchId) {
+                        try {
+                            const stored = localStorage.getItem('NOAR_ACTIVE_BRANCH');
+                            if (stored) {
+                                const parsed = JSON.parse(stored);
+                                targetBranchId = parsed.id;
+                                targetBranchName = parsed.name;
+                            }
+                        } catch (e) {}
+                    }
 
                     set({ 
                         user: fullUserData, 
                         isAuthenticated: true, 
                         isLoading: false,
-                        // Restaurar la última sucursal visitada o la del usuario si es cajero
-                        activeBranchId: firestoreData.branchId || savedBranch?.id || null,
-                        activeBranchName: savedBranch?.name || null
+                        activeBranchId: targetBranchId,
+                        activeBranchName: targetBranchName
                     });
                 } else {
+                    // Fallback si no existe doc en users
                     set({ 
                         user: { uid: firebaseUser.uid, email: firebaseUser.email },
                         isAuthenticated: true,
@@ -124,11 +154,13 @@ export const useAuthStore = create(
       }
     }),
     {
-      name: 'auth-storage', // Nombre para localStorage de Zustand
+      name: 'auth-storage', 
+      // 🔥 FIX: AHORA SÍ PERSISTIMOS LA SUCURSAL ACTIVA
       partialize: (state) => ({ 
           user: state.user, 
           isAuthenticated: state.isAuthenticated,
-          // No persistimos activeBranchId aquí porque usamos lógica manual en initAuthListener
+          activeBranchId: state.activeBranchId, // ¡Esto evita el null al recargar!
+          activeBranchName: state.activeBranchName
       }),
     }
   )

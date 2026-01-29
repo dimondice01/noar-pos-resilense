@@ -24,15 +24,10 @@ import { db as firestoreDB } from '../../../database/firebase';
 
 const formatCurrency = (amount) => `$ ${Number(amount || 0).toLocaleString('es-AR', { minimumFractionDigits: 2 })}`;
 
-// ============================================================================
-// 🧠 HELPER MAESTRO: LECTURA INTELIGENTE DE VALORES
-// ============================================================================
+// ... (El helper getShiftValues y getMovementProps NO cambian, los omito para ahorrar espacio visual, manténlos igual) ...
 const getShiftValues = (shift, calculatedDetails = null) => {
     if (!shift) return { expected: 0, declared: 0, diff: 0, initial: 0, left: 0 };
-
     const isValid = (val) => val !== undefined && val !== null;
-
-    // 1. Teórico/Esperado
     let expected = 0;
     if (calculatedDetails && isValid(calculatedDetails.totalCash)) {
         expected = Number(calculatedDetails.totalCash);
@@ -41,58 +36,45 @@ const getShiftValues = (shift, calculatedDetails = null) => {
     } else if (isValid(shift.systemAmount)) {
         expected = Number(shift.systemAmount);
     }
-
-    // 2. Real/Declarado
     let declared = 0;
     if (isValid(shift.finalCash)) {
         declared = Number(shift.finalCash);
     } else if (isValid(shift.finalAmount)) {
         declared = Number(shift.finalAmount);
     }
-
     const initial = Number(shift.initialAmount) || 0;
     const left = Number(shift.leftInCash) || 0; 
     const diff = declared - expected;
-
     return { expected, declared, diff, initial, left };
 };
 
 const getMovementProps = (mov) => {
     if (!mov) return { sign: '', color: '', typeLabel: '', methodTag: '' };
-
     const isIncome = mov.type === 'SALE' || mov.type === 'DEPOSIT' || mov.type === 'IN';
     const isCash = mov.method === 'cash' || mov.type === 'WITHDRAWAL'; 
-
     let sign = isIncome ? '+' : '-';
     let color = isIncome ? 'text-green-600' : 'text-red-600';
     let typeLabel = mov.type === 'SALE' ? 'VENTA' : mov.type === 'DEPOSIT' || mov.type === 'IN' ? 'INGRESO' : 'RETIRO';
-    
     let methodTag = (mov.method || 'desconocido'); 
     if (methodTag === 'cash') methodTag = 'Efectivo';
     else methodTag = methodTag.toUpperCase();
-
     if (mov.type === 'SALE' && !isCash) {
         color = 'text-blue-600';
         sign = '+';
     }
-    
     if (mov.description === 'Fondo Inicial de Caja') {
         color = 'text-brand';
         sign = '+';
         typeLabel = 'INICIAL';
     }
-
     if (mov.type === 'WITHDRAWAL') {
         color = 'text-red-600';
         sign = '-';
     }
-
     return { sign, color, typeLabel, methodTag };
 };
 
-// ============================================================================
-// SUB-COMPONENTE: DETALLE DE AUDITORÍA (MODAL)
-// ============================================================================
+// ... (AuditDetailModal TAMPOCO cambia, manténlo igual) ...
 const AuditDetailModal = ({ shift, onClose, resolveName }) => {
     const [details, setDetails] = useState(null);
     const [loadingDetails, setLoadingDetails] = useState(true);
@@ -103,7 +85,6 @@ const AuditDetailModal = ({ shift, onClose, resolveName }) => {
         if (shift) {
             setLoadingDetails(true);
             setCurrentPage(1); 
-            // Usamos cashRepository para obtener el balance
             cashRepository.getShiftBalance(shift.id).then(bal => {
                 setDetails(bal);
             }).catch(err => {
@@ -232,7 +213,7 @@ const AuditDetailModal = ({ shift, onClose, resolveName }) => {
 };
 
 // ============================================================================
-// PÁGINA PRINCIPAL: TESORERÍA
+// PÁGINA PRINCIPAL: TESORERÍA (CON LOGS)
 // ============================================================================
 export const CashPage = () => {
     const navigate = useNavigate();
@@ -260,6 +241,9 @@ export const CashPage = () => {
     const loadInitialData = async () => {
         setLoading(true);
         try {
+            console.log("⚡ CashPage: Solicitando datos...");
+            console.log("⚡ Estado Actual - AuthStore:", { uid: user?.uid, role: user?.role, activeBranchId });
+
             const usersPromise = user?.companyId ? (async () => {
                 const q = query(collection(firestoreDB, 'users'), where('companyId', '==', user.companyId));
                 const snap = await getDocs(q);
@@ -271,6 +255,8 @@ export const CashPage = () => {
             const shiftsPromise = cashRepository.getAllShifts(); 
             
             const [users, shifts] = await Promise.all([usersPromise, shiftsPromise]);
+
+            console.log("⚡ CashPage: Datos recibidos del Repo:", shifts.length);
 
             setCashiersList(users);
             
@@ -292,6 +278,7 @@ export const CashPage = () => {
     // 🔥🔥 FIX FINAL: Recarga cuando user.companyId O activeBranchId cambian
     useEffect(() => { 
         if (user?.companyId) {
+            console.log("🔄 CashPage: Recargando por cambio de contexto...", activeBranchId);
             loadInitialData(); 
         }
     }, [user?.companyId, activeBranchId]); 
@@ -489,7 +476,6 @@ export const CashPage = () => {
                         </table>
                     </div>
                     
-                    {/* Footer Paginación */}
                     {totalHistoryPages > 1 && (
                         <div className="p-4 border-t border-sys-100 bg-sys-50 flex justify-between items-center px-6">
                             <span className="text-xs text-sys-500 font-medium">Página <b>{historyPage}</b> de <b>{totalHistoryPages}</b></span>

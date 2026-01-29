@@ -14,7 +14,7 @@ import { useAuthStore } from '../modules/auth/store/useAuthStore';
 import { securityService } from '../modules/security/services/securityService';
 import { db } from '../database/firebase'; 
 
-// 🔥 CORRECCIÓN: Usamos SOLO cashRepository (Fuente única de verdad)
+// 🔥 REPOSITORIO DE CAJA
 import { CashClosingModal } from '../modules/cash/components/CashClosingModal'; 
 import { cashRepository } from '../modules/cash/repositories/cashRepository';
 
@@ -151,7 +151,7 @@ const PinRequestModal = ({ isOpen, onClose, onSuccess }) => {
 };
 
 // ============================================================================
-// 3. COMPONENTE WRAPPER: CIERRE DE CAJA (ROBUSTO ANTI-DUPLICADOS)
+// 3. COMPONENTE WRAPPER: CIERRE DE CAJA
 // ============================================================================
 const CloseShiftModalWrapper = ({ isOpen, onClose, onShiftClosed }) => {
     const [balance, setBalance] = useState(null);
@@ -164,16 +164,14 @@ const CloseShiftModalWrapper = ({ isOpen, onClose, onShiftClosed }) => {
             const fetchShiftData = async () => {
                 setLoading(true);
                 try {
-                    // 1. Obtener Turno Actual (USANDO CASH REPOSITORY)
                     const currentShift = await cashRepository.getCurrentShift(); 
                     
                     if (currentShift) {
                         setShift(currentShift);
-                        // 2. Obtener Balance
                         const currentBalance = await cashRepository.getShiftBalance(currentShift.id);
                         setBalance(currentBalance);
                     } else {
-                        alert("No hay un turno abierto para cerrar.");
+                        alert("⚠️ No hay un turno abierto para cerrar en esta sucursal.");
                         onClose();
                     }
                 } catch (error) {
@@ -189,35 +187,28 @@ const CloseShiftModalWrapper = ({ isOpen, onClose, onShiftClosed }) => {
     }, [isOpen]);
 
     const handleConfirm = async (data) => {
-        // Validación estricta para evitar doble submit
         if (!shift || !balance || processing) return;
         
         setProcessing(true); 
         try {
-            // 🔥 El objeto 'data' ya viene completo desde CashClosingModal
-            // con: declaredCash, expectedCash, leftInCash, etc.
-            
-            // 3. Cerrar Turno (Await estricto)
             await cashRepository.closeShift(shift.id, data);
             
             alert("✅ Turno Cerrado Correctamente.");
             onClose();
             
-            // 🔥 RETRASO DE SEGURIDAD PARA EVITAR RACE CONDITIONS CON FIREBASE/SYNC
             setTimeout(() => {
                 if (onShiftClosed) onShiftClosed(); 
             }, 1000); 
             
         } catch (e) {
-            console.error("Error closing shift from sidebar:", e);
+            console.error("Error closing shift:", e);
             alert(`Error al cerrar turno: ${e.message}`);
-            setProcessing(false); // Solo desbloqueamos si hubo error
+            setProcessing(false); 
         }
     };
 
     if (!isOpen) return null;
     
-    // Spinner Bloqueante
     if (loading || processing) return (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-sys-900/60 backdrop-blur-sm">
             <div className="bg-white p-8 rounded-2xl shadow-2xl flex flex-col items-center gap-4 animate-in zoom-in-95">
@@ -226,7 +217,7 @@ const CloseShiftModalWrapper = ({ isOpen, onClose, onShiftClosed }) => {
                     <p className="text-lg font-bold text-sys-900">
                         {processing ? "Cerrando Turno..." : "Calculando Balance..."}
                     </p>
-                    <p className="text-xs text-sys-500 mt-1">Por favor espere, no recargue la página.</p>
+                    <p className="text-xs text-sys-500 mt-1">Sincronizando con la sucursal...</p>
                 </div>
             </div>
         </div>
@@ -245,7 +236,7 @@ const CloseShiftModalWrapper = ({ isOpen, onClose, onShiftClosed }) => {
 };
 
 // ============================================================================
-// 4. COMPONENTE PRINCIPAL: SIDEBAR
+// 4. COMPONENTE PRINCIPAL: SIDEBAR (AUTO-REPAIR)
 // ============================================================================
 export const Sidebar = () => {
     const { isSyncing } = useAutoSync(15000);
@@ -258,7 +249,8 @@ export const Sidebar = () => {
     const [isPinModalOpen, setIsPinModalOpen] = useState(false);
     const [pendingRoute, setPendingRoute] = useState(null);
 
-    const { user, logout } = useAuthStore();
+    // 🔥 FIX: Traemos switchBranch para auto-reparar el contexto
+    const { user, logout, activeBranchId, switchBranch } = useAuthStore();
     const navigate = useNavigate();
     const { companySlug } = useParams(); 
     
@@ -278,44 +270,67 @@ export const Sidebar = () => {
         navigate(`/login/${redirectSlug}`);
     };
 
+    // 🔥 LOGIC: Auto-Repair y Chequeo
     const checkShiftStatus = async () => {
         if (!user) return;
+        
+        // 🔥 GUARDIA INTELIGENTE:
+        // Si no hay sucursal activa, pero el usuario TIENE una asignada (Cajero), la forzamos.
+        // Esto desatasca el estado "Cargando contexto..."
+        if (!activeBranchId) {
+            if (user.branchId) {
+                console.log("🔧 Sidebar: Contexto perdido. Auto-restaurando sucursal del cajero...");
+                switchBranch(user.branchId, "Mi Sucursal");
+                // No retornamos, dejamos que el cambio de estado dispare de nuevo el useEffect
+                return; 
+            } else {
+                // Si es admin y no ha seleccionado nada, sí esperamos
+                setCheckingShift(true); 
+                return;
+            }
+        }
+        
         try {
-            // 🔥 USAMOS CASH REPOSITORY
             const current = await cashRepository.getCurrentShift();
             setHasActiveShift(!!current);
         } catch (e) { 
-            console.error("Error checking shift status:", e); 
+            console.error("🔴 Error checkShiftStatus:", e); 
             setHasActiveShift(false);
         } finally {
             setCheckingShift(false);
         }
     };
 
+    // 🔥 REACCIÓN
     useEffect(() => {
+        setCheckingShift(true); 
         checkShiftStatus();
-        const interval = setInterval(checkShiftStatus, 10000); 
+        
+        const interval = setInterval(checkShiftStatus, 5000);
         return () => clearInterval(interval);
-    }, [user]); 
+    }, [user, activeBranchId]); 
 
+    // 🔥 ACCIÓN: Abrir Turno
     const handleOpenShiftDirectly = async () => {
+        if (!activeBranchId) {
+            alert("⚠️ Error de contexto: No se ha detectado la sucursal. Recargue la página.");
+            return;
+        }
+
         const input = prompt("Monto inicial en caja:", "1000");
         if (input === null) return;
+        
         const amount = parseFloat(input);
         if (isNaN(amount) || amount < 0) return alert("Monto inválido");
         
         try {
-            // 🔥 USAMOS CASH REPOSITORY
-            await cashRepository.openShift(amount, user?.name); 
+            const result = await cashRepository.openShift(amount, user?.name); 
             alert("✅ Caja abierta correctamente.");
-            
-            // Recarga segura
-            setTimeout(async () => {
-                await checkShiftStatus(); 
-                window.location.reload(); 
-            }, 800);
-            
-        } catch (e) { alert(e.message); }
+            await checkShiftStatus();
+        } catch (e) { 
+            console.error("🔴 Error fatal al abrir caja:", e);
+            alert(`Error al abrir caja: ${e.message}`); 
+        }
     };
 
     useEffect(() => {
@@ -438,11 +453,12 @@ export const Sidebar = () => {
                 {/* Footer: Smart Button */}
                 <div className="p-4 border-t border-sys-100 bg-sys-50/50 space-y-3">
                     
-                    {checkingShift ? (
-                        <div className="w-full h-10 bg-sys-100 animate-pulse rounded-xl" />
+                    {checkingShift || (!activeBranchId && !hasActiveShift) ? (
+                        <div className="w-full h-10 bg-sys-100 animate-pulse rounded-xl flex items-center justify-center">
+                            <span className="text-xs text-sys-400">Verificando...</span>
+                        </div>
                     ) : hasActiveShift ? (
                         
-                        // 🔥 BOTÓN DE CIERRE CON BLOQUEO OFFLINE
                         <button 
                             onClick={() => {
                                 if (isOnline) setIsCloseModalOpen(true);
@@ -494,7 +510,6 @@ export const Sidebar = () => {
                 onShiftClosed={() => {
                     setTimeout(() => {
                         checkShiftStatus(); 
-                        window.location.reload(); 
                     }, 1000);
                 }}
             />

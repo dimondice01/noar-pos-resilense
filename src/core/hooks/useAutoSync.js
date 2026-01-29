@@ -9,111 +9,85 @@ export const useAutoSync = (intervalMs = 30000) => {
     const [status, setStatus] = useState('idle'); // idle | syncing | error
     const [lastSync, setLastSync] = useState(null);
     
-    // Referencias para cancelar escuchas al salir
-    const unsubscribeProducts = useRef(null);
-    const unsubscribeInventory = useRef(null);
-    
     // Datos de sesión
     const { user, activeBranchId } = useAuthStore();
     const companyId = user?.companyId;
     const currentBranchId = activeBranchId || user?.branchId;
 
     // =================================================================
-    // 1. 👂 LISTENER DE BAJADA (REAL-TIME DOWNLOAD)
+    // 1. 👂 INICIALIZAR LISTENERS PROTEGIDOS
     // =================================================================
-    // Escucha cambios en la nube y actualiza Dexie al instante.
     useEffect(() => {
         if (!companyId) return;
 
-        const startListeners = async () => {
-            const dbLocal = await getDB();
-            console.log("📡 Conectando antena a Firebase...");
+        // 🔥 Iniciamos los listeners "Blindados" del servicio
+        syncService.startRealTimeListeners(companyId);
 
-            // A. ESCUCHAR PRODUCTOS MAESTROS (Globales)
-            // Si el dueño cambia un precio en su casa, aquí lo recibimos.
-            const productsQuery = query(collection(firestoreDB, `companies/${companyId}/products`));
+        // Limpieza al desmontar
+        return () => {
+            syncService.stopListeners();
+        };
+    }, [companyId]);
+
+    // =================================================================
+    // 2. 👂 LISTENER DE INVENTARIO LOCAL (Específico para UI)
+    // =================================================================
+    // Mantenemos este listener manual aquí porque actualiza el campo 'stock'
+    // denormalizado en la tabla de productos para velocidad de UI.
+    const unsubscribeInventory = useRef(null);
+
+    useEffect(() => {
+        if (!companyId || !currentBranchId) return;
+
+        const startInventoryListener = async () => {
+            const dbLocal = await getDB();
             
-            unsubscribeProducts.current = onSnapshot(productsQuery, async (snapshot) => {
-                // Solo procesamos si hay cambios reales
+            const inventoryQuery = query(collection(firestoreDB, `companies/${companyId}/branches/${currentBranchId}/inventory`));
+            
+            unsubscribeInventory.current = onSnapshot(inventoryQuery, async (snapshot) => {
                 if (snapshot.docChanges().length === 0) return;
 
-                await dbLocal.transaction('rw', dbLocal.products, async () => {
+                await dbLocal.transaction('rw', [dbLocal.products, dbLocal.inventory], async () => {
                     for (const change of snapshot.docChanges()) {
-                        const data = change.doc.data();
-                        const id = change.doc.id;
+                        const inv = change.doc.data();
+                        const prodId = inv.productId || change.doc.id;
 
-                        if (change.type === 'removed') {
-                            await dbLocal.products.update(id, { deleted: true });
-                        } else {
-                            // Upsert: Si existe actualiza, si no crea.
-                            // 🔥 IMPORTANTE: No pisamos el stock local aquí, solo datos maestros.
-                            const existing = await dbLocal.products.get(id);
-                            if (existing) {
-                                await dbLocal.products.update(id, { ...data, syncStatus: 'synced' });
-                            } else {
-                                await dbLocal.products.put({ ...data, id, stock: 0, syncStatus: 'synced' });
-                            }
+                        if (change.type !== 'removed') {
+                            // 1. Guardar en tabla Inventory (Realidad Física)
+                            await dbLocal.inventory.put({
+                                branchId: currentBranchId,
+                                productId: prodId,
+                                stock: inv.stock,
+                                updatedAt: inv.updatedAt
+                            });
+
+                            // 2. Actualizar campo 'stock' visual en Productos
+                            await dbLocal.products.update(prodId, { stock: inv.stock });
                         }
                     }
                 });
             });
-
-            // B. ESCUCHAR INVENTARIO DE MI SUCURSAL (Local)
-            // Si entra stock desde otra PC a mi sucursal, aquí lo recibimos.
-            if (currentBranchId) {
-                const inventoryQuery = query(collection(firestoreDB, `companies/${companyId}/branches/${currentBranchId}/inventory`));
-                
-                unsubscribeInventory.current = onSnapshot(inventoryQuery, async (snapshot) => {
-                    if (snapshot.docChanges().length === 0) return;
-
-                    await dbLocal.transaction('rw', [dbLocal.products, dbLocal.inventory], async () => {
-                        for (const change of snapshot.docChanges()) {
-                            const inv = change.doc.data();
-                            const prodId = inv.productId || change.doc.id;
-
-                            if (change.type !== 'removed') {
-                                // 1. Guardar en tabla Inventory
-                                await dbLocal.inventory.put({
-                                    branchId: currentBranchId,
-                                    productId: prodId,
-                                    stock: inv.stock,
-                                    updatedAt: inv.updatedAt
-                                });
-
-                                // 2. 🔥 MAGIA: Actualizar el campo 'stock' en Products para que la UI vuele
-                                // Esto arregla el problema de las "Salchichas Fantasmas"
-                                await dbLocal.products.update(prodId, { stock: inv.stock });
-                            }
-                        }
-                    });
-                });
-            }
         };
 
-        startListeners();
+        startInventoryListener();
 
-        // Limpieza al desmontar
         return () => {
-            if (unsubscribeProducts.current) unsubscribeProducts.current();
             if (unsubscribeInventory.current) unsubscribeInventory.current();
         };
-
     }, [companyId, currentBranchId]);
 
 
     // =================================================================
-    // 2. 🗣️ CRON DE SUBIDA (BACKGROUND UPLOAD)
+    // 3. 🗣️ CRON DE SUBIDA (BACKGROUND UPLOAD)
     // =================================================================
-    // Sube lo que hiciste offline o lo que quedó pendiente.
     useEffect(() => {
         if (!companyId) return;
 
         const runUploadProcess = async () => {
-            if (!navigator.onLine) return; // Ahorramos batería/datos
+            if (!navigator.onLine) return; 
 
             try {
                 setStatus('syncing');
-                // Llamamos a tu servicio existente que busca 'pending' y sube
                 const result = await syncService.syncPending(); 
                 
                 if (result && (result.uploaded > 0)) {
@@ -127,11 +101,9 @@ export const useAutoSync = (intervalMs = 30000) => {
             }
         };
 
-        // Ejecutar al inicio y luego cada X segundos
         runUploadProcess();
         const intervalId = setInterval(runUploadProcess, intervalMs);
 
-        // Listener para "Volvió Internet"
         const handleOnline = () => {
             console.log("🌐 Red detectada. Forzando subida...");
             runUploadProcess();

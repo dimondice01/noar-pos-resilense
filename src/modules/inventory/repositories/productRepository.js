@@ -11,21 +11,11 @@ import {
 } from 'firebase/firestore'; 
 import { useAuthStore } from '../../auth/store/useAuthStore'; 
 
-// ===========================================================================
-// 🧠 PRODUCT REPOSITORY (ENTERPRISE EDITION v2.1)
-// ===========================================================================
-
 export const productRepository = {
-
-    // ==========================================
-    // 📖 LECTURA (Local - Ultra Rápida)
-    // ==========================================
 
     async getAll() {
         const dbLocal = await getDB();
-        return await dbLocal.products
-            .filter(p => !p.deleted)
-            .toArray();
+        return await dbLocal.products.filter(p => !p.deleted).toArray();
     },
 
     async findByCode(code) {
@@ -35,15 +25,10 @@ export const productRepository = {
         return product;
     },
 
-    // 🔥 FIX: FALTABA ESTE MÉTODO CRÍTICO PARA EL POS
     async search(query) {
         const dbLocal = await getDB();
         const term = query.toLowerCase().trim();
-
         if (!term) return [];
-
-        // Búsqueda optimizada en memoria local (Dexie)
-        // Busca coincidencias en Nombre O Código O Código de Barras
         return await dbLocal.products
             .filter(p => 
                 !p.deleted && (
@@ -52,7 +37,7 @@ export const productRepository = {
                     (p.barcode && p.barcode.toString().toLowerCase().includes(term))
                 )
             )
-            .limit(50) // Limitamos a 50 resultados para no saturar la UI
+            .limit(50)
             .toArray();
     },
 
@@ -65,16 +50,11 @@ export const productRepository = {
             .sortBy('date');
     },
 
-    // ==========================================
-    // 💾 GUARDADO DE MAESTROS (Global)
-    // ==========================================
     async save(product) {
         const dbLocal = await getDB();
         const { user } = useAuthStore.getState();
-
         if (!user || !user.companyId) throw new Error("Sesión no válida para guardar.");
 
-        // 1. Preparar Datos
         const productId = product.id || crypto.randomUUID();
         const timestamp = new Date().toISOString();
         
@@ -86,36 +66,31 @@ export const productRepository = {
             deleted: false
         };
 
-        // Limpieza para Nube (Separación de Concerns)
         const { stock, batches, user: _, ...cloudMasterData } = productToSave;
 
-        // 2. Guardado Local (Dexie)
         await dbLocal.products.put(productToSave);
 
-        // 3. Sincronización Cloud (Fondo)
         if (navigator.onLine) {
             const masterRef = doc(db, `companies/${user.companyId}/products`, productId);
             setDoc(masterRef, {
                 ...cloudMasterData,
                 updatedAt: serverTimestamp() 
             }, { merge: true }).catch(err => {
-                console.warn("⚠️ Falló subida a Cloud (Maestro), se reintentará por SyncService:", err);
+                console.warn("⚠️ Falló subida a Cloud (Maestro):", err);
             });
         }
-
         return productToSave;
     },
 
-    // ==========================================
-    // ⚡ GESTIÓN DE STOCK (Transactional / Branch Aware)
-    // ==========================================
-    async addStock(productId, quantity, expiryDate, userName = 'Sistema') {
+    // 🔥 FIX: Aceptamos forcedBranchId para ser invocado desde SalesRepo
+    async addStock(productId, quantity, expiryDate, userName = 'Sistema', forcedBranchId = null) {
         const dbLocal = await getDB();
         const { user, activeBranchId } = useAuthStore.getState();
 
         if (!user || !user.companyId) throw new Error("No hay sesión de empresa activa.");
         
-        const targetBranchId = activeBranchId || user.branchId; 
+        // 🔥 Prioridad: Forzado > Activo > Usuario > Error
+        const targetBranchId = forcedBranchId || activeBranchId || user.branchId; 
         
         if (!targetBranchId) {
             throw new Error("⚠️ Debes seleccionar una Sucursal para mover stock.");
@@ -190,10 +165,6 @@ export const productRepository = {
         }
     },
 
-    // ==========================================
-    // ☁️ HELPERS PARA SYNC SERVICE
-    // ==========================================
-
     async getPendingSync() {
         const dbLocal = await getDB();
         return await dbLocal.products
@@ -208,17 +179,12 @@ export const productRepository = {
         );
     },
 
-    // ==========================================
-    // 🗑️ SOFT DELETE (Global)
-    // ==========================================
     async delete(id) {
         const dbLocal = await getDB();
         const { user } = useAuthStore.getState();
 
-        // Local
         await dbLocal.products.update(id, { deleted: true });
 
-        // Cloud
         if (navigator.onLine && user?.companyId) {
             const docRef = doc(db, `companies/${user.companyId}/products`, id);
             updateDoc(docRef, { 
@@ -228,9 +194,6 @@ export const productRepository = {
         }
     },
 
-    // ==========================================
-    // ✍️ IMPORTACIÓN MASIVA
-    // ==========================================
     async saveAll(products) {
         const dbLocal = await getDB();
         const productsToSave = products.map(p => ({

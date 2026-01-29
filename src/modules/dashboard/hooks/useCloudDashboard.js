@@ -15,7 +15,8 @@ export const useCloudDashboard = () => {
         fiscalCount: 0,
         recentSales: [],
         topProducts: [],
-        pendingShifts: [], // 🔥 NUEVO: Cajas por auditar
+        pendingShifts: [], 
+        activeShiftsCount: 0, // 🔥 Monitor de Cajas Abiertas
         loading: true
     });
 
@@ -30,10 +31,11 @@ export const useCloudDashboard = () => {
         const end = new Date();
         end.setHours(23, 59, 59, 999);
 
-        // --- 1. LISTENER DE VENTAS (HOY) ---
+        // Referencias base
         const salesRef = collection(db, 'companies', user.companyId, 'sales');
-        
-        // Query base: Ventas de hoy
+        const shiftsRef = collection(db, 'companies', user.companyId, 'shifts');
+
+        // --- 1. QUERY DE VENTAS (HOY) ---
         let salesQ = query(
             salesRef,
             where('date', '>=', start.toISOString()),
@@ -41,7 +43,6 @@ export const useCloudDashboard = () => {
             orderBy('date', 'desc')
         );
 
-        // Filtrar por sucursal si hay una seleccionada
         if (activeBranchId) {
             salesQ = query(salesQ, where('branchId', '==', activeBranchId));
         }
@@ -56,13 +57,17 @@ export const useCloudDashboard = () => {
 
             snapshot.forEach((doc) => {
                 const data = doc.data();
+                // Validar que no esté cancelada
+                if (data.status === 'CANCELLED') return;
+
                 const saleTotal = parseFloat(data.total || 0);
-                
                 total += saleTotal;
 
                 // Métodos de Pago
                 const paymentMethod = (data.payment?.method || data.method || '').toUpperCase();
-                if (paymentMethod === 'CASH' || paymentMethod === 'EFECTIVO') {
+                const isCash = paymentMethod === 'CASH' || paymentMethod === 'EFECTIVO';
+                
+                if (isCash) {
                     cash += parseFloat(data.payment?.amountPaid || saleTotal);
                 } else {
                     digital += parseFloat(data.payment?.amountPaid || saleTotal);
@@ -73,7 +78,7 @@ export const useCloudDashboard = () => {
                 if (salesData.length < 10) {
                     salesData.push({
                         id: doc.id,
-                        number: data.number || `V-${doc.id.slice(-4)}`, // Mostrar número real
+                        number: data.number || `V-${doc.id.slice(-4)}`,
                         time: new Date(data.date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
                         total: saleTotal,
                         method: paymentMethod,
@@ -110,17 +115,14 @@ export const useCloudDashboard = () => {
             }));
         }, (err) => console.error("Error sales stream:", err));
 
-        // --- 2. LISTENER DE CAJAS PENDIENTES (SHIFTS) ---
-        const shiftsRef = collection(db, 'companies', user.companyId, 'shifts');
-        
-        // Buscamos cajas CERRADAS pero NO AUDITADAS (audited: false)
-        // Opcional: Filtrar por sucursal también
+
+        // --- 2. QUERY DE CAJAS PENDIENTES DE AUDITORÍA ---
         let shiftsQ = query(
             shiftsRef,
             where('status', '==', 'CLOSED'),
             where('audited', '==', false),
             orderBy('closedAt', 'desc'),
-            limit(10) // Solo las últimas 10 pendientes para no saturar
+            limit(10)
         );
 
         if (activeBranchId) {
@@ -135,11 +137,30 @@ export const useCloudDashboard = () => {
             setStats(prev => ({ ...prev, pendingShifts: pending }));
         }, (err) => console.error("Error shifts stream:", err));
 
+
+        // --- 3. QUERY DE CAJAS ACTIVAS (MONITOR TIEMPO REAL) ---
+        // Esto permite al Admin ver si hay alguien operando AHORA en esa sucursal
+        let activeShiftsQ = query(
+            shiftsRef,
+            where('status', '==', 'OPEN')
+        );
+
+        if (activeBranchId) {
+            activeShiftsQ = query(activeShiftsQ, where('branchId', '==', activeBranchId));
+        }
+
+        const unsubActiveShifts = onSnapshot(activeShiftsQ, (snapshot) => {
+            setStats(prev => ({ ...prev, activeShiftsCount: snapshot.size }));
+        }, (err) => console.error("Error active shifts stream:", err));
+
+
         return () => {
             unsubSales();
             unsubShifts();
+            unsubActiveShifts();
         };
-    }, [user?.companyId, activeBranchId]); // Se recarga al cambiar sucursal
+
+    }, [user?.companyId, activeBranchId]); 
 
     return stats;
 };
