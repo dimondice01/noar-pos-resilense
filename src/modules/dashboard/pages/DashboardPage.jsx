@@ -36,12 +36,24 @@ import { db as firestoreDB } from '../../../database/firebase';
 import { db as localDb } from '../../../database/db'; 
 
 // =================================================================
-// 🧠 HELPER: LECTURA INTELIGENTE DE VALORES
+// 🧠 HELPER: LECTURA INTELIGENTE DE VALORES (FIX SNAPSHOT)
 // =================================================================
 const money = (val) => val ? val.toLocaleString('es-AR', {minimumFractionDigits: 2}) : '0.00';
 
 const getShiftValues = (shift, calculatedDetails = null) => {
     if (!shift) return { expected: 0, declared: 0, diff: 0, initial: 0 };
+    
+    // 🔥 PRIORIDAD 1: SNAPSHOT (FOTO CONGELADA)
+    if (shift.auditSnapshot) {
+        const snap = shift.auditSnapshot;
+        const declared = Number(shift.finalCash ?? snap.declaredCash ?? 0);
+        const expected = Number(snap.expectedCash ?? shift.expectedCash ?? 0);
+        const initial = Number(snap.initialAmount ?? shift.initialAmount ?? 0);
+        const diff = declared - expected;
+        return { expected, declared, diff, initial };
+    }
+
+    // PRIORIDAD 2: PROPIEDADES RAÍZ O CÁLCULO
     const isValid = (val) => val !== undefined && val !== null;
 
     let expected = 0;
@@ -254,18 +266,13 @@ const AdminCashAuditPanel = ({ allShifts, loadIntelligence, navigate, resolveNam
     const [auditTarget, setAuditTarget] = useState(null);
 
     // 🔥 FIX: FUSIÓN INTELIGENTE DE DATOS LOCALES Y NUBE
-    // 1. Obtenemos lo que está en memoria local (Recién cerrado)
     const localClosedUnAudited = allShifts.filter(s => s.status === 'CLOSED' && !s.audited);
-    
-    // 2. Obtenemos lo que viene de la nube (si hay)
     const cloudClosedUnAudited = Array.isArray(pendingShifts) ? pendingShifts : [];
 
-    // 3. Fusionamos priorizando LOCAL (porque es lo más reciente en Lazy Sync)
     const combinedMap = new Map();
     cloudClosedUnAudited.forEach(s => combinedMap.set(s.id, s));
-    localClosedUnAudited.forEach(s => combinedMap.set(s.id, s)); // Sobrescribe si existe, añade si es nuevo
+    localClosedUnAudited.forEach(s => combinedMap.set(s.id, s)); 
 
-    // 4. Convertimos a Array y ordenamos
     const shiftsToAudit = Array.from(combinedMap.values())
         .sort((a, b) => new Date(b.closedAt || 0) - new Date(a.closedAt || 0));
 
@@ -273,6 +280,12 @@ const AdminCashAuditPanel = ({ allShifts, loadIntelligence, navigate, resolveNam
     const auditedShifts = allShifts.filter(s => s.status === 'CLOSED' && s.audited).sort((a, b) => new Date(b.closedAt) - new Date(a.closedAt));
 
     const prepareReportData = async (shift) => {
+        // 🔥 SI TIENE SNAPSHOT, NO RECALCULAMOS
+        if (shift.auditSnapshot && shift.status === 'CLOSED') {
+            return shift; // El TicketZModal ahora sabe leer esto directo
+        }
+
+        // Solo si es un turno viejo o abierto, recalculamos
         const balance = await cashRepository.getShiftBalance(shift.id);
         const { expected, declared, diff, initial } = getShiftValues(shift, balance);
         
@@ -317,8 +330,11 @@ const AdminCashAuditPanel = ({ allShifts, loadIntelligence, navigate, resolveNam
         if (!auditTarget) return;
         if (!window.confirm(`¿Aprobar y cerrar auditoría?`)) return;
         try {
-            await cashRepository.updateShift({ ...auditTarget, audited: true });
-            await loadIntelligence(); setIsReportModalOpen(false); setAuditTarget(null);
+            // Usamos la nueva función del repositorio que actualiza en nube y local
+            await cashRepository.confirmShiftAudit(auditTarget.id);
+            await loadIntelligence(); 
+            setIsReportModalOpen(false); 
+            setAuditTarget(null);
         } catch (error) { alert("Error: " + error.message); }
     };
 
@@ -602,7 +618,6 @@ const DashboardContent = () => {
         if (isAdmin && !dbStatus.hasBranches) return;
         setLoading(true);
         try {
-            // 🔥 Obtenemos TODOS los turnos (incluyendo los que acabamos de cerrar localmente)
             const allShifts = await cashRepository.getAllShifts();
             const myActiveShift = allShifts.find(s => s.status === 'OPEN' && s.userId === user.uid);
             
@@ -621,7 +636,7 @@ const DashboardContent = () => {
                     cashInHand: mSales.cash,
                     digitalSales: mSales.digital,
                     activeShift: myActiveShift,
-                    allShifts: allShifts // Esto alimenta al panel de auditoría local
+                    allShifts: allShifts 
                 }));
             } else {
                  setMetrics(prev => ({ ...prev, activeShift: myActiveShift, allShifts }));
@@ -630,7 +645,6 @@ const DashboardContent = () => {
         setLoading(false);
     };
 
-    // Fusionamos métricas locales (inmediatas) con las de la nube
     const finalMetrics = isAdmin ? {
         ...metrics,
         todaySales: cloudStats.totalSales, 
@@ -641,7 +655,6 @@ const DashboardContent = () => {
         averageTicket: cloudStats.averageTicket || 0,
         topProducts: cloudStats.topProducts || [],
         activeShiftsCount: cloudStats.activeShiftsCount || 0,
-        // Mantener allShifts local que es el más fresco
         allShifts: metrics.allShifts 
     } : metrics;
 

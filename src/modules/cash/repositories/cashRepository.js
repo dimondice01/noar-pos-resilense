@@ -82,7 +82,7 @@ export const cashRepository = {
     },
 
     // =========================================
-    // 🔴 GESTIÓN DE TURNO (CIERRE)
+    // 🔴 GESTIÓN DE TURNO (CIERRE CON SNAPSHOT)
     // =========================================
     async closeShift(shiftId, closingData) {
         const dbLocal = await getDB();
@@ -91,18 +91,18 @@ export const cashRepository = {
 
         const { user } = useAuthStore.getState();
         
-        // Validación estricta de permisos
         if (shift.userId !== user?.uid && user?.role !== 'ADMIN' && user?.role !== 'OWNER') {
              throw new Error("No tienes permisos para cerrar esta caja.");
         }
 
+        // 1. 🔥 CALCULAR LA FOTO (SNAPSHOT) EXACTA ANTES DE CERRAR
+        const currentAudit = await this.getShiftAuditData(shiftId);
+
         const declared = closingData.declaredCash ? parseFloat(closingData.declaredCash) : 0;
-        const expected = closingData.expectedCash ? parseFloat(closingData.expectedCash) : 0;
         const left = closingData.leftInCash ? parseFloat(closingData.leftInCash) : 0;
         
-        // El dinero retirado es lo declarado MENOS lo que se deja de cambio
         const withdrawn = Math.max(0, declared - left); 
-        const difference = declared - expected;
+        const difference = declared - currentAudit.expectedCash;
 
         const closedShift = {
             ...shift,
@@ -111,10 +111,32 @@ export const cashRepository = {
             finalCash: declared,      
             leftInCash: left,         
             withdrawn: withdrawn,     
-            expectedCash: expected,
+            expectedCash: currentAudit.expectedCash,
             expectedDigital: parseFloat(closingData.expectedDigital || 0),
             difference: difference,
-            audited: false,
+            
+            // 🔥 CORRECCIÓN: Nace como NO auditado, para que el Admin apruebe después
+            audited: false, 
+            
+            // 🔥🔥 SNAPSHOT CONGELADO 🔥🔥
+            auditSnapshot: {
+                totalSales: currentAudit.totalSales,
+                salesCount: currentAudit.salesCount,
+                salesByMethod: currentAudit.salesByMethod,
+                cashIn: currentAudit.cashIn,
+                cashOut: currentAudit.cashOut,
+                totalExpenses: currentAudit.totalExpenses,
+                totalWithdrawals: currentAudit.totalWithdrawals,
+                totalDigital: currentAudit.totalDigital,
+                
+                expectedCash: currentAudit.expectedCash,
+                initialAmount: currentAudit.initialAmount,
+                declaredCash: declared,
+                leftInCash: left,
+                
+                generatedAt: new Date().toISOString()
+            },
+
             syncStatus: 'pending' 
         };
 
@@ -132,7 +154,7 @@ export const cashRepository = {
                 companyId: user.companyId,
                 date: new Date().toISOString(),
                 syncStatus: 'pending',
-                subtype: 'CLOSING' // 🔥 CRÍTICO: Marca para que la auditoría no lo reste del teórico
+                subtype: 'CLOSING' 
             };
         }
 
@@ -149,6 +171,40 @@ export const cashRepository = {
         }
 
         return closedShift;
+    },
+
+    // =========================================
+    // ✅ CONFIRMAR AUDITORÍA (NUEVO)
+    // =========================================
+    async confirmShiftAudit(shiftId) {
+        const dbLocal = await getDB();
+        const shift = await dbLocal.shifts.get(shiftId);
+        
+        if (!shift) {
+            // Si no está local (caso Owner revisando remoto), no podemos editarlo localmente fácil.
+            // Pero como estamos hidratando, debería estar.
+            // Si no, forzamos actualización en nube.
+            const { user } = useAuthStore.getState();
+            if (user?.companyId) {
+                await setDoc(doc(db, `companies/${user.companyId}/shifts`, shiftId), { 
+                    audited: true,
+                    auditedAt: new Date().toISOString()
+                }, { merge: true });
+                return true;
+            }
+            throw new Error("No se pudo auditar el turno.");
+        }
+
+        const auditedShift = {
+            ...shift,
+            audited: true,
+            auditedAt: new Date().toISOString(),
+            syncStatus: 'pending'
+        };
+
+        await dbLocal.shifts.put(auditedShift);
+        this._syncToCloud('shifts', auditedShift);
+        return auditedShift;
     },
     
     // =========================================
@@ -188,8 +244,9 @@ export const cashRepository = {
                 .filter(s => s.userId === user.uid)
                 .toArray();
 
-            // Buscamos coincidencia estricta de branch
             const activeInBranch = openShifts.find(s => s.branchId === branchId);
+
+            if (!activeInBranch && openShifts.length > 0) return openShifts[0];
 
             return activeInBranch || null;
 
@@ -216,7 +273,6 @@ export const cashRepository = {
 
         let shifts = await dbLocal.shifts.toArray();
 
-        // 📡 Hidratación: Si soy Admin, necesito ver lo de la nube
         if ((user.role === 'ADMIN' || user.role === 'OWNER') && navigator.onLine) {
              await this._fetchHistoryFromCloud(dbLocal, user);
              shifts = await dbLocal.shifts.toArray(); 
@@ -241,9 +297,6 @@ export const cashRepository = {
         });
     },
 
-    // =========================================
-    // ☁️ SYNC HELPERS (PROTEGIDO)
-    // =========================================
     async _fetchHistoryFromCloud(dbLocal, user) {
         if (!navigator.onLine) return;
         try {
@@ -304,12 +357,7 @@ export const cashRepository = {
 
     async getAllActiveShifts() {
         const dbLocal = await getDB();
-        const { branchId, user } = this._getContext();
-        let shifts = await dbLocal.shifts.where('status').equals('OPEN').toArray();
-        if ((user.role === 'ADMIN' || user.role === 'OWNER') && branchId) {
-            return shifts.filter(s => s.branchId === branchId);
-        }
-        return shifts;
+        return await dbLocal.shifts.where('status').equals('OPEN').toArray();
     },
 
     async registerIncome(amount, method, description = 'Venta') {
@@ -359,15 +407,71 @@ export const cashRepository = {
     },
 
     // =========================================
-    // ⚖️ BALANCE Y AUDITORÍA
+    // ⚖️ BALANCE Y AUDITORÍA (CON HIDRATACIÓN)
     // =========================================
+    
+    async _ensureAuditDataConsistency(shift, dbLocal) {
+        if (!navigator.onLine) return;
+        try {
+            const { user } = useAuthStore.getState();
+            if (!user.companyId) return;
+
+            const start = new Date(shift.openedAt);
+            const end = shift.closedAt ? new Date(shift.closedAt) : new Date();
+            start.setMinutes(start.getMinutes() - 10); 
+            end.setMinutes(end.getMinutes() + 10);
+
+            // A. Movimientos
+            const movsQuery = query(
+                collection(db, `companies/${user.companyId}/cash_movements`),
+                where('shiftId', '==', shift.id)
+            );
+
+            // B. Ventas por ShiftID (Ideal)
+            const salesQueryId = query(
+                collection(db, `companies/${user.companyId}/sales`),
+                where('shiftId', '==', shift.id)
+            );
+
+            // C. Ventas por Fecha (Fallback)
+            const salesQueryDate = query(
+                collection(db, `companies/${user.companyId}/sales`),
+                where('date', '>=', start.toISOString()),
+                where('date', '<=', end.toISOString()),
+                where('userId', '==', shift.userId)
+            );
+
+            const [movsSnap, salesIdSnap, salesDateSnap] = await Promise.all([
+                getDocs(movsQuery),
+                getDocs(salesQueryId),
+                getDocs(salesQueryDate)
+            ]);
+
+            const movsToSync = movsSnap.docs.map(d => ({ ...d.data(), id: d.id, syncStatus: 'synced' }));
+            
+            const salesMap = new Map();
+            salesIdSnap.docs.forEach(d => salesMap.set(d.id, { ...d.data(), localId: d.id, syncStatus: 'synced' }));
+            salesDateSnap.docs.forEach(d => salesMap.set(d.id, { ...d.data(), localId: d.id, syncStatus: 'synced' }));
+            
+            const salesToSync = Array.from(salesMap.values());
+
+            if (salesToSync.length > 0) await dbLocal.sales.bulkPut(salesToSync).catch(() => {});
+            if (movsToSync.length > 0) await dbLocal.cash_movements.bulkPut(movsToSync).catch(() => {});
+
+        } catch (e) {
+            console.warn("⚠️ Audit sync warning:", e);
+        }
+    },
+
     async getShiftBalance(shiftId) {
         const dbLocal = await getDB();
         
+        const shift = await dbLocal.shifts.get(shiftId);
+        if (shift) await this._ensureAuditDataConsistency(shift, dbLocal);
+
         return await dbLocal.transaction('r', [dbLocal.cash_movements, dbLocal.shifts], async () => {
-            const shift = await dbLocal.shifts.get(shiftId);
-            
-            if (!shift) return { totalCash: 0, movements: [], salesCash: 0, salesDigital: 0 };
+            const s = await dbLocal.shifts.get(shiftId);
+            if (!s) return { totalCash: 0, movements: [], salesCash: 0, totalDigital: 0 };
 
             const allMovements = await dbLocal.cash_movements
                 .where('shiftId').equals(shiftId)
@@ -376,7 +480,7 @@ export const cashRepository = {
             allMovements.sort((a, b) => new Date(b.date) - new Date(a.date));
 
             let balance = {
-                initialAmount: Number(shift?.initialAmount) || 0,
+                initialAmount: Number(s.initialAmount) || 0,
                 salesCash: 0,
                 salesDigital: 0,
                 withdrawals: 0,
@@ -406,7 +510,7 @@ export const cashRepository = {
                         balance.totalDigital += amount;
                     }
                 } else if (m.type === 'DEPOSIT') {
-                    if (!description.includes('fondo inicial') && m.subtype !== 'OPENING') { 
+                    if (m.subtype !== 'OPENING') { 
                         balance.totalCash += amount;
                         balance.deposits += amount;
                     }
@@ -434,82 +538,40 @@ export const cashRepository = {
             };
         });
     },
-    
-    // 🔥🔥 INGENIERÍA PURA: HIDRATACIÓN DE AUDITORÍA 🔥🔥
-    // Esta función garantiza que antes de auditar, la PC tenga los datos del turno
-    // aunque hayan sido generados en otra PC.
-    async _ensureAuditDataConsistency(shift, dbLocal) {
-        if (!navigator.onLine) return; // Si no hay red, usamos lo que hay
-        
-        try {
-            const { user } = useAuthStore.getState();
-            if (!user.companyId) return;
-
-            // 1. Definir rango temporal del turno con margen de seguridad
-            const start = new Date(shift.openedAt);
-            const end = shift.closedAt ? new Date(shift.closedAt) : new Date();
-            start.setMinutes(start.getMinutes() - 2); 
-            end.setMinutes(end.getMinutes() + 2);
-
-            // 2. Traer VENTAS de la nube para este turno específico
-            const salesQuery = query(
-                collection(db, `companies/${user.companyId}/sales`),
-                where('date', '>=', start.toISOString()),
-                where('date', '<=', end.toISOString()),
-                where('userId', '==', shift.userId) // Clave: Ventas de ESTE usuario
-            );
-
-            // 3. Traer MOVIMIENTOS de caja de la nube
-            const movsQuery = query(
-                collection(db, `companies/${user.companyId}/cash_movements`),
-                where('shiftId', '==', shift.id) // Clave: Movimientos con ESTE shiftId
-            );
-
-            const [salesSnap, movsSnap] = await Promise.all([
-                getDocs(salesQuery),
-                getDocs(movsQuery)
-            ]);
-
-            const salesToSync = salesSnap.docs.map(d => ({ ...d.data(), localId: d.id, syncStatus: 'synced' }));
-            const movsToSync = movsSnap.docs.map(d => ({ ...d.data(), id: d.id, syncStatus: 'synced' }));
-
-            // 4. Inyectar en Dexie (Solo lo que no esté o esté desactualizado)
-            if (salesToSync.length > 0) await dbLocal.sales.bulkPut(salesToSync);
-            if (movsToSync.length > 0) await dbLocal.cash_movements.bulkPut(movsToSync);
-
-            // console.log(`✅ Auditoría Hidratada: ${salesToSync.length} ventas, ${movsToSync.length} movimientos.`);
-
-        } catch (e) {
-            console.warn("⚠️ Error hidratando auditoría (Se usaran datos locales):", e);
-        }
-    },
 
     async getShiftAuditData(shiftId) {
         const dbLocal = await getDB();
-        
-        // 1. Obtener datos básicos del turno
         const shift = await dbLocal.shifts.get(shiftId);
         if (!shift) throw new Error("Turno no encontrado");
 
-        // 🔥 2. Hidratar datos (Cloud -> Dexie) ANTES de calcular
-        await this._ensureAuditDataConsistency(shift, dbLocal);
+        // 🔥 1. Si ya tiene Snapshot, úsalo (prioridad total)
+        if (shift.status === 'CLOSED' && shift.auditSnapshot) {
+            return {
+                shiftId: shift.id,
+                shiftName: shift.userName || shift.userId,
+                status: shift.status,
+                startTime: shift.openedAt,
+                closeTime: shift.closedAt,
+                initialAmount: Number(shift.initialAmount),
+                ...shift.auditSnapshot, 
+                auditSnapshot: shift.auditSnapshot
+            };
+        }
 
-        // 3. Transacción de Lectura y Cálculo
+        // 🔥 2. Si no tiene foto, HIDRATAMOS y CALCULAMOS
+        await this._ensureAuditDataConsistency(shift, dbLocal);
+        
         return await dbLocal.transaction('r', [dbLocal.cash_movements, dbLocal.shifts, dbLocal.sales], async () => {
-            
-            // Recargar shift (por si la hidratación trajo actualizaciones)
             const freshShift = await dbLocal.shifts.get(shiftId);
-            
             const openedAt = new Date(freshShift.openedAt).toISOString();
             const closedAt = freshShift.closedAt ? new Date(freshShift.closedAt).toISOString() : new Date().toISOString();
 
-            // Filtro de Ventas: Por Fecha Y Usuario (Independiente de Branch para seguridad histórica)
             const shiftSales = await dbLocal.sales
                 .where('date').between(openedAt, closedAt, true, true)
                 .filter(s => {
                     const isValidStatus = s.status !== 'CANCELLED';
+                    if (s.shiftId && s.shiftId === shiftId) return isValidStatus;
                     const isSameUser = s.userId === freshShift.userId;
-                    // La sucursal es un filtro secundario, si coincide el usuario es suficiente propiedad
                     return isValidStatus && isSameUser;
                 })
                 .toArray();
@@ -541,7 +603,6 @@ export const cashRepository = {
 
             const round2 = (num) => Math.round((num + Number.EPSILON) * 100) / 100;
 
-            // Procesar Ventas (Acumuladores)
             for (const sale of shiftSales) {
                 const total = parseFloat(sale.total) || 0;
                 audit.totalSales += total;
@@ -561,7 +622,6 @@ export const cashRepository = {
             
             audit.totalDigital = audit.salesByMethod.mercadopago + audit.salesByMethod.clover + audit.salesByMethod.digitalOther;
 
-            // Procesar Movimientos de Caja
             for (const m of allMovements) {
                 const amount = Number(m.amount) || 0;
                 const method = (m.method || 'unknown').toLowerCase();
@@ -574,13 +634,12 @@ export const cashRepository = {
                         audit.expectedCash += amount;
                     }
                     if (m.type === 'DEPOSIT') {
-                        if (!description.includes('fondo inicial') && m.subtype !== 'OPENING') {
+                        if (m.subtype !== 'OPENING') {
                             audit.expectedCash += amount;
                             audit.cashIn += amount; 
                         }
                     }
                     if (m.type === 'WITHDRAWAL' || m.type === 'EXPENSE') {
-                        // FIX MATEMÁTICO: No restar el retiro de cierre
                         if (!isClosingWithdrawal) {
                             audit.expectedCash -= amount;
                             audit.cashOut += amount; 
@@ -588,7 +647,7 @@ export const cashRepository = {
                     }
                 }
                 
-                if (m.type === 'DEPOSIT' && !description.includes('fondo inicial') && m.subtype !== 'OPENING') audit.totalExpenses += 0; 
+                if (m.type === 'DEPOSIT' && m.subtype !== 'OPENING') audit.totalExpenses += 0; 
                 if (m.type === 'WITHDRAWAL' || m.type === 'EXPENSE') {
                      if (!isClosingWithdrawal) audit.totalWithdrawals += amount;
                 }

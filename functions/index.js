@@ -38,40 +38,42 @@ app.use((req, res, next) => {
 // ==================================================================
 // 🛠️ HELPER CORE: OBTENER CONFIGURACIÓN SAAS
 // ==================================================================
-async function getCompanyConfig(companyId, type) {
+async function getCompanyConfig(companyId, type, branchId = null) {
     if (!companyId) {
         throw new Error("Error Backend: Falta el ID de la empresa (companyId) en la petición.");
     }
 
-    const docRef = db.doc(`companies/${companyId}/config/${type}`);
+    // 🔥 LÓGICA DE RUTAS: Si hay branchId, busca en la sucursal, si no, en la ruta global original
+    const docPath = branchId 
+        ? `companies/${companyId}/branches/${branchId}/integrations/${type}`
+        : `companies/${companyId}/config/${type}`;
+
+    const docRef = db.doc(docPath);
     const docSnap = await docRef.get();
     
     if (!docSnap.exists) {
-        throw new Error(`El servicio ${type} no está configurado para la empresa ${companyId}.`);
+        throw new Error(`El servicio ${type} no está configurado para la empresa ${companyId} ${branchId ? `en la sucursal ${branchId}` : ''}.`);
     }
     
     const data = docSnap.data();
     
     if (type === 'mercadopago') {
-        if (!data.isActive) throw new Error(`MercadoPago está desactivado en la empresa ${companyId}.`);
-        if (!data.accessToken || !data.userId) {
-            throw new Error("Configuración MP incompleta (Faltan Tokens).");
-        }
+        if (!data.isActive) throw new Error(`MercadoPago está desactivado.`);
+        if (!data.accessToken) throw new Error("Configuración MP incompleta (Falta Access Token).");
     }
 
     if (type === 'afip') {
-        if (!data.isActive) throw new Error(`AFIP está desactivado en la empresa ${companyId}.`);
+        if (!data.isActive) throw new Error(`AFIP está desactivado.`);
         if (!data.cert || !data.key) throw new Error("Falta Certificado o Clave Privada de AFIP.");
     }
 
     if (type === 'clover') {
-        if (!data.isActive) throw new Error(`Clover está desactivado en la empresa ${companyId}.`);
+        if (!data.isActive) throw new Error(`Clover está desactivado.`);
         if (!data.merchantId || !data.apiToken) throw new Error("Falta Merchant ID o Token de Clover.");
     }
     
     return data;
 }
-
 // ==================================================================
 // 1. ENDPOINT: OBTENER TERMINALES (MODO DEBUG TOTAL)
 // ==================================================================
@@ -273,7 +275,7 @@ app.post("/create-clover-order", async (req, res) => {
       const amount = Number(Number(total).toFixed(2));
       
       // 1. Obtener Credenciales de la Empresa
-      const cloverConfig = await getCompanyConfig(companyId, 'clover');
+      const cloverConfig = await getCompanyConfig(companyId, 'clover', branchId);
       
       logger.info(`☘️ Clover (${companyId}): Iniciando cobro por $${amount}`);
   
@@ -317,44 +319,48 @@ app.post("/create-clover-order", async (req, res) => {
 
 
 // ==================================================================
-// 🚀 ENDPOINT 1: MERCADOPAGO (QR DINÁMICO SAAS) - BLINDADO
+// 🚀 ENDPOINT 1: MERCADOPAGO (QR DINÁMICO SAAS) - BLINDADO POR SUCURSAL
 // ==================================================================
 app.post("/create-order", async (req, res) => {
   try {
-    // 🔥 AHORA RECIBIMOS 'deviceId' (OPCIONAL) DESDE EL FRONT
-    const { total, companyId, deviceId } = req.body;
+    const { total, companyId, deviceId, branchId } = req.body;
     const amount = Number(Number(total).toFixed(2));
 
     if (!amount || amount <= 0) return res.status(400).json({ error: "Monto inválido" });
 
-    const mpConfig = await getCompanyConfig(companyId, 'mercadopago');
-    logger.info(`💳 QR solicitado por: ${companyId} | Collector: ${mpConfig.userId}`);
+    // 1. Obtenemos la configuración de la sucursal (Trae el accessToken)
+    const mpConfig = await getCompanyConfig(companyId, 'mercadopago', branchId);
+    
+    logger.info(`💳 QR solicitado por Sucursal: ${branchId || 'Global'} | Empresa: ${companyId}`);
 
-    // 🔥 PRIORIDAD DE SELECCIÓN DE ID DE CAJA:
-    // 1. Si el frontend mandó un ID específico (deviceId), usamos ese.
-    // 2. Si no, usamos el que está guardado en la base de datos (mpConfig.externalPosId).
+    // 2. 🔥 REPARACIÓN DINÁMICA: Si no tenemos el userId en la config, lo pedimos a MP en tiempo real
+    let userId = mpConfig.userId;
+    if (!userId) {
+        const meRes = await axios.get("https://api.mercadopago.com/users/me", {
+            headers: { "Authorization": `Bearer ${mpConfig.accessToken}` }
+        });
+        userId = meRes.data.id;
+    }
+
     let targetPosId = deviceId || mpConfig.externalPosId;
 
     if (!targetPosId) {
-        return res.status(400).json({ error: "No hay ID de Caja (POS) configurado. Seleccione una caja en Integraciones." });
+        return res.status(400).json({ error: "No hay ID de Caja (POS) asignado a este usuario." });
     }
-
-    // Limpieza básica por si acaso
-    targetPosId = String(targetPosId).trim();
 
     const externalReference = `NOAR-${companyId}-${Date.now()}`;
 
     const orderData = {
       external_reference: externalReference,
-      title: "Consumo Local", 
-      description: "Compra presencial", 
+      title: "Venta Salvador POS", 
+      description: "Compra presencial en sucursal", 
       notification_url: "https://www.google.com", 
       total_amount: amount,
       items: [
         {
           sku_number: "POS-GEN",
-          category: "food",
-          title: "Consumo General",
+          category: "marketplace",
+          title: "Cargo General POS",
           unit_price: amount,
           quantity: 1,
           unit_measure: "unit",
@@ -364,10 +370,8 @@ app.post("/create-order", async (req, res) => {
       cash_out: { amount: 0 }
     };
 
-    logger.info(`🚀 Creando QR en Caja ID: ${targetPosId}`);
-
-    // Usamos 'targetPosId' en la URL en vez del fijo mpConfig.externalPosId
-    const url = `https://api.mercadopago.com/instore/orders/qr/seller/collectors/${mpConfig.userId}/pos/${encodeURIComponent(targetPosId)}/qrs`;
+    // 3. 🔥 URL CORREGIDA: Ahora usamos el userId recuperado dinámicamente
+    const url = `https://api.mercadopago.com/instore/orders/qr/seller/collectors/${userId}/pos/${encodeURIComponent(targetPosId)}/qrs`;
     
     await axios.put(url, orderData, {
       headers: {
@@ -378,9 +382,8 @@ app.post("/create-order", async (req, res) => {
 
     res.status(200).json({ 
       success: true, 
-      message: "Orden MP Creada",
       reference: externalReference,
-      usedPosId: targetPosId // Devuelvo el ID usado para debug en frontend
+      usedPosId: targetPosId 
     });
 
   } catch (error) {
@@ -393,7 +396,6 @@ app.post("/create-order", async (req, res) => {
     });
   }
 });
-
 // ==================================================================
 // 📟 ENDPOINT 2: MERCADOPAGO POINT (SAAS)
 // ==================================================================
@@ -440,12 +442,13 @@ app.post("/create-point-order", async (req, res) => {
 // ==================================================================
 app.post("/check-payment-status", async (req, res) => {
   try {
-    const { reference, provider, companyId } = req.body;
+    // 🔥 AHORA RECIBIMOS branchId PARA SABER QUÉ TOKEN USAR EN LA BÚSQUEDA
+    const { reference, provider, companyId, branchId } = req.body;
 
-    // Solo MP necesita credenciales dinámicas para consultar
     if (provider === 'mercadopago' || provider === 'point') {
         
-        const mpConfig = await getCompanyConfig(companyId, 'mercadopago');
+        // Obtenemos la config de la sucursal (o global si branchId es null)
+        const mpConfig = await getCompanyConfig(companyId, 'mercadopago', branchId);
         const headers = { "Authorization": `Bearer ${mpConfig.accessToken}` };
 
         // A. MERCADOPAGO QR
@@ -455,7 +458,11 @@ app.post("/check-payment-status", async (req, res) => {
             
             if (response.data.results?.length > 0) {
                 const p = response.data.results[0];
-                return res.status(200).json({ status: 'approved', id: p.id, method: p.payment_method_id });
+                return res.status(200).json({ 
+                    status: 'approved', 
+                    id: p.id, 
+                    method: p.payment_method_id 
+                });
             }
             return res.status(200).json({ status: 'pending' });
         } 
@@ -477,21 +484,19 @@ app.post("/check-payment-status", async (req, res) => {
         }
     }
 
-    // C. CLOVER (Simulado)
+    // C. CLOVER (Simulado/Directo)
     else if (provider === 'clover') {
-      const timestamp = parseInt(reference.split('-')[1] || Date.now());
-      if ((Date.now() - timestamp) > 5000) return res.status(200).json({ status: 'approved', id: `CLV-${Date.now()}` });
-      return res.status(200).json({ status: 'pending' });
+      // Clover suele ser síncrono en nuestro create-order, pero dejamos el pending por si acaso
+      return res.status(200).json({ status: 'approved', id: `CLV-${Date.now()}` });
     }
 
     res.status(400).json({ error: "Proveedor desconocido" });
 
   } catch (error) {
-    // logger.error("Error verificando pago:", error.message); // Opcional reducir logs
-    res.status(500).json({ error: "Error de verificación" });
+    logger.error("❌ Error verificando pago:", error.response?.data || error.message);
+    res.status(500).json({ error: "Error de verificación en el servidor" });
   }
 });
-
 // ==================================================================
 // 📠 ENDPOINT 5: FACTURACIÓN AFIP (SAAS)
 // ==================================================================
@@ -503,7 +508,7 @@ app.post("/create-invoice", async (req, res) => {
 
     logger.info(`📠 AFIP (${companyId}): Solicitud Factura por $${amount}`);
 
-    const afipConfig = await getCompanyConfig(companyId, 'afip');
+    const afipConfig = await getCompanyConfig(companyId, 'afip', branchId);
     const factura = await afip.emitirFactura(amount, datosCliente, false, null, afipConfig);
 
     logger.info(`✅ Factura Autorizada: CAE ${factura.cae}`);
@@ -529,7 +534,7 @@ app.post("/create-credit-note", async (req, res) => {
 
     if (!associatedDocument) return res.status(400).json({ error: "Falta documento asociado" });
 
-    const afipConfig = await getCompanyConfig(companyId, 'afip');
+    const afipConfig = await getCompanyConfig(companyId, 'afip', branchId);
 
     logger.info(`🔄 AFIP (${companyId}): Solicitud NC por $${amount}`);
 

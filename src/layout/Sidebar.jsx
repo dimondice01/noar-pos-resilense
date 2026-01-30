@@ -151,7 +151,7 @@ const PinRequestModal = ({ isOpen, onClose, onSuccess }) => {
 };
 
 // ============================================================================
-// 3. COMPONENTE WRAPPER: CIERRE DE CAJA
+// 3. COMPONENTE WRAPPER: CIERRE DE CAJA (CORREGIDO)
 // ============================================================================
 const CloseShiftModalWrapper = ({ isOpen, onClose, onShiftClosed }) => {
     const [balance, setBalance] = useState(null);
@@ -168,6 +168,7 @@ const CloseShiftModalWrapper = ({ isOpen, onClose, onShiftClosed }) => {
                     
                     if (currentShift) {
                         setShift(currentShift);
+                        // Aseguramos que el repositorio esté corregido antes de esto
                         const currentBalance = await cashRepository.getShiftBalance(currentShift.id);
                         setBalance(currentBalance);
                     } else {
@@ -194,16 +195,18 @@ const CloseShiftModalWrapper = ({ isOpen, onClose, onShiftClosed }) => {
             await cashRepository.closeShift(shift.id, data);
             
             alert("✅ Turno Cerrado Correctamente.");
+            // Primero cerramos el modal visualmente
             onClose();
             
-            setTimeout(() => {
-                if (onShiftClosed) onShiftClosed(); 
-            }, 1000); 
+            // Luego notificamos al padre para refrescar estado
+            if (onShiftClosed) onShiftClosed();
             
         } catch (e) {
             console.error("Error closing shift:", e);
             alert(`Error al cerrar turno: ${e.message}`);
-            setProcessing(false); 
+        } finally {
+            // 🔥 SIEMPRE liberamos el estado de procesamiento
+            setProcessing(false);
         }
     };
 
@@ -249,7 +252,6 @@ export const Sidebar = () => {
     const [isPinModalOpen, setIsPinModalOpen] = useState(false);
     const [pendingRoute, setPendingRoute] = useState(null);
 
-    // 🔥 FIX: Traemos switchBranch para auto-reparar el contexto
     const { user, logout, activeBranchId, switchBranch } = useAuthStore();
     const navigate = useNavigate();
     const { companySlug } = useParams(); 
@@ -270,21 +272,15 @@ export const Sidebar = () => {
         navigate(`/login/${redirectSlug}`);
     };
 
-    // 🔥 LOGIC: Auto-Repair y Chequeo
     const checkShiftStatus = async () => {
         if (!user) return;
         
-        // 🔥 GUARDIA INTELIGENTE:
-        // Si no hay sucursal activa, pero el usuario TIENE una asignada (Cajero), la forzamos.
-        // Esto desatasca el estado "Cargando contexto..."
         if (!activeBranchId) {
             if (user.branchId) {
                 console.log("🔧 Sidebar: Contexto perdido. Auto-restaurando sucursal del cajero...");
                 switchBranch(user.branchId, "Mi Sucursal");
-                // No retornamos, dejamos que el cambio de estado dispare de nuevo el useEffect
                 return; 
             } else {
-                // Si es admin y no ha seleccionado nada, sí esperamos
                 setCheckingShift(true); 
                 return;
             }
@@ -301,7 +297,6 @@ export const Sidebar = () => {
         }
     };
 
-    // 🔥 REACCIÓN
     useEffect(() => {
         setCheckingShift(true); 
         checkShiftStatus();
@@ -324,7 +319,7 @@ export const Sidebar = () => {
         if (isNaN(amount) || amount < 0) return alert("Monto inválido");
         
         try {
-            const result = await cashRepository.openShift(amount, user?.name); 
+            await cashRepository.openShift(amount, user?.name); 
             alert("✅ Caja abierta correctamente.");
             await checkShiftStatus();
         } catch (e) { 
@@ -508,9 +503,8 @@ export const Sidebar = () => {
                 isOpen={isCloseModalOpen} 
                 onClose={() => setIsCloseModalOpen(false)} 
                 onShiftClosed={() => {
-                    setTimeout(() => {
-                        checkShiftStatus(); 
-                    }, 1000);
+                    // Refresco suave
+                    setTimeout(() => checkShiftStatus(), 500); 
                 }}
             />
         </>

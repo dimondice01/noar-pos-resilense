@@ -1,13 +1,17 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, forwardRef } from 'react';
 import QRCode from "react-qr-code";
 import { X, Printer, CheckCircle } from 'lucide-react';
+import { useReactToPrint } from 'react-to-print';
 import { useAuthStore } from '../../auth/store/useAuthStore';
 import { doc, getDoc } from 'firebase/firestore'; 
 import { db } from '../../../database/firebase'; 
+
+// 🔥 COMPONENTES UI Y ASSETS
+import { Button } from '../../../core/ui/Button'; // <-- ¡CORREGIDO: Aquí estaba el error!
 import defaultLogo from '../../../assets/logo.png'; 
 
 // =========================================================
-// HELPER SEGURO DE MONEDA
+// HELPER SEGURO DE MONEDA (Walmart Style: Sin decimales si no son necesarios)
 // =========================================================
 const formatCurrency = (amount) => {
     const val = parseFloat(amount);
@@ -16,211 +20,211 @@ const formatCurrency = (amount) => {
 };
 
 // =========================================================
-// CONTENIDO DEL TICKET (Componente Puro)
+// CONTENIDO DEL TICKET (Diseñado para Papel Térmico)
 // =========================================================
-const TicketContent = ({ logoSrc, EMPRESA, tipoComprobante, letra, isFiscal, sale, data, clientData, docLabel, docValue, condFiscal, isSale, formatAfipDate }) => {
+const TicketContent = forwardRef(({ 
+    logoSrc, EMPRESA, tipoComprobante, letra, isFiscal, sale, data, 
+    clientData, docLabel, docValue, condFiscal, isSale, formatAfipDate 
+}, ref) => {
     
-    // 🔥 SAFE GUARD: Asegurar que items es un array
     const items = Array.isArray(data.items) ? data.items : [];
-    
-    // 🔥 SAFE GUARD: Asegurar totales numéricos
     const total = parseFloat(data.total) || 0;
     const discount = parseFloat(data.discount) || 0;
     const subtotal = parseFloat(data.subtotal) || total;
 
     return (
-        <div className="w-full bg-white text-black font-bold pb-10 ticket-container"> 
-            
-            {/* ENCABEZADO */}
-            <div className="flex flex-col items-center text-center mb-2 px-0">
-                {logoSrc && (
-                    <img 
-                        src={logoSrc} 
-                        alt="Logo"
-                        className="mb-1 object-contain grayscale contrast-125"
-                        style={{ maxHeight: '15mm', maxWidth: '80%' }} 
-                    />
-                )}
-                <span className="t-title leading-tight mb-1 uppercase">{EMPRESA.nombre?.substring(0,30)}</span>
-                {EMPRESA.direccion && <span className="t-small leading-tight uppercase">{EMPRESA.direccion.substring(0,40)}</span>}
-                <span className="t-small mt-0.5 uppercase">{EMPRESA.condicionIva?.substring(0,25)}</span>
-                {EMPRESA.cuit && <span className="t-small">CUIT: {EMPRESA.cuit}</span>}
-            </div>
-
-            <div className="border-dash"></div>
-
-            {/* INFO */}
-            <div className="flex justify-between items-end mb-1 px-0">
-                <div className="flex flex-col">
-                    <span className="t-normal">{tipoComprobante} "{letra}"</span>
-                    <span className="t-small">N° {isFiscal ? String(sale.afip.cbteNumero).padStart(8, '0') : (data.number || data.localId?.slice(-8) || '0000')}</span>
+        <div ref={ref} className="ticket-print-container">
+            <div className="ticket-body"> 
+                
+                {/* ENCABEZADO: Branding Puro */}
+                <div className="flex flex-col items-center text-center mb-2 px-0">
+                    {logoSrc && (
+                        <img 
+                            src={logoSrc} 
+                            alt="Logo"
+                            className="mb-1 object-contain grayscale contrast-200"
+                            style={{ maxHeight: '14mm', maxWidth: '75%' }} 
+                        />
+                    )}
+                    <span className="t-title leading-tight mb-1 uppercase font-black">{EMPRESA.nombre}</span>
+                    {EMPRESA.direccion && <span className="t-small leading-tight uppercase">{EMPRESA.direccion}</span>}
+                    <span className="t-small mt-0.5 uppercase">{EMPRESA.condicionIva}</span>
+                    {EMPRESA.cuit && <span className="t-small">CUIT: {EMPRESA.cuit}</span>}
                 </div>
-                <div className="flex flex-col text-right">
-                    <span className="t-small">{new Date(data.date).toLocaleDateString('es-AR')}</span>
-                    <span className="t-small">{new Date(data.date).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
-                </div>
-            </div>
 
-            {/* CLIENTE */}
-            <div className="mb-2">
-                <div className="flex t-small"><span className="w-8">CLI:</span> <span className="flex-1 truncate uppercase">{clientData.name.substring(0, 25)}</span></div>
-                {(docValue !== '-' && docValue !== '0') && (
-                    <div className="flex t-small"><span className="w-8">{docLabel}:</span> <span>{docValue}</span></div>
-                )}
-                <div className="flex t-small"><span className="w-8">IVA:</span> <span className="flex-1 truncate uppercase">{condFiscal.substring(0,20)}</span></div>
-            </div>
+                <div className="border-dash"></div>
 
-            <div className="border-solid"></div>
-
-            {/* ITEMS */}
-            {isSale && (
-                <div className="mb-2">
-                    <div className="row-flex t-small pb-1 border-b border-black/10 mb-1">
-                        <div className="col-qty">CNT</div>
-                        <div className="col-desc">DESC</div>
-                        <div className="col-total">TOTAL</div>
+                {/* INFO TÉCNICA DEL COMPROBANTE */}
+                <div className="flex justify-between items-end mb-1 px-0">
+                    <div className="flex flex-col">
+                        <span className="t-header-text font-black">{tipoComprobante} "{letra}"</span>
+                        <span className="t-normal font-black">N° {isFiscal ? String(sale.afip.cbteNumero).padStart(8, '0') : (data.number || '00000000')}</span>
                     </div>
-                    
-                    <div className="flex flex-col gap-1"> 
-                        {items.map((item, idx) => {
-                            const qty = parseFloat(item.quantity) || 0;
-                            const sub = parseFloat(item.subtotal) || 0;
-                            return (
+                    <div className="flex flex-col text-right">
+                        <span className="t-small font-bold">{new Date(data.date).toLocaleDateString('es-AR')}</span>
+                        <span className="t-small font-bold">{new Date(data.date).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}hs</span>
+                    </div>
+                </div>
+
+                <div className="border-dash"></div>
+
+                {/* DATOS DEL CLIENTE */}
+                <div className="mb-2 info-section">
+                    <div className="row-flex t-small"><span className="font-bold">CLIENTE:</span> <span className="truncate uppercase font-black">{clientData.name}</span></div>
+                    {(docValue !== '-' && docValue !== '0') && (
+                        <div className="row-flex t-small"><span className="font-bold">{docLabel}:</span> <span className="font-black">{docValue}</span></div>
+                    )}
+                    <div className="row-flex t-small"><span className="font-bold">IVA:</span> <span className="truncate uppercase font-black">{condFiscal}</span></div>
+                </div>
+
+                <div className="border-solid"></div>
+
+                {/* CUERPO: LISTADO DE PRODUCTOS (Walmart Style) */}
+                {isSale && (
+                    <div className="mb-2">
+                        <div className="row-flex t-small font-black border-b-2 border-black mb-1 pb-0.5">
+                            <div className="col-qty">CNT</div>
+                            <div className="col-desc">DESCRIPCIÓN</div>
+                            <div className="col-total">TOTAL</div>
+                        </div>
+                        
+                        <div className="flex flex-col gap-1"> 
+                            {items.map((item, idx) => (
                                 <div key={idx} className="row-flex t-normal items-start">
-                                    <div className="col-qty">
-                                        {item.isWeighable ? qty.toFixed(3) : Math.round(qty)}
+                                    <div className="col-qty font-mono font-black">
+                                        {item.isWeighable ? parseFloat(item.quantity).toFixed(3) : Math.round(item.quantity)}
                                     </div>
-                                    <div className="col-desc uppercase">
+                                    <div className="col-desc uppercase leading-none font-bold">
                                         {item.name}
                                     </div>
-                                    <div className="col-total">
-                                        {Math.round(sub)}
+                                    <div className="col-total font-mono font-black">
+                                        {formatCurrency(item.subtotal || (item.price * item.quantity))}
                                     </div>
                                 </div>
-                            );
-                        })}
-                    </div>
-                </div>
-            )}
-
-            {/* MOVIMIENTOS CAJA (RECIBOS) */}
-            {!isSale && (
-                <div className="text-center py-4">
-                    <div className="border-2 border-black py-1 mb-2"><span className="t-title">PAGO A CUENTA</span></div>
-                    <p className="t-normal">MONTO ABONADO:</p>
-                    <p className="t-big mt-1">$ {formatCurrency(data.amount)}</p>
-                </div>
-            )}
-
-            <div className="border-solid"></div>
-
-            {/* TOTALES */}
-            {isSale && (
-                <div className="mt-2 px-0">
-                    {discount > 0 && (
-                        <div className="row-flex t-small justify-end mb-1">
-                            <span className="mr-2">SUBTOTAL:</span>
-                            <span>$ {formatCurrency(subtotal)}</span>
+                            ))}
                         </div>
-                    )}
-                    {discount > 0 && (
-                        <div className="row-flex t-small justify-end mb-1">
-                            <span className="mr-2">DESCUENTO:</span>
-                            <span>-$ {formatCurrency(discount)}</span>
+                    </div>
+                )}
+
+                {/* RECIBOS DE PAGO (Si no es venta directa) */}
+                {!isSale && (
+                    <div className="text-center py-4">
+                        <div className="border-2 border-black py-1 mb-2 font-black"><span className="t-title">PAGO A CUENTA</span></div>
+                        <p className="t-normal font-bold">MONTO ABONADO:</p>
+                        <p className="t-big mt-1 font-black">$ {formatCurrency(data.amount)}</p>
+                    </div>
+                )}
+
+                <div className="border-solid"></div>
+
+                {/* TOTALES: Impacto Visual Máximo */}
+                {isSale && (
+                    <div className="mt-2 px-0 space-y-1">
+                        {discount > 0 && (
+                            <div className="row-flex t-normal">
+                                <span className="font-black">SUBTOTAL:</span>
+                                <span className="font-mono font-black">$ {formatCurrency(subtotal)}</span>
+                            </div>
+                        )}
+                        {discount > 0 && (
+                            <div className="row-flex t-normal">
+                                <span className="font-black">DESC. REC:</span>
+                                <span className="font-mono font-black">-$ {formatCurrency(discount)}</span>
+                            </div>
+                        )}
+                        
+                        <div className="row-flex items-center pt-1">
+                            <span className="t-title font-black" style={{fontSize: '20px'}}>TOTAL</span>
+                            <span className="t-big font-black font-mono" style={{fontSize: '22px'}}>$ {formatCurrency(total)}</span>
+                        </div>
+
+                        <div className="row-flex t-small pt-3 justify-end uppercase">
+                             <span className="mr-2 font-bold opacity-70">MEDIO DE PAGO:</span>
+                             <span className="font-black">{(isSale ? (data.payment?.method || data.paymentMethod) : data.method) || 'EFECTIVO'}</span>
+                        </div>
+                    </div>
+                )}
+
+                <div className="border-dash mt-4"></div>
+
+                {/* BLOQUE FISCAL AFIP (QR & CAE) */}
+                <div className="mt-4 text-center"> 
+                    {isFiscal ? (
+                        <div className="flex flex-col items-center w-full">
+                            <div className="bg-white p-1 mb-2 border-2 border-black" style={{ width: '38mm' }}>
+                                {sale.afip.qr && <QRCode value={sale.afip.qr} size={140} style={{ height: "auto", maxWidth: "100%", width: "100%" }} viewBox={`0 0 256 256`} />}
+                            </div>
+                            <div className="flex items-center justify-center gap-1 w-full mb-1">
+                                <span className="italic font-black t-small">AFIP</span>
+                                <span className="t-small font-black">Comprobante Autorizado</span>
+                            </div>
+                            <div className="flex flex-col w-full t-small font-mono mt-1 border-2 border-black p-1 space-y-0.5 bg-black text-white">
+                                <div className="flex justify-between px-1"><span>CAE:</span> <span className="font-black">{sale.afip.cae}</span></div>
+                                <div className="flex justify-between px-1"><span>VTO:</span> <span className="font-black">{formatAfipDate(sale.afip.vtoCAE)}</span></div>
+                            </div>
+                        </div>
+                    ) : (
+                        <div className="space-y-4">
+                            {!isSale && (
+                                <div className="flex flex-col items-center mt-6">
+                                    <div className="border-t-2 border-black w-32 mb-1"></div>
+                                    <span className="t-small font-black">FIRMA DEL CLIENTE</span>
+                                </div>
+                            )}
+                            <div className="border-2 border-black py-1 bg-black text-white">
+                                <p className="t-small font-black tracking-widest">*** NO VÁLIDO COMO FACTURA ***</p>
+                            </div>
                         </div>
                     )}
                     
-                    <div className="row-flex items-center justify-between mt-2">
-                        <span className="t-title">TOTAL</span>
-                        <span className="t-big">$ {formatCurrency(total)}</span>
-                    </div>
-                    <div className="row-flex t-small mt-2 justify-end uppercase">
-                         <span className="mr-2 font-bold">FORMA PAGO:</span>
-                         <span>{(isSale ? (data.payment?.method || data.paymentMethod) : data.method) || 'EFECTIVO'}</span>
-                    </div>
+                    <p className="mt-6 t-small font-black uppercase tracking-widest">¡Gracias por su visita!</p>
+                    <p className="mt-1 text-[9px] font-black opacity-50 italic">SALVADOR POS - v2.1</p>
+                    <p className="text-[8px] font-mono opacity-40 break-all pt-2">TXID: {data.id || data.localId}</p>
                 </div>
-            )}
-
-            <div className="border-dash"></div>
-
-            {/* FOOTER */}
-            <div className="mt-4 text-center"> 
-                {isFiscal ? (
-                    <div className="flex flex-col items-center w-full">
-                        <div className="bg-white p-1 mb-2" style={{ width: '32mm' }}>
-                            {sale.afip.qr && <QRCode value={sale.afip.qr} size={100} style={{ height: "auto", maxWidth: "100%", width: "100%" }} viewBox={`0 0 256 256`} />}
-                        </div>
-                        <div className="flex items-center justify-center gap-1 w-full mb-1">
-                            <span className="italic font-bold t-small">AFIP</span>
-                            <span className="t-small">Autorizado</span>
-                        </div>
-                        <div className="flex justify-between w-full t-small font-mono mt-1 px-2 border border-black/20 p-1">
-                            <span>CAE: {sale.afip.cae}</span>
-                            <span>VTO: {formatAfipDate(sale.afip.vtoCAE)}</span>
-                        </div>
-                    </div>
-                ) : (
-                    <div className="space-y-2 mt-2">
-                        {!isSale && (
-                            <div className="flex flex-col items-center mt-6">
-                                <div className="border-t-2 border-black w-32 mb-1"></div>
-                                <span className="t-small">FIRMA</span>
-                            </div>
-                        )}
-                        <p className="t-small pt-2 font-normal">*** NO VÁLIDO COMO FACTURA ***</p>
-                    </div>
-                )}
-                <p className="mt-4 text-[9px] font-mono">SISTEMA: NOAR POS</p>
             </div>
         </div>
     );
-};
+});
 
+// =========================================================
+// MODAL PRINCIPAL: GESTIÓN DE INTERFAZ
+// =========================================================
 export const TicketModal = ({ isOpen, onClose, sale, receipt, companyConfig }) => {
   const data = sale || receipt;
   const { user } = useAuthStore(); 
+  const componentRef = useRef(null);
   
   const [dbConfig, setDbConfig] = useState(null);
   const [loadingConfig, setLoadingConfig] = useState(true);
 
-  // 🟢 LOGICA OFFLINE: Intentar LocalStorage primero, luego Firestore
+  // 🔥 CONFIGURACIÓN DE IMPRESIÓN REACT-TO-PRINT
+  const handlePrint = useReactToPrint({
+    contentRef: componentRef,
+    documentTitle: `Ticket-${data?.number || 'pos'}`,
+    onAfterPrint: () => console.log("✅ Impresión finalizada"),
+  });
+
   useEffect(() => {
     if (isOpen && user?.companyId) {
         const fetchCompanyData = async () => {
             try {
-                // 1. Intentar caché local primero (más rápido y funciona offline)
-                const cachedConfig = localStorage.getItem(`NOAR_COMPANY_CONFIG_${user.companyId}`);
+                const cachedConfig = localStorage.getItem(`SALVADOR_COMPANY_CONFIG_${user.companyId}`);
                 if (cachedConfig) {
                     setDbConfig(JSON.parse(cachedConfig));
                     setLoadingConfig(false);
-                    
-                    // Si estamos online, revalidar en segundo plano
-                    if (navigator.onLine) {
-                        try {
-                            const docRef = doc(db, 'companies', user.companyId);
-                            const snap = await getDoc(docRef);
-                            if (snap.exists()) {
-                                const freshData = snap.data();
-                                setDbConfig(freshData);
-                                localStorage.setItem(`NOAR_COMPANY_CONFIG_${user.companyId}`, JSON.stringify(freshData));
-                            }
-                        } catch(e) { console.warn("Background sync failed"); }
-                    }
-                    return;
                 }
 
-                // 2. Si no hay caché y estamos online, ir a Firestore
                 if (navigator.onLine) {
                     const docRef = doc(db, 'companies', user.companyId);
                     const snap = await getDoc(docRef);
                     if (snap.exists()) {
                         const freshData = snap.data();
                         setDbConfig(freshData);
-                        localStorage.setItem(`NOAR_COMPANY_CONFIG_${user.companyId}`, JSON.stringify(freshData));
+                        localStorage.setItem(`SALVADOR_COMPANY_CONFIG_${user.companyId}`, JSON.stringify(freshData));
                     }
                 }
             } catch (error) {
-                console.error("Error cargando datos empresa:", error);
+                console.error("Error cargando configuración de empresa:", error);
             } finally {
                 setLoadingConfig(false);
             }
@@ -235,8 +239,7 @@ export const TicketModal = ({ isOpen, onClose, sale, receipt, companyConfig }) =
   const isFiscal = isSale && sale.afip?.status === 'APPROVED';
   
   const EMPRESA = {
-    nombre: dbConfig?.name || "TU NEGOCIO",
-    razonSocial: dbConfig?.razonSocial || dbConfig?.name || "",
+    nombre: dbConfig?.name || "MI NEGOCIO",
     cuit: dbConfig?.cuit || "",
     direccion: dbConfig?.address || "",
     condicionIva: dbConfig?.taxCondition || "Cons. Final",
@@ -244,8 +247,6 @@ export const TicketModal = ({ isOpen, onClose, sale, receipt, companyConfig }) =
     ...companyConfig, 
     ...sale?.companySnapshot 
   };
-
-  const handlePrint = () => window.print();
 
   const formatAfipDate = (dateStr) => {
     if (!dateStr || dateStr.length !== 8) return dateStr;
@@ -263,135 +264,109 @@ export const TicketModal = ({ isOpen, onClose, sale, receipt, companyConfig }) =
   const logoSrc = (EMPRESA.logoUrl && EMPRESA.logoUrl.length > 5) ? EMPRESA.logoUrl : defaultLogo;
 
   return (
-    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-sys-900/80 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-sys-900/80 backdrop-blur-sm p-4 animate-in fade-in duration-300">
       
-      {/* --- VISTA PREVIA (Pantalla) --- */}
-      <div className="bg-sys-100 p-6 rounded-2xl shadow-2xl max-h-[90vh] overflow-y-auto w-full max-w-sm print:hidden flex flex-col">
+      {/* VISTA PREVIA (Solo UI Pantalla) */}
+      <div className="bg-sys-100 p-6 rounded-3xl shadow-2xl max-h-[95vh] overflow-y-auto w-full max-w-sm print:hidden flex flex-col">
         <div className="flex justify-between items-center mb-6">
-          <div className="flex items-center gap-2">
-              <CheckCircle size={24} className="text-green-500" />
-              <h3 className="font-bold text-sys-900 text-lg">Venta Exitosa</h3>
+          <div className="flex items-center gap-3">
+              <div className="p-2 bg-green-100 rounded-full text-green-600 shadow-inner"><CheckCircle size={22} /></div>
+              <h3 className="font-black text-sys-900 text-xl tracking-tighter uppercase">¡Venta Lista!</h3>
           </div>
-          <button onClick={onClose} className="p-2 bg-white text-sys-500 rounded-full hover:bg-sys-200 transition-colors"><X size={20} /></button>
+          <button onClick={onClose} className="p-2 bg-white text-sys-500 rounded-full hover:bg-sys-200 transition-colors shadow-sm"><X size={20} /></button>
         </div>
         
-        {/* Simulador visual */}
-        <div className="bg-white mx-auto shadow-lg w-[70mm] min-h-[400px] border-t-8 border-sys-800 p-4 overflow-hidden relative">
-             <div className="absolute top-0 right-0 w-8 h-8 bg-sys-800 transform rotate-45 translate-x-4 -translate-y-4"></div>
-             {!loadingConfig && (
-                 <TicketContent 
+        {/* El "Papel" Visual */}
+        <div className="bg-white mx-auto shadow-2xl w-full max-w-[75mm] border-t-[12px] border-sys-900 overflow-hidden relative mb-4">
+             <div className="p-5">
+                <TicketContent 
                     logoSrc={logoSrc} EMPRESA={EMPRESA} tipoComprobante={tipoComprobante} letra={letra} 
                     isFiscal={isFiscal} sale={sale} data={data} clientData={clientData} 
                     docLabel={docLabel} docValue={docValue} condFiscal={condFiscal} 
                     isSale={isSale} formatAfipDate={formatAfipDate} 
-                 />
-             )}
+                />
+             </div>
+             {/* Efecto de corte de papel al final */}
+             <div className="absolute bottom-0 left-0 w-full h-4 bg-gradient-to-t from-sys-100/50 to-transparent"></div>
         </div>
 
-        <div className="mt-6 flex gap-3">
-            <button onClick={onClose} className="flex-1 py-3 bg-white text-sys-600 font-bold rounded-xl border border-sys-200 hover:bg-sys-50 transition-colors">
-                Cerrar
-            </button>
-            <button onClick={handlePrint} className="flex-1 py-3 bg-brand text-white font-bold rounded-xl shadow-lg shadow-brand/20 hover:bg-brand-hover transition-transform active:scale-95 flex items-center justify-center gap-2">
-                <Printer size={20} /> Imprimir
+        <div className="mt-4 flex flex-col gap-3">
+            <Button 
+                onClick={handlePrint} 
+                className="w-full py-5 bg-brand text-white font-black rounded-2xl shadow-xl shadow-brand/30 hover:scale-[1.02] active:scale-95 transition-all flex items-center justify-center gap-3 text-lg"
+            >
+                <Printer size={24} /> IMPRIMIR TICKET
+            </Button>
+            <button 
+                onClick={onClose} 
+                className="w-full py-3 bg-white text-sys-500 font-bold rounded-2xl border-2 border-sys-200 hover:bg-sys-50 transition-colors uppercase text-xs tracking-widest"
+            >
+                Volver al POS
             </button>
         </div>
       </div>
 
-      {/* --- ÁREA DE IMPRESIÓN REAL (Invisible en pantalla) --- */}
-      <div className="hidden print:block print-area">
-          {!loadingConfig && (
-              <TicketContent 
-                    logoSrc={logoSrc} EMPRESA={EMPRESA} tipoComprobante={tipoComprobante} letra={letra} 
-                    isFiscal={isFiscal} sale={sale} data={data} clientData={clientData} 
-                    docLabel={docLabel} docValue={docValue} condFiscal={condFiscal} 
-                    isSale={isSale} formatAfipDate={formatAfipDate} 
-              />
-          )}
+      {/* --- MOTOR DE IMPRESIÓN OCULTO (Blindado) --- */}
+      <div style={{ display: 'none' }}>
+            <TicketContent 
+                ref={componentRef}
+                logoSrc={logoSrc} EMPRESA={EMPRESA} tipoComprobante={tipoComprobante} letra={letra} 
+                isFiscal={isFiscal} sale={sale} data={data} clientData={clientData} 
+                docLabel={docLabel} docValue={docValue} condFiscal={condFiscal} 
+                isSale={isSale} formatAfipDate={formatAfipDate} 
+            />
       </div>
 
+      {/* ESTILOS CSS INYECTADOS ESPECÍFICOS PARA TÉRMICAS */}
       <style>{`
+        .ticket-body {
+            width: 100%;
+            background: white;
+            color: #000;
+            font-family: 'Courier New', Courier, monospace;
+            text-transform: uppercase;
+            padding: 0;
+            margin: 0;
+        }
+
+        .t-title { font-size: 17px; font-weight: 900; }
+        .t-header-text { font-size: 14px; font-weight: 900; }
+        .t-big { font-size: 19px; font-weight: 900; }
+        .t-normal { font-size: 12px; font-weight: 800; }
+        .t-small { font-size: 10.5px; font-weight: 700; }
+        
+        .row-flex { display: flex; justify-content: space-between; width: 100%; }
+        .border-dash { border-bottom: 2px dashed #000; margin: 6px 0; width: 100%; }
+        .border-solid { border-bottom: 2px solid #000; margin: 6px 0; width: 100%; }
+
+        .col-qty { width: 18%; text-align: left; }
+        .col-desc { width: 57%; text-align: left; padding-right: 4px; }
+        .col-total { width: 25%; text-align: right; }
+
         @media print {
             @page { 
-                size: 58mm auto; /* Ajuste automático de largo */
+                size: 80mm auto; 
                 margin: 0; 
             }
-            
             body { 
                 margin: 0; 
-                padding: 0;
-                background: white;
-            }
-
-            /* Ocultar todo lo que no sea el ticket usando visibility (más compatible) */
-            body * {
-                visibility: hidden;
-            }
-
-            /* Mostrar solo el ticket y posicionarlo absolutamente al inicio */
-            .print-area, .print-area * {
-                visibility: visible;
-            }
-
-            .print-area {
-                position: absolute;
-                top: 0;
-                left: 0;
-                /* ANCHO IDEAL: 48mm es el ancho de impresión real de una POS58 (dejando margen) */
-                width: 48mm; 
-                padding: 0;
-                margin: 0;
-                background: white;
-            }
-
-            /* --- TIPOGRAFÍA DE ALTO IMPACTO (Estilo Térmico) --- */
-            * {
-                color: #000 !important;
-                font-family: 'Courier New', Courier, monospace !important; /* Monospace para alineación */
-                font-size: 10px !important; /* Letra base */
-                line-height: 1.1 !important; 
-                font-weight: 700 !important;
-                text-transform: uppercase !important;
+                padding: 0; 
+                background: white !important;
                 -webkit-print-color-adjust: exact;
             }
-
-            /* Tamaños específicos */
-            .t-title { font-size: 14px !important; font-weight: 900 !important; display: block; text-align: center; }
-            .t-big { font-size: 16px !important; font-weight: 900 !important; }
-            .t-normal { font-size: 11px !important; font-weight: 800 !important; }
-            .t-small { font-size: 9px !important; font-weight: 600 !important; }
-            
-            /* Líneas */
-            .border-dash { border-bottom: 1px dashed #000 !important; margin: 4px 0 !important; width: 100%; display: block; }
-            .border-solid { border-bottom: 1px solid #000 !important; margin: 3px 0 !important; width: 100%; }
-
-            /* Tabla de Items (Flexbox para ajuste perfecto) */
-            .row-flex {
-                display: flex;
-                width: 100%;
-                justify-content: space-between;
-                align-items: flex-start;
-                margin-bottom: 2px;
+            .ticket-print-container {
+                display: block !important;
+                width: 100% !important;
+                padding: 0 !important;
+                margin: 0 !important;
             }
-            
-            /* Columnas calibradas */
-            .col-qty { width: 15%; text-align: left; }
-            .col-desc { 
-                width: 60%; 
-                text-align: left; 
-                padding-right: 2px; 
-                white-space: normal; /* Permitir wrap en térmicas */
-                overflow: hidden; 
+            .ticket-body {
+                width: 72mm; /* Ancho real de impresión seguro */
+                margin: 0 auto;
+                padding: 5mm 3mm;
             }
-            .col-total { width: 25%; text-align: right; }
-
-            /* Imágenes */
-            img, svg { 
-                filter: grayscale(100%) contrast(150%) !important; 
-                max-width: 100% !important;
-            }
-            
-            ::-webkit-scrollbar { display: none; }
+            /* Forzamos que todo sea negro para térmicas */
+            * { color: #000 !important; border-color: #000 !important; }
         }
       `}</style>
     </div>

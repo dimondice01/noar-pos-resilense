@@ -1,8 +1,7 @@
-import React, { useRef, useEffect } from 'react';
+import React, { useRef } from 'react';
 import { X, Printer, CheckCircle, AlertTriangle, ShieldCheck } from 'lucide-react';
 import { Button } from '../../../core/ui/Button';
 import { useReactToPrint } from 'react-to-print';
-import { cn } from '../../../core/utils/cn';
 
 // Helper de Moneda
 const formatMoney = (val) => {
@@ -12,147 +11,160 @@ const formatMoney = (val) => {
 };
 
 // =========================================================
-// CONTENIDO DEL TICKET Z
+// CONTENIDO DEL TICKET Z (COMPONENT FOR PRINT)
 // =========================================================
-const TicketZContent = ({ data }) => {
+// Usamos React.forwardRef para que useReactToPrint acceda al DOM directamente
+const TicketZContent = React.forwardRef(({ data }, ref) => {
     if (!data) return null;
 
-    // 🔥 DEBUG: Ver qué datos llegan (Abrir consola F12)
-    // console.log("Datos recibidos en TicketZ:", data);
+    const snap = data.auditSnapshot || {};
+    
+    const getVal = (...values) => {
+        for (const v of values) {
+            if (v !== undefined && v !== null && v !== '') return v;
+        }
+        return 0;
+    };
+
+    const getString = (...values) => {
+        for (const v of values) {
+            if (v && v !== '---') return v;
+        }
+        return '---';
+    };
+
+    const source = {
+        id: getString(data.id, data.shiftId),
+        userName: getString(snap.shiftName, data.userName, data.shiftName, data.user?.name),
+        closedAt: getVal(snap.closeTime, data.closedAt, data.closeTime),
+        initialAmount: parseFloat(getVal(snap.initialAmount, data.initialAmount)),
+        expectedCash: parseFloat(getVal(snap.expectedCash, data.expectedCash)),
+        declaredCash: parseFloat(getVal(snap.declaredCash, data.finalCash, data.declaredCash)),
+        leftInCash: parseFloat(getVal(snap.leftInCash, data.leftInCash)),
+        cashIn: parseFloat(getVal(snap.cashIn, data.cashIn)),
+        cashOut: parseFloat(getVal(snap.cashOut, data.cashOut)),
+        salesByMethod: snap.salesByMethod || data.salesByMethod || { cash: 0, digital: 0 },
+        salesCount: getVal(snap.salesCount, data.salesCount)
+    };
 
     const printDate = new Date().toLocaleString();
-    const closeDate = data.closeTime ? new Date(data.closeTime).toLocaleString() : 'PENDIENTE';
+    const closeDate = source.closedAt && source.closedAt !== 0 ? new Date(source.closedAt).toLocaleString() : 'PENDIENTE';
     
-    // 1. VALORES
-    const efvoTeorico = parseFloat(data.expectedCash) || 0;
-    const efvoReal = parseFloat(data.declaredCash) || 0;
-    const dejadoEnCaja = parseFloat(data.leftInCash) || 0; // 🔥 Aseguramos lectura
-    
-    // 2. CÁLCULO
-    const retiroNeto = Math.max(0, efvoReal - dejadoEnCaja);
-    const desvio = efvoReal - efvoTeorico;
+    const retiroNeto = Math.max(0, source.declaredCash - source.leftInCash);
+    const desvio = source.declaredCash - source.expectedCash;
     const esPerfecto = Math.abs(desvio) < 10; 
 
-    // 3. MOVIMIENTOS
-    const fondoInicial = parseFloat(data.initialAmount) || 0;
-    const ingresosExtra = parseFloat(data.cashIn) || 0;
-    const egresosExtra = parseFloat(data.cashOut) || 0;
+    const ventasEfectivo = parseFloat(source.salesByMethod.cash || 0);
+    const mp = parseFloat(source.salesByMethod.mercadopago || 0);
+    const clover = parseFloat(source.salesByMethod.clover || 0);
+    const digitalOther = parseFloat(source.salesByMethod.digitalOther || source.salesByMethod.digital || 0);
     
-    const ventasEfectivo = parseFloat(data.salesByMethod?.cash) || 0;
-    const ventasDigital = parseFloat(data.salesByMethod?.digital) || 0;
+    const ventasDigital = mp + clover + digitalOther;
     const ventasTotales = ventasEfectivo + ventasDigital;
 
     return (
-        <div className="ticket-body">
-            {/* ENCABEZADO */}
-            <div className="text-center mb-2">
-                <h1 className="t-title">CIERRE DE CAJA "Z"</h1>
-                <p className="t-small">*** REPORTE DE AUDITORÍA ***</p>
-                <div className="border-dash"></div>
-            </div>
-
-            {/* INFO GENERAL */}
-            <div className="mb-2 space-y-1">
-                <div className="row-flex t-small"><span>SUCURSAL:</span> <span>CENTRAL</span></div>
-                <div className="row-flex t-small"><span>CAJERO:</span> <span className="uppercase">{data.userName || '---'}</span></div>
-                <div className="row-flex t-small"><span>CIERRE:</span> <span>{closeDate}</span></div>
-                <div className="row-flex t-small"><span>ID TURNO:</span> <span>#{data.shiftId ? data.shiftId.slice(-6) : '---'}</span></div>
-            </div>
-
-            <div className="border-solid"></div>
-
-            {/* FLUJO DE CAJA */}
-            <div className="mb-2">
-                <p className="t-header">FLUJO DE CAJA</p>
-                <div className="row-flex t-normal"><span>(+) FONDO INICIAL:</span><span>{formatMoney(fondoInicial)}</span></div>
-                <div className="row-flex t-normal"><span>(+) VENTAS EFECTIVO:</span><span>{formatMoney(ventasEfectivo)}</span></div>
-                <div className="row-flex t-normal"><span>(+) INGRESOS EXTRA:</span><span>{formatMoney(ingresosExtra)}</span></div>
-                <div className="row-flex t-normal"><span>(-) GASTOS/RETIROS:</span><span>{formatMoney(egresosExtra)}</span></div>
-                <div className="border-dash my-1"></div>
-                <div className="row-flex t-big"><span>= TEÓRICO CAJA:</span><span>{formatMoney(efvoTeorico)}</span></div>
-            </div>
-
-            <div className="border-solid"></div>
-
-            {/* ARQUEO FÍSICO */}
-            <div className="mb-2">
-                <p className="t-header">ARQUEO FÍSICO</p>
-                <div className="row-flex t-big font-bold mt-1"><span>REAL (DECLARADO):</span><span>{formatMoney(efvoReal)}</span></div>
-                
-                {/* 🔥 DATO CRÍTICO VISIBLE */}
-                <div className="row-flex t-normal mt-1"><span>(-) DEJA CAMBIO:</span><span>{formatMoney(dejadoEnCaja)}</span></div>
-                
-                <div className="border-dash my-1"></div>
-                <div className="row-flex t-big font-black"><span>= A RENDIR:</span><span>{formatMoney(retiroNeto)}</span></div>
-            </div>
-
-            {/* RESULTADO */}
-            <div className="mt-4 p-1 border-2 border-black text-center">
-                <p className="t-small font-bold">RESULTADO AUDITORÍA</p>
-                <div className="row-flex justify-center gap-2 t-big mt-1">
-                    <span>DIFERENCIA:</span>
-                    <span>{desvio > 0 ? '+' : ''}{formatMoney(desvio)}</span>
+        <div ref={ref} className="ticket-print-container">
+            <div className="ticket-body">
+                {/* ENCABEZADO */}
+                <div className="text-center mb-2">
+                    <h1 className="t-title">CIERRE DE CAJA "Z"</h1>
+                    <p className="t-small">*** REPORTE DE AUDITORÍA ***</p>
+                    <div className="border-dash"></div>
                 </div>
-                <p className="t-inverse mt-1">{esPerfecto ? ' CAJA BALANCEADA ' : ' REVISAR DIFERENCIAS '}</p>
-            </div>
 
-            <div className="border-dash mt-4"></div>
-
-            {/* OTROS MEDIOS */}
-            <div className="mb-2">
-                <p className="t-header">OTROS MEDIOS</p>
-                <div className="row-flex t-normal"><span>TOTAL DIGITAL:</span><span>{formatMoney(ventasDigital)}</span></div>
-                <div className="row-flex t-big mt-1"><span>TOTAL VENDIDO:</span><span>{formatMoney(ventasTotales)}</span></div>
-                <div className="row-flex t-small mt-1"><span>CANT. OPS:</span><span>{data.salesCount || 0}</span></div>
-            </div>
-
-            {/* FIRMAS */}
-            <div className="mt-12 space-y-8">
-                <div className="flex flex-col items-center">
-                    <div className="border-t-2 border-black w-32 mb-1"></div>
-                    <span className="t-small">FIRMA CAJERO</span>
+                {/* INFO GENERAL */}
+                <div className="mb-2 space-y-1">
+                    <div className="row-flex t-small"><span>SUCURSAL:</span> <span>CENTRAL</span></div>
+                    <div className="row-flex t-small"><span>CAJERO:</span> <span className="uppercase">{source.userName}</span></div>
+                    <div className="row-flex t-small"><span>CIERRE:</span> <span>{closeDate}</span></div>
+                    <div className="row-flex t-small"><span>ID TURNO:</span> <span>#{String(source.id).slice(-6)}</span></div>
                 </div>
-                <div className="flex flex-col items-center">
-                    <div className="border-t-2 border-black w-32 mb-1"></div>
-                    <span className="t-small">FIRMA SUPERVISOR</span>
+
+                <div className="border-solid"></div>
+
+                {/* FLUJO DE CAJA */}
+                <div className="mb-2">
+                    <p className="t-header">FLUJO DE CAJA</p>
+                    <div className="row-flex t-normal"><span>(+) FONDO INICIAL:</span><span>{formatMoney(source.initialAmount)}</span></div>
+                    <div className="row-flex t-normal"><span>(+) VENTAS EFECTIVO:</span><span>{formatMoney(ventasEfectivo)}</span></div>
+                    {source.cashIn > 0 && <div className="row-flex t-normal"><span>(+) INGRESOS EXTRA:</span><span>{formatMoney(source.cashIn)}</span></div>}
+                    <div className="row-flex t-normal"><span>(-) GASTOS/RETIROS:</span><span>{formatMoney(source.cashOut)}</span></div>
+                    <div className="border-dash my-1"></div>
+                    <div className="row-flex t-big"><span>= TEÓRICO CAJA:</span><span>{formatMoney(source.expectedCash)}</span></div>
                 </div>
+
+                <div className="border-solid"></div>
+
+                {/* ARQUEO FÍSICO */}
+                <div className="mb-2">
+                    <p className="t-header">ARQUEO FÍSICO</p>
+                    <div className="row-flex t-big font-bold mt-1"><span>REAL (DECLARADO):</span><span>{formatMoney(source.declaredCash)}</span></div>
+                    <div className="row-flex t-normal mt-1"><span>(-) DEJA CAMBIO:</span><span>{formatMoney(source.leftInCash)}</span></div>
+                    <div className="border-dash my-1"></div>
+                    <div className="row-flex t-big font-black"><span>= A RENDIR:</span><span>{formatMoney(retiroNeto)}</span></div>
+                </div>
+
+                {/* RESULTADO */}
+                <div className="mt-4 p-1 border-2 border-black text-center result-box">
+                    <p className="t-small font-bold">RESULTADO AUDITORÍA</p>
+                    <div className="row-flex justify-center gap-2 t-big mt-1">
+                        <span>DIFERENCIA:</span>
+                        <span>{desvio > 0 ? '+' : ''}{formatMoney(desvio)}</span>
+                    </div>
+                    <p className="t-inverse mt-1">{esPerfecto ? ' CAJA BALANCEADA ' : ' REVISAR DIFERENCIAS '}</p>
+                </div>
+
+                <div className="border-dash mt-4"></div>
+
+                {/* OTROS MEDIOS */}
+                <div className="mb-2">
+                    <p className="t-header">OTROS MEDIOS</p>
+                    <div className="row-flex t-normal"><span>TOTAL DIGITAL:</span><span>{formatMoney(ventasDigital)}</span></div>
+                    <div className="row-flex t-big mt-1"><span>TOTAL VENDIDO:</span><span>{formatMoney(ventasTotales)}</span></div>
+                    <div className="row-flex t-small mt-1"><span>CANT. OPS:</span><span>{source.salesCount}</span></div>
+                </div>
+
+                {/* FIRMAS */}
+                <div className="mt-12 space-y-8 signature-section">
+                    <div className="flex flex-col items-center">
+                        <div className="border-t-2 border-black w-32 mb-1"></div>
+                        <span className="t-small">FIRMA CAJERO</span>
+                    </div>
+                    <div className="flex flex-col items-center">
+                        <div className="border-t-2 border-black w-32 mb-1"></div>
+                        <span className="t-small">FIRMA SUPERVISOR</span>
+                    </div>
+                </div>
+                <p className="text-center mt-6 t-small">SISTEMA SALVADOR POS</p>
+                <p className="text-center t-small pb-8">IMPRESO: {printDate}</p>
             </div>
-            <p className="text-center mt-6 t-small">IMPRESO: {printDate}</p>
         </div>
     );
-};
+});
 
 // =========================================================
 // MODAL PRINCIPAL
 // =========================================================
 export const TicketZModal = ({ isOpen, onClose, reportData, onConfirmAudit }) => {
-    const contentRef = useRef(null);
+    const componentRef = useRef(null);
     
-    // Configuración robusta de impresión
+    // 🔥 Configuración Blindada para Impresoras Térmicas
     const handlePrint = useReactToPrint({
-        contentRef,
-        documentTitle: `Z-${new Date().getTime()}`,
-        onAfterPrint: () => console.log("Impresión OK"),
-        onPrintError: (e) => console.error("Error impresión", e),
-        // 🔥 ESTILOS FORZADOS EN EL MOMENTO DE IMPRESIÓN PARA CHROME
-        pageStyle: `
-            @page { size: 72mm auto; margin: 0mm; }
-            @media print {
-                body { background-color: white !important; -webkit-print-color-adjust: exact; }
-                .ticket-body { width: 100%; padding: 5px; }
-            }
-        `
+        contentRef: componentRef,
+        documentTitle: `Ticket-Z-${reportData?.id || '000'}`,
     });
 
     if (!isOpen || !reportData) return null;
 
-    const desvio = (parseFloat(reportData.declaredCash) || 0) - (parseFloat(reportData.expectedCash) || 0);
+    const snap = reportData.auditSnapshot || {};
+    const expected = parseFloat(snap.expectedCash ?? reportData.expectedCash ?? 0);
+    const declared = parseFloat(reportData.finalCash ?? snap.declaredCash ?? reportData.declaredCash ?? 0);
+    const desvio = declared - expected;
     const hasIssues = Math.abs(desvio) > 50;
 
     return (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-sys-900/80 backdrop-blur-sm p-4 animate-in fade-in">
             
-            {/* MODAL VISIBLE EN PANTALLA */}
             <div className="bg-sys-100 p-6 rounded-2xl shadow-2xl max-h-[90vh] overflow-y-auto w-full max-w-sm print:hidden flex flex-col">
                 <div className="flex justify-between items-center mb-4">
                     <div>
@@ -164,12 +176,9 @@ export const TicketZModal = ({ isOpen, onClose, reportData, onConfirmAudit }) =>
                     <button onClick={onClose} className="p-2 bg-white text-sys-500 rounded-full hover:bg-sys-200 transition-colors"><X size={20} /></button>
                 </div>
 
-                {/* VISTA PREVIA */}
-                <div className="bg-white mx-auto shadow-lg w-[72mm] min-h-[400px] border-t-8 border-sys-800 overflow-hidden mb-4 relative">
-                     {/* Referencia única */}
-                     <div ref={contentRef}>
-                        <TicketZContent data={reportData} />
-                     </div>
+                {/* VISTA PREVIA (Solo pantalla) */}
+                <div className="bg-white mx-auto shadow-lg w-full max-w-[72mm] min-h-[400px] border-t-8 border-sys-800 overflow-hidden mb-4 relative">
+                     <TicketZContent data={reportData} />
                 </div>
 
                 <div className="flex flex-col gap-3">
@@ -185,44 +194,53 @@ export const TicketZModal = ({ isOpen, onClose, reportData, onConfirmAudit }) =>
                 </div>
             </div>
 
-            {/* ESTILOS CSS PUROS (Sin Tailwind en impresión para evitar conflictos) */}
+            {/* 🔥 CONTENEDOR OCULTO PARA IMPRESIÓN (AQUÍ ESTÁ EL TRUCO) */}
+            <div style={{ display: 'none' }}>
+                <TicketZContent ref={componentRef} data={reportData} />
+            </div>
+
             <style>{`
-                /* ESTILOS DEL TICKET (Se aplican siempre) */
+                /* Estilos del Ticket */
                 .ticket-body {
+                    width: 100%;
+                    padding: 10px;
+                    background: white;
+                    color: black;
                     font-family: 'Courier New', Courier, monospace;
                     text-transform: uppercase;
-                    color: #000;
-                    line-height: 1.2;
-                    background: white;
                 }
-                .t-title { font-size: 16px; font-weight: 900; display: block; letter-spacing: 1px; }
-                .t-header { font-size: 12px; font-weight: 800; border-bottom: 2px solid #000; display: block; margin-top: 6px; margin-bottom: 2px; }
-                .t-big { font-size: 14px; font-weight: 900; }
+                .t-title { font-size: 18px; font-weight: 900; text-align: center; }
+                .t-header { font-size: 13px; font-weight: 800; border-bottom: 2px solid black; margin-bottom: 4px; padding-top: 8px; }
+                .t-big { font-size: 15px; font-weight: 900; }
                 .t-normal { font-size: 12px; font-weight: 700; }
-                .t-small { font-size: 10px; font-weight: 600; }
-                .t-inverse { background: #000; color: #fff; font-weight: bold; font-size: 12px; display: inline-block; padding: 2px 4px; }
-
+                .t-small { font-size: 11px; font-weight: 600; }
+                .t-inverse { background: black; color: white; padding: 2px 4px; font-weight: bold; }
                 .row-flex { display: flex; justify-content: space-between; width: 100%; }
-                .border-dash { border-bottom: 1px dashed #000; margin: 5px 0; width: 100%; }
-                .border-solid { border-bottom: 1px solid #000; margin: 5px 0; width: 100%; }
-
-                /* LÓGICA DE IMPRESIÓN */
+                .border-dash { border-bottom: 1px dashed black; margin: 6px 0; }
+                .border-solid { border-bottom: 1px solid black; margin: 6px 0; }
+                
+                /* Configuración de Impresión Térmica */
                 @media print {
-                    /* Ocultar todo lo que no sea el área de impresión nativa de react-to-print */
-                    body * {
-                        visibility: hidden;
+                    @page {
+                        size: 80mm auto; /* Ajuste estándar para térmicas de 80mm o 58mm */
+                        margin: 0;
                     }
-                    
-                    /* react-to-print crea un div temporal al final del body, ese es el que queremos ver */
-                    /* Pero como pasamos contentRef, el contenido dentro de ese ref es lo que importa */
-                    
-                    #root, .print\\:hidden { display: none !important; }
-                    
-                    /* Asegurar visibilidad del contenido referenciado */
-                    [data-reactroot], html, body {
-                        height: auto !important;
-                        overflow: visible !important;
+                    body {
+                        margin: 0;
+                        padding: 0;
+                        background: white;
                     }
+                    .ticket-print-container {
+                        display: block !important;
+                        width: 100% !important;
+                        padding: 0 !important;
+                        margin: 0 !important;
+                    }
+                    .ticket-body {
+                        width: 100%;
+                        padding: 5mm;
+                    }
+                    .print\\:hidden { display: none !important; }
                 }
             `}</style>
         </div>

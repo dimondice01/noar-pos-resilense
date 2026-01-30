@@ -13,6 +13,7 @@ import {
 } from 'firebase/firestore'; 
 import { useAuthStore } from '../../auth/store/useAuthStore'; 
 import { productRepository } from '../../inventory/repositories/productRepository';
+import { cashRepository } from '../../cash/repositories/cashRepository'; // 🔥 IMPORT CRÍTICO
 
 // ==========================================
 // ☁️ HELPER: SYNC OPTIMISTA
@@ -158,7 +159,7 @@ export const salesRepository = {
   },
 
   // ==========================================
-  // 💰 CREAR VENTA (FIX CONTEXTO)
+  // 💰 CREAR VENTA (FIX CONTEXTO + SHIFT LINK)
   // ==========================================
   async createSale(saleData) {
     const dbLocal = await getDB();
@@ -166,29 +167,33 @@ export const salesRepository = {
     
     if (!user?.companyId) throw new Error("Error crítico: Sesión inválida (Sin Empresa).");
 
-    // 🔥 FIX CONTEXTO: Cascada de seguridad para obtener branchId
     const targetBranchId = activeBranchId || user.branchId || 'main';
 
     const saleId = `sale_${crypto.randomUUID()}`;
     const timestamp = new Date().toISOString(); 
     const docType = saleData.afip ? saleData.afip.type : 'X';
     
-    // Generamos número pasando el branchId correcto
+    // 1. Generamos número de ticket
     const { finalNumber, nextSequence, configKey } = await this._generateTicketNumber(docType, targetBranchId);
+
+    // 🔥 2. LINK FUERTE: Obtenemos el turno activo para vincularlo a la venta
+    const currentShift = await cashRepository.getCurrentShift();
 
     const sale = {
       ...saleData,
       id: saleId,
       localId: saleId,
       number: finalNumber,
-      branchId: targetBranchId, // 🔥 Asegurado
+      branchId: targetBranchId,
       date: saleData.date ? new Date(saleData.date).toISOString() : timestamp, 
       createdAt: timestamp,
       status: 'COMPLETED', 
       syncStatus: 'pending', 
       userId: user?.uid || 'unknown',
       userName: user?.name || 'Vendedor',
-      companyId: user.companyId
+      companyId: user.companyId,
+      // 🔥 Guardamos la referencia explícita al turno
+      shiftId: currentShift ? currentShift.id : null 
     };
 
     const movementsToCreate = [];
@@ -233,14 +238,14 @@ export const salesRepository = {
 
             const movement = {
                 id: `mov_${crypto.randomUUID()}`, 
-                productId: item.id, // 🔥 Fix: usar item.id que es seguro
+                productId: item.id, 
                 type: 'STOCK_OUT', 
                 description: `Venta ${finalNumber}`,
                 amount: item.isWeighable ? parseFloat(item.quantity) : parseInt(item.quantity),
                 date: timestamp,
                 user: sale.userName, 
                 refId: saleId,
-                branchId: targetBranchId, // 🔥 Asegurado
+                branchId: targetBranchId, 
                 syncStatus: 'pending'
             };
             
@@ -248,6 +253,7 @@ export const salesRepository = {
             movementsToCreate.push(movement); 
         }
 
+        // Registrar Movimiento de Caja si es Efectivo
         if (sale.payment && sale.payment.method === 'cash') {
              await dbLocal.cash_movements.put({
                  id: `cm_${crypto.randomUUID()}`,
@@ -257,17 +263,18 @@ export const salesRepository = {
                  date: timestamp,
                  method: 'cash',
                  userId: user.uid,
-                 branchId: targetBranchId, // 🔥 Asegurado
-                 shiftId: saleData.shiftId || null,
+                 branchId: targetBranchId, 
+                 // 🔥 Vinculamos también el movimiento al turno
+                 shiftId: currentShift ? currentShift.id : null,
+                 subtype: 'SALE', // Para diferenciar ventas de ingresos manuales
                  syncStatus: 'pending'
              });
         }
     });
     
-    // 4. DESCUENTO DE STOCK CLOUD (Pasando branch explícito)
+    // 4. DESCUENTO DE STOCK CLOUD
     const stockPromises = saleData.items.map(item => {
         const qty = item.isWeighable ? parseFloat(item.quantity) : parseInt(item.quantity);
-        // 🔥 FIX: Pasamos targetBranchId explícitamente
         return productRepository.addStock(item.id, -qty, null, user.name, targetBranchId)
             .catch(err => console.error(`Error background stock update ${item.id}:`, err));
     });
