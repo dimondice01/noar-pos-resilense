@@ -43,7 +43,6 @@ export const clientRepository = {
 
   async getAll() {
     const dbLocal = await getDB();
-    // Dexie: toArray() is fast. Sort in memory for <5000 clients is fine.
     const clients = await dbLocal.clients.toArray();
     return clients.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
   },
@@ -93,7 +92,7 @@ export const clientRepository = {
   },
 
   // ==========================================
-  // 💰 GESTIÓN FINANCIERA (Transaccional)
+  // 💰 GESTIÓN FINANCIERA (Transaccional & Trazable)
   // ==========================================
 
   async registerMovement(clientId, type, amount, description, referenceId = null) {
@@ -108,9 +107,11 @@ export const clientRepository = {
     // Generar IDs y Datos fuera de la transacción
     const movementId = `ledger_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
     const timestamp = new Date().toISOString();
+    
+    // 🔥 TRAZABILIDAD: Registramos la sucursal donde ocurrió el movimiento
     const currentBranch = activeBranchId || user.branchId || 'main';
 
-    // 🔥 TRANSACCIÓN ACID: Balance + Movimiento
+    // 🔥 TRANSACCIÓN ACID: Balance Global + Movimiento Localizado
     await dbLocal.transaction('rw', [dbLocal.clients, dbLocal.customer_ledger], async () => {
         
         const client = await dbLocal.clients.get(clientId);
@@ -118,8 +119,8 @@ export const clientRepository = {
 
         const currentBalance = parseFloat(client.balance || 0);
         
-        // SALE_DEBT = Aumenta Deuda (+)
-        // PAYMENT = Disminuye Deuda (-)
+        // SALE_DEBT = Aumenta Deuda (+) (El cliente debe más)
+        // PAYMENT = Disminuye Deuda (-) (El cliente pagó)
         newBalance = type === 'SALE_DEBT' 
             ? currentBalance + parseFloat(amount) 
             : currentBalance - parseFloat(amount);
@@ -134,8 +135,8 @@ export const clientRepository = {
             newBalance: newBalance,
             description,
             referenceId,
-            branchId: currentBranch, // 👈 Trazabilidad: Dónde ocurrió
-            userId: user.uid,        // 👈 Trazabilidad: Quién lo hizo
+            branchId: currentBranch, // 👈 Trazabilidad: Sucursal origen
+            userId: user.uid,        // 👈 Trazabilidad: Operador
             syncStatus: 'pending'
         };
 
@@ -151,7 +152,6 @@ export const clientRepository = {
         await dbLocal.clients.put(updatedClient);
         
         // Disparar sync (dentro de IIFE para no bloquear)
-        // Usamos el helper que respeta la compañía del usuario logueado
         (async () => {
              triggerOptimisticSync('clients', updatedClient);
              triggerOptimisticSync('customer_ledger', movement);
@@ -162,8 +162,22 @@ export const clientRepository = {
   },
 
   // ==========================================
-  // ✍️ ABM (Cloud Enabled)
+  // ✍️ ABM (Fiscal Aware)
   // ==========================================
+
+  // 🔥 VALIDACIÓN FISCAL PREVIA
+  validateForFiscal(client) {
+      if (client.fiscalCondition === 'RESPONSABLE_INSCRIPTO') {
+          if (client.docType !== '80') return { valid: false, error: 'RI requiere CUIT' };
+          const cleanDoc = client.docNumber ? client.docNumber.replace(/\D/g, '') : '';
+          if (cleanDoc.length !== 11) return { valid: false, error: 'CUIT debe tener 11 dígitos' };
+      }
+      if (client.docType === '80') {
+          const cleanDoc = client.docNumber ? client.docNumber.replace(/\D/g, '') : '';
+          if (cleanDoc.length !== 11) return { valid: false, error: 'CUIT inválido (largo incorrecto)' };
+      }
+      return { valid: true };
+  },
 
   async save(client) {
     const dbLocal = await getDB();
@@ -171,21 +185,35 @@ export const clientRepository = {
     
     if (!user?.companyId) throw new Error("Sin sesión de empresa.");
 
+    // 1. Sanitización
+    const cleanDocNumber = client.docNumber ? client.docNumber.replace(/\D/g, '') : '';
+    const cleanName = client.name.toUpperCase().trim();
+    
+    // 2. Validación Fiscal Dura
+    const fiscalCheck = this.validateForFiscal({ ...client, docNumber: cleanDocNumber });
+    if (!fiscalCheck.valid) {
+        throw new Error(`Error Fiscal: ${fiscalCheck.error}`);
+    }
+
     const clientToSave = {
       ...client,
       id: client.id || crypto.randomUUID(),
-      name: client.name.toUpperCase().trim(),
-      docNumber: client.docNumber ? client.docNumber.replace(/\D/g, '') : '',
+      name: cleanName,
+      docType: client.docType || '96', // Default DNI
+      docNumber: cleanDocNumber,
+      address: client.address || '-',
+      fiscalCondition: client.fiscalCondition || 'CONSUMIDOR_FINAL', // Default seguro
+      
       companyId: user.companyId, // Aseguramos tenant
       balance: client.balance || 0,
       updatedAt: new Date().toISOString(),
       syncStatus: 'pending'
     };
 
-    // 1. Local
+    // 3. Local
     await dbLocal.clients.put(clientToSave);
 
-    // 2. Nube (Optimista)
+    // 4. Nube (Optimista)
     triggerOptimisticSync('clients', clientToSave);
 
     return clientToSave;

@@ -1,19 +1,39 @@
 import React, { useState, useEffect } from 'react';
-import { Users, UserPlus, Shield, ShieldCheck, Mail, Lock, Info, Building2, Store } from 'lucide-react';
+import { 
+    Users, UserPlus, Shield, ShieldCheck, Mail, Lock, Info, Building2, Store, 
+    Trash2, CreditCard, Percent, PlusCircle, AlertTriangle, Layers, Tag, Save,
+    ChevronDown, ChevronUp, CheckCircle2
+} from 'lucide-react';
 import { Card } from '../../../core/ui/Card';
 import { Button } from '../../../core/ui/Button';
 import { authService } from '../../auth/services/authService';
-import { collection, getDocs, query, where, updateDoc } from 'firebase/firestore'; 
+import { collection, getDocs, query, where, updateDoc, doc, deleteDoc, getDoc, setDoc } from 'firebase/firestore'; 
 import { db } from '../../../database/firebase';
 import { cn } from '../../../core/utils/cn';
 import { useAuthStore } from '../../auth/store/useAuthStore'; 
 
+// URL para borrar usuarios de Auth (Necesitaremos agregar esta función en el backend luego)
+const API_URL = import.meta.env.VITE_API_URL || "https://us-central1-salvadorpos1.cloudfunctions.net/api";
+
 export const TeamPage = () => {
+  const [activeTab, setActiveTab] = useState('team'); // 'team' | 'financials'
   const [users, setUsers] = useState([]);
-  const [branches, setBranches] = useState([]); // Lista de sucursales
+  const [branches, setBranches] = useState([]); 
   const [loading, setLoading] = useState(true);
   
-  const currentUser = useAuthStore(state => state.user);
+  // 🆕 ESTADO FINANCIERO JERÁRQUICO
+  // Estructura: [{ brand: 'VISA', rates: [{ qty: 3, interest: 10 }] }]
+  const [paymentMethods, setPaymentMethods] = useState([]); 
+  const [savingFinancials, setSavingFinancials] = useState(false);
+  
+  // Inputs temporales
+  const [newBrandName, setNewBrandName] = useState('');
+  
+  // Estado para saber qué marca estamos editando (agregando tasas)
+  const [expandedBrand, setExpandedBrand] = useState(null); 
+  const [newRate, setNewRate] = useState({ qty: '', interest: '' });
+
+  const { user: currentUser, activeBranchId } = useAuthStore();
 
   // Formulario Nuevo Usuario
   const [isCreating, setIsCreating] = useState(false);
@@ -22,27 +42,25 @@ export const TeamPage = () => {
       email: '', 
       password: '', 
       role: 'CAJERO',
-      branchId: '' // Campo crítico para Multi-Branch
+      branchId: '' 
   });
 
-  // Cargar Usuarios y Sucursales
   useEffect(() => {
     if (currentUser?.companyId) {
         loadData();
+        loadFinancials();
     }
-  }, [currentUser]);
+  }, [currentUser, activeBranchId]); 
 
   const loadData = async () => {
     try {
       setLoading(true);
       
-      // 1. Cargar Usuarios
       const usersQuery = query(
           collection(db, 'users'), 
           where('companyId', '==', currentUser.companyId)
       );
       
-      // 2. Cargar Sucursales (Para el picker)
       const branchesQuery = query(
           collection(db, 'companies', currentUser.companyId, 'branches')
       );
@@ -56,10 +74,25 @@ export const TeamPage = () => {
       setBranches(branchesSnap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
 
     } catch (error) {
-      console.error("Error cargando equipo/sucursales:", error);
+      console.error("Error cargando equipo:", error);
     } finally {
       setLoading(false);
     }
+  };
+
+  // 🆕 Cargar Configuración Financiera
+  const loadFinancials = async () => {
+      try {
+          const docRef = doc(db, `companies/${currentUser.companyId}/config/financials`);
+          const snap = await getDoc(docRef);
+          if (snap.exists() && snap.data().methods) {
+              setPaymentMethods(snap.data().methods);
+          } else {
+              setPaymentMethods([]);
+          }
+      } catch (error) {
+          console.error("Error cargando finanzas:", error);
+      }
   };
 
   const getBranchName = (branchId) => {
@@ -68,12 +101,50 @@ export const TeamPage = () => {
       return b ? b.name : 'Sucursal Desconocida';
   };
 
+  // ==========================================
+  // 🗑️ LÓGICA DE BORRADO DE USUARIO
+  // ==========================================
+  const handleDeleteUser = async (userId, userEmail, userRole) => {
+      if (userRole === 'ADMIN' && users.filter(u => u.role === 'ADMIN').length <= 1) {
+          return alert("❌ No puedes borrar al último administrador.");
+      }
+
+      if (!window.confirm(`⚠️ ¿Estás seguro de eliminar a ${userEmail}?\nEsta acción borrará su acceso y datos permanentemente.`)) {
+          return;
+      }
+
+      try {
+          setLoading(true);
+          await deleteDoc(doc(db, 'users', userId));
+
+          // Intentar borrar de Auth si existe endpoint
+          try {
+              const token = await authService.getToken(); 
+              await fetch(`${API_URL}/delete-user`, {
+                  method: 'POST',
+                  headers: {
+                      'Content-Type': 'application/json',
+                      'Authorization': `Bearer ${token}`
+                  },
+                  body: JSON.stringify({ uid: userId })
+              });
+          } catch (e) { console.warn("Delete auth skipped"); }
+
+          alert("Usuario eliminado correctamente.");
+          loadData();
+      } catch (error) {
+          console.error("Error eliminando usuario:", error);
+          alert("Error al eliminar usuario.");
+      } finally {
+          setLoading(false);
+      }
+  };
+
   const handleCreate = async (e) => {
     e.preventDefault();
     if (formData.password.length < 6) return alert("La contraseña debe tener 6 caracteres mínimo.");
     if (!currentUser?.companyId) return alert("Error crítico: No tienes empresa asignada.");
     
-    // Validación estricta para Cajeros
     if (formData.role === 'CAJERO' && !formData.branchId) {
         return alert("⚠️ Atención: Un CAJERO debe tener una sucursal asignada obligatoriamente.");
     }
@@ -85,19 +156,15 @@ export const TeamPage = () => {
           companyId: currentUser.companyId, 
           status: 'ACTIVE',
           createdAt: new Date().toISOString(),
-          // Si es Admin y no eligió sucursal, puede ser null (Acceso Global)
           branchId: formData.branchId || null 
       };
 
-      // 1. Crear usuario (Auth + Doc base vía Backend)
       await authService.createUser(newEmployeeData);
       
-      // 2. 🔥 FORCE UPDATE: Garantizar que el branchId se guarde
-      // FIX DE SEGURIDAD: Debemos buscar por Email Y por CompanyId para satisfacer las reglas
       const q = query(
           collection(db, 'users'), 
           where('email', '==', formData.email),
-          where('companyId', '==', currentUser.companyId) // 🔥 ESTO FALTABA
+          where('companyId', '==', currentUser.companyId)
       );
       
       const querySnapshot = await getDocs(q);
@@ -108,7 +175,6 @@ export const TeamPage = () => {
               branchId: formData.branchId || null,
               role: formData.role
           });
-          // console.log("✅ Branch ID inyectado correctamente:", formData.branchId);
       }
 
       alert(`✅ Usuario ${formData.name} creado exitosamente.`);
@@ -122,189 +188,415 @@ export const TeamPage = () => {
     }
   };
 
+  // ==========================================
+  // 💰 LÓGICA FINANCIERA (COMPETITIVE MODE)
+  // ==========================================
+  
+  // 1. Agregar Nueva Marca (Container)
+  const handleAddBrand = () => {
+      const name = newBrandName.trim().toUpperCase();
+      if (!name) return;
+      if (paymentMethods.some(m => m.brand === name)) return alert("Esta marca ya existe.");
+
+      const newMethod = { brand: name, rates: [] };
+      const updatedMethods = [...paymentMethods, newMethod];
+      
+      setPaymentMethods(updatedMethods);
+      setNewBrandName('');
+      setExpandedBrand(name); // Auto-expandir para cargar tasas
+      saveFinancials(updatedMethods);
+  };
+
+  const handleDeleteBrand = (brandName) => {
+      if(!window.confirm(`¿Borrar la tarjeta ${brandName} y todas sus reglas?`)) return;
+      const updatedMethods = paymentMethods.filter(m => m.brand !== brandName);
+      setPaymentMethods(updatedMethods);
+      saveFinancials(updatedMethods);
+  };
+
+  // 2. Agregar Tasa a una Marca Específica
+  const handleAddRate = (brandName) => {
+      const qty = parseInt(newRate.qty);
+      const interest = parseFloat(newRate.interest);
+
+      if (!qty || isNaN(interest)) return alert("Datos inválidos");
+
+      const updatedMethods = paymentMethods.map(method => {
+          if (method.brand === brandName) {
+              // Validar duplicados de cuotas
+              const exists = method.rates.some(r => r.qty === qty);
+              if (exists) {
+                  alert(`Ya existe una regla para ${qty} cuotas en ${brandName}. Bórrala primero.`);
+                  return method;
+              }
+
+              // Ordenar tasas por cantidad de cuotas
+              const newRates = [...method.rates, { qty, interest }].sort((a,b) => a.qty - b.qty);
+              return { ...method, rates: newRates };
+          }
+          return method;
+      });
+
+      setPaymentMethods(updatedMethods);
+      setNewRate({ qty: '', interest: '' });
+      saveFinancials(updatedMethods);
+  };
+
+  const handleDeleteRate = (brandName, qtyToDelete) => {
+      const updatedMethods = paymentMethods.map(method => {
+          if (method.brand === brandName) {
+              return { ...method, rates: method.rates.filter(r => r.qty !== qtyToDelete) };
+          }
+          return method;
+      });
+      setPaymentMethods(updatedMethods);
+      saveFinancials(updatedMethods);
+  };
+
+  // 3. Persistencia
+  const saveFinancials = async (data) => {
+      setSavingFinancials(true);
+      try {
+          const docRef = doc(db, `companies/${currentUser.companyId}/config/financials`);
+          await setDoc(docRef, { methods: data }, { merge: true });
+      } catch (error) {
+          console.error("Error guardando:", error);
+          alert("Error de conexión al guardar configuración.");
+      } finally {
+          setSavingFinancials(false);
+      }
+  };
+
+  const filteredUsers = activeBranchId 
+      ? users.filter(u => u.branchId === activeBranchId)
+      : users;
+
   return (
     <div className="max-w-6xl mx-auto space-y-8 pb-20 px-4">
       
-      <header className="flex justify-between items-center">
+      <header className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
             <h2 className="text-2xl font-bold text-sys-900 flex items-center gap-2">
-            <Users className="text-brand" /> Gestión de Equipo
+            <Users className="text-brand" /> Configuración & Equipo
             </h2>
-            <p className="text-sys-500">Administra el acceso y asignación de sucursales.</p>
+            <p className="text-sys-500">Administra usuarios y reglas de facturación.</p>
         </div>
-        <div className="bg-sys-100 text-sys-600 px-3 py-1 rounded-full text-xs font-mono border border-sys-200 hidden md:block">
-            Empresa ID: {currentUser?.companyId}
+        
+        <div className="bg-sys-100 p-1 rounded-xl flex gap-1">
+            <button 
+                onClick={() => setActiveTab('team')}
+                className={cn("px-4 py-2 rounded-lg text-sm font-bold transition-all", activeTab === 'team' ? "bg-white shadow text-sys-900" : "text-sys-500 hover:bg-sys-200")}
+            >
+                Equipo
+            </button>
+            <button 
+                onClick={() => setActiveTab('financials')}
+                className={cn("px-4 py-2 rounded-lg text-sm font-bold transition-all flex items-center gap-2", activeTab === 'financials' ? "bg-white shadow text-indigo-600" : "text-sys-500 hover:bg-sys-200")}
+            >
+                <CreditCard size={14}/> Financiamiento
+            </button>
         </div>
       </header>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        
-        {/* COLUMNA IZQUIERDA: Formulario de Alta */}
-        <div className="lg:col-span-1">
-          <Card className="sticky top-6 border-brand/10 shadow-lg shadow-brand/5">
-            <h3 className="font-bold text-lg text-sys-800 mb-4 flex items-center gap-2">
-              <UserPlus size={20} /> Nuevo Miembro
-            </h3>
-            
-            <form onSubmit={handleCreate} className="space-y-4">
-              <div>
-                <label className="text-[11px] font-bold text-sys-500 uppercase tracking-wider ml-1">Nombre</label>
-                <input 
-                  type="text" required 
-                  className="w-full bg-sys-50 border border-sys-200 rounded-xl px-3 py-2.5 text-sm outline-none focus:border-brand transition-all"
-                  placeholder="Ej: Juan Perez"
-                  value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})}
-                />
-              </div>
-
-              <div>
-                <label className="text-[11px] font-bold text-sys-500 uppercase tracking-wider ml-1">Email Acceso</label>
-                <div className="relative">
-                  <Mail size={16} className="absolute left-3 top-3 text-sys-400" />
-                  <input 
-                    type="email" required 
-                    className="w-full bg-sys-50 border border-sys-200 rounded-xl pl-9 pr-3 py-2.5 text-sm outline-none focus:border-brand transition-all"
-                    placeholder="cajero@noar.com"
-                    value={formData.email} onChange={e => setFormData({...formData, email: e.target.value})}
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="text-[11px] font-bold text-sys-500 uppercase tracking-wider ml-1">Contraseña</label>
-                <div className="relative">
-                  <Lock size={16} className="absolute left-3 top-3 text-sys-400" />
-                  <input 
-                    type="password" required 
-                    className="w-full bg-sys-50 border border-sys-200 rounded-xl pl-9 pr-3 py-2.5 text-sm outline-none focus:border-brand transition-all"
-                    placeholder="••••••"
-                    value={formData.password} onChange={e => setFormData({...formData, password: e.target.value})}
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
+      {/* =================================================================================
+          VISTA: EQUIPO (Sin Cambios Lógicos)
+      ================================================================================= */}
+      {activeTab === 'team' && (
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 animate-in fade-in">
+            {/* Formulario Alta */}
+            <div className="lg:col-span-1">
+              <Card className="sticky top-6 border-brand/10 shadow-lg shadow-brand/5">
+                <h3 className="font-bold text-lg text-sys-800 mb-4 flex items-center gap-2">
+                  <UserPlus size={20} /> Nuevo Miembro
+                </h3>
+                
+                <form onSubmit={handleCreate} className="space-y-4">
                   <div>
-                    <label className="text-[11px] font-bold text-sys-500 uppercase tracking-wider ml-1">Rol</label>
-                    <div className="flex flex-col gap-2 mt-1">
-                      {['CAJERO', 'ADMIN'].map((role) => (
-                        <button
-                          key={role}
-                          type="button"
-                          onClick={() => setFormData({...formData, role})}
-                          className={cn(
-                            "py-2 rounded-lg text-xs font-bold transition-all border flex items-center justify-center gap-2",
-                            formData.role === role 
-                              ? "bg-brand text-white border-brand shadow-md" 
-                              : "bg-white text-sys-500 border-sys-200 hover:bg-sys-50"
-                          )}
-                        >
-                          {role === 'ADMIN' ? <ShieldCheck size={14}/> : <UserPlus size={14}/>} {role}
-                        </button>
-                      ))}
+                    <label className="text-[11px] font-bold text-sys-500 uppercase tracking-wider ml-1">Nombre</label>
+                    <input 
+                      type="text" required 
+                      className="w-full bg-sys-50 border border-sys-200 rounded-xl px-3 py-2.5 text-sm outline-none focus:border-brand transition-all"
+                      placeholder="Ej: Juan Perez"
+                      value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})}
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-[11px] font-bold text-sys-500 uppercase tracking-wider ml-1">Email Acceso</label>
+                    <div className="relative">
+                      <Mail size={16} className="absolute left-3 top-3 text-sys-400" />
+                      <input 
+                        type="email" required 
+                        className="w-full bg-sys-50 border border-sys-200 rounded-xl pl-9 pr-3 py-2.5 text-sm outline-none focus:border-brand transition-all"
+                        placeholder="cajero@noar.com"
+                        value={formData.email} onChange={e => setFormData({...formData, email: e.target.value})}
+                      />
                     </div>
                   </div>
 
                   <div>
-                    <label className="text-[11px] font-bold text-sys-500 uppercase tracking-wider ml-1">Sucursal</label>
-                    <div className="relative mt-1">
-                        <Store size={16} className="absolute left-3 top-3 text-sys-400 pointer-events-none" />
-                        <select 
-                            className={cn(
-                                "w-full bg-sys-50 border border-sys-200 rounded-xl pl-9 pr-2 py-2.5 text-xs outline-none focus:border-brand transition-all appearance-none cursor-pointer font-medium text-sys-700",
-                                !formData.branchId && formData.role === 'CAJERO' && "border-red-300 bg-red-50"
-                            )}
-                            value={formData.branchId}
-                            onChange={(e) => setFormData({...formData, branchId: e.target.value})}
-                            required={formData.role === 'CAJERO'}
-                        >
-                            <option value="">Seleccionar...</option>
-                            {branches.map(b => (
-                                <option key={b.id} value={b.id}>{b.name}</option>
-                            ))}
-                        </select>
-                        <div className="absolute right-3 top-3 pointer-events-none">
-                            <svg className="w-4 h-4 text-sys-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path></svg>
-                        </div>
+                    <label className="text-[11px] font-bold text-sys-500 uppercase tracking-wider ml-1">Contraseña</label>
+                    <div className="relative">
+                      <Lock size={16} className="absolute left-3 top-3 text-sys-400" />
+                      <input 
+                        type="password" required 
+                        className="w-full bg-sys-50 border border-sys-200 rounded-xl pl-9 pr-3 py-2.5 text-sm outline-none focus:border-brand transition-all"
+                        placeholder="••••••"
+                        value={formData.password} onChange={e => setFormData({...formData, password: e.target.value})}
+                      />
                     </div>
-                    {formData.role === 'CAJERO' && !formData.branchId && (
-                        <p className="text-[10px] text-red-500 mt-1 font-bold">* Requerido para Cajero</p>
-                    )}
                   </div>
-              </div>
 
-              <div className="bg-blue-50 p-3 rounded-lg flex gap-2 items-start mt-2">
-                  <Info size={16} className="text-blue-600 mt-0.5 shrink-0"/>
-                  <p className="text-[11px] text-blue-700 leading-tight">
-                      {formData.role === 'ADMIN' && !formData.branchId 
-                        ? "Admin Global: Tendrá acceso a todas las sucursales." 
-                        : `Usuario asignado a: ${formData.branchId ? getBranchName(formData.branchId) : 'Sin asignar'}`}
-                  </p>
-              </div>
-
-              <Button type="submit" className="w-full mt-4 h-12 shadow-md" disabled={isCreating}>
-                {isCreating ? 'Procesando...' : 'Dar de Alta'}
-              </Button>
-            </form>
-          </Card>
-        </div>
-
-        {/* COLUMNA DERECHA: Lista de Usuarios */}
-        <div className="lg:col-span-2">
-          <Card className="p-0 overflow-hidden">
-            <div className="p-4 border-b border-sys-100 bg-sys-50/50 flex justify-between items-center">
-              <h4 className="font-bold text-sys-700 text-sm">Personal Activo ({users.length})</h4>
-              {branches.length === 0 && <span className="text-xs text-red-500 font-bold">⚠️ Crea sucursales primero</span>}
-            </div>
-            
-            <div className="divide-y divide-sys-100">
-              {loading ? (
-                <div className="p-10 text-center flex flex-col items-center gap-2">
-                    <div className="w-6 h-6 border-2 border-brand border-t-transparent rounded-full animate-spin"></div>
-                    <span className="text-xs text-sys-400">Cargando equipo...</span>
-                </div>
-              ) : users.length === 0 ? (
-                <div className="p-8 text-center text-sys-400 italic">No hay usuarios registrados.</div>
-              ) : (
-                users.map((u) => (
-                  <div key={u.id} className="p-4 flex items-center justify-between group hover:bg-sys-50 transition-colors">
-                    <div className="flex items-center gap-4">
-                      <div className={cn(
-                        "w-10 h-10 rounded-full flex items-center justify-center text-white shadow-sm font-bold text-sm",
-                        u.role === 'ADMIN' ? "bg-sys-800" : "bg-brand"
-                      )}>
-                        {u.name?.charAt(0).toUpperCase()}
-                      </div>
+                  <div className="grid grid-cols-2 gap-4">
                       <div>
-                        <p className="font-bold text-sys-900 text-sm">{u.name}</p>
-                        <p className="text-xs text-sys-500 font-mono">{u.email}</p>
+                        <label className="text-[11px] font-bold text-sys-500 uppercase tracking-wider ml-1">Rol</label>
+                        <div className="flex flex-col gap-2 mt-1">
+                          {['CAJERO', 'ADMIN'].map((role) => (
+                            <button
+                              key={role}
+                              type="button"
+                              onClick={() => setFormData({...formData, role})}
+                              className={cn(
+                                "py-2 rounded-lg text-xs font-bold transition-all border flex items-center justify-center gap-2",
+                                formData.role === role 
+                                  ? "bg-brand text-white border-brand shadow-md" 
+                                  : "bg-white text-sys-500 border-sys-200 hover:bg-sys-50"
+                              )}
+                            >
+                              {role === 'ADMIN' ? <ShieldCheck size={14}/> : <UserPlus size={14}/>} {role}
+                            </button>
+                          ))}
+                        </div>
                       </div>
-                    </div>
-                    
-                    <div className="flex flex-col items-end gap-1">
-                      <span className={cn(
-                        "px-2 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider border inline-flex items-center gap-1",
-                        u.role === 'ADMIN' 
-                          ? "bg-sys-100 text-sys-700 border-sys-200" 
-                          : "bg-blue-50 text-blue-600 border-blue-100"
-                      )}>
-                        {u.role === 'ADMIN' ? <ShieldCheck size={12}/> : <Building2 size={12}/>}
-                        {u.role}
-                      </span>
-                      
-                      <span className="text-[10px] text-sys-400 font-medium flex items-center gap-1">
-                          <Store size={10}/>
-                          {getBranchName(u.branchId)}
-                      </span>
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-          </Card>
-        </div>
 
-      </div>
+                      <div>
+                        <label className="text-[11px] font-bold text-sys-500 uppercase tracking-wider ml-1">Sucursal</label>
+                        <div className="relative mt-1">
+                            <Store size={16} className="absolute left-3 top-3 text-sys-400 pointer-events-none" />
+                            <select 
+                                className={cn(
+                                    "w-full bg-sys-50 border border-sys-200 rounded-xl pl-9 pr-2 py-2.5 text-xs outline-none focus:border-brand transition-all appearance-none cursor-pointer font-medium text-sys-700",
+                                    !formData.branchId && formData.role === 'CAJERO' && "border-red-300 bg-red-50"
+                                )}
+                                value={formData.branchId}
+                                onChange={(e) => setFormData({...formData, branchId: e.target.value})}
+                                required={formData.role === 'CAJERO'}
+                            >
+                                <option value="">Seleccionar...</option>
+                                {branches.map(b => (
+                                    <option key={b.id} value={b.id}>{b.name}</option>
+                                ))}
+                            </select>
+                            <div className="absolute right-3 top-3 pointer-events-none">
+                                <svg className="w-4 h-4 text-sys-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path></svg>
+                            </div>
+                        </div>
+                      </div>
+                  </div>
+
+                  <Button type="submit" className="w-full mt-4 h-12 shadow-md" disabled={isCreating}>
+                    {isCreating ? 'Procesando...' : 'Dar de Alta'}
+                  </Button>
+                </form>
+              </Card>
+            </div>
+
+            {/* Lista */}
+            <div className="lg:col-span-2">
+              <Card className="p-0 overflow-hidden">
+                <div className="p-4 border-b border-sys-100 bg-sys-50/50 flex justify-between items-center">
+                  <div className="flex flex-col">
+                      <h4 className="font-bold text-sys-700 text-sm">Personal Activo ({filteredUsers.length})</h4>
+                      {activeBranchId && <span className="text-[10px] text-brand font-bold uppercase tracking-wider">Filtrado por: {getBranchName(activeBranchId)}</span>}
+                  </div>
+                </div>
+                
+                <div className="divide-y divide-sys-100">
+                  {loading ? (
+                    <div className="p-10 text-center flex flex-col items-center gap-2">
+                        <div className="w-6 h-6 border-2 border-brand border-t-transparent rounded-full animate-spin"></div>
+                    </div>
+                  ) : filteredUsers.length === 0 ? (
+                    <div className="p-8 text-center text-sys-400 italic">No hay usuarios en esta vista.</div>
+                  ) : (
+                    filteredUsers.map((u) => (
+                      <div key={u.id} className="p-4 flex items-center justify-between group hover:bg-sys-50 transition-colors">
+                        <div className="flex items-center gap-4">
+                          <div className={cn(
+                            "w-10 h-10 rounded-full flex items-center justify-center text-white shadow-sm font-bold text-sm",
+                            u.role === 'ADMIN' ? "bg-sys-800" : "bg-brand"
+                          )}>
+                            {u.name?.charAt(0).toUpperCase()}
+                          </div>
+                          <div>
+                            <p className="font-bold text-sys-900 text-sm">{u.name}</p>
+                            <p className="text-xs text-sys-500 font-mono">{u.email}</p>
+                          </div>
+                        </div>
+                        
+                        <div className="flex items-center gap-3">
+                            <span className={cn(
+                                "px-2 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider border",
+                                u.role === 'ADMIN' ? "bg-sys-100 border-sys-200" : "bg-blue-50 text-blue-600 border-blue-100"
+                            )}>
+                                {u.role}
+                            </span>
+                            <button 
+                                onClick={() => handleDeleteUser(u.id, u.email, u.role)}
+                                className="p-2 text-sys-300 hover:text-red-500 hover:bg-red-50 rounded-full transition-all"
+                                title="Eliminar Usuario"
+                            >
+                                <Trash2 size={18} />
+                            </button>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </Card>
+            </div>
+          </div>
+      )}
+
+      {/* =================================================================================
+          VISTA: CONFIGURACIÓN FINANCIERA (MODO EXPERTO - POR TARJETA)
+      ================================================================================= */}
+      {activeTab === 'financials' && (
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-8 animate-in fade-in">
+              
+              {/* COLUMNA IZQUIERDA: CREAR TARJETA */}
+              <div className="md:col-span-1 space-y-4">
+                  <div className="bg-indigo-900 text-white p-6 rounded-2xl shadow-xl shadow-indigo-500/20">
+                      <CreditCard size={32} className="mb-4 text-indigo-300"/>
+                      <h3 className="text-xl font-bold mb-1">Tarjetas y Planes</h3>
+                      <p className="text-xs text-indigo-200 opacity-80 mb-6">
+                          Configure tasas específicas para cada tarjeta (Visa, Master, Naranja, etc.) para competir con precisión.
+                      </p>
+                      
+                      <div className="bg-white/10 p-1 rounded-xl flex gap-2 border border-white/20">
+                          <input 
+                              type="text" 
+                              className="w-full bg-transparent px-3 text-sm font-bold placeholder-indigo-300 text-white outline-none uppercase"
+                              placeholder="NUEVA MARCA (EJ: VISA)"
+                              value={newBrandName}
+                              onChange={(e) => setNewBrandName(e.target.value)}
+                              onKeyDown={(e) => e.key === 'Enter' && handleAddBrand()}
+                          />
+                          <button onClick={handleAddBrand} className="p-2 bg-white text-indigo-900 rounded-lg hover:bg-indigo-50 transition-colors">
+                              <PlusCircle size={20} />
+                          </button>
+                      </div>
+                  </div>
+
+                  {/* INFO BOX */}
+                  <div className="bg-orange-50 border border-orange-100 rounded-xl p-4 flex gap-3">
+                      <AlertTriangle size={20} className="text-orange-500 shrink-0" />
+                      <div>
+                          <p className="text-xs font-bold text-orange-800">Importante</p>
+                          <p className="text-[10px] text-orange-700 mt-1 leading-relaxed">
+                              Cada tarjeta tiene sus propias reglas. Si configuras "3 Cuotas 0%" en VISA, no afectará a Naranja.
+                          </p>
+                      </div>
+                  </div>
+              </div>
+
+              {/* COLUMNA DERECHA: LISTA DE TARJETAS Y REGLAS */}
+              <div className="md:col-span-2 space-y-4">
+                  {savingFinancials && <p className="text-xs text-indigo-600 font-bold animate-pulse text-right">Guardando cambios...</p>}
+                  
+                  {paymentMethods.length === 0 ? (
+                      <Card className="p-10 flex flex-col items-center justify-center text-sys-400 border-dashed">
+                          <Layers size={48} className="mb-2 opacity-20"/>
+                          <p>No hay tarjetas configuradas.</p>
+                      </Card>
+                  ) : (
+                      paymentMethods.map((method) => (
+                          <Card key={method.brand} className={cn("p-0 overflow-hidden transition-all duration-300", expandedBrand === method.brand ? "ring-2 ring-indigo-500 shadow-md" : "hover:border-indigo-200")}>
+                              {/* HEADER DE LA TARJETA */}
+                              <div 
+                                  className="p-4 flex items-center justify-between cursor-pointer bg-sys-50/50 hover:bg-sys-100 transition-colors"
+                                  onClick={() => setExpandedBrand(expandedBrand === method.brand ? null : method.brand)}
+                              >
+                                  <div className="flex items-center gap-3">
+                                      <div className="w-10 h-6 bg-white border border-sys-200 rounded flex items-center justify-center shadow-sm">
+                                          {/* Logo Simulado */}
+                                          <span className="text-[10px] font-black text-sys-700">{method.brand.substring(0,4)}</span>
+                                      </div>
+                                      <div>
+                                          <h4 className="font-bold text-sys-800">{method.brand}</h4>
+                                          <p className="text-[10px] text-sys-500 font-medium">
+                                              {method.rates.length} Planes configurados
+                                          </p>
+                                      </div>
+                                  </div>
+                                  <div className="flex items-center gap-2">
+                                      <button 
+                                          onClick={(e) => { e.stopPropagation(); handleDeleteBrand(method.brand); }}
+                                          className="p-2 text-sys-300 hover:text-red-500 hover:bg-red-50 rounded-full"
+                                      >
+                                          <Trash2 size={16}/>
+                                      </button>
+                                      {expandedBrand === method.brand ? <ChevronUp size={20} className="text-sys-400"/> : <ChevronDown size={20} className="text-sys-400"/>}
+                                  </div>
+                              </div>
+
+                              {/* CUERPO EXPANDIBLE (TASAS) */}
+                              {expandedBrand === method.brand && (
+                                  <div className="p-4 bg-white border-t border-sys-100 animate-in slide-in-from-top-2">
+                                      
+                                      {/* LISTA DE TASAS EXISTENTES */}
+                                      <div className="space-y-2 mb-4">
+                                          {method.rates.length === 0 && <p className="text-xs text-sys-400 italic text-center">Sin tasas definidas para {method.brand}</p>}
+                                          
+                                          {method.rates.map(rate => (
+                                              <div key={rate.qty} className="flex items-center justify-between p-2 rounded-lg border border-sys-100 hover:bg-sys-50">
+                                                  <div className="flex items-center gap-3">
+                                                      <span className="bg-sys-800 text-white text-[10px] font-bold px-2 py-1 rounded">
+                                                          {rate.qty} x
+                                                      </span>
+                                                      <span className={cn("text-xs font-bold uppercase", rate.interest === 0 ? "text-green-600" : "text-sys-700")}>
+                                                          {rate.interest === 0 ? "Sin Interés" : `+ ${rate.interest}% Interés`}
+                                                      </span>
+                                                  </div>
+                                                  <button onClick={() => handleDeleteRate(method.brand, rate.qty)} className="text-sys-300 hover:text-red-500">
+                                                      <Trash2 size={14}/>
+                                                  </button>
+                                              </div>
+                                          ))}
+                                      </div>
+
+                                      {/* INPUT PARA AGREGAR NUEVA TASA */}
+                                      <div className="bg-indigo-50 p-2 rounded-xl flex gap-2 items-center">
+                                          <input 
+                                              type="number" 
+                                              className="w-16 bg-white border border-indigo-100 rounded-lg px-2 py-1.5 text-xs font-bold text-center outline-none focus:border-indigo-500 placeholder-indigo-300"
+                                              placeholder="Cuotas"
+                                              value={newRate.qty}
+                                              onChange={(e) => setNewRate({...newRate, qty: e.target.value})}
+                                          />
+                                          <span className="text-indigo-300 text-xs font-bold">x</span>
+                                          <div className="relative flex-1">
+                                              <input 
+                                                  type="number" 
+                                                  className="w-full bg-white border border-indigo-100 rounded-lg pl-2 pr-6 py-1.5 text-xs font-bold outline-none focus:border-indigo-500 placeholder-indigo-300"
+                                                  placeholder="% Interés"
+                                                  value={newRate.interest}
+                                                  onChange={(e) => setNewRate({...newRate, interest: e.target.value})}
+                                              />
+                                              <span className="absolute right-2 top-1.5 text-indigo-400 text-[10px]">%</span>
+                                          </div>
+                                          <Button size="xs" onClick={() => handleAddRate(method.brand)} className="bg-indigo-600 hover:bg-indigo-700">
+                                              <PlusCircle size={14} className="mr-1"/> Agregar
+                                          </Button>
+                                      </div>
+                                  </div>
+                              )}
+                          </Card>
+                      ))
+                  )}
+              </div>
+          </div>
+      )}
     </div>
   );
 };

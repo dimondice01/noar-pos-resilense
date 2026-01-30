@@ -2,7 +2,7 @@ import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { 
     Search, Trash2, ShoppingCart, PackageOpen, 
     Keyboard, User, DollarSign, ChevronRight, Plus, 
-    Lock, Wallet, ArrowRight, Loader2, X, PlusCircle, CreditCard
+    Lock, Wallet, ArrowRight, Loader2, X, Store
 } from 'lucide-react';
 
 // Controlador Maestro (Cerebro)
@@ -31,19 +31,17 @@ export const PosPage = () => {
       activeTabId,
       totals,
       searchResults,
-      isProcessing,
-      // Acciones
       addTab,
       removeTab,
       switchTab,
       addToCart,
       removeFromCart,
-      updateItemQuantity,
       setClient,
       clearCart,
       searchProduct,
       setSearchResults, 
-      processSale
+      processSale,
+      isProcessing // 🔥 AHORA SÍ OBTENEMOS EL ESTADO DE CARGA
   } = usePosController();
 
   // Estados Locales de UI
@@ -119,6 +117,8 @@ export const PosPage = () => {
   useEffect(() => {
       const loadInitialProducts = async () => {
           if (hasOpenShift) {
+              // Aquí podrías filtrar por sucursal si tu repositorio lo soporta, 
+              // pero generalmente los productos son globales de la empresa.
               const all = await productRepository.getAll();
               setDefaultProducts(all.slice(0, 15));
           }
@@ -246,13 +246,27 @@ export const PosPage = () => {
   // 💰 PROCESAR VENTA + AUTO-CIERRE DE PESTAÑA
   // =================================================================
   const handleProcessSale = async (paymentData) => {
+    // 🕵️‍♂️ AUDITORÍA: Verificamos que la data del Surcharge Engine llegue
+    // console.log("💰 Procesando Venta:", paymentData); 
+    
+    // paymentData YA contiene: totalSale (con interés), baseAmount (sin interés), surcharge (interés), branchId
     const result = await processSale(paymentData);
+    
     if (result) {
-        setLastSaleTicket(result);
+        // 🔥 INYECCIÓN DE DATOS DE SUCURSAL PARA TICKET
+        const enrichedTicket = {
+            ...result,
+            companySnapshot: {
+                nombre: user?.activeBranchName || 'MI NEGOCIO', // Fallback visual
+                // Otros datos si los tuviéramos en el user store
+            }
+        };
+
+        setLastSaleTicket(enrichedTicket);
         setIsPaymentOpen(false);
         setSearchTerm('');
         
-        // 🔥 Lógica: Si NO es la pestaña 1 (la principal), cerrarla al finalizar cobro
+        // Auto-cierre de pestañas secundarias
         const activeIndex = tabs.findIndex(t => t.id === activeTabId);
         if (tabs.length > 1 && activeIndex !== 0) {
             removeTab(activeTabId);
@@ -295,7 +309,7 @@ export const PosPage = () => {
   return (
     <div className="h-[calc(100vh-4rem)] flex flex-col bg-sys-50 relative overflow-hidden">
       
-      {/* 🟢 BARRA SUPERIOR: PESTAÑAS (Walmart Inspired Tabs) */}
+      {/* 🟢 BARRA SUPERIOR: PESTAÑAS */}
       <div className="h-12 bg-white border-b border-sys-200 flex items-end px-2 gap-1 overflow-x-auto no-scrollbar shrink-0 z-20 shadow-sm">
           {tabs.map((tab, index) => (
               <div 
@@ -346,7 +360,9 @@ export const PosPage = () => {
                               <User size={16} />
                           </div>
                           <div className="flex flex-col overflow-hidden">
-                              <span className="text-[10px] uppercase font-bold opacity-70 tracking-widest">{activeTab.client?.docType === '80' ? 'Factura A' : 'Consumidor Final'}</span>
+                              <span className="text-[10px] uppercase font-bold opacity-70 tracking-widest">
+                                  {activeTab.client?.fiscalCondition === 'RESPONSABLE_INSCRIPTO' ? 'FACTURA A' : 'CONSUMIDOR FINAL'}
+                              </span>
                               <span className="text-sm font-black truncate">{activeTab.client?.name || "Cliente (F3)"}</span>
                           </div>
                           <ChevronRight size={16} className="ml-auto opacity-50"/>
@@ -452,7 +468,7 @@ export const PosPage = () => {
           </div>
       </div>
 
-      {/* 🕹️ FOOTER DE COMANDOS (High Contrast: Black & White) */}
+      {/* 🕹️ FOOTER DE COMANDOS */}
       <div className="h-10 bg-sys-900 border-t border-white/10 flex items-center px-4 gap-8 text-[11px] font-black text-white shrink-0 select-none uppercase tracking-[0.1em]">
           <div className="flex items-center gap-2"><Keyboard size={16} className="text-brand"/> <span>ATAJOS DE TERMINAL:</span></div>
           <div className="flex items-center gap-6">
@@ -461,7 +477,13 @@ export const PosPage = () => {
             <div className="flex items-center gap-2"><span className="bg-white/10 px-2 py-0.5 rounded text-white font-mono">F3</span> CLIENTE</div>
             <div className="flex items-center gap-2"><span className="bg-white/10 px-2 py-0.5 rounded text-white font-mono">F12</span> COBRAR</div>
           </div>
-          <div className="ml-auto flex items-center gap-3">
+          <div className="ml-auto flex items-center gap-4">
+              {/* INDICADOR DE SUCURSAL */}
+              <div className="flex items-center gap-2 opacity-60 hover:opacity-100 transition-opacity">
+                  <Store size={14} className="text-brand"/>
+                  <span className="font-bold">{user?.activeBranchName || "SUCURSAL PRINCIPAL"}</span>
+              </div>
+              <div className="w-px h-4 bg-white/20"></div>
               <div className="flex items-center gap-2 bg-white/5 px-4 py-1 rounded-full border border-white/10">
                 <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse shadow-[0_0_12px_rgba(16,185,129,0.7)]"></div>
                 <span className="text-white uppercase tracking-widest">{user?.name}</span>
@@ -478,10 +500,18 @@ export const PosPage = () => {
         client={activeTab.client} 
         onClose={() => { setIsPaymentOpen(false); maintainFocus(); }} 
         onConfirm={handleProcessSale} 
+        isProcessing={isProcessing} // 🔥 AHORA SÍ CONECTADO
       />
 
       <ClientSelectionModal isOpen={isClientSelectorOpen} onClose={() => { setIsClientSelectorOpen(false); maintainFocus(); }} onSelect={(c) => { setClient(c); setIsClientSelectorOpen(false); maintainFocus(); }} />
-      <TicketModal isOpen={!!lastSaleTicket} sale={lastSaleTicket} onClose={() => { setLastSaleTicket(null); maintainFocus(); }} />
+      
+      {/* TICKET: Recibe el objeto enriquecido con Surcharge y Datos Fiscales */}
+      <TicketModal 
+        isOpen={!!lastSaleTicket} 
+        sale={lastSaleTicket} 
+        onClose={() => { setLastSaleTicket(null); maintainFocus(); }} 
+        companyConfig={{ nombre: user?.activeBranchName }} // Fallback de seguridad
+      />
     </div>
   );
 };

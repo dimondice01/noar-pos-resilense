@@ -1,10 +1,10 @@
 import React, { useEffect, useState } from 'react';
-import { Plus, Search, Edit2, Trash2, Users, CreditCard, Building2, User, ChevronRight } from 'lucide-react';
+import { Plus, Search, Edit2, Trash2, Users, CreditCard, Building2, User, ChevronRight, AlertCircle } from 'lucide-react';
 import { clientRepository } from '../repositories/clientRepository';
 import { Card } from '../../../core/ui/Card';
 import { Button } from '../../../core/ui/Button';
 import { ClientModal } from '../components/ClientModal';
-import { ClientDashboard } from './ClientDashboard'; // ✅ Importamos el Dashboard
+import { ClientDashboard } from './ClientDashboard'; // ✅ Dashboard Integrado
 import { cn } from '../../../core/utils/cn';
 
 export const ClientsPage = () => {
@@ -33,7 +33,7 @@ export const ClientsPage = () => {
 
   useEffect(() => { loadClients(); }, []);
 
-  // Búsqueda en tiempo real
+  // Búsqueda en tiempo real (Debounced)
   useEffect(() => {
     const timer = setTimeout(async () => {
         if (!searchTerm) {
@@ -47,13 +47,18 @@ export const ClientsPage = () => {
   }, [searchTerm]);
 
   const handleSave = async (clientData) => {
-    await clientRepository.save(clientData);
-    loadClients();
+    try {
+        await clientRepository.save(clientData);
+        loadClients();
+        setIsModalOpen(false);
+    } catch (error) {
+        alert(error.message); // Mostrar error fiscal si falla validación
+    }
   };
 
   const handleDelete = async (id, e) => {
     e.stopPropagation(); // Evitar abrir el dashboard
-    if (confirm("¿Estás seguro de eliminar este cliente?")) {
+    if (confirm("¿Estás seguro de eliminar este cliente? Se perderá su historial.")) {
         await clientRepository.delete(id);
         loadClients();
     }
@@ -68,7 +73,7 @@ export const ClientsPage = () => {
   const getConditionBadge = (condition) => {
       const styles = {
           'RESPONSABLE_INSCRIPTO': 'bg-purple-100 text-purple-700 border-purple-200',
-          'MONOTRIBUTO': 'bg-blue-100 text-brand border-blue-200',
+          'MONOTRIBUTO': 'bg-blue-100 text-blue-700 border-blue-200',
           'CONSUMIDOR_FINAL': 'bg-gray-100 text-gray-600 border-gray-200',
           'EXENTO': 'bg-orange-100 text-orange-700 border-orange-200'
       };
@@ -92,7 +97,7 @@ export const ClientsPage = () => {
       <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-4">
         <div>
           <h2 className="text-2xl font-bold text-sys-900">Cartera de Clientes</h2>
-          <p className="text-sys-500">Gestión de contactos y cuentas corrientes</p>
+          <p className="text-sys-500 text-sm">Gestión de contactos y cuentas corrientes</p>
         </div>
         <Button onClick={() => { setEditingClient(null); setIsModalOpen(true); }} className="shadow-lg shadow-brand/20">
             <Plus size={20} className="mr-2" /> Nuevo Cliente
@@ -105,7 +110,7 @@ export const ClientsPage = () => {
          <input 
             type="text" 
             placeholder="Buscar por Nombre, CUIT o DNI..." 
-            className="flex-1 bg-transparent outline-none text-sys-800 placeholder:text-sys-400"
+            className="flex-1 bg-transparent outline-none text-sys-800 placeholder:text-sys-400 font-medium"
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
          />
@@ -114,17 +119,17 @@ export const ClientsPage = () => {
       {/* Lista de Clientes */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {loading ? (
-            <p className="text-sys-500 col-span-full text-center py-10">Cargando cartera...</p>
+            <p className="text-sys-500 col-span-full text-center py-10 text-sm font-bold uppercase tracking-widest animate-pulse">Cargando cartera...</p>
         ) : clients.length === 0 ? (
             <div className="col-span-full text-center py-12 text-sys-400 bg-sys-50/50 rounded-2xl border-2 border-dashed border-sys-200">
                 <Users size={48} className="mx-auto mb-3 opacity-50" />
-                <p>No se encontraron clientes.</p>
+                <p className="font-medium">No se encontraron clientes.</p>
             </div>
         ) : (
             clients.map(client => (
                 <Card 
                     key={client.id} 
-                    className="p-0 overflow-hidden hover:shadow-float transition-all duration-300 group border border-sys-200 cursor-pointer relative"
+                    className="p-0 overflow-hidden hover:shadow-lg hover:-translate-y-1 transition-all duration-300 group border border-sys-200 cursor-pointer relative bg-white"
                     onClick={() => setSelectedClientId(client.id)}
                 >
                     <div className="p-5">
@@ -134,19 +139,19 @@ export const ClientsPage = () => {
                             )}>
                                 {client.name.charAt(0)}
                             </div>
-                            <span className={cn("px-2 py-1 rounded text-[10px] font-bold uppercase border", getConditionBadge(client.fiscalCondition))}>
-                                {client.fiscalCondition.replace('_', ' ')}
+                            <span className={cn("px-2 py-1 rounded text-[9px] font-bold uppercase border tracking-tight", getConditionBadge(client.fiscalCondition))}>
+                                {client.fiscalCondition?.replace(/_/g, ' ') || 'CONSUMIDOR FINAL'}
                             </span>
                         </div>
                         
-                        <h3 className="font-bold text-sys-900 truncate pr-6" title={client.name}>{client.name}</h3>
+                        <h3 className="font-bold text-sys-900 truncate pr-6 text-base" title={client.name}>{client.name}</h3>
                         
                         <div className="mt-3 space-y-1.5">
                             <div className="flex items-center gap-2 text-xs text-sys-600">
                                 <CreditCard size={14} className="text-sys-400" />
-                                <span className="font-mono tracking-wide">{client.docNumber}</span>
+                                <span className="font-mono tracking-wide font-medium">{client.docNumber}</span>
                             </div>
-                            {client.address && (
+                            {client.address && client.address !== '-' && (
                                 <div className="flex items-center gap-2 text-xs text-sys-500 truncate">
                                     <Building2 size={14} className="text-sys-400" />
                                     {client.address}
@@ -156,12 +161,14 @@ export const ClientsPage = () => {
 
                         {/* Indicador de Deuda (Si existe) */}
                         {(client.balance && client.balance > 0) ? (
-                            <div className="mt-4 pt-3 border-t border-sys-100 flex justify-between items-center">
-                                <span className="text-[10px] font-bold text-red-500 uppercase tracking-wider">Deuda Pendiente</span>
+                            <div className="mt-4 pt-3 border-t border-sys-100 flex justify-between items-center bg-red-50/50 -mx-5 px-5 -mb-5 pb-5">
+                                <span className="text-[10px] font-bold text-red-500 uppercase tracking-wider flex items-center gap-1">
+                                    <AlertCircle size={12}/> Deuda
+                                </span>
                                 <span className="text-sm font-black text-red-600">$ {client.balance.toLocaleString()}</span>
                             </div>
                         ) : (
-                            <div className="mt-4 pt-3 border-t border-sys-100 flex justify-end">
+                            <div className="mt-4 pt-3 border-t border-sys-100 flex justify-end opacity-50 group-hover:opacity-100 transition-opacity">
                                 <span className="text-[10px] font-bold text-green-600 uppercase tracking-wider flex items-center gap-1">
                                     Al Día <ChevronRight size={12}/>
                                 </span>
@@ -170,7 +177,7 @@ export const ClientsPage = () => {
                     </div>
 
                     {/* Acciones Rápidas (Hover) */}
-                    <div className="absolute top-4 right-4 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity bg-white/80 backdrop-blur-sm rounded-lg p-1 shadow-sm border border-sys-100">
+                    <div className="absolute top-3 right-3 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity bg-white/90 backdrop-blur-sm rounded-lg p-1 shadow-sm border border-sys-100">
                         <button onClick={(e) => handleEdit(client, e)} className="p-1.5 hover:bg-sys-100 rounded text-sys-600 transition-colors" title="Editar">
                             <Edit2 size={14} />
                         </button>

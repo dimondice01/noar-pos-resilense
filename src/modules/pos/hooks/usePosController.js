@@ -3,7 +3,10 @@ import { productRepository } from '../../inventory/repositories/productRepositor
 import { salesRepository } from '../../sales/repositories/salesRepository';
 import { cashRepository } from '../../cash/repositories/cashRepository';
 import { useAuthStore } from '../../auth/store/useAuthStore';
-import { toast } from 'react-hot-toast'; // O tu librería de notificaciones preferida
+import { paymentService } from '../../payments/services/paymentService'; // 🔥 IMPORT CRÍTICO
+import { toast } from 'react-hot-toast'; 
+import { doc, getDoc, updateDoc, setDoc, increment } from 'firebase/firestore'; // 🔥 Imports para contadores
+import { db } from '../../../database/firebase'; // 🔥 Instancia DB
 
 // =================================================================
 // 🧠 POS CONTROLLER (CEREBRO MULTI-SESIÓN)
@@ -22,14 +25,15 @@ const NEW_TAB_TEMPLATE = {
 
 export const usePosController = () => {
     // 1. ESTADO DE SESIONES (PESTAÑAS)
+    const { user, activeBranchId } = useAuthStore(); // 🔑 Contexto de Sucursal Activa
+    
     const [tabs, setTabs] = useState([{ ...NEW_TAB_TEMPLATE, id: Date.now() }]);
     const [activeTabId, setActiveTabId] = useState(tabs[0].id);
     
     // Estado Global UI
     const [isProcessing, setIsProcessing] = useState(false);
     const [searchResults, setSearchResults] = useState([]);
-    const [globalScanBuffer, setGlobalScanBuffer] = useState(''); // Para lector de código de barras físico
-
+    
     // =================================================================
     // 🕹️ GESTIÓN DE PESTAÑAS (TABS)
     // =================================================================
@@ -87,11 +91,8 @@ export const usePosController = () => {
 
             if (existingIndex >= 0) {
                 // Producto existe: Aumentar cantidad
-                // Validar Stock (Opcional: permitir venta negativa según config)
                 const currentQty = newItems[existingIndex].quantity;
                 const newQty = currentQty + qty;
-
-                // if (newQty > product.stock) { toast.error("Stock insuficiente"); return tab; }
 
                 newItems[existingIndex] = {
                     ...newItems[existingIndex],
@@ -110,11 +111,10 @@ export const usePosController = () => {
             return { ...tab, items: newItems };
         });
         
-        // Feedback sonoro o visual aquí
     }, [activeTabId]);
 
     const updateItemQuantity = (productId, newQty) => {
-        if (newQty < 0) return; // O borrar si es 0
+        if (newQty < 0) return; 
         if (newQty === 0) {
             removeFromCart(productId);
             return;
@@ -180,23 +180,21 @@ export const usePosController = () => {
         // 1. Intento Exacto (Código de barras) - Rápido
         const exactMatch = await productRepository.findByCode(query);
         if (exactMatch) {
-            // Si es escaneo exacto, agregar directo y limpiar búsqueda
             addToCart(exactMatch, 1);
             setSearchResults([]);
             return true; // Match encontrado
         }
 
         // 2. Búsqueda Difusa (Nombre) - Para UI
-        // Solo si la query tiene más de 3 caracteres para no saturar
         if (query.length > 2) {
-             const results = await productRepository.search(query); // Asumiendo que implementaste search en productRepo
+             const results = await productRepository.search(query); 
              setSearchResults(results.slice(0, 10)); // Top 10
              return false;
         }
     };
 
     // =================================================================
-    // 💳 PROCESO DE COBRO (CHECKOUT)
+    // 💳 PROCESO DE COBRO (OPTIMIZADO MODO RIESGO/VELOCIDAD)
     // =================================================================
     const processSale = async (paymentData) => {
         if (activeTab.items.length === 0) {
@@ -204,54 +202,163 @@ export const usePosController = () => {
             return;
         }
 
+        // 🛡️ Validación de Seguridad: Sucursal Activa
+        if (!activeBranchId) {
+            toast.error("Error crítico: No hay sucursal activa seleccionada.");
+            return;
+        }
+
         setIsProcessing(true);
+        let loadingToast = null;
+
         try {
-            // 1. Validar Caja Abierta
+            // 1. Validar Caja Abierta (Rápido, generalmente cacheado)
             const currentShift = await cashRepository.getCurrentShift();
             if (!currentShift) {
                 throw new Error("⚠️ DEBES ABRIR CAJA ANTES DE VENDER");
             }
 
-            // 2. Preparar Datos Venta
-            const salePayload = {
+            // 🛡️ Validación de Seguridad: Coincidencia de Sucursal
+            if (currentShift.branchId !== activeBranchId) {
+                throw new Error("⚠️ EL TURNO ABIERTO NO PERTENECE A ESTA SUCURSAL. Por favor, cierre turno y vuelva a abrirlo en la sucursal correcta.");
+            }
+
+            // 2. Preparar Datos Base
+            const finalTotal = paymentData.totalSale || totals.total;
+            const finalBaseAmount = paymentData.baseAmount || totals.total;
+            const finalSurcharge = paymentData.surcharge || 0;
+
+            const basePayload = {
                 items: activeTab.items.map(i => ({
-                    id: i.id,
-                    code: i.code,
-                    name: i.name,
-                    price: i.price,
-                    cost: i.cost, // Importante para reportes de ganancia
-                    quantity: i.quantity,
-                    isWeighable: i.isWeighable,
-                    taxRate: i.taxRate || 21
+                    id: i.id, code: i.code, name: i.name, price: i.price, cost: i.cost, quantity: i.quantity, isWeighable: i.isWeighable, taxRate: i.taxRate || 21, subtotal: i.subtotal
                 })),
-                client: activeTab.client, // Si es null, salesRepo lo maneja como Consumidor Final
-                total: totals.total,
+                client: activeTab.client, 
+                total: finalTotal, 
                 subtotal: totals.subtotal,
                 discount: totals.discountAmount,
+                baseAmount: finalBaseAmount,
+                surcharge: finalSurcharge,
                 payment: {
-                    method: paymentData.method, // 'cash', 'card', 'qr', 'checking_account'
-                    amountTendered: paymentData.amountTendered, // Con cuánto pagó
-                    change: paymentData.change // Vuelto
+                    method: paymentData.method,
+                    amountTendered: paymentData.amountTendered || finalTotal, 
+                    change: paymentData.change || 0,
+                    reference: paymentData.reference || '',
+                    totalSale: finalTotal,
+                    surcharge: finalSurcharge
                 },
-                branchId: currentShift.branchId, // Vinculamos a la sucursal del turno
-                shiftId: currentShift.id // Vinculamos al turno actual
+                branchId: activeBranchId, 
+                shiftId: currentShift.id,
+                companyId: user.companyId,
+                operatorId: user.uid,
+                operatorName: user.name,
+                createdAt: new Date().toISOString(),
+                status: 'COMPLETED'
             };
 
-            // 3. Impactar en Base de Datos (Atomic)
-            const result = await salesRepository.createSale(salePayload);
+            let saleResult = null;
+
+            // 🔥 3. BIFURCACIÓN FISCAL
+            if (paymentData.withAfip) {
+                // 🅰️ RUTA FISCAL (AFIP) - LENTA (Esperamos respuesta del servidor obligatoriamente)
+                loadingToast = toast.loading("📡 Solicitando CAE a AFIP...");
+                
+                try {
+                    // LLAMADA A CLOUD FUNCTION (Esto tarda 2-3 segs)
+                    const afipResult = await paymentService.createInvoice({
+                        ...basePayload,
+                        // El backend determina letra A/B/C, pero podemos sugerir
+                        invoiceLetter: activeTab.client?.fiscalCondition === 'RESPONSABLE_INSCRIPTO' ? 'A' : 'B'
+                    });
+
+                    // 🔥🔥 CORRECCIÓN DE MAPEO DE VARIABLES 🔥🔥
+                    const ptoVta = afipResult.ptoVta || 1;
+                    const cbteNumero = afipResult.numero || afipResult.cbteNumero; 
+                    
+                    const fiscalPayload = {
+                        ...basePayload,
+                        afip: {
+                            status: 'APPROVED',
+                            cae: afipResult.cae,
+                            vtoCAE: afipResult.vencimiento || afipResult.caeFchVto, 
+                            cbteNumero: cbteNumero,
+                            cbteTipo: afipResult.tipo || afipResult.cbteTipo, 
+                            cbteLetra: afipResult.letra, 
+                            qr_data: afipResult.qr_data || afipResult.qrData,
+                            ptoVta: ptoVta
+                        },
+                        // Forzamos el número de comprobante para que el repo local no genere uno X
+                        number: `FC-${afipResult.letra}-${String(ptoVta).padStart(4,'0')}-${String(cbteNumero).padStart(8,'0')}`
+                    };
+
+                    // Guardamos en Local DB
+                    saleResult = await salesRepository.createSale(fiscalPayload);
+                    toast.dismiss(loadingToast);
+                    toast.success(`✅ Factura ${fiscalPayload.afip.cbteLetra} autorizada!`);
+
+                } catch (afipError) {
+                    toast.dismiss(loadingToast);
+                    throw new Error(`Error AFIP: ${afipError.message}`);
+                }
+            } else {
+                // 🅱️ RUTA NO FISCAL (TICKET X) - MODO VELOCIDAD (OPTIMIZADO)
+                
+                // 1. Obtener referencia al contador
+                const counterRef = doc(db, 'companies', user.companyId, 'branches', activeBranchId, 'counters', 'ticket_x');
+                
+                let nextNumber = 1;
+
+                try {
+                    // LECTURA (Espera brevemente para tener el número correcto)
+                    const snap = await getDoc(counterRef);
+                    
+                    if (snap.exists()) {
+                        nextNumber = snap.data().current + 1; // Calculamos el siguiente
+                    }
+
+                    // 🔥 ESCRITURA EN SEGUNDO PLANO (NO ESPERAMOS EL AWAIT)
+                    // Esto es lo que da la velocidad "instantánea".
+                    updateDoc(counterRef, { current: increment(1) }).catch(err => {
+                        // Si falla porque no existe, lo creamos
+                        if (err.code === 'not-found') setDoc(counterRef, { current: 1 });
+                    });
+
+                } catch (error) {
+                    console.error("Error lectura contador, usando fallback fecha:", error);
+                    // Fallback extremo si no hay internet: Usar timestamp corto
+                    nextNumber = parseInt(Date.now().toString().slice(-6));
+                }
+
+                // 4. Construir ID Humano
+                const branchCode = activeBranchId.slice(0, 4).toUpperCase();
+                const ticketNumber = `TK-X-${branchCode}-${String(nextNumber).padStart(8, '0')}`;
+
+                // 5. Guardar Venta
+                saleResult = await salesRepository.createSale({
+                    ...basePayload,
+                    afip: { 
+                        status: 'SKIPPED',
+                        cbteLetra: 'X',
+                        cbteTipo: 'NO FISCAL',
+                        cbteNumero: nextNumber,
+                        ptoVta: 0
+                    },
+                    number: ticketNumber
+                });
+                
+                if (!paymentData.withAfip) {
+                    toast.success(`Venta #${nextNumber} OK`);
+                }
+            }
             
-            // 4. Éxito
-            toast.success(`Venta ${result.number} registrada!`);
-            
-            // 5. Limpiar pestaña actual (o cerrarla si prefieres)
+            // 5. Limpieza
             clearCart();
-            
-            // Opcional: Retornar ticket para imprimir
-            return result;
+            return saleResult;
 
         } catch (error) {
             console.error("Error en cobro:", error);
-            toast.error(error.message);
+            if (loadingToast) toast.dismiss(loadingToast);
+            toast.error(error.message || "Error al procesar la venta");
+            return null;
         } finally {
             setIsProcessing(false);
         }
@@ -260,59 +367,22 @@ export const usePosController = () => {
     // =================================================================
     // 🎹 ATAJOS DE TECLADO (Barcode Scanner Listener)
     // =================================================================
-    // Detecta input rápido de lector de barras que actúa como teclado
     useEffect(() => {
         let buffer = '';
         let lastKeyTime = Date.now();
-
         const handleKeyDown = (e) => {
+            if (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA') return;
             const currentTime = Date.now();
             const char = e.key;
-
-            // Si pasa mucho tiempo entre teclas, reseteamos (es tipeo humano)
-            if (currentTime - lastKeyTime > 100) {
-                buffer = '';
-            }
+            if (currentTime - lastKeyTime > 100) buffer = '';
             lastKeyTime = currentTime;
-
             if (char === 'Enter') {
-                if (buffer.length > 3) { // Asumimos código de barras > 3 chars
-                    searchProduct(buffer);
-                    buffer = '';
-                }
-            } else if (char.length === 1) {
-                buffer += char;
-            }
+                if (buffer.length > 2) { searchProduct(buffer); buffer = ''; }
+            } else if (char.length === 1) buffer += char;
         };
-
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, []);
+    }, [activeTabId]);
 
-    return {
-        // Estado
-        tabs,
-        activeTab,
-        activeTabId,
-        totals,
-        searchResults,
-        isProcessing,
-        
-        // Acciones Pestañas
-        addTab,
-        removeTab,
-        switchTab,
-        
-        // Acciones Carrito
-        addToCart,
-        removeFromCart,
-        updateItemQuantity,
-        setClient,
-        clearCart,
-        
-        // Acciones Negocio
-        searchProduct,
-        setSearchResults,
-        processSale
-    };
+    return { tabs, activeTab, activeTabId, totals, searchResults, isProcessing, addTab, removeTab, switchTab, addToCart, removeFromCart, updateItemQuantity, setClient, clearCart, searchProduct, setSearchResults, processSale };
 };

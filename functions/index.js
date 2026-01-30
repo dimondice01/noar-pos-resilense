@@ -14,7 +14,8 @@ const axios = require("axios");
 const admin = require("firebase-admin");
 
 // Importamos el módulo de AFIP (Debe existir el archivo afip.js en la misma carpeta)
-const afip = require("./afip"); 
+const Afip = require("./afip");
+const afipModule = require("./afip") 
 
 // Inicialización de Firebase Admin
 if (!admin.apps.length) {
@@ -401,12 +402,17 @@ app.post("/create-order", async (req, res) => {
 // ==================================================================
 app.post("/create-point-order", async (req, res) => {
   try {
-    const { total, deviceId, companyId } = req.body;
+    // 🔥 CORRECCIÓN: Agregamos branchId al destructuring
+    const { total, deviceId, companyId, branchId } = req.body;
+    
     const amount = Number(Number(total).toFixed(2));
-    const mpConfig = await getCompanyConfig(companyId, 'mercadopago');
+    
+    // 🔥 CORRECCIÓN: Pasamos branchId a la configuración para leer las credenciales DE LA SUCURSAL
+    const mpConfig = await getCompanyConfig(companyId, 'mercadopago', branchId);
+    
     const targetDevice = deviceId || "SIN_DISPOSITIVO"; 
 
-    logger.info(`📟 Point (${companyId}) -> Enviando $${amount} a ${targetDevice}`);
+    logger.info(`📟 Point (${companyId}) -> Enviando $${amount} a ${targetDevice} desde Sucursal: ${branchId || 'Global'}`);
 
     const body = {
         amount: Math.round(amount * 100), 
@@ -429,6 +435,7 @@ app.post("/create-point-order", async (req, res) => {
     });
 
   } catch (error) {
+    // Mejoramos el log para ver si falla por token o por dispositivo
     logger.error("❌ Error Point Data:", error.response?.data || error.message);
     res.status(500).json({ 
         error: "Error de comunicación con Terminal", 
@@ -498,31 +505,69 @@ app.post("/check-payment-status", async (req, res) => {
   }
 });
 // ==================================================================
-// 📠 ENDPOINT 5: FACTURACIÓN AFIP (SAAS)
+// 📠 ENDPOINT: FACTURACIÓN AFIP (Multitenant & Multisucursal)
 // ==================================================================
-app.post("/create-invoice", async (req, res) => {
+app.post('/create-invoice', async (req, res) => {
   try {
-    const { total, client, companyId } = req.body; 
-    const amount = Number(Number(total).toFixed(2));
-    const datosCliente = client || { docNumber: "0", fiscalCondition: "CONSUMIDOR_FINAL" };
+    // 1. EXTRAER DATOS DEL REQUEST
+    const { total, client, companyId, branchId } = req.body;
 
-    logger.info(`📠 AFIP (${companyId}): Solicitud Factura por $${amount}`);
+    logger.info(`📠 AFIP: Solicitud Factura por $${total} | Sucursal: ${branchId}`);
 
-    const afipConfig = await getCompanyConfig(companyId, 'afip', branchId);
-    const factura = await afip.emitirFactura(amount, datosCliente, false, null, afipConfig);
+    // 🛡️ VALIDACIÓN DE SEGURIDAD BÁSICA
+    if (!companyId || !branchId) {
+      throw new Error("Faltan identificadores de Empresa o Sucursal.");
+    }
 
-    logger.info(`✅ Factura Autorizada: CAE ${factura.cae}`);
-    res.status(200).json(factura);
+    // 🛡️ SANITIZACIÓN DEL CLIENTE (Fix para el error docNumber of null)
+    // Si client es null o undefined, usamos un objeto vacío para que afip.js 
+    // aplique sus valores por defecto (Consumidor Final).
+    const sanitizedClient = client || {};
+
+    // 2. BUSCAR CONFIGURACIÓN EN FIRESTORE
+    const configPath = `companies/${companyId}/branches/${branchId}/integrations/afip`;
+    const configSnap = await db.doc(configPath).get();
+
+    if (!configSnap.exists) {
+      throw new Error(`La sucursal ${branchId} no tiene configurado AFIP.`);
+    }
+
+    const afipData = configSnap.data();
+
+    // Validar estado de la configuración
+    if (!afipData.isActive) {
+      throw new Error("La facturación AFIP está desactivada para esta sucursal.");
+    }
+    if (!afipData.cert || !afipData.key || !afipData.cuit) {
+      throw new Error("Credenciales de AFIP incompletas en la base de datos (Cert/Key/Cuit).");
+    }
+
+    // 3. DELEGAR AL MÓDULO ESPECIALIZADO
+    // Pasamos 'afipData' como el objeto de configuración (rawConfig en tu afip.js)
+    const result = await afipModule.emitirFactura(
+        total,             // Monto final
+        sanitizedClient,   // ✅ Cliente sanitizado (nunca null)
+        false,             // esNotaCredito
+        null,              // comprobanteAsociado
+        afipData           // Config con CUIT, Cert y Key
+    );
+
+    // 4. RESPONDER AL FRONTEND
+    logger.info(`✅ Factura ${result.letra} ${result.numero} autorizada exitosamente.`);
+    
+    res.json(result);
 
   } catch (error) {
-    logger.error("❌ Error Facturación:", error.message);
+    // Registramos el error completo con el stack trace para debug
+    logger.error("❌ Error en Proceso Facturación:", error);
+
+    // Respondemos un error 500 con un mensaje claro
     res.status(500).json({ 
-      error: "Error al facturar", 
-      details: error.message 
+        error: "Error al procesar el comprobante electrónico", 
+        details: error.message 
     });
   }
 });
-
 // ==================================================================
 // 🔄 ENDPOINT 6: NOTA DE CRÉDITO (SAAS)
 // ==================================================================
@@ -803,6 +848,75 @@ app.post("/create-tenant", async (req, res) => {
   }
 });
 
+
+// ==================================================================
+// 🛡️ ENDPOINT: BORRADO SEGURO DE USUARIOS (NUEVO)
+// ==================================================================
+app.post("/delete-user", async (req, res) => {
+  try {
+    const { uid } = req.body; // ID del usuario a borrar
+    const authHeader = req.headers.authorization;
+
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    
+    // 1. Verificar identidad del solicitante
+    const idToken = authHeader.split('Bearer ')[1];
+    const decodedToken = await admin.auth().verifyIdToken(idToken);
+    
+    // 2. Validar que quien pide borrar sea ADMIN u OWNER
+    const requestor = await db.collection('users').doc(decodedToken.uid).get();
+    if (!requestor.exists || (requestor.data().role !== 'ADMIN' && requestor.data().role !== 'OWNER')) {
+        return res.status(403).json({ error: "No tienes permisos para eliminar usuarios." });
+    }
+
+    // 3. Verificar que el usuario a borrar pertenezca a la misma empresa (Aislamiento Multi-Tenant)
+    const targetUser = await db.collection('users').doc(uid).get();
+    if (targetUser.exists && targetUser.data().companyId !== requestor.data().companyId) {
+        return res.status(403).json({ error: "No puedes borrar usuarios de otra empresa." });
+    }
+
+    logger.info(`🗑️ Eliminando usuario ${uid} solicitado por ${decodedToken.uid}`);
+
+    // 4. Borrar de Authentication (Revoca el acceso inmediatamente)
+    await admin.auth().deleteUser(uid);
+
+    // 5. Borrar de Firestore (Limpia los datos del perfil)
+    await db.collection('users').doc(uid).delete();
+
+    res.status(200).json({ success: true, message: "Usuario eliminado y acceso revocado." });
+
+  } catch (error) {
+    logger.error("Error borrando usuario:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ==================================================================
+// 📡 ENDPOINT: WEBHOOK MERCADOPAGO (NUEVO)
+// ==================================================================
+app.post("/webhook/mercadopago", async (req, res) => {
+    const { type, data } = req.body;
+    const topic = req.query.topic || type;
+    const id = req.query.id || data?.id;
+
+    try {
+        if (topic === 'payment' && id) {
+            logger.info(`🔔 Webhook MP: Pago recibido ID ${id}`);
+            
+            // Nota de Arquitecto:
+            // Por ahora solo logueamos para no romper nada. 
+            // En el futuro, aquí podemos buscar la venta por 'external_reference' 
+            // y aprobarla automáticamente si el frontend se cerró.
+        }
+        // MP requiere responder 200 OK rápido o reenvía la notificación
+        res.status(200).send("OK");
+    } catch (error) {
+        logger.error("Webhook Error:", error);
+        res.status(500).send("Error");
+    }
+});
 // Exportamos la función HTTP
 console.log("Versión con Auto-Fix Forzado v3.0");
 exports.api = onRequest({ cors: true }, app);

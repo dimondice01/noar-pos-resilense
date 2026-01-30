@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
     X, Banknote, QrCode, Loader2, CheckCircle2, 
-    AlertCircle, FileText, Wallet, ArrowRight, CreditCard, Landmark, Terminal,
-    ShieldCheck
+    AlertCircle, Wallet, ArrowRight, CreditCard, Landmark, 
+    ShieldCheck, Calculator, ChevronLeft, Layers, Info
 } from 'lucide-react';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../../../database/firebase';
@@ -12,10 +12,11 @@ import { cn } from '../../../core/utils/cn';
 import { paymentService } from '../../payments/services/paymentService';
 import { useAuthStore } from '../../auth/store/useAuthStore'; 
 
-// URL del Backend (Cloud Functions)
 const API_URL = import.meta.env.VITE_API_URL || "https://us-central1-salvadorpos1.cloudfunctions.net/api";
 
-export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disableAfip = false }) => {
+// 🔥 AÑADIDA PROP 'isProcessing' PARA CONTROLAR EL ESTADO DE CARGA EXTERNO
+export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disableAfip = false, isProcessing = false }) => {
+    
     // ==========================================
     // ESTADOS Y REFS
     // ==========================================
@@ -23,11 +24,17 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
     const [amountToPay, setAmountToPay] = useState(''); 
     const [reference, setReference] = useState(''); 
     
-    // Configuración de Terminales (Ahora desde la Nube por Sucursal/Usuario)
+    // Hardware
     const [assignedHardware, setAssignedHardware] = useState({ qrId: null, pointId: null });
     const [loadingHardware, setLoadingHardware] = useState(false);
 
-    // Estado del Flujo Digital
+    // Surcharge Engine V2
+    const [paymentMethods, setPaymentMethods] = useState([]); 
+    const [selectedBrand, setSelectedBrand] = useState(null); 
+    const [selectedRate, setSelectedRate] = useState(null);   
+    const [loadingPlans, setLoadingPlans] = useState(false);
+
+    // Digital Payments
     const [digitalState, setDigitalState] = useState('idle'); 
     const [paymentReference, setPaymentReference] = useState(null);
     const [errorMessage, setErrorMessage] = useState(null);
@@ -35,36 +42,63 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
     // Refs
     const pollingRef = useRef(null);
     const cashInputRef = useRef(null);
-    const transferRef = useRef(null);
+    
+    // 🔥 VITAL: Referencia para evitar cierres de estado (closures) en pagos digitales
+    const withAfipRef = useRef(false);
 
     // Hooks
-    const { user, activeBranchId } = useAuthStore(); 
+    const { user, activeBranchId, activeBranchName } = useAuthStore(); 
 
     // Estado AFIP
     const [withAfip, setWithAfip] = useState(false);
 
-    // Datos Cuenta para Transferencia
     const ACCOUNT_DATA = {
         alias: "MAXIKIOSCO.ESQUINA",
         bank: "MercadoPago / Naranja X"
     };
 
     // ==========================================
-    // CÁLCULOS FINANCIEROS
+    // 🧮 CÁLCULOS
     // ==========================================
+    const effectiveTotal = selectedRate 
+        ? total * (1 + (selectedRate.interest || 0) / 100)
+        : total;
+
     const payValue = parseFloat(amountToPay || 0); 
-    const difference = total - payValue; 
+    const difference = effectiveTotal - payValue; 
     const debtValue = difference > 0.5 ? difference : 0; 
     const changeValue = difference < -0.5 ? Math.abs(difference) : 0; 
-    
     const isPartialPayment = debtValue > 0;
     const isClientRegistered = client && client.id; 
-    
     const hasError = isPartialPayment && !isClientRegistered; 
-    const canConfirm = !hasError && payValue >= 0 && amountToPay !== ''; 
+    
+    // 🛡️ VALIDACIÓN BLINDADA: Si está procesando, NO se puede confirmar
+    const canConfirm = !hasError && payValue >= 0 && amountToPay !== '' && !isProcessing; 
 
     // ==========================================
-    // 🛡️ LÓGICA DE ASIGNACIÓN CLOUD
+    // 🛡️ LÓGICA DE BLOQUEO FISCAL
+    // ==========================================
+    const isRI = client?.fiscalCondition === 'RESPONSABLE_INSCRIPTO';
+    
+    // Sincronizar State con Ref
+    useEffect(() => {
+        withAfipRef.current = withAfip;
+    }, [withAfip]);
+
+    // Lógica Fiscal Automática
+    useEffect(() => {
+        if (isOpen) {
+            // Si el cliente es RI y no es un cobro de deuda (disableAfip), forzamos factura
+            if (isRI && !disableAfip) {
+                setWithAfip(true); 
+            } else {
+                setWithAfip(false);
+            }
+        }
+    }, [isOpen, isRI, disableAfip]);
+
+    // ==========================================
+    // 🛡️ DATA FETCHING
     // ==========================================
     const fetchHardwareAssignments = async () => {
         if (!user?.uid || !activeBranchId) return;
@@ -72,35 +106,57 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
         try {
             const branchRef = `companies/${user.companyId}/branches/${activeBranchId}/integrations`;
             const assignDoc = await getDoc(doc(db, branchRef, 'assignments'));
-            
             if (assignDoc.exists()) {
                 const allAssignments = assignDoc.data();
-                const myHardware = allAssignments[user.uid] || { qrId: null, pointId: null };
-                setAssignedHardware(myHardware);
+                setAssignedHardware(allAssignments[user.uid] || { qrId: null, pointId: null });
             }
-        } catch (e) {
-            console.error("Error recuperando asignaciones cloud:", e);
+        } catch (e) { console.error(e); } finally { setLoadingHardware(false); }
+    };
+
+    const fetchFinancialPlans = async () => {
+        if (!user?.companyId) return;
+        setLoadingPlans(true);
+        try {
+            const configRef = doc(db, `companies/${user.companyId}/config/financials`);
+            const snap = await getDoc(configRef);
+            if (snap.exists() && snap.data().methods) {
+                setPaymentMethods(snap.data().methods);
+            } else {
+                setPaymentMethods([]);
+            }
+        } catch (error) {
+            setPaymentMethods([]);
         } finally {
-            setLoadingHardware(false);
+            setLoadingPlans(false);
         }
     };
 
     const handleAfipChange = (checked) => {
+        if (isRI && !checked && !disableAfip) {
+            alert("⚠️ Atención: A un Responsable Inscripto se le debe emitir Factura A obligatoriamente.");
+            return;
+        }
         setWithAfip(checked);
     };
 
-    // Reset de Estado
+    // Reset Inicial
     useEffect(() => {
         if (isOpen) {
             fetchHardwareAssignments();
+            fetchFinancialPlans(); 
+            
             setMethod('cash');
             setAmountToPay(Math.round(total).toString());
             setReference('');
             setDigitalState('idle');
             setPaymentReference(null);
             setErrorMessage(null);
+            setSelectedBrand(null);
+            setSelectedRate(null);
+            
+            // NO TOCAR withAfip AQUÍ PARA NO PISAR LA LÓGICA FISCAL
+            
             if (pollingRef.current) clearInterval(pollingRef.current);
-            setWithAfip(false);
             
             setTimeout(() => {
                 if (cashInputRef.current) {
@@ -113,21 +169,29 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
         }
     }, [isOpen, total]);
 
-    // 🚀 LÓGICA DE COBRO DIGITAL (MP / POINT / CLOVER)
+    // Actualizar monto al cambiar tasa
+    useEffect(() => {
+        if (selectedRate) {
+            const newTotal = total * (1 + (selectedRate.interest || 0) / 100);
+            setAmountToPay(newTotal.toFixed(2));
+        } else if (method === 'manual_card') {
+            setAmountToPay(total.toFixed(2));
+        } else if (method === 'cash') {
+            setAmountToPay(Math.round(total).toString());
+        }
+    }, [selectedRate, total, method]);
+
+
+    // 🚀 LÓGICA DE COBRO DIGITAL
     useEffect(() => {
         if (isOpen && (method === 'mercadopago' || method === 'point')) {
             const startTransaction = async () => {
                 setDigitalState('creating');
                 setErrorMessage(null);
-                
                 try {
                     const targetDeviceId = method === 'point' ? assignedHardware.pointId : assignedHardware.qrId;
+                    if (!targetDeviceId) throw new Error(`Falta configurar ${method === 'point' ? 'Terminal Point' : 'Caja QR'}.`);
 
-                    if (!targetDeviceId) {
-                        throw new Error(`Falta configurar ${method === 'point' ? 'Terminal Point' : 'Caja QR'} para este usuario en la sucursal activa.`);
-                    }
-
-                    // 🔥 CAMBIO CRUCIAL: Enviamos branchId para que la Cloud Function sepa de dónde sacar el token
                     const res = await paymentService.initTransaction(method, total, targetDeviceId, {
                         companyId: user.companyId,
                         branchId: activeBranchId
@@ -135,9 +199,7 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
                     
                     setPaymentReference(res.reference);
                     setDigitalState('waiting'); 
-
                 } catch (error) {
-                    console.error(`Error iniciando ${method}:`, error);
                     setDigitalState('error');
                     setErrorMessage(error.message || "Error de conexión");
                 }
@@ -163,7 +225,18 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
                     if (response.ok && result.success) {
                         setDigitalState('approved');
                         setTimeout(() => {
-                            onConfirm({ method: 'card', totalSale: total, amountPaid: total, amountDebt: 0, withAfip, reference: result.paymentId });
+                            // 🔥 Usamos withAfipRef.current para captar el valor real en este instante
+                            onConfirm({ 
+                                method: 'card', 
+                                totalSale: total, 
+                                amountPaid: total, 
+                                amountDebt: 0, 
+                                withAfip: withAfipRef.current, 
+                                reference: result.paymentId,
+                                branchId: activeBranchId,
+                                baseAmount: total,
+                                surcharge: 0
+                            });
                         }, 1500);
                     } else {
                         setDigitalState('error');
@@ -176,7 +249,7 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
             };
             handleCloverPayment();
         }
-    }, [method, isOpen, assignedHardware]); 
+    }, [method, isOpen, assignedHardware, user.companyId, activeBranchId, total, user.uid, onConfirm]);
 
     // Polling de Estado
     useEffect(() => {
@@ -188,7 +261,17 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
                         setDigitalState('approved');
                         clearInterval(pollingRef.current);
                         setTimeout(() => {
-                            onConfirm({ method, totalSale: total, amountPaid: total, amountDebt: 0, withAfip });
+                            // 🔥 Usamos withAfipRef.current para captar el valor real
+                            onConfirm({ 
+                                method, 
+                                totalSale: total, 
+                                amountPaid: total, 
+                                amountDebt: 0, 
+                                withAfip: withAfipRef.current, 
+                                branchId: activeBranchId,
+                                baseAmount: total,
+                                surcharge: 0
+                            });
                         }, 1500);
                     } else if (['rejected', 'canceled'].includes(res.status)) {
                         setDigitalState('error');
@@ -200,9 +283,12 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
             pollingRef.current = setInterval(checkPayment, 3000);
             return () => clearInterval(pollingRef.current);
         }
-    }, [digitalState, paymentReference]);
+    }, [digitalState, paymentReference, method, total, activeBranchId, onConfirm]);
 
     const handleCloseAttempt = () => {
+        // Si está procesando la venta final (isProcessing), NO dejar cerrar
+        if (isProcessing) return;
+
         if (digitalState === 'waiting' || digitalState === 'creating') {
             if (window.confirm("⚠️ ¿CANCELAR PAGO EN PROCESO?")) {
                 if (pollingRef.current) clearInterval(pollingRef.current);
@@ -212,32 +298,58 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
         } else onClose();
     };
 
+    // ==========================================
+    // 🧠 CONFIRMACIÓN MANUAL (BLINDADA)
+    // ==========================================
     const handleManualConfirm = () => {
-        if (!canConfirm) return;
+        // 🔥 DOBLE CHECK: Si ya está procesando o no es válido, abortar
+        if (!canConfirm || isProcessing) return;
+
+        const finalTotalSale = selectedRate ? effectiveTotal : total;
+        const baseAmount = total;
+        const surchargeAmount = selectedRate ? (effectiveTotal - total) : 0;
+
+        let finalReference = method === 'transfer' ? reference : null;
+        
+        if (selectedRate && selectedBrand) {
+            finalReference = `${selectedBrand.brand} ${selectedRate.qty} ctes (${selectedRate.interest}%)`;
+        } else if (method === 'manual_card') {
+            finalReference = "Tarjeta (Manual sin plan)";
+        }
+
         onConfirm({
-            method,
-            totalSale: total,
+            method: (method === 'manual_card' || method === 'point' || method === 'clover') ? 'card' : method,
+            reference: finalReference,
+            branchId: activeBranchId, 
+            totalSale: finalTotalSale,
             amountPaid: payValue - changeValue, 
             amountDebt: debtValue, 
-            withAfip, 
-            reference: method === 'transfer' ? reference : null 
+            baseAmount: baseAmount,
+            surcharge: surchargeAmount, 
+            withAfip: withAfip 
         });
     };
 
     const handleKeyDown = (e) => {
         if (e.key === 'Enter') {
             e.preventDefault();
-            if (canConfirm) handleManualConfirm();
+            if (canConfirm && !isProcessing) handleManualConfirm();
         }
-        if (e.key === 'Escape') handleCloseAttempt(); 
+        if (e.key === 'Escape' && !isProcessing) handleCloseAttempt(); 
     };
 
     if (!isOpen) return null;
 
     const PaymentOption = ({ id, label, icon: Icon, colorClass, shortcut }) => (
         <button 
-            onClick={() => setMethod(id)} 
-            disabled={digitalState === 'creating' || digitalState === 'waiting' || digitalState === 'approved'} 
+            onClick={() => {
+                setMethod(id);
+                if (id !== 'manual_card') {
+                    setSelectedBrand(null);
+                    setSelectedRate(null);
+                }
+            }} 
+            disabled={digitalState === 'creating' || digitalState === 'waiting' || digitalState === 'approved' || isProcessing} 
             className={cn(
                 "flex flex-col items-center justify-center p-3 rounded-xl border-2 transition-all duration-200 h-24 relative overflow-hidden active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed group", 
                 method === id ? `bg-sys-50 border-${colorClass} shadow-md` : "bg-white border-sys-100 hover:border-sys-300 text-sys-500"
@@ -252,168 +364,207 @@ export const PaymentModal = ({ isOpen, onClose, total, client, onConfirm, disabl
 
     return (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-sys-900/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-            <div className="bg-white rounded-3xl shadow-2xl w-full max-w-4xl overflow-hidden flex flex-col md:flex-row min-h-[500px]">
+            <div className="bg-white rounded-3xl shadow-2xl w-full max-w-4xl overflow-hidden flex flex-col md:flex-row min-h-[550px]">
                 
-                {/* 🟢 COLUMNA IZQUIERDA: RESUMEN FINANCIERO */}
+                {/* 🟢 IZQUIERDA: RESUMEN FINANCIERO */}
                 <div className="w-full md:w-1/3 bg-sys-50 p-6 flex flex-col justify-between border-r border-sys-200">
-                    <div>
-                        <h3 className="font-bold text-sys-800 text-lg mb-1">
-                            {disableAfip ? "Cobranza de Deuda" : "Total a Cobrar"}
-                        </h3>
-                        <p className="text-sys-500 text-sm">Resumen de la operación</p>
-                    </div>
-
-                    <div className="space-y-4 flex-1 mt-6">
-                        <div className="bg-white p-4 rounded-xl border border-sys-200 shadow-sm">
-                            <p className="text-xs text-sys-500 uppercase font-bold">{disableAfip ? "Monto a Saldar" : "Total Venta"}</p>
-                            <p className="text-3xl font-black text-sys-900 tracking-tight">$ {total.toLocaleString('es-AR', {minimumFractionDigits: 0})}</p>
+                    <div className="space-y-4">
+                        <div className="bg-white p-4 rounded-xl border border-sys-200 shadow-sm relative overflow-hidden transition-all duration-300">
+                            {selectedRate && (
+                                <div className="absolute top-0 right-0 bg-indigo-600 text-white text-[9px] font-bold px-2 py-0.5 rounded-bl-lg">
+                                    CON RECARGO
+                                </div>
+                            )}
+                            <p className="text-xs text-sys-500 uppercase font-bold">{disableAfip ? "Monto a Saldar" : "Total Final"}</p>
+                            <p className="text-3xl font-black text-sys-900 tracking-tight">
+                                $ {effectiveTotal.toLocaleString('es-AR', {minimumFractionDigits: 0, maximumFractionDigits: 2})}
+                            </p>
+                            
+                            {selectedRate && (
+                                <div className="mt-2 pt-2 border-t border-dashed border-sys-200 flex justify-between text-xs animate-in slide-in-from-left-2">
+                                    <span className="text-sys-500">Base: ${total.toLocaleString('es-AR')}</span>
+                                    <span className="text-indigo-600 font-bold">
+                                        + ${(effectiveTotal - total).toLocaleString('es-AR', {maximumFractionDigits: 2})} ({selectedRate.interest}%)
+                                    </span>
+                                </div>
+                            )}
                         </div>
 
-                        {(method === 'cash' || method === 'transfer' || digitalState === 'error') && (
-                            <div className={cn("p-4 rounded-xl border transition-colors ring-offset-2 animate-in slide-in-from-bottom-2", 
-                                isPartialPayment ? "bg-orange-50 border-orange-300 ring-orange-100" : 
-                                changeValue > 0 ? "bg-green-50 border-green-300 ring-green-100" : "bg-white border-brand ring-brand/10"
-                            )}>
-                                <p className={cn("text-xs uppercase font-bold mb-1 flex justify-between", 
-                                    isPartialPayment ? "text-orange-700" : changeValue > 0 ? "text-green-700" : "text-brand"
-                                )}>
-                                    <span>{isPartialPayment ? "Pago Parcial" : changeValue > 0 ? "Paga con" : "Monto Exacto"}</span>
-                                    <span className="text-[10px] bg-black/5 px-1.5 rounded">ENTER</span>
-                                </p>
-                                <div className="relative">
-                                    <span className="absolute left-0 top-1 text-lg font-bold text-sys-400">$</span>
-                                    <input 
-                                        ref={cashInputRef}
-                                        type="number" 
-                                        className="w-full bg-transparent text-3xl font-black outline-none border-b-2 border-sys-300 focus:border-brand p-0 pl-5 text-sys-900 placeholder-sys-300"
-                                        value={amountToPay}
-                                        onChange={e => setAmountToPay(e.target.value)}
-                                        onKeyDown={handleKeyDown}
-                                        placeholder={Math.round(total).toString()}
-                                    />
-                                </div>
+                        <div className={cn("p-4 rounded-xl border-2 transition-all duration-300", 
+                            isPartialPayment ? "bg-orange-50 border-orange-200" : 
+                            changeValue > 0 ? "bg-green-50 border-green-200" : "bg-white border-sys-200",
+                            selectedRate && "opacity-90 grayscale-[0.5]"
+                        )}>
+                            <p className={cn("text-[10px] uppercase font-bold mb-1 flex justify-between", isPartialPayment ? "text-orange-700" : "text-sys-500")}>
+                                <span>Monto que entrega</span>
+                                {selectedRate && <span className="text-[9px] bg-sys-200 px-1 rounded text-sys-600">AUTO</span>}
+                            </p>
+                            <div className="flex items-center relative">
+                                <span className="text-lg font-bold text-sys-400 mr-1">$</span>
+                                <input 
+                                    ref={cashInputRef}
+                                    type="number" 
+                                    className={cn(
+                                        "w-full bg-transparent text-2xl font-black outline-none text-sys-900 placeholder-sys-300 transition-colors",
+                                        selectedRate && "cursor-not-allowed text-sys-600"
+                                    )}
+                                    value={amountToPay}
+                                    onChange={e => !selectedRate && setAmountToPay(e.target.value)}
+                                    onKeyDown={handleKeyDown}
+                                    readOnly={!!selectedRate || isProcessing}
+                                    disabled={isProcessing}
+                                    placeholder={Math.round(total).toString()}
+                                />
+                            </div>
+                        </div>
+
+                        {changeValue > 0 && (
+                            <div className="p-4 rounded-xl bg-green-600 text-white shadow-lg shadow-green-200 animate-in zoom-in-95">
+                                <p className="text-[10px] uppercase font-bold opacity-80">Su Vuelto</p>
+                                <p className="text-2xl font-black">$ {changeValue.toLocaleString('es-AR', {maximumFractionDigits: 2})}</p>
                             </div>
                         )}
-
-                        {(method === 'cash' || method === 'transfer') && (
-                            <>
-                                {isPartialPayment ? (
-                                    <div className="p-4 rounded-xl bg-red-50 border border-red-200 animate-in zoom-in-95">
-                                        <p className="text-xs text-red-600 uppercase font-bold">Saldo Deudor (Cta Cte)</p>
-                                        <p className="text-2xl font-black text-red-600">$ {debtValue.toLocaleString('es-AR', {maximumFractionDigits: 2})}</p>
-                                        {!isClientRegistered && (
-                                            <div className="mt-3 text-[10px] text-red-600 font-bold bg-white/60 p-2 rounded border border-red-100 flex gap-2 items-start leading-tight">
-                                                <AlertCircle size={14} className="shrink-0 mt-0.5" />
-                                                <span>ERROR: REQUIERE CLIENTE REGISTRADO</span>
-                                            </div>
-                                        )}
+                        {debtValue > 0 && (
+                            <div className="p-4 rounded-xl bg-red-50 border border-red-200 animate-in zoom-in-95">
+                                <p className="text-[10px] text-red-600 uppercase font-bold">Saldo a Cta Cte</p>
+                                <p className="text-xl font-black text-red-600">$ {debtValue.toLocaleString('es-AR', {maximumFractionDigits: 2})}</p>
+                                {!isClientRegistered && (
+                                    <div className="mt-2 text-[9px] text-red-700 font-bold flex items-center gap-1">
+                                        <AlertCircle size={10} /> CLIENTE REQUERIDO
                                     </div>
-                                ) : changeValue > 0 ? (
-                                    <div className="p-4 rounded-xl bg-green-100 border border-green-200 animate-in zoom-in-95 shadow-sm">
-                                        <p className="text-xs text-green-800 uppercase font-bold">Su Vuelto</p>
-                                        <p className="text-3xl font-black text-green-800">$ {changeValue.toLocaleString('es-AR', {maximumFractionDigits: 2})}</p>
-                                    </div>
-                                ) : null}
-                            </>
+                                )}
+                            </div>
                         )}
+                    </div>
+                    <div className="mt-4 text-center">
+                        <p className="text-[9px] text-sys-300 font-mono">ID: {reference || '---'}</p>
                     </div>
                 </div>
 
-                {/* 🔵 COLUMNA DERECHA: SELECCIÓN DE MÉTODO */}
+                {/* 🔵 DERECHA: SELECCIÓN DE MÉTODO */}
                 <div className="flex-1 p-8 flex flex-col bg-white">
                     <div className="flex justify-between items-center mb-6">
                         <div>
-                            <h3 className="font-bold text-xl text-sys-900 uppercase">Medio de Pago</h3>
-                            <p className="text-xs text-sys-500 uppercase font-bold opacity-60">Sucursal: {user?.activeBranchName}</p>
+                            <h3 className="font-bold text-xl text-sys-900 uppercase tracking-tight">Medio de Pago</h3>
+                            <p className="text-xs text-sys-500 uppercase font-bold opacity-60">Sucursal: {activeBranchName || user?.activeBranchName || "General"}</p>
                         </div>
-                        <button onClick={handleCloseAttempt} className="p-2 hover:bg-sys-100 rounded-full transition text-sys-500">
+                        <button onClick={handleCloseAttempt} disabled={isProcessing} className="p-2 hover:bg-sys-100 rounded-full text-sys-400 transition-colors disabled:opacity-30">
                             <X size={24} />
                         </button>
                     </div>
 
-                    <div className="grid grid-cols-4 gap-3 mb-6">
-                        <PaymentOption id="cash" label="Efectivo" icon={Banknote} colorClass="brand" shortcut="F1" />
-                        <PaymentOption id="transfer" label="Transfer" icon={Landmark} colorClass="purple-600" shortcut="F2" />
-                        <PaymentOption id="mercadopago" label="MP QR" icon={QrCode} colorClass="blue-500" />
-                        <PaymentOption id="point" label="MP Point" icon={CreditCard} colorClass="blue-600" />
-                        <PaymentOption id="clover" label="Clover" icon={Terminal} colorClass="green-600" /> 
+                    <div className="grid grid-cols-5 gap-2 mb-6">
+                        {[
+                            {id:'cash', icon: Banknote, label:'Efectivo', color:'brand'},
+                            {id:'transfer', icon: Landmark, label:'Transf.', color:'purple-600'},
+                            {id:'mercadopago', icon: QrCode, label:'QR MP', color:'blue-500'},
+                            {id:'point', icon: CreditCard, label:'Point', color:'blue-600'},
+                            {id:'manual_card', icon: Calculator, label:'Tarjeta', color:'indigo-600'}
+                        ].map(opt => (
+                            <PaymentOption key={opt.id} {...opt} colorClass={opt.color} />
+                        ))}
                     </div>
 
-                    <div className="flex-1 flex flex-col justify-center items-center text-center min-h-[150px] bg-sys-50 rounded-2xl border-2 border-dashed border-sys-200 p-6">
-                        {method === 'transfer' && (
-                            <div className="w-full max-w-sm animate-in fade-in">
-                                <div className="bg-purple-50 p-4 rounded-xl border border-purple-100 mb-4 shadow-sm">
-                                    <Landmark size={32} className="mx-auto text-purple-500 mb-2"/>
-                                    <p className="text-sm font-bold text-purple-900">{ACCOUNT_DATA.alias}</p>
-                                    <p className="text-xs text-purple-600">{ACCOUNT_DATA.bank}</p>
-                                </div>
-                                <input ref={transferRef} type="text" className="w-full bg-white border border-sys-300 rounded-xl px-4 py-3 text-sm outline-none focus:border-purple-500 text-center font-bold uppercase" placeholder="Nro de Comprobante" value={reference} onChange={(e) => setReference(e.target.value)} onKeyDown={handleKeyDown} />
-                            </div>
-                        )}
-
-                        {(method === 'mercadopago' || method === 'point' || method === 'clover') && (
-                            <div className="w-full max-w-xs animate-in fade-in">
-                                {digitalState === 'creating' && <><Loader2 size={48} className="animate-spin text-sys-300 mx-auto mb-4"/><p className="text-sys-500 font-bold uppercase text-xs">Iniciando Terminal...</p></>}
-                                {digitalState === 'waiting' && (
-                                    <>
-                                        <div className="w-20 h-20 bg-brand/10 rounded-full flex items-center justify-center mx-auto text-brand mb-4 animate-pulse">
-                                            {method === 'point' ? <CreditCard size={40}/> : <QrCode size={40}/>}
+                    {/* ÁREA DINÁMICA DE CONTENIDO */}
+                    <div className="flex-1 bg-sys-50 rounded-2xl border-2 border-dashed border-sys-200 p-4 flex flex-col items-center justify-center overflow-y-auto relative">
+                        
+                        {method === 'manual_card' && (
+                            <div className="w-full h-full flex flex-col animate-in fade-in absolute inset-0 p-4 overflow-y-auto">
+                                {loadingPlans ? (
+                                    <div className="flex flex-col items-center justify-center h-full">
+                                        <Loader2 size={32} className="animate-spin text-indigo-500 mb-2"/>
+                                        <p className="text-xs text-indigo-500 font-bold">Cargando tasas...</p>
+                                    </div>
+                                ) : paymentMethods.length === 0 ? (
+                                    <div className="flex flex-col items-center justify-center h-full text-sys-400">
+                                        <Layers size={40} className="mb-2 opacity-30"/>
+                                        <p className="font-bold text-sm">Sin tarjetas configuradas</p>
+                                        <p className="text-[10px] mt-1">Configure las marcas en el panel de Equipo.</p>
+                                    </div>
+                                ) : !selectedBrand ? (
+                                    <div className="grid grid-cols-2 gap-3 w-full content-start">
+                                        {paymentMethods.map((method) => (
+                                            <button key={method.brand} onClick={() => setSelectedBrand(method)} className="p-4 rounded-xl border border-sys-200 bg-white hover:border-indigo-400 hover:shadow-md transition-all flex flex-col items-center group">
+                                                <div className="w-10 h-7 bg-sys-50 border border-sys-100 rounded mb-2 flex items-center justify-center">
+                                                    <span className="text-[9px] font-black text-sys-500">{method.brand.substring(0,3)}</span>
+                                                </div>
+                                                <p className="font-bold text-sys-800 text-xs uppercase">{method.brand}</p>
+                                            </button>
+                                        ))}
+                                    </div>
+                                ) : (
+                                    <div className="w-full h-full flex flex-col">
+                                        <div className="flex items-center gap-2 mb-3 w-full sticky top-0 bg-sys-50 pb-2 z-10">
+                                            <Button variant="ghost" size="sm" onClick={() => { setSelectedBrand(null); setSelectedRate(null); }} className="text-sys-500 hover:bg-sys-200 h-8 px-2">
+                                                <ChevronLeft size={16} />
+                                            </Button>
+                                            <span className="font-bold text-indigo-900 bg-indigo-100 px-3 py-1.5 rounded-lg text-xs flex-1 text-center truncate">PLANES {selectedBrand.brand}</span>
                                         </div>
-                                        <h4 className="text-lg font-black text-sys-900 uppercase">Esperando Pago...</h4>
-                                        <p className="text-[10px] text-sys-500 mt-2 bg-white px-3 py-1 rounded-full border border-sys-100 uppercase font-black">
-                                            ID: {method === 'point' ? assignedHardware.pointId : assignedHardware.qrId}
-                                        </p>
-                                    </>
-                                )}
-                                {digitalState === 'approved' && (
-                                    <div className="animate-in zoom-in duration-300"><div className="w-20 h-20 bg-green-100 rounded-full flex items-center justify-center mx-auto text-green-600 mb-4"><CheckCircle2 size={48} /></div><h4 className="text-xl font-black text-green-600 uppercase">¡PAGO APROBADO!</h4></div>
-                                )}
-                                {digitalState === 'error' && (
-                                    <div className="text-red-500 bg-red-50 p-5 rounded-2xl border border-red-100">
-                                        <AlertCircle size={40} className="mx-auto mb-2"/><p className="font-bold text-sm uppercase mb-3">{errorMessage}</p>
-                                        <Button variant="ghost" size="sm" onClick={() => setMethod('cash')} className="bg-white border border-red-200 text-red-700 hover:bg-red-50 text-[10px] font-black uppercase">Cambiar a Efectivo</Button>
+                                        <div className="grid grid-cols-2 gap-2 w-full pb-2">
+                                            {selectedBrand.rates.map((rate) => (
+                                                <button key={rate.qty} onClick={() => setSelectedRate(selectedRate?.qty === rate.qty ? null : rate)} className={cn("p-3 rounded-xl border text-left transition-all h-20", selectedRate?.qty === rate.qty ? "bg-indigo-600 text-white shadow-md ring-2 ring-indigo-300" : "bg-white border-sys-200 text-sys-700 hover:border-indigo-300")}>
+                                                    <div className="flex justify-between items-start w-full">
+                                                        <span className={cn("text-lg font-black leading-none", selectedRate?.qty === rate.qty ? "text-white" : "text-sys-900")}>{rate.qty}</span>
+                                                        <span className={cn("text-[9px] font-bold uppercase px-1.5 py-0.5 rounded", selectedRate?.qty === rate.qty ? "bg-white/20 text-white" : "bg-sys-100 text-sys-600")}>{rate.interest === 0 ? "S/INT" : `+${rate.interest}%`}</span>
+                                                    </div>
+                                                    <span className={cn("text-xs font-bold mt-auto", selectedRate?.qty === rate.qty ? "text-indigo-100" : "text-sys-500")}>${((total * (1 + rate.interest/100)) / rate.qty).toLocaleString('es-AR', {maximumFractionDigits:0})} <span className="text-[9px] font-normal">/mes</span></span>
+                                                </button>
+                                            ))}
+                                        </div>
                                     </div>
                                 )}
                             </div>
                         )}
-
-                        {method === 'cash' && (
-                            <div className="text-sys-300 flex flex-col items-center opacity-40">
-                                <Wallet size={60} strokeWidth={1}/><p className="text-xs font-black uppercase tracking-[0.2em] mt-2">Operación en Efectivo</p>
+                        {method === 'cash' && <div className="text-sys-300 flex flex-col items-center opacity-40"><Wallet size={48} /><p className="text-[10px] font-black uppercase mt-2 tracking-widest">Cobro Manual</p></div>}
+                        {method === 'transfer' && (
+                            <div className="w-full max-w-xs space-y-3 animate-in fade-in">
+                                <div className="bg-purple-600 text-white p-4 rounded-xl text-center"><p className="font-black text-lg tracking-wide">{ACCOUNT_DATA.alias}</p></div>
+                                <input type="text" className="w-full p-3 rounded-xl border-2 border-sys-200 text-center font-bold" placeholder="Nro de Operación" value={reference} onChange={e => setReference(e.target.value)} />
+                            </div>
+                        )}
+                        {(method === 'mercadopago' || method === 'point' || method === 'clover') && (
+                            <div className="flex flex-col items-center gap-3 animate-in fade-in">
+                                {digitalState === 'waiting' ? <div className="w-16 h-16 rounded-full border-4 border-brand border-t-transparent animate-spin"/> : digitalState === 'approved' ? <div className="w-16 h-16 rounded-full bg-green-500 text-white flex items-center justify-center animate-in zoom-in"><CheckCircle2 size={32}/></div> : <Loader2 className="animate-spin text-sys-300" />}
                             </div>
                         )}
                     </div>
 
-                    <div className="mt-4 pt-4 border-t border-sys-100">
+                    <div className="mt-6 pt-4 border-t border-sys-100">
                         {!disableAfip && (
-                            <div className="flex items-center justify-between mb-4">
+                            <div className={cn("flex items-center justify-between mb-4 p-3 rounded-xl border transition-all", isRI ? "bg-indigo-50 border-indigo-200" : "bg-sys-50 border-sys-100")}>
                                 <div className="flex items-center gap-2">
-                                    <div className={cn("p-2 rounded-lg transition-colors", withAfip ? "bg-blue-50 text-brand" : "bg-sys-50 text-sys-400")}>
-                                        <ShieldCheck size={20} />
-                                    </div>
+                                    <ShieldCheck className={cn(withAfip ? "text-brand" : "text-sys-300")} size={20}/>
                                     <div>
-                                        <p className="text-sm font-bold text-sys-800 uppercase">Facturación AFIP</p>
-                                        <p className="text-[10px] text-sys-500 leading-none">{withAfip ? "Solicitar CAE" : "Ticket interno (X)"}</p>
+                                        <span className="text-xs font-bold text-sys-700 uppercase block">Facturación Electrónica</span>
+                                        <span className="text-[9px] text-sys-400 block flex items-center gap-1">
+                                            {isRI ? <span className="text-indigo-600 font-bold flex items-center gap-1"><Info size={10}/> CLIENTE RI: FACTURA A</span> : withAfip ? "Se emitirá ticket fiscal (CAE)" : "Solo ticket interno"}
+                                        </span>
                                     </div>
                                 </div>
-                                <Switch checked={withAfip} onCheckedChange={handleAfipChange} />
+                                <Switch checked={withAfip} onCheckedChange={handleAfipChange} disabled={isRI || isProcessing} />
                             </div>
                         )}
-
-                        {(method === 'cash' || method === 'transfer') && (
-                            <Button 
-                                onClick={handleManualConfirm}
-                                disabled={!canConfirm}
-                                className={cn(
-                                    "w-full py-4 text-lg font-black uppercase transition-all shadow-xl", 
-                                    !canConfirm ? "opacity-50 cursor-not-allowed bg-sys-400" : 
-                                    method === 'transfer' ? "bg-purple-600 hover:bg-purple-700 shadow-purple-500/20" : "shadow-brand/20"
-                                )}
-                            >
-                                {isPartialPayment ? "Confirmar Pago Parcial" : "Finalizar Venta (Enter)"} 
-                                <ArrowRight size={20} className="ml-2"/>
-                            </Button>
-                        )}
+                        
+                        {/* 🚀 BOTÓN DE CONFIRMACIÓN PREMIUM */}
+                        <Button 
+                            onClick={handleManualConfirm} 
+                            disabled={!canConfirm || isProcessing}
+                            className={cn("w-full py-6 text-xl font-black uppercase shadow-xl transition-all duration-300 relative overflow-hidden", 
+                                (!canConfirm || isProcessing) ? "bg-sys-200 text-sys-400 cursor-not-allowed shadow-none" : "bg-brand hover:bg-brand-dark hover:scale-[1.01] shadow-brand/30 active:scale-[0.98]"
+                            )}
+                        >
+                            {isProcessing ? (
+                                <div className="flex items-center justify-center gap-3 animate-pulse">
+                                    <Loader2 className="animate-spin" size={24} />
+                                    <span>Procesando Venta...</span>
+                                </div>
+                            ) : (
+                                <div className="flex items-center justify-center gap-2">
+                                    <span>{isPartialPayment ? "Confirmar Pago Parcial" : "Confirmar Cobro"}</span>
+                                    <ArrowRight size={24} />
+                                </div>
+                            )}
+                        </Button>
                     </div>
                 </div>
             </div>

@@ -496,8 +496,17 @@ export const cashRepository = {
             for (const m of allMovements) {
                 const amount = Number(m.amount) || 0; 
                 const method = (m.method || 'unknown').toLowerCase(); 
-                const isDigitalKnown = method.includes('mercado') || method.includes('clover') || method.includes('card') || method === 'point' || method === 'qr';
                 
+                // 🔥 AQUI ESTABA EL ERROR POTENCIAL:
+                // Debemos incluir TODOS los métodos digitales nuevos.
+                const isDigitalKnown = 
+                    method.includes('mercado') || 
+                    method.includes('clover') || 
+                    method.includes('card') || 
+                    method === 'point' || 
+                    method === 'qr' ||
+                    method === 'manual_card'; // ✅ Agregado
+
                 const description = (m.description || '').toLowerCase();
                 const isClosingWithdrawal = m.subtype === 'CLOSING' || description.includes('rendición de cierre');
 
@@ -604,7 +613,10 @@ export const cashRepository = {
             const round2 = (num) => Math.round((num + Number.EPSILON) * 100) / 100;
 
             for (const sale of shiftSales) {
-                const total = parseFloat(sale.total) || 0;
+                // 🔥 AQUI ESTABA EL ERROR DE REPORTE:
+                // Debemos usar el TOTAL real (con interés) si existe totalSale
+                const total = parseFloat(sale.totalSale || sale.total) || 0;
+                
                 audit.totalSales += total;
                 const methodRaw = sale.payment?.method || 'unknown';
                 const method = methodRaw.toLowerCase();
@@ -616,6 +628,7 @@ export const cashRepository = {
                 } else if (method.includes('clover')) {
                     audit.salesByMethod.clover += total;
                 } else {
+                    // Aquí caerán las tarjetas manuales
                     audit.salesByMethod.digitalOther += total;
                 }
             }
@@ -649,7 +662,7 @@ export const cashRepository = {
                 
                 if (m.type === 'DEPOSIT' && m.subtype !== 'OPENING') audit.totalExpenses += 0; 
                 if (m.type === 'WITHDRAWAL' || m.type === 'EXPENSE') {
-                     if (!isClosingWithdrawal) audit.totalWithdrawals += amount;
+                      if (!isClosingWithdrawal) audit.totalWithdrawals += amount;
                 }
             }
 

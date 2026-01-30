@@ -5,11 +5,9 @@ import {
     setDoc, 
     getDoc, 
     getDocs,
-    serverTimestamp,
     collection,
     query,
-    where,
-    orderBy
+    where
 } from 'firebase/firestore'; 
 import { useAuthStore } from '../../auth/store/useAuthStore'; 
 import { productRepository } from '../../inventory/repositories/productRepository';
@@ -36,6 +34,8 @@ const triggerOptimisticSync = async (collectionName, data, companyId) => {
             await dbLocal.sales.update(data.localId, { syncStatus: 'synced' });
         } else if (collectionName === 'movements') {
             await dbLocal.movements.update(data.id, { syncStatus: 'synced' });
+        } else if (collectionName === 'cash_movements') {
+            await dbLocal.cash_movements.update(data.id, { syncStatus: 'synced' });
         }
     } catch (err) {
         console.warn(`☁️ Sync optimista falló (${collectionName}), se reintentará en background.`);
@@ -159,7 +159,7 @@ export const salesRepository = {
   },
 
   // ==========================================
-  // 💰 CREAR VENTA (FIX CONTEXTO + SHIFT LINK)
+  // 💰 CREAR VENTA (FIX INTERESES + CAJA + AFIP)
   // ==========================================
   async createSale(saleData) {
     const dbLocal = await getDB();
@@ -169,40 +169,64 @@ export const salesRepository = {
 
     const targetBranchId = activeBranchId || user.branchId || 'main';
 
-    const saleId = `sale_${crypto.randomUUID()}`;
-    const timestamp = new Date().toISOString(); 
-    const docType = saleData.afip ? saleData.afip.type : 'X';
+    const saleId = saleData.id || `sale_${crypto.randomUUID()}`; // Usamos ID si viene de AFIP service
+    const timestamp = saleData.createdAt || new Date().toISOString(); 
     
-    // 1. Generamos número de ticket
-    const { finalNumber, nextSequence, configKey } = await this._generateTicketNumber(docType, targetBranchId);
+    // 🔥 LÓGICA DE NUMERACIÓN INTELIGENTE
+    let finalNumber = saleData.number; // Si viene de AFIP, ya tiene número fiscal
+    let configKeyToUpdate = null;
+    let nextSequenceVal = 0;
 
-    // 🔥 2. LINK FUERTE: Obtenemos el turno activo para vincularlo a la venta
+    // Si NO tiene número (es venta local o Ticket X), lo generamos
+    if (!finalNumber) {
+        const docType = saleData.afip?.status === 'APPROVED' ? saleData.afip.cbteLetra : 'X';
+        const gen = await this._generateTicketNumber(docType, targetBranchId);
+        finalNumber = gen.finalNumber;
+        configKeyToUpdate = gen.configKey;
+        nextSequenceVal = gen.nextSequence;
+    }
+
+    // 2. LINK FUERTE: Obtenemos el turno activo para vincularlo a la venta
     const currentShift = await cashRepository.getCurrentShift();
 
+    // 3. Armado del Objeto Venta (Asegurando campos de Auditoría)
     const sale = {
       ...saleData,
       id: saleId,
       localId: saleId,
       number: finalNumber,
       branchId: targetBranchId,
-      date: saleData.date ? new Date(saleData.date).toISOString() : timestamp, 
+      date: saleData.date || timestamp, 
       createdAt: timestamp,
       status: 'COMPLETED', 
       syncStatus: 'pending', 
       userId: user?.uid || 'unknown',
       userName: user?.name || 'Vendedor',
       companyId: user.companyId,
-      // 🔥 Guardamos la referencia explícita al turno
-      shiftId: currentShift ? currentShift.id : null 
+      shiftId: currentShift ? currentShift.id : null,
+      
+      // 🛡️ Aseguramos que los campos de doble columna existan sí o sí
+      total: saleData.totalSale || saleData.total, // El monto final cobrado
+      baseAmount: saleData.baseAmount || saleData.total, // El monto de la mercadería
+      surcharge: saleData.surcharge || 0, // El interés
+      
+      // Persistencia obligatoria de datos AFIP
+      afip: saleData.afip || { status: 'SKIPPED' }
     };
 
     const movementsToCreate = [];
+    let cashMovement = null;
 
     await dbLocal.transaction('rw', [dbLocal.sales, dbLocal.config, dbLocal.products, dbLocal.movements, dbLocal.cash_movements], async () => {
         
         await dbLocal.sales.put(sale);
-        await dbLocal.config.put({ key: configKey, value: nextSequence });
+        
+        // Solo actualizamos el contador local si generamos nosotros el número
+        if (configKeyToUpdate) {
+            await dbLocal.config.put({ key: configKeyToUpdate, value: nextSequenceVal });
+        }
 
+        // A. Descuento de Stock
         for (const item of saleData.items) {
             const product = await dbLocal.products.get(item.id);
             
@@ -253,26 +277,28 @@ export const salesRepository = {
             movementsToCreate.push(movement); 
         }
 
-        // Registrar Movimiento de Caja si es Efectivo
-        if (sale.payment && sale.payment.method === 'cash') {
-             await dbLocal.cash_movements.put({
-                 id: `cm_${crypto.randomUUID()}`,
-                 type: 'IN',
-                 amount: sale.total,
-                 description: `Venta ${finalNumber}`,
-                 date: timestamp,
-                 method: 'cash',
-                 userId: user.uid,
-                 branchId: targetBranchId, 
-                 // 🔥 Vinculamos también el movimiento al turno
-                 shiftId: currentShift ? currentShift.id : null,
-                 subtype: 'SALE', // Para diferenciar ventas de ingresos manuales
-                 syncStatus: 'pending'
-             });
-        }
+        // B. Registro de Movimiento Financiero (CAJA / BANCO)
+        const method = sale.payment?.method || 'cash';
+        
+        cashMovement = {
+             id: `cm_${crypto.randomUUID()}`,
+             type: 'IN', // Ingreso
+             amount: sale.total, // Usamos el total con interés
+             description: `Venta ${finalNumber} (${method.toUpperCase()}) ${sale.afip?.status === 'APPROVED' ? '[AFIP]' : ''}`,
+             date: timestamp,
+             method: method, // 'cash', 'card', 'qr', etc.
+             userId: user.uid,
+             branchId: targetBranchId, 
+             shiftId: currentShift ? currentShift.id : null,
+             subtype: 'SALE', 
+             syncStatus: 'pending',
+             referenceId: saleId // Link a la venta
+        };
+
+        await dbLocal.cash_movements.put(cashMovement);
     });
     
-    // 4. DESCUENTO DE STOCK CLOUD
+    // 4. DESCUENTO DE STOCK CLOUD (Background)
     const stockPromises = saleData.items.map(item => {
         const qty = item.isWeighable ? parseFloat(item.quantity) : parseInt(item.quantity);
         return productRepository.addStock(item.id, -qty, null, user.name, targetBranchId)
@@ -284,8 +310,13 @@ export const salesRepository = {
     const saleToUpload = { ...sale, number: finalNumber };
     triggerOptimisticSync('sales', saleToUpload, user.companyId);
     
-    // 6. Sync Optimista Movimientos
+    // 6. Sync Optimista Movimientos de Stock
     movementsToCreate.forEach(m => triggerOptimisticSync('movements', m, user.companyId));
+
+    // 7. Sync Optimista Movimiento Financiero (Caja)
+    if (cashMovement) {
+        triggerOptimisticSync('cash_movements', cashMovement, user.companyId);
+    }
 
     return sale;
   },

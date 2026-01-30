@@ -1,121 +1,173 @@
 import React, { useState, useEffect } from 'react';
-import { Camera, Save, Building, FileText, MapPin, CreditCard, AlertCircle } from 'lucide-react';
-import { doc, updateDoc, getDoc } from 'firebase/firestore';
+import { Camera, Save, Store, FileText, MapPin, Hash, Calendar, AlertTriangle, Info } from 'lucide-react';
+import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { db, storage } from '../../../database/firebase'; 
 import { useAuthStore } from '../../auth/store/useAuthStore';
 import { Card } from '../../../core/ui/Card';
 import { Button } from '../../../core/ui/Button';
+import { toast } from 'react-hot-toast';
 
 export const CompanySettingsPage = () => {
-    const { user } = useAuthStore();
+    const { user, activeBranchId, activeBranchName } = useAuthStore();
     
-    // Estado inicial con todos los campos necesarios para el ticket
-    const [companyData, setCompanyData] = useState({ 
-        name: '', 
-        slug: '', 
-        logoUrl: null,
-        razonSocial: '',
-        cuit: '',
-        address: '',
+    // Estado inicial completo para evitar uncontrolled inputs
+    const [branchData, setBranchData] = useState({ 
+        name: '',           // Nombre de Fantasía (Kiosco Pepe - Centro)
+        logoUrl: null,      // Logo específico de la sucursal
+        razonSocial: '',    // Razón Social (puede ser la misma para todas)
+        cuit: '',           // CUIT (el mismo para todas)
+        iibb: '',           // IIBB (puede variar por jurisdicción)
+        inicioAct: '',      // Inicio Actividades
+        address: '',        // Dirección (específica de la sucursal)
         taxCondition: 'CONSUMIDOR FINAL'
     });
     
     const [file, setFile] = useState(null);
     const [loading, setLoading] = useState(false);
-    const [msg, setMsg] = useState('');
+    const [loadingData, setLoadingData] = useState(true);
 
-    // 1. Cargar datos actuales
+    // =================================================================
+    // 1. CARGAR DATOS (Estrategia: Branch > Company Fallback)
+    // =================================================================
     useEffect(() => {
-        if (!user?.companyId) return;
+        if (!user?.companyId || !activeBranchId) return;
+        
         const fetchConfig = async () => {
-            const docRef = doc(db, 'companies', user.companyId);
-            const snap = await getDoc(docRef);
-            if (snap.exists()) {
-                // Fusionamos con defaults para evitar errores de "uncontrolled inputs"
-                setCompanyData({
-                    name: '', 
-                    slug: '', 
-                    logoUrl: null,
-                    razonSocial: '',
-                    cuit: '',
-                    address: '',
-                    taxCondition: 'CONSUMIDOR FINAL',
-                    ...snap.data() // Sobrescribe con lo que venga de DB
-                });
+            setLoadingData(true);
+            try {
+                // A. Buscamos config específica de la sucursal
+                const branchRef = doc(db, 'companies', user.companyId, 'branches', activeBranchId);
+                const branchSnap = await getDoc(branchRef);
+                
+                // B. Buscamos config general de la empresa (para rellenar huecos)
+                const companyRef = doc(db, 'companies', user.companyId);
+                const companySnap = await getDoc(companyRef);
+                const companyData = companySnap.exists() ? companySnap.data() : {};
+
+                if (branchSnap.exists()) {
+                    const data = branchSnap.data();
+                    // Prioridad: Lo que tenga la sucursal. Si falta, usamos lo de la empresa.
+                    setBranchData(prev => ({
+                        ...prev,
+                        ...data,
+                        // Fallbacks inteligentes para datos fiscales que suelen repetirse
+                        cuit: data.cuit || companyData.cuit || '',
+                        razonSocial: data.razonSocial || companyData.razonSocial || '',
+                        taxCondition: data.taxCondition || companyData.taxCondition || 'CONSUMIDOR FINAL',
+                        iibb: data.iibb || companyData.iibb || '',
+                        inicioAct: data.inicioAct || companyData.inicioAct || ''
+                    }));
+                } else {
+                    // Si la sucursal no tiene config (nueva), pre-cargamos con datos de empresa + nombre sucursal
+                    setBranchData(prev => ({ 
+                        ...prev, 
+                        ...companyData, 
+                        name: activeBranchName, // Nombre por defecto: el nombre de la sucursal en el sistema
+                        address: '' // Dirección vacía para obligar a cargarla
+                    }));
+                }
+            } catch (error) {
+                console.error("Error cargando configuración:", error);
+                toast.error("No se pudieron cargar los datos de la sucursal.");
+            } finally {
+                setLoadingData(false);
             }
         };
+        
         fetchConfig();
-    }, [user]);
+    }, [user?.companyId, activeBranchId, activeBranchName]);
 
-    // 2. Manejar Guardado
+    // =================================================================
+    // 2. GUARDAR CONFIGURACIÓN (En el documento de la Sucursal)
+    // =================================================================
     const handleSave = async (e) => {
         e.preventDefault();
         setLoading(true);
-        setMsg('');
 
         try {
-            let newLogoUrl = companyData.logoUrl;
+            let newLogoUrl = branchData.logoUrl;
 
-            // A. Subir imagen si seleccionó una nueva
+            // A. Subir Logo (Ruta aislada por sucursal)
             if (file) {
-                const storageRef = ref(storage, `logos/${user.companyId}/logo_${Date.now()}`);
+                const storageRef = ref(storage, `logos/${user.companyId}/${activeBranchId}/logo_${Date.now()}`);
                 await uploadBytes(storageRef, file);
                 newLogoUrl = await getDownloadURL(storageRef);
             }
 
-            // B. Guardar en Firestore
-            const companyRef = doc(db, 'companies', user.companyId);
-            await updateDoc(companyRef, {
-                name: companyData.name,
+            // B. Guardar en Firestore: companies -> branches -> [ID]
+            const branchRef = doc(db, 'companies', user.companyId, 'branches', activeBranchId);
+            
+            // 🔥 Usamos merge: true para NO borrar la config de AFIP (certificados) que vive en el mismo doc
+            const payload = {
+                ...branchData,
                 logoUrl: newLogoUrl,
-                // Datos Fiscales Nuevos
-                razonSocial: companyData.razonSocial,
-                cuit: companyData.cuit,
-                address: companyData.address,
-                taxCondition: companyData.taxCondition
-                // 🚫 NO guardamos 'slug' aquí porque es fijo
-            });
+                updatedAt: new Date().toISOString()
+            };
 
-            setCompanyData(prev => ({ ...prev, logoUrl: newLogoUrl }));
-            setMsg('✅ Datos del negocio actualizados.');
+            await setDoc(branchRef, payload, { merge: true });
+
+            // C. Actualizar estado local
+            setBranchData(prev => ({ ...prev, logoUrl: newLogoUrl }));
+            
+            // D. Actualizar Cache Local (Para que el TicketModal lo vea YA)
+            const cacheKey = `SALVADOR_BRANCH_CONFIG_${activeBranchId}`;
+            localStorage.setItem(cacheKey, JSON.stringify(payload));
+
+            toast.success(`Datos de "${activeBranchName}" guardados correctamente.`);
 
         } catch (error) {
-            console.error(error);
-            setMsg('❌ Error al guardar.');
+            console.error("Error al guardar:", error);
+            toast.error('Error al guardar. Verifique su conexión.');
         } finally {
             setLoading(false);
         }
     };
 
+    if (loadingData) {
+        return <div className="p-10 text-center text-white">Cargando configuración de la sucursal...</div>;
+    }
+
     return (
-        <div className="p-6 max-w-4xl mx-auto pb-20">
-            <h1 className="text-2xl font-bold text-white mb-6 flex items-center gap-2">
-                <Building className="text-blue-400" /> Configuración de Marca y Ticket
-            </h1>
+        <div className="p-6 max-w-4xl mx-auto pb-20 animate-in fade-in duration-500">
+            
+            {/* ENCABEZADO DE CONTEXTO */}
+            <div className="mb-6 flex items-center justify-between">
+                <div>
+                    <h1 className="text-2xl font-bold text-white flex items-center gap-2">
+                        <Store className="text-blue-400" /> Configuración de Sucursal
+                    </h1>
+                    <div className="flex items-center gap-2 mt-2">
+                        <span className="text-slate-400 text-sm">Estás editando:</span>
+                        <span className="bg-blue-600/20 text-blue-300 px-3 py-1 rounded-full text-xs font-bold border border-blue-500/30 flex items-center gap-1">
+                            <MapPin size={12}/> {activeBranchName}
+                        </span>
+                    </div>
+                </div>
+            </div>
 
             <form onSubmit={handleSave} className="space-y-6">
                 
-                {/* 1. IDENTIDAD VISUAL (LOGO Y NOMBRE) */}
-                <Card className="bg-slate-800 border-slate-700 p-6">
-                    <h3 className="text-slate-300 font-bold mb-4 flex items-center gap-2">
-                        <Camera size={18}/> Identidad Visual
+                {/* 1. IDENTIDAD VISUAL */}
+                <Card className="bg-slate-800 border-slate-700 p-6 shadow-xl">
+                    <h3 className="text-slate-300 font-bold mb-6 flex items-center gap-2 border-b border-slate-700 pb-2">
+                        <Camera size={18} className="text-blue-400"/> Identidad Visual
                     </h3>
                     
-                    <div className="flex flex-col md:flex-row gap-6 items-center md:items-start">
+                    <div className="flex flex-col md:flex-row gap-8 items-center md:items-start">
                         {/* Logo Upload */}
                         <div className="flex flex-col items-center gap-3">
-                            <div className="w-32 h-32 rounded-full bg-slate-700 overflow-hidden flex items-center justify-center border-4 border-slate-600 shadow-xl relative group">
+                            <div className="w-32 h-32 rounded-full bg-slate-900 overflow-hidden flex items-center justify-center border-4 border-slate-600 shadow-xl relative group transition-all hover:border-blue-500">
                                 {file ? (
                                     <img src={URL.createObjectURL(file)} className="w-full h-full object-cover" alt="Preview" />
-                                ) : companyData.logoUrl ? (
-                                    <img src={companyData.logoUrl} className="w-full h-full object-cover" alt="Logo" />
+                                ) : branchData.logoUrl ? (
+                                    <img src={branchData.logoUrl} className="w-full h-full object-contain p-2" alt="Logo" />
                                 ) : (
-                                    <Camera size={48} className="text-slate-500" />
+                                    <Camera size={40} className="text-slate-600 group-hover:text-blue-500 transition-colors" />
                                 )}
                                 
-                                <label htmlFor="logo-upload" className="absolute inset-0 bg-black/50 hidden group-hover:flex items-center justify-center text-xs text-white cursor-pointer transition-all">
-                                    Cambiar Logo
+                                <label htmlFor="logo-upload" className="absolute inset-0 bg-black/60 hidden group-hover:flex items-center justify-center text-xs font-bold text-white cursor-pointer transition-all uppercase tracking-wider text-center p-2">
+                                    CAMBIAR
                                 </label>
                                 <input 
                                     type="file" 
@@ -125,106 +177,136 @@ export const CompanySettingsPage = () => {
                                     onChange={(e) => setFile(e.target.files[0])}
                                 />
                             </div>
-                            <p className="text-xs text-slate-500">Formato JPG/PNG</p>
+                            <p className="text-[10px] text-slate-500 font-mono">JPG/PNG (Max 2MB)</p>
                         </div>
 
-                        {/* Nombre y Slug */}
+                        {/* Nombre */}
                         <div className="flex-1 w-full space-y-4">
                             <div>
-                                <label className="block text-slate-400 text-xs font-bold mb-1">NOMBRE DE FANTASÍA</label>
+                                <label className="block text-slate-400 text-xs font-bold mb-1.5 uppercase tracking-wide">Nombre de Fantasía</label>
                                 <input 
                                     type="text" 
-                                    className="w-full bg-slate-900 border border-slate-600 rounded p-3 text-white focus:border-blue-500 outline-none"
-                                    placeholder="Ej: Kiosco Pepe"
-                                    value={companyData.name || ''}
-                                    onChange={(e) => setCompanyData({...companyData, name: e.target.value})}
+                                    className="w-full bg-slate-900 border border-slate-600 rounded-lg p-3 text-white focus:border-blue-500 outline-none transition-all"
+                                    placeholder={`Ej: ${activeBranchName}`}
+                                    value={branchData.name || ''}
+                                    onChange={(e) => setBranchData({...branchData, name: e.target.value})}
                                 />
-                            </div>
-
-                            <div>
-                                <label className="block text-slate-400 text-xs font-bold mb-1 flex justify-between">
-                                    ENLACE DE ACCESO
-                                    <span className="text-[10px] text-yellow-500 flex items-center gap-1"><AlertCircle size={10}/> NO MODIFICABLE</span>
-                                </label>
-                                <div className="flex items-center bg-slate-900/50 border border-slate-700 rounded text-slate-500 px-3 py-3">
-                                    <span className="text-xs select-none">noarpos.com/login/</span>
-                                    <span className="text-white font-mono ml-1">{companyData.slug || user?.companyId}</span>
-                                </div>
+                                <p className="text-xs text-slate-500 mt-2 flex gap-1 items-center">
+                                    <Info size={12}/> Este nombre aparecerá en el encabezado del ticket.
+                                </p>
                             </div>
                         </div>
                     </div>
                 </Card>
 
-                {/* 2. DATOS FISCALES (PARA EL TICKET) */}
-                <Card className="bg-slate-800 border-slate-700 p-6">
-                    <h3 className="text-slate-300 font-bold mb-4 flex items-center gap-2">
-                        <FileText size={18}/> Datos para el Ticket
+                {/* 2. DATOS FISCALES */}
+                <Card className="bg-slate-800 border-slate-700 p-6 shadow-xl">
+                    <h3 className="text-slate-300 font-bold mb-6 flex items-center gap-2 border-b border-slate-700 pb-2">
+                        <FileText size={18} className="text-blue-400"/> Datos Fiscales del Local
                     </h3>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
                         
                         {/* Razón Social */}
-                        <div>
-                            <label className="block text-slate-400 text-xs font-bold mb-1">RAZÓN SOCIAL</label>
+                        <div className="md:col-span-2">
+                            <label className="block text-slate-400 text-xs font-bold mb-1.5 uppercase">Razón Social</label>
                             <input 
                                 type="text" 
-                                className="w-full bg-slate-900 border border-slate-600 rounded p-3 text-white focus:border-blue-500 outline-none"
+                                className="w-full bg-slate-900 border border-slate-600 rounded-lg p-3 text-white focus:border-blue-500 outline-none"
                                 placeholder="Ej: Juan Pérez S.A."
-                                value={companyData.razonSocial || ''}
-                                onChange={(e) => setCompanyData({...companyData, razonSocial: e.target.value})}
+                                value={branchData.razonSocial || ''}
+                                onChange={(e) => setBranchData({...branchData, razonSocial: e.target.value})}
                             />
-                            <p className="text-[10px] text-slate-500 mt-1">Si se deja vacío, no aparece en el ticket.</p>
                         </div>
 
                         {/* CUIT */}
                         <div>
-                            <label className="block text-slate-400 text-xs font-bold mb-1">CUIT / DNI</label>
-                            <input 
-                                type="text" 
-                                className="w-full bg-slate-900 border border-slate-600 rounded p-3 text-white focus:border-blue-500 outline-none font-mono"
-                                placeholder="20-12345678-9"
-                                value={companyData.cuit || ''}
-                                onChange={(e) => setCompanyData({...companyData, cuit: e.target.value})}
-                            />
+                            <label className="block text-slate-400 text-xs font-bold mb-1.5 uppercase">CUIT del Titular</label>
+                            <div className="relative">
+                                <input 
+                                    type="text" 
+                                    className="w-full bg-slate-900 border border-slate-600 rounded-lg p-3 pl-10 text-white font-mono focus:border-blue-500 outline-none"
+                                    placeholder="20-12345678-9"
+                                    value={branchData.cuit || ''}
+                                    onChange={(e) => setBranchData({...branchData, cuit: e.target.value})}
+                                />
+                                <Hash size={16} className="absolute left-3 top-3.5 text-slate-500"/>
+                            </div>
+                        </div>
+
+                        {/* Condición IVA */}
+                        <div>
+                            <label className="block text-slate-400 text-xs font-bold mb-1.5 uppercase">Condición IVA</label>
+                            <select 
+                                className="w-full bg-slate-900 border border-slate-600 rounded-lg p-3 text-white focus:border-blue-500 outline-none"
+                                value={branchData.taxCondition || 'CONSUMIDOR FINAL'}
+                                onChange={(e) => setBranchData({...branchData, taxCondition: e.target.value})}
+                            >
+                                <option value="CONSUMIDOR FINAL">Consumidor Final</option>
+                                <option value="RESPONSABLE INSCRIPTO">Responsable Inscripto</option>
+                                <option value="MONOTRIBUTO">Monotributo</option>
+                                <option value="EXENTO">Exento</option>
+                            </select>
                         </div>
 
                         {/* Dirección */}
                         <div className="md:col-span-2">
-                            <label className="block text-slate-400 text-xs font-bold mb-1 flex items-center gap-1"><MapPin size={12}/> DIRECCIÓN COMERCIAL</label>
+                            <label className="block text-slate-400 text-xs font-bold mb-1.5 uppercase flex justify-between">
+                                Dirección del Local
+                                <span className="text-[10px] text-yellow-500 flex items-center gap-1"><AlertTriangle size={10}/> Importante para el ticket</span>
+                            </label>
+                            <div className="relative">
+                                <input 
+                                    type="text" 
+                                    className="w-full bg-slate-900 border border-slate-600 rounded-lg p-3 pl-10 text-white focus:border-blue-500 outline-none"
+                                    placeholder="Calle 123, Localidad, Provincia"
+                                    value={branchData.address || ''}
+                                    onChange={(e) => setBranchData({...branchData, address: e.target.value})}
+                                />
+                                <MapPin size={16} className="absolute left-3 top-3.5 text-slate-500"/>
+                            </div>
+                        </div>
+
+                        {/* IIBB */}
+                        <div>
+                            <label className="block text-slate-400 text-xs font-bold mb-1.5 uppercase">N° Ingresos Brutos</label>
                             <input 
                                 type="text" 
-                                className="w-full bg-slate-900 border border-slate-600 rounded p-3 text-white focus:border-blue-500 outline-none"
-                                placeholder="Ej: Av. Siempreviva 742, Ciudad"
-                                value={companyData.address || ''}
-                                onChange={(e) => setCompanyData({...companyData, address: e.target.value})}
+                                className="w-full bg-slate-900 border border-slate-600 rounded-lg p-3 text-white font-mono focus:border-blue-500 outline-none"
+                                placeholder="Ej: 901-283921-1"
+                                value={branchData.iibb || ''}
+                                onChange={(e) => setBranchData({...branchData, iibb: e.target.value})}
                             />
                         </div>
 
-                        {/* Condición IVA */}
-                        <div className="md:col-span-2">
-                            <label className="block text-slate-400 text-xs font-bold mb-1 flex items-center gap-1"><CreditCard size={12}/> CONDICIÓN IVA</label>
-                            <select 
-                                className="w-full bg-slate-900 border border-slate-600 rounded p-3 text-white focus:border-blue-500 outline-none"
-                                value={companyData.taxCondition || 'CONSUMIDOR FINAL'}
-                                onChange={(e) => setCompanyData({...companyData, taxCondition: e.target.value})}
-                            >
-                                <option value="CONSUMIDOR FINAL">Consumidor Final (Ticket X)</option>
-                                <option value="RESPONSABLE INSCRIPTO">Responsable Inscripto (Factura A/B)</option>
-                                <option value="MONOTRIBUTO">Monotributo (Factura C)</option>
-                                <option value="EXENTO">Exento</option>
-                            </select>
+                        {/* Inicio Actividad */}
+                        <div>
+                            <label className="block text-slate-400 text-xs font-bold mb-1.5 uppercase">Inicio de Actividades</label>
+                            <div className="relative">
+                                <input 
+                                    type="date" 
+                                    className="w-full bg-slate-900 border border-slate-600 rounded-lg p-3 pl-10 text-white font-mono focus:border-blue-500 outline-none"
+                                    value={branchData.inicioAct || ''}
+                                    onChange={(e) => setBranchData({...branchData, inicioAct: e.target.value})}
+                                />
+                                <Calendar size={16} className="absolute left-3 top-3.5 text-slate-500"/>
+                            </div>
                         </div>
+
                     </div>
                 </Card>
 
-                {/* MENSAJES Y BOTÓN */}
-                {msg && (
-                    <div className={`p-3 rounded text-center font-bold ${msg.includes('Error') ? 'bg-red-900/30 text-red-400 border border-red-800' : 'bg-green-900/30 text-green-400 border border-green-800'}`}>
-                        {msg}
-                    </div>
-                )}
-
-                <Button type="submit" disabled={loading} className="w-full bg-blue-600 hover:bg-blue-500 text-white py-4 font-bold text-lg shadow-lg shadow-blue-900/50 rounded-xl transition-all active:scale-95">
-                    {loading ? <span className="flex items-center justify-center gap-2"><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"/> Guardando...</span> : '💾 Guardar Configuración'}
+                <Button type="submit" disabled={loading} className="w-full bg-blue-600 hover:bg-blue-500 text-white py-4 font-bold text-lg rounded-xl shadow-lg shadow-blue-900/30 transition-all active:scale-[0.98] flex items-center justify-center gap-3">
+                    {loading ? (
+                        <>
+                            <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin"/>
+                            Guardando...
+                        </>
+                    ) : (
+                        <>
+                            <Save size={20}/> Guardar Cambios en {activeBranchName}
+                        </>
+                    )}
                 </Button>
 
             </form>

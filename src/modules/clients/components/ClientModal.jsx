@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { X, User, FileText, MapPin, Mail, Save, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { X, User, FileText, MapPin, Mail, Save, AlertCircle } from 'lucide-react';
 import { Button } from '../../../core/ui/Button';
 import { cn } from '../../../core/utils/cn';
 
-// --- Helpers de UI (Locales para mantener modularidad por ahora) ---
+// --- Helpers de UI ---
 const PremiumInput = ({ label, icon: Icon, error, className, ...props }) => (
   <div className="group">
     <label className="block text-[11px] font-bold text-sys-500 uppercase tracking-wider mb-1.5 ml-1 transition-colors group-focus-within:text-brand">
@@ -47,7 +47,7 @@ export const ClientModal = ({ isOpen, onClose, clientToEdit, onSave }) => {
     name: '',
     docType: '80', // 80=CUIT, 96=DNI
     docNumber: '',
-    fiscalCondition: 'MONOTRIBUTO',
+    fiscalCondition: 'CONSUMIDOR_FINAL', // Default seguro
     address: '',
     email: ''
   });
@@ -59,7 +59,7 @@ export const ClientModal = ({ isOpen, onClose, clientToEdit, onSave }) => {
       if (clientToEdit) {
         setFormData(clientToEdit);
       } else {
-        setFormData({ name: '', docType: '80', docNumber: '', fiscalCondition: 'MONOTRIBUTO', address: '', email: '' });
+        setFormData({ name: '', docType: '80', docNumber: '', fiscalCondition: 'CONSUMIDOR_FINAL', address: '', email: '' });
       }
       setErrors({});
     }
@@ -71,12 +71,18 @@ export const ClientModal = ({ isOpen, onClose, clientToEdit, onSave }) => {
     
     // Validación Fiscal Estricta
     const cleanDoc = formData.docNumber.replace(/\D/g, '');
-    if (!cleanDoc) newErrors.docNumber = "Requerido";
-    else if (formData.docType === '80') { // Si es CUIT
+    
+    if (!cleanDoc) {
+        newErrors.docNumber = "Requerido";
+    } else if (formData.docType === '80') { // Si es CUIT
         if (cleanDoc.length !== 11) newErrors.docNumber = "Debe tener 11 dígitos";
-        else if (!isValidCUIT(cleanDoc)) newErrors.docNumber = "CUIT Inválido (Error de dígito verificador)";
+        else if (!isValidCUIT(cleanDoc)) newErrors.docNumber = "CUIT Inválido (Dígito verificador incorrecto)";
     } else { // Si es DNI
         if (cleanDoc.length < 7 || cleanDoc.length > 8) newErrors.docNumber = "DNI Inválido";
+    }
+
+    if (formData.fiscalCondition === 'RESPONSABLE_INSCRIPTO' && formData.docType !== '80') {
+        newErrors.docType = "RI requiere CUIT";
     }
 
     setErrors(newErrors);
@@ -89,7 +95,8 @@ export const ClientModal = ({ isOpen, onClose, clientToEdit, onSave }) => {
 
     onSave({
         ...formData,
-        docNumber: formData.docNumber.replace(/\D/g, '') // Guardamos limpio
+        docNumber: formData.docNumber.replace(/\D/g, ''), // Guardamos limpio
+        name: formData.name.toUpperCase() // Normalizamos nombre
     });
     onClose();
   };
@@ -129,13 +136,17 @@ export const ClientModal = ({ isOpen, onClose, clientToEdit, onSave }) => {
                 <div className="col-span-1">
                     <label className="block text-[11px] font-bold text-sys-500 uppercase tracking-wider mb-1.5 ml-1">Tipo Doc.</label>
                     <select 
-                        className="w-full bg-sys-50 border border-sys-200 text-sys-900 rounded-xl py-3 px-3 text-sm font-medium outline-none focus:border-brand"
+                        className={cn(
+                            "w-full bg-sys-50 border border-sys-200 text-sys-900 rounded-xl py-3 px-3 text-sm font-medium outline-none focus:border-brand",
+                            errors.docType ? "border-red-300" : ""
+                        )}
                         value={formData.docType}
                         onChange={e => setFormData({...formData, docType: e.target.value})}
                     >
                         <option value="80">CUIT (80)</option>
                         <option value="96">DNI (96)</option>
                     </select>
+                    {errors.docType && <p className="text-[9px] text-red-500 mt-1">{errors.docType}</p>}
                 </div>
                 <div className="col-span-2">
                     <PremiumInput 
@@ -153,7 +164,7 @@ export const ClientModal = ({ isOpen, onClose, clientToEdit, onSave }) => {
             <div>
                 <label className="block text-[11px] font-bold text-sys-500 uppercase tracking-wider mb-1.5 ml-1">Condición Fiscal</label>
                 <select 
-                    className="w-full bg-sys-50 border border-sys-200 text-sys-900 rounded-xl py-3 px-3 text-sm font-medium outline-none focus:border-brand"
+                    className="w-full bg-sys-50 border border-sys-200 text-sys-900 rounded-xl py-3 px-3 text-sm font-medium outline-none focus:border-brand cursor-pointer"
                     value={formData.fiscalCondition}
                     onChange={e => setFormData({...formData, fiscalCondition: e.target.value})}
                 >

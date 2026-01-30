@@ -57,12 +57,11 @@ export const syncService = {
           active: data.active !== false,
           deleted: data.deleted === true,
           lastUpdated: data.lastUpdated || new Date().toISOString(),
-          // 🔥 FIX: Aunque el producto es global, preparamos terreno por si acaso
           syncStatus: 'synced' 
       };
   },
 
-  // 2. VENTAS (FIX BRANCH ID)
+  // 2. VENTAS (FIX BRANCH ID & AFIP DATA)
   _sanitizeCloudSale(data, id) {
       let rawItems = data.items || data.cart || data.details || [];
       if (typeof rawItems === 'string') { try { rawItems = JSON.parse(rawItems); } catch (e) { rawItems = []; } }
@@ -75,19 +74,38 @@ export const syncService = {
           branchId: data.branchId || 'main', 
           
           date: data.date || new Date().toISOString(),
-          total: parseFloat(data.total) || 0,
+          
+          // 🔥 INTEGRIDAD FINANCIERA (Recargos)
+          total: parseFloat(data.total) || 0, // Total cobrado (con interés)
+          baseAmount: parseFloat(data.baseAmount) || parseFloat(data.total) || 0, // Total mercadería
+          surcharge: parseFloat(data.surcharge) || 0, // Interés financiero
+          
           subtotal: parseFloat(data.subtotal) || 0,
           discount: parseFloat(data.discount) || 0,
           status: data.status || 'COMPLETED',
+          
           items: Array.isArray(rawItems) ? rawItems : [],
           itemCount: Array.isArray(rawItems) ? rawItems.length : 0, 
+          
           payment: data.payment || { method: 'cash' },
+          
           userId: data.userId || 'unknown',
           userName: data.userName || 'Vendedor',
           sellerName: data.sellerName || data.userName || 'Cajero',
           createdBy: data.createdBy || '',
+          
           client: data.client || null, 
-          afip: data.afip || null,
+          
+          // 🔥 PERSISTENCIA DE DATOS FISCALES (CAE / QR)
+          afip: data.afip ? {
+              status: data.afip.status || 'PENDING',
+              cae: data.afip.cae || null,
+              vtoCAE: data.afip.vtoCAE || null,
+              cbteTipo: data.afip.cbteTipo || null,
+              cbteNumero: data.afip.cbteNumero || null,
+              qr_data: data.afip.qr_data || null
+          } : null,
+          
           syncStatus: 'synced'
       };
   },
@@ -256,7 +274,6 @@ export const syncService = {
             snapshot.docChanges().forEach(change => {
                 if (change.type === 'added' || change.type === 'modified') {
                     if (!pendingSet.has(change.doc.id)) {
-                        // Al sanitizar aquí, ahora incluimos branchId gracias al fix
                         salesToPut.push(this._sanitizeCloudSale(change.doc.data(), change.doc.id));
                     }
                 }
