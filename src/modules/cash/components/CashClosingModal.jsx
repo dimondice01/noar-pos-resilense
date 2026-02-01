@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { X, Lock, DollarSign, Calculator, AlertTriangle, ArrowRight, Wallet } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { X, Lock, DollarSign, Calculator, AlertTriangle, ArrowRight, Wallet, CheckCircle } from 'lucide-react';
 import { Button } from '../../../core/ui/Button';
 import { cn } from '../../../core/utils/cn';
 
@@ -16,14 +16,23 @@ export const CashClosingModal = ({ isOpen, onClose, onConfirm, systemTotals }) =
     // Paso 2: Cuánto dejo para cambio (Remanente)
     const [leftInCash, setLeftInCash] = useState(''); 
 
+    // Reset al abrir
+    useEffect(() => {
+        if (isOpen) {
+            setStep(1);
+            setDeclaredCash('');
+            setLeftInCash('');
+        }
+    }, [isOpen]);
+
     if (!isOpen) return null;
 
     // CÁLCULOS EN TIEMPO REAL
-    // 🔥 IMPORTANTE: Si el campo está vacío, es 0 para el cálculo pero '' para el input
     const valDeclared = declaredCash === '' ? 0 : parseFloat(declaredCash);
     const valLeft = leftInCash === '' ? 0 : parseFloat(leftInCash);
     
     // Retiro = Total que tengo - Lo que dejo
+    // Validamos que no sea negativo (no puedes dejar más de lo que tienes)
     const totalWithdrawal = Math.max(0, valDeclared - valLeft);
     
     const handleSubmit = () => {
@@ -31,7 +40,8 @@ export const CashClosingModal = ({ isOpen, onClose, onConfirm, systemTotals }) =
         onConfirm({
             declaredCash: valDeclared,  // Lo que contaste
             leftInCash: valLeft,        // Lo que dejas
-            expectedCash: systemTotals?.totalCash || 0, // Lo que el sistema dice que debería haber
+            // Pasamos los esperados para referencia rápida, aunque el repo recalcula para seguridad
+            expectedCash: systemTotals?.totalCash || 0, 
             expectedDigital: systemTotals?.totalDigital || 0
         });
     };
@@ -47,7 +57,7 @@ export const CashClosingModal = ({ isOpen, onClose, onConfirm, systemTotals }) =
                          <Lock className="text-brand" size={24} /> Cierre de Turno (Z)
                       </h3>
                       <p className="text-xs text-sys-500 mt-1 font-medium">
-                          {step === 1 ? 'Paso 1: Arqueo Físico' : step === 2 ? 'Paso 2: Distribución' : 'Confirmación'}
+                          {step === 1 ? 'Paso 1: Arqueo Físico' : step === 2 ? 'Paso 2: Distribución' : 'Confirmación Final'}
                       </p>
                    </div>
                    <button onClick={onClose} className="p-2 hover:bg-sys-200 rounded-full text-sys-400 transition-colors"><X/></button>
@@ -85,7 +95,7 @@ export const CashClosingModal = ({ isOpen, onClose, onConfirm, systemTotals }) =
                         </div>
 
                         <div className="pt-4">
-                           <Button onClick={() => setStep(2)} className="w-full py-4 text-lg shadow-xl" disabled={declaredCash === ''}>
+                           <Button onClick={() => setStep(2)} className="w-full py-4 text-lg shadow-xl bg-sys-900 hover:bg-black text-white" disabled={declaredCash === ''}>
                               Siguiente <ArrowRight className="ml-2" size={20}/>
                            </Button>
                         </div>
@@ -105,28 +115,37 @@ export const CashClosingModal = ({ isOpen, onClose, onConfirm, systemTotals }) =
                         <div>
                            <label className="block text-xs font-bold text-sys-500 uppercase tracking-wider mb-2 flex justify-between">
                                <span>¿Cuánto deja en caja?</span>
-                               <span className="text-brand text-[10px] bg-brand/10 px-2 py-0.5 rounded-full">Cambio Mañana</span>
+                               <span className="text-brand text-[10px] bg-brand/10 px-2 py-0.5 rounded-full font-bold">Fondo Mañana</span>
                            </label>
                            <div className="relative">
                               <Wallet className="absolute left-4 top-4 text-sys-400" />
                               <input 
                                 type="number" 
                                 autoFocus
-                                className="w-full pl-10 pr-4 py-4 text-2xl font-bold border-2 border-sys-200 rounded-xl focus:border-brand outline-none transition-all"
+                                className={cn(
+                                    "w-full pl-10 pr-4 py-4 text-2xl font-bold border-2 rounded-xl outline-none transition-all placeholder:text-sys-200",
+                                    valLeft > valDeclared ? "border-red-300 focus:border-red-500 text-red-600" : "border-sys-200 focus:border-brand"
+                                )}
                                 placeholder="0.00"
                                 value={leftInCash}
                                 onChange={e => setLeftInCash(e.target.value)}
-                                onKeyDown={e => e.key === 'Enter' && setStep(3)}
+                                onKeyDown={e => e.key === 'Enter' && valLeft <= valDeclared && setStep(3)}
                               />
                            </div>
-                           <p className="text-xs text-sys-400 mt-2 text-right">
-                               Se retirarán: <span className="font-bold text-sys-800">{formatMoney(totalWithdrawal)}</span>
-                           </p>
+                           {valLeft > valDeclared ? (
+                               <p className="text-xs text-red-500 mt-2 font-bold flex items-center gap-1">
+                                   <AlertTriangle size={12}/> No puedes dejar más de lo que tienes.
+                               </p>
+                           ) : (
+                               <p className="text-xs text-sys-400 mt-2 text-right">
+                                   Se retirarán: <span className="font-bold text-sys-800">{formatMoney(totalWithdrawal)}</span>
+                               </p>
+                           )}
                         </div>
 
                         <div className="grid grid-cols-2 gap-3 pt-2">
-                           <Button variant="ghost" onClick={() => setStep(1)}>Atrás</Button>
-                           <Button onClick={() => setStep(3)} className="shadow-lg" disabled={valLeft > valDeclared}>
+                           <Button variant="ghost" onClick={() => setStep(1)} className="h-12 font-bold text-sys-500">Atrás</Button>
+                           <Button onClick={() => setStep(3)} className="shadow-lg h-12 bg-sys-900 hover:bg-black text-white" disabled={valLeft > valDeclared}>
                               Revisar Cierre
                            </Button>
                         </div>
@@ -138,36 +157,36 @@ export const CashClosingModal = ({ isOpen, onClose, onConfirm, systemTotals }) =
                     {/* ================================================= */}
                     {step === 3 && (
                       <div className="text-center space-y-6 animate-in zoom-in-95 duration-300">
-                        <div className="w-20 h-20 bg-red-50 rounded-full flex items-center justify-center mx-auto text-red-600 mb-2 border-4 border-red-100">
+                        <div className="w-20 h-20 bg-red-50 rounded-full flex items-center justify-center mx-auto text-red-600 mb-2 border-4 border-red-100 animate-pulse">
                            <Lock size={36} />
                         </div>
                         
                         <div>
                            <h4 className="text-2xl font-black text-sys-900 leading-none mb-4">¿Cerrar Turno?</h4>
                            
-                           <div className="bg-sys-50 rounded-xl p-4 text-sm space-y-2 border border-sys-200">
-                               <div className="flex justify-between">
-                                   <span className="text-sys-500">Total en Caja:</span>
-                                   <span className="font-bold">{formatMoney(valDeclared)}</span>
+                           <div className="bg-sys-50 rounded-xl p-4 text-sm space-y-3 border border-sys-200 text-left">
+                               <div className="flex justify-between items-center border-b border-sys-200 pb-2">
+                                   <span className="text-sys-500 font-medium">Total en Caja</span>
+                                   <span className="font-bold text-lg">{formatMoney(valDeclared)}</span>
                                </div>
-                               <div className="flex justify-between text-brand">
-                                   <span>Se deja (Cambio):</span>
+                               <div className="flex justify-between items-center text-emerald-600">
+                                   <span className="font-medium flex items-center gap-1"><Wallet size={14}/> Se deja en Caja</span>
                                    <span className="font-bold">-{formatMoney(valLeft)}</span>
                                </div>
-                               <div className="border-t border-sys-200 pt-2 flex justify-between text-lg font-black text-sys-800">
-                                   <span>A RETIRAR:</span>
-                                   <span>{formatMoney(totalWithdrawal)}</span>
+                               <div className="bg-white p-3 rounded-lg border border-sys-200 flex justify-between items-center">
+                                   <span className="text-sys-900 font-black uppercase text-xs tracking-wider">A RETIRAR (SOBRE)</span>
+                                   <span className="text-xl font-black text-sys-900">{formatMoney(totalWithdrawal)}</span>
                                </div>
                            </div>
 
-                           <p className="text-xs text-red-500 mt-4 font-medium flex items-center justify-center gap-1">
-                               <AlertTriangle size={14}/> Esta acción es irreversible.
+                           <p className="text-[10px] text-red-500 mt-4 font-bold flex items-center justify-center gap-1 uppercase tracking-wider bg-red-50 py-2 rounded-lg">
+                               <AlertTriangle size={12}/> Esta acción cerrará el turno y es irreversible.
                            </p>
                         </div>
 
                         <div className="grid grid-cols-2 gap-3">
-                           <Button variant="ghost" onClick={() => setStep(2)} className="h-12">Corregir</Button>
-                           <Button variant="danger" onClick={handleSubmit} className="h-12 shadow-xl shadow-red-500/20">
+                           <Button variant="ghost" onClick={() => setStep(2)} className="h-12 font-bold text-sys-500">Corregir</Button>
+                           <Button variant="danger" onClick={handleSubmit} className="h-12 shadow-xl shadow-red-500/20 bg-red-600 hover:bg-red-700 text-white font-black tracking-wider text-xs">
                                CONFIRMAR CIERRE Z
                            </Button>
                         </div>

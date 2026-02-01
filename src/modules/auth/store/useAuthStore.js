@@ -31,11 +31,14 @@ export const useAuthStore = create(
         try {
           await authService.logout();
           localStorage.removeItem('NOAR_ACTIVE_BRANCH'); 
+          
+          // 🔥 LIMPIEZA PROFUNDA DEL ESTADO
           set({ 
             user: null, 
             isAuthenticated: false, 
             activeBranchId: null, 
-            activeBranchName: null 
+            activeBranchName: null,
+            error: null
           }); 
         } catch (error) {
           console.error(error);
@@ -50,7 +53,7 @@ export const useAuthStore = create(
             return; 
         }
 
-        // Guardar también en localStorage puro como respaldo
+        // Guardar también en localStorage puro como respaldo de emergencia
         localStorage.setItem('NOAR_ACTIVE_BRANCH', JSON.stringify({ id: branchId, name: branchName }));
         set({ activeBranchId: branchId, activeBranchName: branchName });
       },
@@ -96,12 +99,13 @@ export const useAuthStore = create(
                     let targetBranchId = get().activeBranchId; // Intentamos mantener la actual
                     let targetBranchName = get().activeBranchName;
 
-                    // A. Si el usuario es CAJERO (tiene branchId fijo)
+                    // A. Si el usuario es CAJERO (tiene branchId fijo en su perfil)
                     if (firestoreData.branchId) {
                         targetBranchId = firestoreData.branchId;
-                        targetBranchName = "Mi Sucursal"; // Nombre genérico temporal
+                        // Si no tenemos nombre, usamos uno genérico hasta que cargue la config
+                        if (!targetBranchName) targetBranchName = "Mi Sucursal"; 
                     } 
-                    // B. Si es ADMIN y no tiene sucursal seleccionada (o viene null), buscar en localStorage
+                    // B. Si es ADMIN y no tiene sucursal seleccionada (o viene null), buscar en localStorage de respaldo
                     else if (!targetBranchId) {
                         try {
                             const stored = localStorage.getItem('NOAR_ACTIVE_BRANCH');
@@ -121,7 +125,7 @@ export const useAuthStore = create(
                         activeBranchName: targetBranchName
                     });
                 } else {
-                    // Fallback si no existe doc en users
+                    // Fallback si no existe doc en users (raro, pero posible en demos)
                     set({ 
                         user: { uid: firebaseUser.uid, email: firebaseUser.email },
                         isAuthenticated: true,
@@ -155,11 +159,11 @@ export const useAuthStore = create(
     }),
     {
       name: 'auth-storage', 
-      // 🔥 FIX: AHORA SÍ PERSISTIMOS LA SUCURSAL ACTIVA
+      // 🔥 FIX: PERSISTIMOS TODO LO NECESARIO PARA QUE EL REFRESH NO ROMPA NADA
       partialize: (state) => ({ 
           user: state.user, 
           isAuthenticated: state.isAuthenticated,
-          activeBranchId: state.activeBranchId, // ¡Esto evita el null al recargar!
+          activeBranchId: state.activeBranchId, 
           activeBranchName: state.activeBranchName
       }),
     }

@@ -8,168 +8,174 @@ import {
     getDocs, 
     query, 
     serverTimestamp,
-    orderBy 
+    orderBy,
+    where,
+    limit,
+    Timestamp
 } from 'firebase/firestore'; 
 import { useAuthStore } from '../../auth/store/useAuthStore'; 
 
 // =================================================================
-// 🧠 MASTER REPOSITORY (ENTERPRISE EDITION v2.0)
-// =================================================================
-// Gestiona datos globales (Categorías, Marcas, Proveedores) que 
-// pertenecen a la EMPRESA y se replican a todas las SUCURSALES.
+// 🧠 MASTER REPOSITORY (RETAIL PRO EDITION)
 // =================================================================
 
 export const masterRepository = {
 
-    // ==========================================
-    // 🛠️ HELPER PRIVADO (Contexto Seguro)
-    // ==========================================
     _getCollectionPath(storeName) {
         const { user } = useAuthStore.getState();
-        
-        // Si no hay empresa, es un estado inválido para Maestros Globales
-        if (!user || !user.companyId) {
-            // console.warn(`⛔ MasterRepo: Acceso denegado a ${storeName} (Sin Empresa).`);
-            return null;
-        }
-
-        // Ruta Global: companies/{empresa_id}/{categories|brands|suppliers}
+        if (!user?.companyId) return null;
         return `companies/${user.companyId}/${storeName}`;
     },
 
     // ==========================================
-    // 📖 LECTURA INTELIGENTE (Local First + Mirror Sync)
+    // 📖 LECTURA CON DELTA-SYNC (Solo cambios)
     // ==========================================
     async getAll(storeName) {
         const dbLocal = await getDB();
         
-        // 1. CARGA LOCAL (0ms Latencia)
-        // Dexie es la fuente de verdad para la UI inmediata
+        // 1. Retorno inmediato desde IndexedDB
         let items = await dbLocal.table(storeName).toArray();
 
-        // 2. SYNC SILENCIOSO (Background Mirroring)
-        // Solo si hay red, disparamos la actualización para la próxima vez
+        // 2. Disparar Sincronización Incremental en segundo plano
         if (navigator.onLine) {
-            this._syncMirror(storeName).catch(e => {
-                if (process.env.NODE_ENV === 'development') console.warn(`Sync ${storeName} pospuesto:`, e.message);
-            });
+            this._syncIncremental(storeName).catch(console.error);
         }
         
-        // Ordenamiento local (UX)
         return items.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
     },
 
-    // 🔥 EL SECRETO DEL ÉXITO: MIRROR SYNC
-    // No solo "agrega" lo nuevo, también detecta lo BORRADO en la nube.
-    async _syncMirror(storeName) {
+    // 🔥 EL MOTOR DE VELOCIDAD: Solo baja lo nuevo/editado
+    async _syncIncremental(storeName) {
         const path = this._getCollectionPath(storeName);
         if (!path) return;
 
-        // Bajamos TODO de la colección (son maestros, suelen ser pocos < 1000)
-        // Si crece mucho, se debería paginar o usar 'updatedAt', pero para maestros es seguro bajar todo.
-        const q = query(collection(db, path));
-        const snapshot = await getDocs(q);
-        
         const dbLocal = await getDB();
         
+        // 1. Obtener la fecha del último elemento sincronizado
+        const lastItem = await dbLocal.table(storeName).orderBy('updatedAt').last();
+        const lastSyncDate = lastItem ? lastItem.updatedAt : "1970-01-01T00:00:00Z";
+
+        // 2. Consultar solo cambios desde esa fecha
+        const q = query(
+            collection(db, path),
+            where('updatedAt', '>', new Date(lastSyncDate)),
+            orderBy('updatedAt', 'asc'),
+            limit(500) // Evitamos ráfagas masivas
+        );
+
+        const snapshot = await getDocs(q);
+        
         if (!snapshot.empty) {
-            const cloudItems = snapshot.docs.map(doc => ({
-                ...doc.data(),
-                syncStatus: 'synced' // Vienen de la fuente de verdad
-            }));
-
-            // TRANSACCIÓN DE ESPEJO (Mirroring)
-            // 1. Traemos IDs locales
-            // 2. Traemos IDs nube
-            // 3. Borramos locales que no existen en nube (fueron borrados por otro admin)
-            // 4. Actualizamos/Creamos los que vienen de nube
-            
-            await dbLocal.transaction('rw', dbLocal.table(storeName), async () => {
-                const cloudIds = new Set(cloudItems.map(i => i.id));
-                const localItems = await dbLocal.table(storeName).toArray();
-                
-                // Detectar eliminados remotamente
-                const idsToDelete = localItems
-                    .filter(local => local.syncStatus === 'synced' && !cloudIds.has(local.id))
-                    .map(local => local.id);
-
-                if (idsToDelete.length > 0) {
-                    await dbLocal.table(storeName).bulkDelete(idsToDelete);
-                }
-
-                // Upsert masivo (Insert + Update)
-                await dbLocal.table(storeName).bulkPut(cloudItems);
+            const updates = snapshot.docs.map(doc => {
+                const data = doc.data();
+                return {
+                    ...data,
+                    // Convertimos Timestamp de Firebase a ISO string para IndexedDB
+                    updatedAt: data.updatedAt?.toDate?.()?.toISOString() || new Date().toISOString(),
+                    syncStatus: 'synced'
+                };
             });
+
+            // Guardado masivo de novedades
+            await dbLocal.table(storeName).bulkPut(updates);
+            
+            // Si la tabla es pequeña (marcas/cats), hacemos mirror para detectar borrados
+            // Si es grande (productos), los borrados se manejan con un campo 'deleted: true' (Soft Delete)
+            if (storeName !== 'products' && snapshot.size < 50) {
+                this._detectRemoteDeletions(storeName, path);
+            }
+        }
+    },
+
+    async _detectRemoteDeletions(storeName, path) {
+        const snapshot = await getDocs(collection(db, path));
+        const cloudIds = new Set(snapshot.docs.map(d => d.id));
+        const dbLocal = await getDB();
+        
+        const localItems = await dbLocal.table(storeName).toArray();
+        const idsToDelete = localItems
+            .filter(local => local.syncStatus === 'synced' && !cloudIds.has(local.id))
+            .map(local => local.id);
+
+        if (idsToDelete.length > 0) {
+            await dbLocal.table(storeName).bulkDelete(idsToDelete);
         }
     },
 
     // ==========================================
-    // 💾 GUARDADO ATÓMICO (Optimistic UI)
+    // 💾 GUARDADO ROBUSTO (Con esquema para Suppliers)
     // ==========================================
     async save(storeName, item) {
         const dbLocal = await getDB();
         const path = this._getCollectionPath(storeName);
+        if (!path) throw new Error("No hay contexto de empresa.");
 
-        if (!path) throw new Error("No hay contexto de empresa para guardar.");
+        // Esquema enriquecido para proveedores si es el caso
+        if (storeName === 'suppliers') {
+            item = {
+                ...item,
+                taxId: item.taxId || '', // CUIT
+                balance: item.balance || 0, // Cuenta corriente con proveedor
+                paymentTerms: item.paymentTerms || 'Efectivo',
+                contactName: item.contactName || '',
+                phone: item.phone || '',
+                email: item.email || ''
+            };
+        }
 
-        // Generación de ID amigable (Slug) si es nuevo
-        // Ej: "Coca Cola" -> "cat_coca-cola"
         let finalId = item.id;
         if (!finalId) {
-            const cleanName = (item.name || '').toLowerCase().replace(/[^a-z0-9]+/g, '-');
-            const prefix = storeName === 'categories' ? 'cat' : storeName === 'brands' ? 'brand' : 'sup';
-            finalId = `${prefix}_${cleanName}_${Date.now().toString(36).slice(-4)}`;
+            const prefix = storeName.slice(0, 3);
+            finalId = `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(-4)}`;
         }
 
         const newItem = {
             ...item,
             id: finalId,
+            name: item.name.toUpperCase(),
             syncStatus: 'pending',
             updatedAt: new Date().toISOString()
         };
 
-        // 1. Guardar Localmente (Dexie) - UI Inmediata
+        // 1. Guardar local (UI instantánea)
         await dbLocal.table(storeName).put(newItem);
 
-        // 2. Subir a Nube (Fire & Forget)
+        // 2. Intentar subida a Cloud
         if (navigator.onLine) {
-            // Limpiamos campos locales antes de subir
             const { syncStatus, ...cloudData } = newItem;
-            
-            // Usamos setDoc con merge para seguridad
-            setDoc(doc(db, path, newItem.id), {
-                ...cloudData,
-                updatedAt: serverTimestamp() // Timestamp real del servidor
-            }, { merge: true })
-            .then(() => {
-                // Confirmación de éxito
-                dbLocal.table(storeName).update(newItem.id, { syncStatus: 'synced' });
-            })
-            .catch(e => {
-                console.error(`🔴 Error crítico guardando ${storeName}:`, e);
-                // El SyncService lo reintentará luego porque quedó en 'pending'
-            });
+            try {
+                await setDoc(doc(db, path, finalId), {
+                    ...cloudData,
+                    updatedAt: serverTimestamp() 
+                }, { merge: true });
+                
+                await dbLocal.table(storeName).update(finalId, { syncStatus: 'synced' });
+            } catch (e) {
+                console.error("Sync diferido:", e);
+            }
         }
 
         return newItem;
     },
 
-    // ==========================================
-    // 🗑️ BORRADO (Global Soft Delete o Hard Delete)
-    // ==========================================
     async delete(storeName, id) {
         const dbLocal = await getDB();
         const path = this._getCollectionPath(storeName);
         
-        // 1. Borrar Local (Dexie)
-        await dbLocal.table(storeName).delete(id);
+        // Aplicamos SOFT DELETE para no romper la integridad de datos
+        // (Especialmente importante en proveedores y productos)
+        await dbLocal.table(storeName).update(id, { deleted: true, syncStatus: 'pending' });
 
-        // 2. Borrar de Nube (Fire & Forget)
         if (navigator.onLine && path) {
-            deleteDoc(doc(db, path, id)).catch(e => {
-                console.error(`Error eliminando ${storeName}:`, e);
-                // Aquí podríamos implementar una cola de "borrados pendientes" si fuera crítico
-            });
+            try {
+                await updateDoc(doc(db, path, id), { 
+                    deleted: true, 
+                    updatedAt: serverTimestamp() 
+                });
+                await dbLocal.table(storeName).delete(id); // Limpiar local si ya subió
+            } catch (e) {
+                console.error("Fallo borrado nube:", e);
+            }
         }
     }
 };

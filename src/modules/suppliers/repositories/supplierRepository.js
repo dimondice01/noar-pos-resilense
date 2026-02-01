@@ -1,6 +1,6 @@
 import { getDB } from '../../../database/db';
 import { db } from '../../../database/firebase';
-import { doc, setDoc, deleteDoc } from 'firebase/firestore';
+import { doc, setDoc, updateDoc } from 'firebase/firestore';
 import { useAuthStore } from '../../auth/store/useAuthStore'; 
 
 // ==========================================
@@ -15,6 +15,7 @@ const triggerOptimisticSync = async (collectionName, data) => {
         const { syncStatus, ...cloudData } = data;
         const path = `companies/${user.companyId}/${collectionName}`;
         
+        // Si es update solo mandamos lo que cambió
         setDoc(doc(db, path, data.id), {
             ...cloudData,
             firestoreId: data.id,
@@ -35,7 +36,6 @@ export const supplierRepository = {
     // ==========================================
     // 🧠 LÓGICA DE COSTOS (La "Magia" Fiscal)
     // ==========================================
-    // Calcula el costo neto real y el IVA basándose en la factura
     _calculateLineItem(inputCost, inputPrice, taxRate, isTaxIncluded) {
         let netCost = 0;
         let finalCostWithTax = 0;
@@ -44,19 +44,15 @@ export const supplierRepository = {
         const cost = parseFloat(inputCost) || 0;
 
         if (isTaxIncluded) {
-            // Ejemplo: Costo $121, IVA 21% -> Neto $100
             finalCostWithTax = cost;
             netCost = cost / (1 + (rate / 100));
             taxAmount = finalCostWithTax - netCost;
         } else {
-            // Ejemplo: Costo $100, IVA 21% -> Final $121
             netCost = cost;
             taxAmount = cost * (rate / 100);
             finalCostWithTax = cost + taxAmount;
         }
 
-        // Margen de ganancia (Markup)
-        // Precio Venta = CostoFinal * (1 + Margen)
         let markup = 0;
         const price = parseFloat(inputPrice) || 0;
         if (price > 0 && finalCostWithTax > 0) {
@@ -64,18 +60,17 @@ export const supplierRepository = {
         }
 
         return {
-            netCost,      // Costo sin IVA (Base imponible)
-            taxAmount,    // Monto IVA
-            finalCost: finalCostWithTax, // Costo real puesto en góndola
-            price: price, // Precio venta público
-            markup: markup // Porcentaje de ganancia
+            netCost,
+            taxAmount,
+            finalCost: finalCostWithTax,
+            price: price,
+            markup: markup
         };
     },
 
     // ==========================================
     // 🚚 REGISTRO DE COMPRA (INGRESO MERCADERÍA)
     // ==========================================
-    // Esta es la función "Walmart". Maneja Stock, Costos, Deuda y Caja.
     async registerPurchase(purchaseHeader, items) {
         const dbLocal = await getDB();
         const { user, activeBranchId } = useAuthStore.getState();
@@ -95,11 +90,15 @@ export const supplierRepository = {
             createdAt: timestamp,
             status: 'COMPLETED',
             itemsCount: items.length,
-            // Totales calculados
             totalNet: 0,
             totalTax: 0,
             totalFinal: 0,
-            syncStatus: 'pending'
+            syncStatus: 'pending',
+            
+            // 🔥 CAMPOS FINANCIEROS CLAVE
+            amountPaid: 0,
+            remainingBalance: 0,
+            paymentStatus: 'UNPAID' // UNPAID, PARTIAL, PAID
         };
 
         const productsToUpdate = [];
@@ -107,98 +106,84 @@ export const supplierRepository = {
         const movementsToCreate = [];
         const newProductsToCreate = [];
 
-        // 2. Procesar Ítems (El corazón de la lógica)
+        // 2. Procesar Ítems
         for (const item of items) {
-            // item: { id (opcional si es nuevo), code, name, cost, price, qty, tax, isTaxIncluded }
-            
-            // A. Cálculo Fiscal
             const financials = this._calculateLineItem(item.cost, item.price, item.tax, item.isTaxIncluded);
             
             purchase.totalNet += (financials.netCost * item.qty);
             purchase.totalTax += (financials.taxAmount * item.qty);
             purchase.totalFinal += (financials.finalCost * item.qty);
 
-            // B. Obtener o Crear Producto
             let productId = item.id;
             let product = null;
 
             if (productId) {
                 product = await dbLocal.products.get(productId);
             } else {
-                // ALTA RÁPIDA: Si no tiene ID, lo buscamos por código o creamos
                 product = await dbLocal.products.where('code').equals(item.code).first();
             }
 
             if (!product) {
-                // ✨ CREACIÓN AL VUELO
                 productId = crypto.randomUUID();
                 product = {
                     id: productId,
                     code: item.code,
                     name: item.name.toUpperCase(),
                     barcode: item.code,
-                    categoryId: 'general', // Default, luego se edita
+                    categoryId: 'general',
                     active: true,
                     isWeighable: false,
                     createdAt: timestamp
                 };
-                // Lo marcamos para crear
                 newProductsToCreate.push({ ...product, syncStatus: 'pending' });
             }
 
-            // C. Lógica de Costo Promedio (PPP) Enterprise
-            // Si ya tenía stock, promediamos el costo. Si no, es el nuevo.
+            // PPP (Precio Promedio Ponderado)
             const currentStock = parseFloat(product.stock || 0);
             const currentCost = parseFloat(product.cost || 0);
             const newQty = parseFloat(item.qty);
             
-            let newWeightedCost = financials.finalCost; // Por defecto el nuevo
+            let newWeightedCost = financials.finalCost;
 
             if (currentStock > 0) {
-                // Fórmula PPP: ((CostoActual * StockActual) + (CostoNuevo * CantidadNueva)) / (StockActual + CantidadNueva)
                 const totalValueOld = currentCost * currentStock;
                 const totalValueNew = financials.finalCost * newQty;
                 newWeightedCost = (totalValueOld + totalValueNew) / (currentStock + newQty);
             }
 
-            // D. Actualizar Producto (Maestro)
-            // Actualizamos costo, y si el usuario puso precio de venta nuevo, también.
             const productUpdate = {
                 ...product,
-                cost: newWeightedCost, // Guardamos el promedio ponderado
-                price: financials.price > 0 ? financials.price : product.price, // Actualizar precio venta si vino
+                cost: newWeightedCost,
+                price: financials.price > 0 ? financials.price : product.price,
                 lastPurchaseDate: timestamp,
                 supplierId: purchaseHeader.supplierId,
                 updatedAt: timestamp,
                 syncStatus: 'pending'
             };
             
-            // Agregamos el Lote (Batch) al producto local para FIFO
             const newBatch = {
                 id: `batch_${Date.now()}_${Math.random().toString(36).substr(2,3)}`,
                 purchaseId: purchaseId,
                 dateAdded: timestamp,
                 quantity: newQty,
-                originalCost: financials.finalCost, // Costo real de este lote (no el promedio)
+                originalCost: financials.finalCost,
                 expiryDate: item.expiryDate || null
             };
             
             const currentBatches = product.batches || [];
             productUpdate.batches = [...currentBatches, newBatch];
-            productUpdate.stock = currentStock + newQty; // Cache visual
+            productUpdate.stock = currentStock + newQty;
 
             productsToUpdate.push(productUpdate);
 
-            // E. Actualizar Inventario (Tabla Inventory)
             inventoryToUpdate.push({
                 productId: productId,
                 branchId: branchId,
                 stock: currentStock + newQty,
                 updatedAt: timestamp,
-                syncStatus: 'pending_stock' // Flag especial para sync service
+                syncStatus: 'pending_stock'
             });
 
-            // F. Movimiento de Stock (Kardex)
             movementsToCreate.push({
                 id: `mov_${crypto.randomUUID()}`,
                 productId: productId,
@@ -213,8 +198,17 @@ export const supplierRepository = {
             });
         }
 
+        // 🔥 AJUSTE DE SALDOS INICIALES
+        const initialPay = parseFloat(purchaseHeader.initialPayment || 0);
+        purchase.amountPaid = initialPay;
+        purchase.remainingBalance = Math.max(0, purchase.totalFinal - initialPay);
+        
+        if (purchase.remainingBalance <= 0.01) purchase.paymentStatus = 'PAID';
+        else if (initialPay > 0) purchase.paymentStatus = 'PARTIAL';
+        else purchase.paymentStatus = 'UNPAID';
+
+
         // 3. Transacción ACID Gigante
-        // Se guarda todo o no se guarda nada.
         await dbLocal.transaction('rw', [
             dbLocal.purchases, 
             dbLocal.products, 
@@ -236,56 +230,60 @@ export const supplierRepository = {
             await dbLocal.movements.bulkPut(movementsToCreate);
 
             // C. Manejo Financiero (Caja vs Cta Cte)
-            if (purchaseHeader.paymentMethod === 'checking_account') {
-                // 1. Aumentar deuda con proveedor
+            // Si hay deuda remanente, actualizamos saldo del proveedor
+            if (purchase.remainingBalance > 0) {
                 const supplier = await dbLocal.suppliers.get(purchaseHeader.supplierId);
                 if (supplier) {
-                    const newBalance = (parseFloat(supplier.balance) || 0) - purchase.totalFinal; // Deuda es negativa o positiva según criterio
-                    // Usualmente Proveedores: Saldo Positivo = A Favor nuestro, Negativo = Deuda.
-                    // O al revés. Definamos: Deuda es Positiva en Ledger de Proveedores.
-                    
-                    const currentDebt = parseFloat(supplier.balance || 0);
-                    const newDebt = currentDebt + purchase.totalFinal;
+                    const currentBalance = parseFloat(supplier.balance || 0);
+                    const newBalance = currentBalance + purchase.remainingBalance; // Deuda aumenta
 
                     await dbLocal.suppliers.update(supplier.id, { 
-                        balance: newDebt, 
+                        balance: newBalance, 
                         syncStatus: 'pending' 
                     });
 
-                    // 2. Registro en Ledger Proveedor
+                    // Ledger: Registro de la deuda total generada
                     await dbLocal.supplier_ledger.put({
                         id: `sledger_${crypto.randomUUID()}`,
                         supplierId: supplier.id,
                         date: timestamp,
-                        type: 'PURCHASE',
-                        amount: purchase.totalFinal,
-                        description: `Compra Fac ${purchaseHeader.invoiceNumber}`,
-                        balance: newDebt,
+                        type: 'PURCHASE', // Generación de deuda
+                        amount: purchase.remainingBalance,
+                        description: `Fac ${purchaseHeader.invoiceNumber} (Saldo)`,
+                        balance: newBalance,
                         refId: purchaseId,
                         syncStatus: 'pending'
                     });
                 }
-            } else if (purchaseHeader.paymentMethod === 'cash') {
-                // 1. Salida de Caja (Egreso)
-                // Necesitamos el turno abierto
+            }
+
+            // D. 🔥 Si hubo pago inicial, registrar SALIDA DE CAJA COMO 'PURCHASE'
+            // Esto es vital para que useCloudDashboard lo sume a "Compras Proveedores"
+            if (initialPay > 0 && purchaseHeader.paymentMethod !== 'debt') {
                 const activeShift = await dbLocal.shifts
                     .where('status').equals('OPEN')
                     .filter(s => s.userId === user.uid && s.branchId === branchId)
                     .first();
                 
                 if (activeShift) {
-                    await dbLocal.cash_movements.put({
+                    const movementData = {
                         id: `cm_${crypto.randomUUID()}`,
                         shiftId: activeShift.id,
-                        type: 'EXPENSE', // Gasto/Egreso
-                        method: 'cash',
-                        amount: purchase.totalFinal,
-                        description: `Pago a Prov. ${purchaseHeader.supplierName}`,
+                        type: 'PURCHASE', // 🔥 FIX CRÍTICO: Antes era 'EXPENSE'
+                        method: purchaseHeader.paymentMethod || 'cash',
+                        amount: initialPay,
+                        description: `Pago Prov. ${purchaseHeader.supplierName} (Fac ${purchaseHeader.invoiceNumber})`,
                         date: timestamp,
+                        branchId: branchId,
                         userId: user.uid,
                         companyId: user.companyId,
+                        supplierName: purchaseHeader.supplierName, // Extra para ranking
+                        referenceId: purchaseId,
                         syncStatus: 'pending'
-                    });
+                    };
+                    
+                    await dbLocal.cash_movements.put(movementData);
+                    triggerOptimisticSync('cash_movements', movementData);
                 }
             }
         });
@@ -293,9 +291,106 @@ export const supplierRepository = {
         // 4. Sync Background
         triggerOptimisticSync('purchases', purchase);
         productsToUpdate.forEach(p => triggerOptimisticSync('products', p));
-        // Nota: Los movimientos y ledger también deberían subirse aquí idealmente
 
         return purchase;
+    },
+
+    // ==========================================
+    // 💰 REGISTRO DE PAGOS POSTERIORES
+    // ==========================================
+    async registerPayment(paymentData) {
+        const dbLocal = await getDB();
+        const { user, activeBranchId } = useAuthStore.getState();
+        const timestamp = new Date().toISOString();
+        const branchId = activeBranchId || 'main';
+
+        const { supplierId, amount, method, description, refId } = paymentData;
+
+        await dbLocal.transaction('rw', [
+            dbLocal.purchases, 
+            dbLocal.suppliers, 
+            dbLocal.supplier_ledger, 
+            dbLocal.cash_movements,
+            dbLocal.shifts
+        ], async () => {
+
+            // 1. Si es pago de una factura específica, actualizarla
+            if (refId) {
+                const purchase = await dbLocal.purchases.get(refId);
+                if (purchase) {
+                    const newPaid = (purchase.amountPaid || 0) + amount;
+                    const newRemaining = Math.max(0, (purchase.remainingBalance || 0) - amount);
+                    const newStatus = newRemaining <= 0.01 ? 'PAID' : 'PARTIAL';
+
+                    await dbLocal.purchases.update(refId, {
+                        amountPaid: newPaid,
+                        remainingBalance: newRemaining,
+                        paymentStatus: newStatus,
+                        syncStatus: 'pending'
+                    });
+                    
+                    // Trigger sync manual para la compra actualizada
+                    triggerOptimisticSync('purchases', { ...purchase, amountPaid: newPaid, remainingBalance: newRemaining, paymentStatus: newStatus });
+                }
+            }
+
+            // 2. Actualizar Saldo Global del Proveedor (Baja la deuda)
+            const supplier = await dbLocal.suppliers.get(supplierId);
+            let supplierName = '';
+            
+            if (supplier) {
+                supplierName = supplier.name;
+                const currentBalance = parseFloat(supplier.balance || 0);
+                const newBalance = Math.max(0, currentBalance - amount);
+
+                await dbLocal.suppliers.update(supplierId, {
+                    balance: newBalance,
+                    syncStatus: 'pending'
+                });
+
+                // 3. Registro en Ledger (Haber)
+                await dbLocal.supplier_ledger.put({
+                    id: `sledger_${crypto.randomUUID()}`,
+                    supplierId: supplierId,
+                    date: timestamp,
+                    type: 'PAYMENT', // Pago de deuda
+                    amount: amount,
+                    description: description || 'Pago a cuenta',
+                    balance: newBalance,
+                    refId: refId || null,
+                    syncStatus: 'pending'
+                });
+            }
+
+            // 4. Salida de Caja (Egreso Real)
+            if (method !== 'debt') {
+                const activeShift = await dbLocal.shifts
+                    .where('status').equals('OPEN')
+                    .filter(s => s.userId === user.uid && s.branchId === branchId)
+                    .first();
+
+                if (activeShift) {
+                    const movementData = {
+                        id: `cm_${crypto.randomUUID()}`,
+                        shiftId: activeShift.id,
+                        type: 'PURCHASE', // 🔥 FIX CRÍTICO: Tipo correcto para BI
+                        method: method,
+                        amount: amount,
+                        description: `Pago Prov. ${supplierName} - ${description}`,
+                        date: timestamp,
+                        branchId: branchId,
+                        userId: user.uid,
+                        companyId: user.companyId,
+                        supplierName: supplierName, // Para ranking
+                        referenceId: refId || null,
+                        syncStatus: 'pending'
+                    };
+
+                    await dbLocal.cash_movements.put(movementData);
+                    triggerOptimisticSync('cash_movements', movementData);
+                }
+            }
+        });
     },
 
     // ==========================================
@@ -304,14 +399,6 @@ export const supplierRepository = {
     async getAll() {
         const dbLocal = await getDB();
         return await dbLocal.suppliers.toArray();
-    },
-
-    async getLedger(supplierId) {
-        const dbLocal = await getDB();
-        return await dbLocal.supplier_ledger
-            .where('supplierId').equals(supplierId)
-            .reverse()
-            .sortBy('date');
     },
 
     async save(supplier) {

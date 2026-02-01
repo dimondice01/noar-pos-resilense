@@ -7,57 +7,51 @@ import {
     getDocs,
     collection,
     query,
-    where
+    where,
+    serverTimestamp
 } from 'firebase/firestore'; 
 import { useAuthStore } from '../../auth/store/useAuthStore'; 
 import { productRepository } from '../../inventory/repositories/productRepository';
-import { cashRepository } from '../../cash/repositories/cashRepository'; // 🔥 IMPORT CRÍTICO
+import { cashRepository } from '../../cash/repositories/cashRepository';
 
 // ==========================================
-// ☁️ HELPER: SYNC OPTIMISTA
+// ☁️ HELPER: SYNC OPTIMISTA NEXUS CORE
 // ==========================================
 const triggerOptimisticSync = async (collectionName, data, companyId) => {
-    if (!navigator.onLine) return; 
-    if (!companyId) return;
+    if (!navigator.onLine || !companyId) return;
 
     try {
-        await setDoc(doc(db, `companies/${companyId}/${collectionName}`, data.id || data.localId), {
+        const docId = data.id || data.localId;
+        await setDoc(doc(db, `companies/${companyId}/${collectionName}`, docId), {
             ...data,
-            firestoreId: data.id || data.localId,
+            firestoreId: docId,
             syncedAt: new Date().toISOString(),
             origin: 'POS_WEB',
             syncStatus: 'synced' 
         }, { merge: true });
 
         const dbLocal = await getDB();
-        if (collectionName === 'sales') {
-            await dbLocal.sales.update(data.localId, { syncStatus: 'synced' });
-        } else if (collectionName === 'movements') {
-            await dbLocal.movements.update(data.id, { syncStatus: 'synced' });
-        } else if (collectionName === 'cash_movements') {
-            await dbLocal.cash_movements.update(data.id, { syncStatus: 'synced' });
-        }
+        await dbLocal.table(collectionName).update(docId, { syncStatus: 'synced' });
     } catch (err) {
-        console.warn(`☁️ Sync optimista falló (${collectionName}), se reintentará en background.`);
+        console.warn(`☁️ Sync optimista falló (${collectionName}), el SyncService reintentará.`);
     }
 };
 
 export const salesRepository = {
   
   // ==========================================
-  // 🔢 GENERADOR DE NÚMEROS DE TICKET
+  // 🔢 GENERADOR DE NÚMEROS (ALBA SEQUENCE)
   // ==========================================
   async _generateTicketNumber(type = 'X', branchId) {
       const dbLocal = await getDB();
-      
-      let ptoVenta = 1;
+      let ptoVta = 1;
       
       try {
           const branch = await dbLocal.branches.get(branchId);
-          if (branch && branch.number) ptoVenta = branch.number;
+          if (branch && branch.number) ptoVta = branch.number;
       } catch(e) { }
       
-      const configKey = `last_ticket_${type}_${ptoVenta}`;
+      const configKey = `last_ticket_${type}_${ptoVta}`;
       const lastConfig = await dbLocal.config.get(configKey);
       
       let nextSequence = 1;
@@ -65,119 +59,31 @@ export const salesRepository = {
           nextSequence = parseInt(lastConfig.value) + 1;
       }
 
-      const ptoVentaStr = String(ptoVenta).padStart(4, '0');
+      const ptoVtaStr = String(ptoVta).padStart(4, '0');
       const seqStr = String(nextSequence).padStart(8, '0');
-      const finalNumber = `${type}-${ptoVentaStr}-${seqStr}`;
+      const finalNumber = `${type}-${ptoVtaStr}-${seqStr}`;
 
       return { finalNumber, nextSequence, configKey };
   },
 
-  async getSaleById(saleId) {
-    if (!saleId) return null;
-    const dbLocal = await getDB();
-    let sale = await dbLocal.sales.get(saleId);
-    if (sale) return sale;
-
-    if (navigator.onLine) {
-        try {
-            const { user } = useAuthStore.getState();
-            if (user?.companyId) {
-                const docRef = doc(db, `companies/${user.companyId}/sales`, saleId);
-                const docSnap = await getDoc(docRef);
-                if (docSnap.exists()) {
-                    sale = docSnap.data();
-                    await dbLocal.sales.put({ ...sale, syncStatus: 'synced' });
-                    return sale;
-                }
-            }
-        } catch (error) { console.warn("Error buscando venta en nube:", error); }
-    }
-    return null;
-  },
-
-  async getOperationsByDateRange(startDate, endDate) {
-    const dbLocal = await getDB();
-    const { user } = useAuthStore.getState();
-    const startISO = startDate.toISOString();
-    const endISO = endDate.toISOString();
-
-    const localSales = await dbLocal.sales
-        .where('date')
-        .between(startISO, endISO, true, true)
-        .toArray();
-
-    let cloudSales = [];
-    if (navigator.onLine && user?.companyId) {
-        try {
-            const q = query(
-                collection(db, `companies/${user.companyId}/sales`),
-                where('date', '>=', startISO),
-                where('date', '<=', endISO)
-            );
-            const snapshot = await getDocs(q);
-            cloudSales = snapshot.docs.map(doc => ({ ...doc.data(), localId: doc.id }));
-            
-            if (cloudSales.length > 0) {
-                const toCache = cloudSales.map(s => ({ ...s, syncStatus: 'synced' }));
-                await dbLocal.sales.bulkPut(toCache).catch(e => {});
-            }
-        } catch (e) { console.error("Error fetching cloud sales:", e); }
-    }
-
-    let receipts = [];
-    try {
-        receipts = await dbLocal.cash_movements
-            .where('date')
-            .between(startISO, endISO, true, true)
-            .filter(m => m.type === 'DEPOSIT' && (m.description || '').includes('Cobro'))
-            .toArray();
-    } catch(e) {}
-
-    const normReceipts = receipts.map(r => ({
-        localId: r.referenceId || `rec_${r.id}`,
-        date: r.date, 
-        total: r.amount,
-        type: 'RECEIPT', 
-        client: { name: r.description.split(': ')[1] || 'Cliente' },
-        payment: { method: r.method || 'cash' },
-        itemCount: 0, items: [], afip: { status: 'SKIPPED' },
-        userId: r.userId, createdBy: r.userEmail || r.userId, companyId: r.companyId,
-        number: `REC-${r.id.slice(-6)}`,
-        branchId: r.branchId 
-    }));
-
-    const salesMap = new Map();
-    cloudSales.forEach(sale => salesMap.set(sale.localId || sale.id, sale));
-    localSales.forEach(sale => {
-        if (sale.syncStatus === 'pending' || !salesMap.has(sale.localId)) {
-             salesMap.set(sale.localId, sale);
-        }
-    });
-
-    const allSales = Array.from(salesMap.values());
-    return [...allSales, ...normReceipts].sort((a, b) => new Date(b.date) - new Date(a.date));
-  },
-
   // ==========================================
-  // 💰 CREAR VENTA (FIX INTERESES + CAJA + AFIP)
+  // 💰 CREAR VENTA (NEXUS PRO MAX ENGINE + SPLIT PAYMENTS)
   // ==========================================
   async createSale(saleData) {
     const dbLocal = await getDB();
     const { user, activeBranchId } = useAuthStore.getState();
     
-    if (!user?.companyId) throw new Error("Error crítico: Sesión inválida (Sin Empresa).");
+    if (!user?.companyId) throw new Error("Error crítico: Sesión inválida.");
 
     const targetBranchId = activeBranchId || user.branchId || 'main';
-
-    const saleId = saleData.id || `sale_${crypto.randomUUID()}`; // Usamos ID si viene de AFIP service
+    const saleId = saleData.id || `sale_${crypto.randomUUID()}`;
     const timestamp = saleData.createdAt || new Date().toISOString(); 
     
-    // 🔥 LÓGICA DE NUMERACIÓN INTELIGENTE
-    let finalNumber = saleData.number; // Si viene de AFIP, ya tiene número fiscal
+    // 1. GESTIÓN DE NUMERACIÓN
+    let finalNumber = saleData.number;
     let configKeyToUpdate = null;
     let nextSequenceVal = 0;
 
-    // Si NO tiene número (es venta local o Ticket X), lo generamos
     if (!finalNumber) {
         const docType = saleData.afip?.status === 'APPROVED' ? saleData.afip.cbteLetra : 'X';
         const gen = await this._generateTicketNumber(docType, targetBranchId);
@@ -186,58 +92,102 @@ export const salesRepository = {
         nextSequenceVal = gen.nextSequence;
     }
 
-    // 2. LINK FUERTE: Obtenemos el turno activo para vincularlo a la venta
     const currentShift = await cashRepository.getCurrentShift();
 
-    // 3. Armado del Objeto Venta (Asegurando campos de Auditoría)
+    // 2. PROCESAMIENTO FINANCIERO DE ÍTEMS (PPP & MARGEN)
+    const enrichedItems = saleData.items.map(item => {
+        const qty = parseFloat(item.quantity);
+        const costUnit = parseFloat(item.cost || 0);
+        const priceSold = parseFloat(item.price); // Este es el PPP enviado por el usePos
+        
+        // Calculamos utilidad neta de la línea
+        const lineProfit = (priceSold - costUnit) * qty;
+
+        return {
+            ...item,
+            id: item.id,
+            name: item.name,
+            quantity: qty,
+            cost: costUnit,               // Costo histórico
+            originalPrice: parseFloat(item.originalPrice || item.price), // Precio lista
+            price: priceSold,             // Precio cobrado (PPP)
+            subtotal: parseFloat(item.subtotal),
+            profit: parseFloat(lineProfit.toFixed(2)),
+            appliedPromo: item.appliedPromo || false,
+            promoLabel: item.promoLabel || ''
+        };
+    });
+
+    // 3. ARMADO DEL OBJETO VENTA MAESTRO
+    const totalProfit = enrichedItems.reduce((acc, item) => acc + item.profit, 0);
+
     const sale = {
-      ...saleData,
       id: saleId,
       localId: saleId,
       number: finalNumber,
       branchId: targetBranchId,
-      date: saleData.date || timestamp, 
+      date: timestamp, 
       createdAt: timestamp,
       status: 'COMPLETED', 
       syncStatus: 'pending', 
       userId: user?.uid || 'unknown',
       userName: user?.name || 'Vendedor',
       companyId: user.companyId,
-      shiftId: currentShift ? currentShift.id : null,
+      shiftId: currentShift?.id || null,
       
-      // 🛡️ Aseguramos que los campos de doble columna existan sí o sí
-      total: saleData.totalSale || saleData.total, // El monto final cobrado
-      baseAmount: saleData.baseAmount || saleData.total, // El monto de la mercadería
-      surcharge: saleData.surcharge || 0, // El interés
+      // Totales
+      items: enrichedItems,
+      itemCount: enrichedItems.reduce((acc, i) => acc + i.quantity, 0),
+      subtotal: saleData.subtotal || saleData.total,
+      discount: saleData.discount || 0,
+      surcharge: saleData.surcharge || 0,
+      total: saleData.total, // Monto final percibido
       
-      // Persistencia obligatoria de datos AFIP
+      // Inteligencia Nexus (Reporting)
+      totalCost: enrichedItems.reduce((acc, i) => acc + (i.cost * i.quantity), 0),
+      netProfit: parseFloat(totalProfit.toFixed(2)),
+      
+      client: saleData.client || null,
+      
+      // 🔥 SOPORTE SPLIT PAYMENTS (Array prioritario)
+      payments: saleData.payments || (saleData.payment ? [saleData.payment] : [{ method: 'cash', total: saleData.total }]),
+      
+      // Compatibilidad Legacy
+      payment: saleData.payment || { method: 'cash' },
       afip: saleData.afip || { status: 'SKIPPED' }
     };
 
     const movementsToCreate = [];
-    let cashMovement = null;
+    const cashMovementsToCreate = []; // Array para múltiples movimientos de caja
 
-    await dbLocal.transaction('rw', [dbLocal.sales, dbLocal.config, dbLocal.products, dbLocal.movements, dbLocal.cash_movements], async () => {
+    // 🔄 TRANSACCIÓN ATÓMICA LOCAL
+    await dbLocal.transaction('rw', [
+        dbLocal.sales, 
+        dbLocal.config, 
+        dbLocal.products, 
+        dbLocal.movements, 
+        dbLocal.cash_movements
+    ], async () => {
         
+        // 1. Guardar Venta
         await dbLocal.sales.put(sale);
         
-        // Solo actualizamos el contador local si generamos nosotros el número
         if (configKeyToUpdate) {
             await dbLocal.config.put({ key: configKeyToUpdate, value: nextSequenceVal });
         }
 
-        // A. Descuento de Stock
-        for (const item of saleData.items) {
+        // 2. DESCUENTO DE STOCK & KARDEX
+        for (const item of enrichedItems) {
             const product = await dbLocal.products.get(item.id);
             
             if (product) {
-                const quantityToDeduct = item.isWeighable ? parseFloat(item.quantity) : parseInt(item.quantity);
-                const newStock = (parseFloat(product.stock || 0) - quantityToDeduct);
-
+                const newStock = (parseFloat(product.stock || 0) - item.quantity);
+                
+                // Manejo de lotes (FEFO) si existen
                 let batches = product.batches || [];
                 if (batches.length > 0) {
                     batches.sort((a, b) => new Date(a.dateAdded || 0) - new Date(b.dateAdded || 0));
-                    let remaining = quantityToDeduct;
+                    let remaining = item.quantity;
                     batches = batches.map(batch => {
                         if (remaining <= 0) return batch;
                         const currentQty = parseFloat(batch.quantity);
@@ -264,8 +214,8 @@ export const salesRepository = {
                 id: `mov_${crypto.randomUUID()}`, 
                 productId: item.id, 
                 type: 'STOCK_OUT', 
-                description: `Venta ${finalNumber}`,
-                amount: item.isWeighable ? parseFloat(item.quantity) : parseInt(item.quantity),
+                description: `Venta ${finalNumber} ${item.appliedPromo ? '[PROMO]' : ''}`,
+                amount: item.quantity,
                 date: timestamp,
                 user: sale.userName, 
                 refId: saleId,
@@ -277,48 +227,121 @@ export const salesRepository = {
             movementsToCreate.push(movement); 
         }
 
-        // B. Registro de Movimiento Financiero (CAJA / BANCO)
-        const method = sale.payment?.method || 'cash';
-        
-        cashMovement = {
-             id: `cm_${crypto.randomUUID()}`,
-             type: 'IN', // Ingreso
-             amount: sale.total, // Usamos el total con interés
-             description: `Venta ${finalNumber} (${method.toUpperCase()}) ${sale.afip?.status === 'APPROVED' ? '[AFIP]' : ''}`,
-             date: timestamp,
-             method: method, // 'cash', 'card', 'qr', etc.
-             userId: user.uid,
-             branchId: targetBranchId, 
-             shiftId: currentShift ? currentShift.id : null,
-             subtype: 'SALE', 
-             syncStatus: 'pending',
-             referenceId: saleId // Link a la venta
-        };
+        // 3. REGISTRO DE CAJA (SPLIT PAYMENTS ENGINE) 🔥
+        // Iteramos sobre el array de pagos para generar N movimientos
+        const paymentList = sale.payments;
 
-        await dbLocal.cash_movements.put(cashMovement);
+        for (const p of paymentList) {
+            // Validamos montos positivos
+            const amount = parseFloat(p.total || p.amount || 0);
+            if (amount <= 0) continue;
+
+            const description = paymentList.length > 1 
+                ? `Venta ${finalNumber} (${p.method.toUpperCase()})` 
+                : `Venta ${finalNumber}`;
+
+            const cashMovement = {
+                 id: `cm_${crypto.randomUUID()}`,
+                 type: 'IN',
+                 subtype: 'SALE',
+                 amount: amount, // Monto específico de este pago
+                 description: description,
+                 date: timestamp,
+                 method: p.method, // Método específico (cash, card, qr...)
+                 userId: user.uid,
+                 branchId: targetBranchId, 
+                 shiftId: currentShift?.id || null,
+                 syncStatus: 'pending',
+                 referenceId: saleId
+            };
+
+            await dbLocal.cash_movements.put(cashMovement);
+            cashMovementsToCreate.push(cashMovement);
+        }
     });
     
-    // 4. DESCUENTO DE STOCK CLOUD (Background)
-    const stockPromises = saleData.items.map(item => {
-        const qty = item.isWeighable ? parseFloat(item.quantity) : parseInt(item.quantity);
-        return productRepository.addStock(item.id, -qty, null, user.name, targetBranchId)
-            .catch(err => console.error(`Error background stock update ${item.id}:`, err));
+    // 4. ACTUALIZACIÓN CLOUD (BACKGROUND)
+    // Sincronizamos stock de forma atómica en la nube
+    const stockPromises = enrichedItems.map(item => {
+        return productRepository.addStock(item.id, -item.quantity, `Venta ${finalNumber}`, user.name, targetBranchId)
+            .catch(err => console.error(`Error cloud stock update:`, err));
     });
     Promise.all(stockPromises);
 
-    // 5. Sync Optimista Venta
-    const saleToUpload = { ...sale, number: finalNumber };
-    triggerOptimisticSync('sales', saleToUpload, user.companyId);
-    
-    // 6. Sync Optimista Movimientos de Stock
+    // 5. SYNC OPTIMISTA (Cloud Replication)
+    triggerOptimisticSync('sales', sale, user.companyId);
     movementsToCreate.forEach(m => triggerOptimisticSync('movements', m, user.companyId));
-
-    // 7. Sync Optimista Movimiento Financiero (Caja)
-    if (cashMovement) {
-        triggerOptimisticSync('cash_movements', cashMovement, user.companyId);
-    }
+    // Sincronizamos todos los movimientos de caja generados
+    cashMovementsToCreate.forEach(cm => triggerOptimisticSync('cash_movements', cm, user.companyId));
 
     return sale;
+  },
+
+  // ==========================================
+  // 📖 CONSULTAS BLINDADAS
+  // ==========================================
+
+  async getSaleById(saleId) {
+    if (!saleId) return null;
+    const dbLocal = await getDB();
+    let sale = await dbLocal.sales.get(saleId);
+    if (sale) return sale;
+
+    if (navigator.onLine) {
+        try {
+            const { user } = useAuthStore.getState();
+            if (user?.companyId) {
+                const docSnap = await getDoc(doc(db, `companies/${user.companyId}/sales`, saleId));
+                if (docSnap.exists()) {
+                    sale = docSnap.data();
+                    await dbLocal.sales.put({ ...sale, syncStatus: 'synced' });
+                    return sale;
+                }
+            }
+        } catch (error) { console.warn("Error cloud fetch:", error); }
+    }
+    return null;
+  },
+
+  async getOperationsByDateRange(startDate, endDate) {
+    const dbLocal = await getDB();
+    const { user, activeBranchId } = useAuthStore.getState();
+    const startISO = startDate.toISOString();
+    const endISO = endDate.toISOString();
+
+    // Filtramos localmente por sucursal para coherencia Nexus
+    const localSales = await dbLocal.sales
+        .where('date').between(startISO, endISO, true, true)
+        .filter(s => s.branchId === activeBranchId)
+        .toArray();
+
+    // En la nube buscamos todo el rango (el syncService se encarga de la consistencia)
+    let cloudSales = [];
+    if (navigator.onLine && user?.companyId) {
+        try {
+            const q = query(
+                collection(db, `companies/${user.companyId}/sales`),
+                where('branchId', '==', activeBranchId),
+                where('date', '>=', startISO),
+                where('date', '<=', endISO)
+            );
+            const snapshot = await getDocs(q);
+            cloudSales = snapshot.docs.map(doc => ({ ...doc.data(), localId: doc.id }));
+            if (cloudSales.length > 0) {
+                await dbLocal.sales.bulkPut(cloudSales.map(s => ({ ...s, syncStatus: 'synced' }))).catch(()=>{});
+            }
+        } catch (e) { console.error("Cloud fetch error:", e); }
+    }
+
+    const salesMap = new Map();
+    cloudSales.forEach(sale => salesMap.set(sale.localId || sale.id, sale));
+    localSales.forEach(sale => {
+        if (sale.syncStatus === 'pending' || !salesMap.has(sale.localId)) {
+             salesMap.set(sale.localId, sale);
+        }
+    });
+
+    return Array.from(salesMap.values()).sort((a, b) => new Date(b.date) - new Date(a.date));
   },
 
   async getTodayOperations() {
@@ -327,50 +350,5 @@ export const salesRepository = {
     const end = new Date();
     end.setHours(23,59,59,999);
     return this.getOperationsByDateRange(start, end);
-  },
-
-  async getTodaySales() {
-    return this.getTodayOperations();
-  },
-
-  async forcePendingState() {
-    const dbLocal = await getDB();
-    return await dbLocal.sales
-        .where('syncStatus')
-        .notEqual('pending')
-        .modify({ syncStatus: 'pending' });
-  },
-
-  async getFiscalStats() {
-    const dbLocal = await getDB();
-    const now = new Date();
-    const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
-    const startOfWeek = new Date(now);
-    startOfWeek.setDate(now.getDate() - (now.getDay() || 7) + 1);
-    startOfWeek.setHours(0,0,0,0);
-    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
-
-    const monthlySales = await dbLocal.sales
-        .where('date')
-        .aboveOrEqual(startOfMonth)
-        .toArray();
-
-    let daily = 0;
-    let weekly = 0;
-    let monthly = 0;
-    let lastFiscalTime = null;
-    const startOfWeekISO = startOfWeek.toISOString();
-
-    for (const sale of monthlySales) {
-        if (sale.afip?.status === 'APPROVED') {
-            monthly++;
-            if (sale.date >= startOfWeekISO) weekly++;
-            if (sale.date >= startOfDay) daily++;
-            if (!lastFiscalTime || sale.date > lastFiscalTime) {
-                lastFiscalTime = sale.date;
-            }
-        }
-    }
-    return { daily, weekly, monthly, lastTime: lastFiscalTime };
   }
 };

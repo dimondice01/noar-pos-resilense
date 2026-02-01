@@ -1,44 +1,58 @@
 import React, { useEffect, useState, useRef, useMemo } from 'react';
+// 🔥 Importamos useParams para capturar el slug de la empresa
+import { useNavigate, useParams } from 'react-router-dom'; 
 import { 
-    Plus, Search, Edit2, Trash2, Package, Scale, AlertTriangle, 
+    Plus, Search, Edit2, Trash2, Package, AlertTriangle, 
     ArrowUpRight, Filter, CheckSquare, Square, X, History,
     Printer, ArrowRightLeft, Calendar, ChevronLeft, ChevronRight,
-    Upload, RefreshCw 
+    Upload, RefreshCw, MoreVertical, Cloud, MapPin, 
+    Tag, Percent, Megaphone, MoreHorizontal, LayoutGrid, DollarSign
 } from 'lucide-react';
-import { useNavigate } from 'react-router-dom'; 
 
 import { productRepository } from '../repositories/productRepository';
 import { masterRepository } from '../repositories/masterRepository';
 import { useAuthStore } from '../../auth/store/useAuthStore'; 
 
-import { Card } from '../../../core/ui/Card';
-import { Button } from '../../../core/ui/Button';
-import { ProductModal } from '../components/ProductModal';
+import { ProductModal } from '../components/ProductModal'; 
 import { MastersModal } from '../components/MastersModal';
-import { ProductHistoryModal } from '../components/ProductHistoryModal';
 import { ImportMapperModal } from '../components/ImportMapperModal'; 
 import { cn } from '../../../core/utils/cn';
+import { Button } from '../../../core/ui/Button'; 
 
 import { collection, getDocs, query, where, documentId } from 'firebase/firestore';
 import { db as firestoreDB } from '../../../database/firebase';
 
-// HELPERS
+// =================================================================
+// 🧠 HELPER FUNCTIONS (NEXUS UTILS)
+// =================================================================
+
 const formatMoney = (amount) => {
     return amount ? amount.toLocaleString('es-AR', { minimumFractionDigits: 0, maximumFractionDigits: 2 }) : '0';
 };
 
 const formatStock = (stock) => {
     if (stock === undefined || stock === null) return '0';
-    return parseFloat(Number(stock).toFixed(3));
+    return Number(stock) % 1 === 0 ? Number(stock).toFixed(0) : Number(stock).toFixed(3);
+};
+
+const getActivePromo = (product) => {
+    if (!product.promo) return null;
+    const now = new Date();
+    const start = product.promo.startDate ? new Date(product.promo.startDate + 'T00:00:00') : null;
+    const end = product.promo.endDate ? new Date(product.promo.endDate + 'T23:59:59') : null;
+    
+    if (start && end && now >= start && now <= end) {
+        return product.promo;
+    }
+    return null;
 };
 
 // =================================================================
-// 1. STOCK ENTRY MODAL
+// 1. STOCK ENTRY MODAL (Ingreso Rápido)
 // =================================================================
 const StockEntryModal = ({ isOpen, onClose, product, onConfirm }) => {
     if (!isOpen || !product) return null;
     const [qty, setQty] = useState('');
-    const [expiry, setExpiry] = useState('');
     const inputRef = useRef(null);
 
     useEffect(() => {
@@ -47,10 +61,9 @@ const StockEntryModal = ({ isOpen, onClose, product, onConfirm }) => {
 
     const handleConfirm = () => {
         const val = parseFloat(qty);
-        if (!val || val <= 0) return alert("Ingrese una cantidad válida");
-        onConfirm(product.id, val, expiry);
+        if (!val || val === 0) return alert("Ingrese una cantidad válida");
+        onConfirm(product.id, val, "Ingreso Rápido Manual");
         setQty('');
-        setExpiry('');
         onClose();
     };
 
@@ -58,7 +71,7 @@ const StockEntryModal = ({ isOpen, onClose, product, onConfirm }) => {
         <div className="fixed inset-0 z-[90] flex items-center justify-center bg-sys-900/60 backdrop-blur-sm p-4 animate-in fade-in zoom-in-95">
               <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden">
                 <div className="p-4 bg-brand text-white flex justify-between items-center">
-                    <h3 className="font-bold flex items-center gap-2"><Package size={18}/> Ingreso de Stock</h3>
+                    <h3 className="font-bold flex items-center gap-2"><Package size={18}/> Ajuste de Stock</h3>
                     <button onClick={onClose} className="hover:bg-white/20 p-1 rounded"><X size={18}/></button>
                 </div>
                 <div className="p-6 space-y-4">
@@ -67,7 +80,7 @@ const StockEntryModal = ({ isOpen, onClose, product, onConfirm }) => {
                         <p className="text-lg font-bold text-sys-900 leading-tight">{product.name}</p>
                     </div>
                     <div>
-                        <label className="text-xs text-sys-500 uppercase font-bold mb-1 block">Cantidad a Agregar</label>
+                        <label className="text-xs text-sys-500 uppercase font-bold mb-1 block">Cantidad (+/-)</label>
                         <input 
                             ref={inputRef}
                             type="number" 
@@ -77,17 +90,9 @@ const StockEntryModal = ({ isOpen, onClose, product, onConfirm }) => {
                             onChange={e => setQty(e.target.value)}
                             onKeyDown={e => e.key === 'Enter' && handleConfirm()}
                         />
+                        <p className="text-[10px] text-sys-400 mt-2 text-center">Use números negativos para restar stock</p>
                     </div>
-                    <div className="bg-red-50 p-3 rounded-xl border border-red-100">
-                        <label className="text-xs text-red-600 uppercase font-bold mb-1 block flex items-center gap-1"><Calendar size={14}/> Vencimiento (Nuevo Lote)</label>
-                        <input 
-                            type="date" 
-                            className="w-full p-2 bg-white border border-red-200 rounded-lg text-sm"
-                            value={expiry}
-                            onChange={e => setExpiry(e.target.value)}
-                        />
-                    </div>
-                    <Button onClick={handleConfirm} className="w-full py-3 shadow-lg shadow-brand/20">Confirmar Ingreso</Button>
+                    <Button onClick={handleConfirm} className="w-full py-3 shadow-lg shadow-brand/20">Confirmar Ajuste</Button>
                 </div>
              </div>
         </div>
@@ -112,8 +117,6 @@ const BulkUpdateModal = ({ isOpen, onClose, onConfirm, allProducts, masters, man
         else if (activeTab === 'category' && targetId) list = allProducts.filter(p => p.category === targetId);
         setTargetList(list);
     }, [activeTab, targetId, manualSelectionIds, allProducts]);
-
-    const removeProduct = (id) => setTargetList(prev => prev.filter(p => p.id !== id));
 
     return (
       <div className="fixed inset-0 z-[80] flex items-center justify-center bg-sys-900/60 backdrop-blur-sm p-4 animate-in fade-in zoom-in-95">
@@ -153,15 +156,12 @@ const BulkUpdateModal = ({ isOpen, onClose, onConfirm, allProducts, masters, man
                             <span>Producto ({targetList.length})</span><span>Precio Hoy</span>
                         </div>
                         {targetList.map(p => (
-                            <div key={p.id} className="p-3 flex justify-between items-center group hover:bg-white transition-colors bg-sys-50/50">
+                            <div key={p.id} className="p-3 flex justify-between items-center bg-sys-50/50">
                                 <div className="truncate flex-1 pr-2">
                                     <p className="text-sm font-medium text-sys-800 truncate">{p.name}</p>
                                     <p className="text-[10px] text-sys-400">{p.code}</p>
                                 </div>
-                                <div className="flex items-center gap-2">
-                                    <span className="text-sm font-mono font-bold text-sys-600">$ {p.price}</span>
-                                    <button onClick={() => removeProduct(p.id)} className="p-1 text-sys-400 hover:text-red-500"><X size={14} /></button>
-                                </div>
+                                <span className="text-sm font-mono font-bold text-sys-600">$ {p.price}</span>
                             </div>
                         ))}
                     </div>
@@ -182,464 +182,522 @@ const BulkUpdateModal = ({ isOpen, onClose, onConfirm, allProducts, masters, man
 };
 
 // =================================================================
-// 3. INVENTORY PAGE (ENTERPRISE)
+// 🏭 MAIN PAGE: INVENTORY DASHBOARD
 // =================================================================
 export const InventoryPage = () => {
-  const navigate = useNavigate();
-  const { user, activeBranchId } = useAuthStore(); 
+    const navigate = useNavigate();
+    
+    // 🔥 CAPTURA DE SLUG Y AUTH (SEGURIDAD)
+    const { companySlug } = useParams();
+    const { user, activeBranchId, activeBranchName } = useAuthStore(); 
+    
+    const isAdmin = user?.role === 'OWNER' || user?.role === 'ADMIN' || user?.role === 'SUPER_ADMIN';
 
-  const isAdmin = user?.role === 'OWNER' || user?.role === 'ADMIN';
+    // Data States
+    const [products, setProducts] = useState([]);
+    const [loading, setLoading] = useState(true);
+    const [masters, setMasters] = useState({ categories: [], brands: [], suppliers: [] });
+    
+    // Matrix Global State (Multi-Branch)
+    const [branches, setBranches] = useState([]); 
+    const [globalStock, setGlobalStock] = useState({}); 
+    const [loadingStock, setLoadingStock] = useState(false);
+    const lastFetchedIds = useRef(""); 
 
-  // Data States
-  const [products, setProducts] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [masters, setMasters] = useState({ categories: [], brands: [], suppliers: [] });
-  
-  // Matrix Global State
-  const [branches, setBranches] = useState([]); 
-  const [globalStock, setGlobalStock] = useState({}); 
-  const [loadingStock, setLoadingStock] = useState(false);
-  
-  // Cache Ref para evitar bucles de fetchMatrix
-  const lastFetchedIds = useRef(""); 
+    // Search & Filter
+    const [inputValue, setInputValue] = useState(''); 
+    const [searchTerm, setSearchTerm] = useState('');
+    const [filters, setFilters] = useState({ category: '', brand: '' });
+    const searchInputRef = useRef(null);
 
-  // Search & Filter
-  const [inputValue, setInputValue] = useState(''); 
-  const [searchTerm, setSearchTerm] = useState('');
-  const [filters, setFilters] = useState({ category: '', brand: '', supplier: '' });
-  const searchInputRef = useRef(null);
+    // Selection & View State
+    const [selectedIds, setSelectedIds] = useState(new Set());
+    const [currentPage, setCurrentPage] = useState(1);
+    const ITEMS_PER_PAGE = 25;
 
-  // Selection & Pagination
-  const [selectedIds, setSelectedIds] = useState(new Set());
-  const [currentPage, setCurrentPage] = useState(1);
-  const ITEMS_PER_PAGE = 20;
+    // Modals
+    const [isProductModalOpen, setIsProductModalOpen] = useState(false);
+    const [isMastersModalOpen, setIsMastersModalOpen] = useState(false);
+    const [isImportModalOpen, setIsImportModalOpen] = useState(false); 
+    const [isBulkUpdateOpen, setIsBulkUpdateOpen] = useState(false);
+    
+    const [editingProduct, setEditingProduct] = useState(null);
+    const [stockEntryProduct, setStockEntryProduct] = useState(null);
 
-  // Modals
-  const [isProductModalOpen, setIsProductModalOpen] = useState(false);
-  const [isMastersModalOpen, setIsMastersModalOpen] = useState(false);
-  const [isBulkUpdateOpen, setIsBulkUpdateOpen] = useState(false);
-  const [isImportModalOpen, setIsImportModalOpen] = useState(false); 
-  
-  const [editingProduct, setEditingProduct] = useState(null);
-  const [historyProduct, setHistoryProduct] = useState(null);
-  const [stockEntryProduct, setStockEntryProduct] = useState(null); 
+    // =================================================================
+    // 🔄 DATA LOADING & REFRESH
+    // =================================================================
 
-  // Debounce Search
-  useEffect(() => {
-    const timer = setTimeout(() => setSearchTerm(inputValue), 300);
-    return () => clearTimeout(timer);
-  }, [inputValue]);
+    const loadData = async () => {
+        setLoading(true);
+        try {
+            const [allProducts, cats, brands, supps] = await Promise.all([
+                productRepository.getAll(),
+                masterRepository.getAll('categories'),
+                masterRepository.getAll('brands'),
+                masterRepository.getAll('suppliers')
+            ]);
+            
+            lastFetchedIds.current = ""; 
 
-  // Load Initial Data
-  const loadData = async () => {
-    setLoading(true);
-    try {
-      const [allProducts, cats, brands, supps] = await Promise.all([
-        productRepository.getAll(),
-        masterRepository.getAll('categories'),
-        masterRepository.getAll('brands'),
-        masterRepository.getAll('suppliers')
-      ]);
-      setProducts((allProducts || []).reverse());
-      setMasters({ categories: cats || [], brands: brands || [], suppliers: supps || [] });
+            setProducts([...allProducts].sort((a,b) => a.name.localeCompare(b.name)));
+            setMasters({ 
+                categories: cats || [], 
+                brands: brands || [], 
+                suppliers: supps || [] 
+            });
 
-      if (isAdmin && user?.companyId) {
-         try {
-            const q = collection(firestoreDB, 'companies', user.companyId, 'branches');
-            const snap = await getDocs(q);
-            setBranches(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-         } catch (e) { console.error("Error loading branches:", e); }
-      }
-    } catch (error) { console.error("Error loading data", error); } 
-    finally { setLoading(false); }
-  };
-
-  useEffect(() => { loadData(); }, [user, isAdmin]);
-
-  // Reset page on filter change
-  useEffect(() => { setCurrentPage(1); }, [searchTerm, filters]);
-
-  // Filter Logic
-  const filteredProducts = useMemo(() => {
-      const term = searchTerm.toLowerCase();
-      return products.filter(p => {
-        const name = (p.name || '').toLowerCase();
-        const code = (p.code || '').toString().toLowerCase();
-        const matchesSearch = name.includes(term) || code.includes(term);
-        
-        const matchesCat = filters.category ? p.category === filters.category : true;
-        const matchesBrand = filters.brand ? p.brand === filters.brand : true;
-        const matchesSupp = filters.supplier ? p.supplier === filters.supplier : true;
-        
-        return matchesSearch && matchesCat && matchesBrand && matchesSupp;
-      });
-  }, [products, searchTerm, filters]);
-
-  // Pagination Logic
-  const totalPages = Math.ceil(filteredProducts.length / ITEMS_PER_PAGE);
-  const currentProducts = useMemo(() => {
-      return filteredProducts.slice(
-          (currentPage - 1) * ITEMS_PER_PAGE, 
-          currentPage * ITEMS_PER_PAGE
-      );
-  }, [filteredProducts, currentPage]);
-
-  // Total Valuation
-  const totalStockValuado = useMemo(() => {
-      return products.reduce((acc, p) => acc + ((parseFloat(p.cost)||0) * (parseFloat(p.stock)||0)), 0);
-  }, [products]);
-
-  // 🔥 MATRIX FETCHING FIX (NO INFINITE LOOP)
-  useEffect(() => {
-      // Validaciones para no ejecutar
-      if (!isAdmin || branches.length === 0 || currentProducts.length === 0) return;
-
-      // Generar fingerprint de los productos visibles
-      const currentIdsString = currentProducts.map(p => p.id).sort().join(',');
-      
-      // Si son los mismos productos que la última vez, NO HACER NADA
-      if (lastFetchedIds.current === currentIdsString) return;
-      
-      // Actualizar ref y ejecutar
-      lastFetchedIds.current = currentIdsString;
-
-      const fetchMatrix = async () => {
-          setLoadingStock(true);
-          const visibleIds = currentProducts.map(p => p.id);
-          const newStockMap = { ...globalStock }; // Clonamos estado actual
-
-          const chunks = [];
-          for (let i = 0; i < visibleIds.length; i += 10) {
-              chunks.push(visibleIds.slice(i, i + 10));
-          }
-
-          try {
-              for (const branch of branches) {
-                  for (const chunk of chunks) {
-                      const q = query(
-                          collection(firestoreDB, 'companies', user.companyId, 'branches', branch.id, 'inventory'),
-                          where(documentId(), 'in', chunk)
-                      );
-                      const snap = await getDocs(q);
-                      
-                      snap.docs.forEach(doc => {
-                          const prodId = doc.id;
-                          const data = doc.data();
-                          if (!newStockMap[prodId]) newStockMap[prodId] = {};
-                          newStockMap[prodId][branch.id] = data.stock;
-                      });
-
-                      // Rellenar ceros
-                      chunk.forEach(prodId => {
-                           if (!newStockMap[prodId]) newStockMap[prodId] = {};
-                           if (newStockMap[prodId][branch.id] === undefined) {
-                               newStockMap[prodId][branch.id] = 0;
-                           }
-                      });
-                  }
-              }
-              setGlobalStock(newStockMap);
-          } catch (e) { console.error("Matrix error:", e); } 
-          finally { setLoadingStock(false); }
-      };
-
-      fetchMatrix();
-      
-  }, [currentProducts, branches, isAdmin, user?.companyId]); // 🔥 Dependencias corregidas
-
-  // Handlers
-  const handleSearchKeyDown = (e) => {
-    if (e.key === 'Enter') {
-        const term = e.target.value.trim(); 
-        if (!term) return;
-        const exactMatch = products.find(p => (p.code || '').toString() === term);
-        
-        if (exactMatch) {
-            setEditingProduct(exactMatch);
-            setIsProductModalOpen(true);
-            setInputValue(''); setSearchTerm(''); 
-        } else {
-            setEditingProduct({ code: term, name: '', cost: 0, price: 0, stock: 0 });
-            setIsProductModalOpen(true);
-            setInputValue(''); setSearchTerm('');
+            if (isAdmin && user?.companyId) {
+                 try {
+                    const q = collection(firestoreDB, 'companies', user.companyId, 'branches');
+                    const snap = await getDocs(q);
+                    const branchesData = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+                    setBranches(branchesData.sort((a,b) => (a.id === activeBranchId ? -1 : 1)));
+                 } catch (e) { console.error("Error loading branches:", e); }
+            } else {
+                setBranches([{ id: activeBranchId, name: activeBranchName }]);
+            }
+        } catch (error) { 
+            console.error("Error loading data", error); 
+        } finally { 
+            setLoading(false); 
         }
-    }
-  };
+    };
 
-  const toggleSelection = (id) => {
-    const newSet = new Set(selectedIds);
-    if (newSet.has(id)) newSet.delete(id); else newSet.add(id);
-    setSelectedIds(newSet);
-  };
+    useEffect(() => { loadData(); }, [user, isAdmin, activeBranchId]);
 
-  const toggleSelectAll = () => {
-    if (selectedIds.size === currentProducts.length && currentProducts.length > 0) {
-      setSelectedIds(new Set());
-    } else {
-      setSelectedIds(new Set(currentProducts.map(p => p.id)));
-    }
-  };
+    useEffect(() => {
+        const timer = setTimeout(() => setSearchTerm(inputValue), 300);
+        return () => clearTimeout(timer);
+    }, [inputValue]);
 
-  const handleSaveProduct = async (productData) => {
-    await productRepository.save(productData); 
-    loadData();
-  };
+    // =================================================================
+    // 🔍 FILTERING & PAGINATION ENGINE
+    // =================================================================
 
-  const handleDelete = async (id) => {
-    if (window.confirm("¿Estás seguro de eliminar este producto?")) {
-      await productRepository.delete(id);
-      loadData();
-    }
-  };
+    const filteredProducts = useMemo(() => {
+        const term = searchTerm.toLowerCase();
+        return products.filter(p => {
+            const name = (p.name || '').toLowerCase();
+            const code = (p.code || '').toString().toLowerCase();
+            const barcodeStr = Array.isArray(p.barcode) ? p.barcode.join(' ') : (p.barcode || '');
+            
+            const matchesSearch = name.includes(term) || code.includes(term) || barcodeStr.toLowerCase().includes(term);
+            const matchesCat = filters.category ? p.category === filters.category : true;
+            const matchesBrand = filters.brand ? p.brand === filters.brand : true;
+            
+            return matchesSearch && matchesCat && matchesBrand;
+        });
+    }, [products, searchTerm, filters]);
 
-  const handleQuickStockEntry = async (productId, qty, expiryDate) => {
-    try {
-        const userName = user?.name || user?.email || 'Usuario';
-        await productRepository.addStock(productId, qty, expiryDate, userName); 
-        loadData();
-    } catch (e) { alert("Error al sumar stock: " + e.message); }
-  };
+    const totalPages = Math.ceil(filteredProducts.length / ITEMS_PER_PAGE);
+    const currentProducts = useMemo(() => {
+        return filteredProducts.slice(
+            (currentPage - 1) * ITEMS_PER_PAGE, 
+            currentPage * ITEMS_PER_PAGE
+        );
+    }, [filteredProducts, currentPage]);
 
-  const executeBulkUpdate = async (targetProducts, costPct, pricePct) => {
-    if (targetProducts.length === 0) return alert("No hay productos seleccionados.");
-    if (!window.confirm(`⚠️ CONFIRMACIÓN:\nSe actualizarán ${targetProducts.length} productos.\nCost: +${costPct}% | Precio: +${pricePct}%`)) return;
-    setLoading(true);
-    try {
-      const userName = user?.name || user?.email || 'Usuario';
-      const updates = targetProducts.map(p => {
-          const newCost = p.cost * (1 + costPct / 100);
-          let calculatedPrice = p.price * (1 + pricePct / 100);
-          const newPrice = Math.ceil(calculatedPrice / 50) * 50; 
-          return { ...p, cost: newCost, price: newPrice, user: userName }; 
-      });
-      for (const p of updates) { await productRepository.save(p); }
-      alert(`✅ Éxito: ${updates.length} productos actualizados.`);
-      setSelectedIds(new Set());
-      setIsBulkUpdateOpen(false);
-      loadData();
-    } catch (error) { alert("Error al actualizar."); } 
-    finally { setLoading(false); }
-  };
+    // =================================================================
+    // 🌐 GLOBAL MATRIX FETCHING
+    // =================================================================
+    
+    useEffect(() => {
+        if (!isAdmin || branches.length <= 1 || currentProducts.length === 0) return;
 
-  return (
-    <div className="space-y-6 pb-20 relative">
-      {/* HEADER */}
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-4">
-        <div>
-          <h2 className="text-2xl font-bold text-sys-900">Inventario {isAdmin ? 'Global' : 'Local'}</h2>
-          <div className="flex gap-4 mt-2 text-xs text-sys-500">
-              <p>Valuación Total (Costo): <span className="font-bold text-sys-800">$ {formatMoney(totalStockValuado)}</span></p>
-              <p>Items: <span className="font-bold text-sys-800">{filteredProducts.length}</span></p>
-          </div>
-        </div>
-        
-        <div className="flex flex-wrap gap-2 justify-end">
-            <div className="flex gap-1">
-                <Button variant="secondary" className="border-purple-200 text-purple-700 bg-purple-50 hover:bg-purple-100 px-3" onClick={() => navigate('print')}>
-                    <Printer size={18} className="mr-2" /> Etiquetas
-                </Button>
-                <Button variant="secondary" className="border-blue-200 text-blue-700 bg-blue-50 hover:bg-blue-100 px-3" onClick={() => navigate('movements')}>
-                    <ArrowRightLeft size={18} className="mr-2" /> Movimientos
-                </Button>
-            </div>
-            <div className="w-[1px] h-8 bg-sys-200 mx-1 hidden md:block"></div>
-            <div className="flex gap-1">
-                <Button variant="secondary" className="border-gray-200 text-gray-700 bg-white hover:bg-gray-50 shadow-sm" onClick={() => setIsImportModalOpen(true)}>
-                    <Upload size={18} className="mr-2" /> Importar
-                </Button>
-                <Button variant="secondary" className="border-brand/20 text-brand bg-brand/5 hover:bg-brand/10" onClick={() => setIsBulkUpdateOpen(true)}>
-                    <ArrowUpRight size={18} className="mr-2" /> Aumento Masivo
-                </Button>
-                <Button variant="secondary" onClick={() => setIsMastersModalOpen(true)}>
-                    <Filter size={18} className="mr-2" /> Maestros
-                </Button>
-            </div>
-            <Button onClick={() => { setEditingProduct(null); setIsProductModalOpen(true); }} className="shadow-lg shadow-brand/20 ml-2">
-                <Plus size={20} className="mr-2" /> Nuevo
-            </Button>
-        </div>
-      </div>
+        const currentIdsString = currentProducts.map(p => p.id).sort().join(',');
+        if (lastFetchedIds.current === currentIdsString) return;
+        lastFetchedIds.current = currentIdsString;
 
-      {/* FILTROS */}
-      <Card className="p-4 flex flex-col md:flex-row gap-4 items-center bg-white shadow-sm border border-sys-100">
-        <div className="relative w-full md:w-1/3 group">
-            <Search className="absolute left-3 top-2.5 text-sys-400 group-focus-within:text-brand transition-colors" size={18} />
-            <input 
-                ref={searchInputRef}
-                type="text" 
-                placeholder="Escanear código o buscar nombre..." 
-                className="w-full pl-10 pr-4 py-2 rounded-lg border border-sys-200 bg-sys-50 focus:bg-white focus:border-brand outline-none transition-all text-sm font-medium shadow-sm focus:shadow-md"
-                value={inputValue} 
-                onChange={e => setInputValue(e.target.value)} 
-                onKeyDown={handleSearchKeyDown} 
-                autoFocus
-            />
-        </div>
-        <div className="flex gap-2 w-full md:w-2/3 overflow-x-auto no-scrollbar">
-            <select className="filter-select" value={filters.category} onChange={e => setFilters({...filters, category: e.target.value})}>
-                <option value="">Categoría...</option>
-                {masters.categories.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
-            </select>
-            <select className="filter-select" value={filters.brand} onChange={e => setFilters({...filters, brand: e.target.value})}>
-                <option value="">Marca...</option>
-                {masters.brands.map(b => <option key={b.id} value={b.name}>{b.name}</option>)}
-            </select>
-            <select className="filter-select" value={filters.supplier} onChange={e => setFilters({...filters, supplier: e.target.value})}>
-                <option value="">Proveedor...</option>
-                {masters.suppliers.map(s => <option key={s.id} value={s.name}>{s.name}</option>)}
-            </select>
-            {(filters.category || filters.brand || filters.supplier) && (
-                <button onClick={() => setFilters({category:'', brand:'', supplier:''})} className="p-2 text-red-500 hover:bg-red-50 rounded-lg"><X size={18} /></button>
-            )}
-        </div>
-      </Card>
+        const fetchMatrix = async () => {
+            setLoadingStock(true);
+            const visibleIds = currentProducts.map(p => p.id);
+            const newStockMap = { ...globalStock };
 
-      {/* SELECCIÓN MASIVA */}
-      {selectedIds.size > 0 && (
-        <div className="bg-brand-light/30 border border-brand/20 p-3 rounded-xl flex justify-between items-center text-sm text-brand-hover">
-            <span>Has seleccionado <b>{selectedIds.size} productos</b> manualmente.</span>
-            <Button size="sm" className="bg-brand text-white border-none h-8 text-xs" onClick={() => setIsBulkUpdateOpen(true)}>Aplicar Aumento a Selección</Button>
-        </div>
-      )}
+            const chunks = [];
+            for (let i = 0; i < visibleIds.length; i += 10) {
+                chunks.push(visibleIds.slice(i, i + 10));
+            }
 
-      {/* TABLA PRINCIPAL */}
-      <Card className="p-0 overflow-hidden shadow-soft border-0 min-h-[400px] flex flex-col">
-        <div className="overflow-x-auto flex-1">
-          <table className="w-full text-left border-collapse">
-            <thead>
-              <tr className="bg-sys-50/80 backdrop-blur-sm text-sys-500 text-xs uppercase tracking-wider border-b border-sys-100">
-                <th className="p-4 w-10 text-center">
-                    <button onClick={toggleSelectAll} className="text-sys-400 hover:text-brand">
-                        {selectedIds.size === currentProducts.length && currentProducts.length > 0 ? <CheckSquare size={18} /> : <Square size={18} />}
-                    </button>
-                </th>
-                <th className="p-4 font-semibold w-12">Img</th>
-                <th className="p-4 font-semibold">Producto</th>
-                <th className="p-4 font-semibold text-right">Precios</th>
+            try {
+                const otherBranches = branches.filter(b => b.id !== activeBranchId);
+                for (const branch of otherBranches) {
+                    for (const chunk of chunks) {
+                        const q = query(
+                            collection(firestoreDB, 'companies', user.companyId, 'branches', branch.id, 'inventory'),
+                            where(documentId(), 'in', chunk)
+                        );
+                        const snap = await getDocs(q);
+                        
+                        snap.docs.forEach(doc => {
+                            const prodId = doc.id;
+                            const data = doc.data();
+                            if (!newStockMap[prodId]) newStockMap[prodId] = {};
+                            newStockMap[prodId][branch.id] = data.stock;
+                        });
+                        
+                        chunk.forEach(prodId => {
+                             if (!newStockMap[prodId]) newStockMap[prodId] = {};
+                             if (newStockMap[prodId][branch.id] === undefined) {
+                                 newStockMap[prodId][branch.id] = 0;
+                             }
+                        });
+                    }
+                }
+                setGlobalStock(newStockMap);
+            } catch (e) { console.error("Matrix error:", e); } 
+            finally { setLoadingStock(false); }
+        };
 
-                {/* COLUMNAS DINÁMICAS SUCURSALES (Admin Only) */}
-                {isAdmin ? (
-                    branches.map(b => (
-                        <th key={b.id} className="p-4 font-bold text-center text-sys-600 bg-sys-50 border-l border-sys-200 min-w-[120px]">
-                            {b.name}
-                        </th>
-                    ))
-                ) : (
-                    <th className="p-4 font-semibold text-center bg-brand/5 text-brand">Stock Local</th>
-                )}
+        fetchMatrix();
+    }, [currentProducts, branches, isAdmin]);
 
-                <th className="p-4 font-semibold text-right">Acciones</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-sys-100">
-              {currentProducts.map(p => {
-                const isSelected = selectedIds.has(p.id);
-                const isLowStock = p.stock <= (p.minStock || 5);
+    // =================================================================
+    // 🎮 HANDLERS
+    // =================================================================
+
+    const handleSaveProduct = async (productData) => {
+        await productRepository.save(productData); 
+        await loadData();
+        setIsProductModalOpen(false);
+    };
+
+    const handleDelete = async (id) => {
+        if (window.confirm("¿Confirma eliminación del Catálogo Global?")) {
+            await productRepository.delete(id);
+            loadData();
+        }
+    };
+
+    const handleQuickStockEntry = async (productId, qty, reason) => {
+        try {
+            const userName = user?.name || user?.email || 'Sistema';
+            await productRepository.addStock(productId, qty, reason, userName, activeBranchId);
+            loadData();
+        } catch (e) { console.error(e); }
+    };
+
+    const executeBulkUpdate = async (targetProducts, costPct, pricePct) => {
+        if (targetProducts.length === 0) return alert("No hay productos seleccionados.");
+        if (!window.confirm(`⚠️ CONFIRMACIÓN:\nSe actualizarán ${targetProducts.length} productos.\nCost: +${costPct}% | Precio: +${pricePct}%`)) return;
+        setLoading(true);
+        try {
+            const updates = targetProducts.map(p => {
+                const newCost = p.cost * (1 + costPct / 100);
+                let calculatedPrice = p.price * (1 + pricePct / 100);
+                const newPrice = Math.ceil(calculatedPrice / 50) * 50; 
+                return { ...p, cost: newCost, price: newPrice }; 
+            });
+            for (const p of updates) { await productRepository.save(p); }
+            alert(`✅ Éxito: ${updates.length} productos actualizados.`);
+            setSelectedIds(new Set());
+            setIsBulkUpdateOpen(false);
+            loadData();
+        } catch (error) { alert("Error al actualizar."); } 
+        finally { setLoading(false); }
+    };
+
+    const toggleSelection = (id) => {
+        const newSet = new Set(selectedIds);
+        if (newSet.has(id)) newSet.delete(id); else newSet.add(id);
+        setSelectedIds(newSet);
+    };
+
+    const toggleSelectAll = () => {
+        if (selectedIds.size === currentProducts.length && currentProducts.length > 0) {
+            setSelectedIds(new Set());
+        } else {
+            setSelectedIds(new Set(currentProducts.map(p => p.id)));
+        }
+    };
+
+    // 🔥 FIX: Navegación Segura a Etiquetas
+    // Usamos el slug capturado para no perder el contexto de la empresa
+    const goToLabels = () => {
+        const targetSlug = companySlug || activeBranchId || 'main';
+        navigate(`/${targetSlug}/inventory/print-labels`);
+    };
+
+    const goToMovements = () => {
+        const targetSlug = companySlug || activeBranchId || 'main';
+        navigate(`/${targetSlug}/inventory/movements`);
+    };
+
+    return (
+        <div className="flex h-[calc(100vh-4rem)] overflow-hidden bg-sys-50 relative">
+            
+            {/* MAIN CONTENT AREA */}
+            <div className="flex-1 flex flex-col w-full">
                 
-                return (
-                  <tr key={p.id} className={cn("transition-colors group hover:bg-sys-50", isSelected ? "bg-brand-light/20" : "")}>
-                    <td className="p-4 text-center">
-                        <button onClick={() => toggleSelection(p.id)} className={cn("transition-colors", isSelected ? "text-brand" : "text-sys-300 hover:text-sys-500")}>{isSelected ? <CheckSquare size={18} /> : <Square size={18} />}</button>
-                    </td>
-                    <td className="p-4">
-                        <div className="w-10 h-10 rounded-lg bg-gray-100 border border-gray-200 flex items-center justify-center text-gray-400">
-                            <Package size={16}/>
+                {/* HEADER (ACTIONS) */}
+                <div className="px-6 py-5 bg-white border-b border-sys-200 flex flex-col md:flex-row justify-between items-start md:items-center gap-4 shrink-0 shadow-sm z-20">
+                    <div>
+                        <h1 className="text-2xl font-black text-sys-900 tracking-tight flex items-center gap-2">
+                            <LayoutGrid className="text-brand" size={28} /> 
+                            {isAdmin ? 'Inventario Global' : 'Mi Inventario'}
+                        </h1>
+                        <div className="flex items-center gap-3 text-[10px] font-bold text-sys-500 uppercase mt-1">
+                            <span className="flex items-center gap-1 bg-sys-100 px-2 py-0.5 rounded text-sys-600 border border-sys-200">
+                                <MapPin size={10}/> {activeBranchName}
+                            </span>
+                            <span className="text-sys-300">|</span>
+                            <span>{filteredProducts.length} Items Visibles</span>
                         </div>
-                    </td>
-                    <td className="p-4">
-                        <div className="font-bold text-sys-900">{p.name}</div>
-                        <div className="text-xs text-sys-400 font-mono flex items-center gap-2">{p.code}</div>
-                        <div className="flex gap-1 mt-1">
-                            {p.category && <span className="badge">{p.category}</span>}
-                            {p.brand && <span className="text-xs text-sys-500 bg-sys-100 px-1 rounded">{p.brand}</span>}
-                        </div>
-                    </td>
-                    <td className="p-4 text-right">
-                        <div className="text-[10px] text-sys-400">Costo: ${formatMoney(p.cost)}</div>
-                        <div className="font-bold text-sys-900 text-base">$ {formatMoney(p.price)}</div>
-                    </td>
+                    </div>
                     
-                    {/* CELDAS SUCURSALES (Admin) */}
-                    {isAdmin ? (
-                        branches.map(b => {
-                            const stockVal = globalStock[p.id]?.[b.id];
-                            const isActiveBranch = b.id === activeBranchId;
-                            
-                            return (
-                                <td key={b.id} className={cn("p-4 text-center border-l border-sys-100 font-medium text-sys-600", isActiveBranch && "bg-brand/5")}>
-                                    {loadingStock ? (
-                                        <RefreshCw size={12} className="animate-spin mx-auto text-sys-300"/>
-                                    ) : (
-                                        <span className={cn("font-mono font-bold", stockVal > 0 ? "text-sys-800" : "text-sys-300")}>
-                                            {formatStock(stockVal)} 
-                                        </span>
-                                    )}
-                                </td>
-                            );
-                        })
-                    ) : (
-                        <td className="p-4 text-center">
-                            <div className="flex items-center justify-center gap-2">
-                                 <button onClick={() => setStockEntryProduct(p)} className="p-1 rounded-full bg-green-50 text-green-600 border border-green-200 hover:bg-green-100 hover:scale-110 transition-all" title="Sumar Stock">
-                                     <Plus size={14} strokeWidth={3} />
-                                 </button>
-                                 <div className={cn("stock-badge", isLowStock ? "text-red-600 border-red-100 bg-red-50" : "text-sys-700 border-sys-200 bg-white")}>
-                                    {isLowStock && <AlertTriangle size={12} />}
-                                    {formatStock(p.stock)} {p.isWeighable ? 'kg' : 'un'}
-                                 </div>
-                            </div>
-                        </td>
-                    )}
+                    <div className="flex flex-wrap gap-2">
+                        {/* 🔥 FIX: Botones con navegación segura */}
+                        <Button variant="secondary" className="border-purple-200 text-purple-700 bg-purple-50 hover:bg-purple-100" onClick={goToLabels}>
+                            <Printer size={18} className="mr-2" /> Etiquetas
+                        </Button>
+                        <Button variant="secondary" className="border-blue-200 text-blue-700 bg-blue-50 hover:bg-blue-100" onClick={goToMovements}>
+                            <ArrowRightLeft size={18} className="mr-2" /> Movimientos
+                        </Button>
+                        
+                        <div className="w-px h-8 bg-sys-200 mx-2 hidden md:block"></div>
 
-                    <td className="p-4 text-right">
-                      <div className="flex justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                        <button onClick={() => setHistoryProduct(p)} className="action-btn text-blue-600 bg-blue-50/50 hover:bg-blue-100 border border-blue-200" title="Ver Historial"><History size={16} /></button>
-                        <button onClick={() => { setEditingProduct(p); setIsProductModalOpen(true); }} className="action-btn text-brand bg-white border border-sys-200"><Edit2 size={16} /></button>
-                        <button onClick={() => handleDelete(p.id)} className="action-btn text-red-500 bg-white border border-sys-200"><Trash2 size={16} /></button>
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-
-        {/* PAGINACIÓN */}
-        {totalPages > 1 && (
-            <div className="p-4 border-t border-sys-100 flex justify-between items-center bg-sys-50/50">
-                <span className="text-xs text-sys-500">
-                    Mostrando <b>{(currentPage - 1) * ITEMS_PER_PAGE + 1}</b> a <b>{Math.min(currentPage * ITEMS_PER_PAGE, filteredProducts.length)}</b> de <b>{filteredProducts.length}</b>
-                </span>
-                <div className="flex gap-2">
-                    <button onClick={() => setCurrentPage(p => Math.max(1, p - 1))} disabled={currentPage === 1} className="p-2 rounded-lg bg-white border border-sys-200 text-sys-600 disabled:opacity-50"><ChevronLeft size={16} /></button>
-                    <span className="px-3 py-1.5 rounded-lg bg-white border border-sys-200 text-sm font-bold text-sys-800 flex items-center">Pág {currentPage}</span>
-                    <button onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages} className="p-2 rounded-lg bg-white border border-sys-200 text-sys-600 disabled:opacity-50"><ChevronRight size={16} /></button>
+                        <Button variant="secondary" onClick={() => setIsImportModalOpen(true)}>
+                            <Upload size={18} className="mr-2"/> Importar
+                        </Button>
+                        {selectedIds.size > 0 && (
+                            <Button variant="secondary" className="border-brand/30 text-brand bg-brand/5 hover:bg-brand/10" onClick={() => setIsBulkUpdateOpen(true)}>
+                                <ArrowUpRight size={18} className="mr-2"/> Aumento Masivo ({selectedIds.size})
+                            </Button>
+                        )}
+                        <Button variant="secondary" onClick={() => setIsMastersModalOpen(true)}>
+                            <Filter size={18} className="mr-2"/> Maestros
+                        </Button>
+                        <Button onClick={() => { setEditingProduct(null); setIsProductModalOpen(true); }} className="shadow-lg shadow-brand/20 ml-2">
+                            <Plus size={20} className="mr-2"/> Nuevo
+                        </Button>
+                    </div>
                 </div>
+
+                {/* FILTERS TOOLBAR */}
+                <div className="px-6 py-3 bg-sys-50 border-b border-sys-200 flex gap-3 overflow-x-auto no-scrollbar items-center shrink-0">
+                    <div className="relative w-72 group shrink-0">
+                        <Search className="absolute left-3 top-2.5 text-sys-400 group-focus-within:text-brand transition-colors" size={16} />
+                        <input 
+                            ref={searchInputRef}
+                            type="text" 
+                            placeholder="Buscar código, nombre, barras..." 
+                            className="w-full pl-9 pr-3 py-2 bg-white border border-sys-200 rounded-xl text-sm font-bold outline-none focus:border-brand shadow-sm transition-all focus:ring-4 focus:ring-brand/10"
+                            value={inputValue} 
+                            onChange={e => setInputValue(e.target.value)} 
+                        />
+                    </div>
+                    
+                    <select className="filter-select" value={filters.category} onChange={e => setFilters({...filters, category: e.target.value})}>
+                        <option value="">Todas las Categorías</option>
+                        {masters.categories.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
+                    </select>
+                    
+                    <select className="filter-select" value={filters.brand} onChange={e => setFilters({...filters, brand: e.target.value})}>
+                        <option value="">Todas las Marcas</option>
+                        {masters.brands.map(b => <option key={b.id} value={b.name}>{b.name}</option>)}
+                    </select>
+
+                    {(filters.category || filters.brand) && (
+                        <button onClick={() => setFilters({category:'', brand:''})} className="p-2 text-red-500 hover:bg-red-50 rounded-lg transition-colors border border-transparent hover:border-red-100" title="Limpiar Filtros">
+                            <X size={18} />
+                        </button>
+                    )}
+                </div>
+
+                {/* DATA TABLE */}
+                <div className="flex-1 overflow-auto bg-white relative">
+                    <table className="w-full text-left border-collapse">
+                        <thead className="sticky top-0 bg-sys-50 z-10 shadow-sm">
+                            <tr className="text-[10px] uppercase font-black text-sys-400 tracking-wider border-b border-sys-200">
+                                <th className="p-3 w-10 text-center">
+                                    <button onClick={toggleSelectAll} className="hover:text-brand transition-colors">
+                                        {selectedIds.size === currentProducts.length && currentProducts.length > 0 ? <CheckSquare size={16} /> : <Square size={16} />}
+                                    </button>
+                                </th>
+                                <th className="p-3 font-bold">Producto / SKU</th>
+                                
+                                {/* 🏢 COLUMNAS DINÁMICAS DE SUCURSALES */}
+                                {branches.map(b => (
+                                    <th key={b.id} className={cn("p-3 text-center border-l border-sys-100 min-w-[100px]", b.id === activeBranchId ? "bg-brand/5 text-brand" : "")}>
+                                        {b.name}
+                                    </th>
+                                ))}
+
+                                <th className="p-3 text-right border-l border-sys-100">Costo Neto</th>
+                                <th className="p-3 text-right">Precio Final</th>
+                                <th className="p-3 text-center w-20">Acciones</th>
+                            </tr>
+                        </thead>
+                        <tbody className="divide-y divide-sys-100">
+                            {currentProducts.map(p => {
+                                const promo = getActivePromo(p);
+                                const isSelected = selectedIds.has(p.id);
+                                
+                                const isNegativeStock = p.stock < 0;
+                                const isLowStock = p.stock <= (p.minStock || 5);
+                                const hasMarginError = parseFloat(p.cost) > parseFloat(p.price);
+
+                                return (
+                                    <tr 
+                                        key={p.id} 
+                                        onClick={() => { setEditingProduct(p); setIsProductModalOpen(true); }}
+                                        className={cn(
+                                            "cursor-pointer transition-colors group h-[60px]",
+                                            hasMarginError ? "bg-red-50 hover:bg-red-100" : "hover:bg-sys-50",
+                                            isSelected ? "bg-brand/5" : ""
+                                        )}
+                                    >
+                                        <td className="p-3 text-center" onClick={(e) => e.stopPropagation()}>
+                                            <button onClick={() => toggleSelection(p.id)} className={cn("transition-colors", isSelected ? "text-brand" : "text-sys-300 hover:text-sys-500")}>
+                                                {isSelected ? <CheckSquare size={16} /> : <Square size={16} />}
+                                            </button>
+                                        </td>
+
+                                        {/* Info Producto */}
+                                        <td className="p-3 max-w-[300px]">
+                                            <div className="flex flex-col justify-center h-full relative">
+                                                <span className="text-sm font-bold text-sys-900 truncate flex items-center gap-2" title={p.name}>
+                                                    {p.name}
+                                                    {hasMarginError && <AlertTriangle size={14} className="text-red-600 animate-pulse" title="Costo mayor a precio"/>}
+                                                </span>
+                                                <div className="flex items-center gap-2 mt-0.5">
+                                                    <span className="text-[9px] font-mono text-sys-500 bg-sys-100 px-1.5 rounded border border-sys-200">{p.code || 'S/C'}</span>
+                                                    {p.category && <span className="text-[9px] font-bold text-sys-500 bg-sys-50 px-1.5 rounded uppercase border border-sys-100">{p.category}</span>}
+                                                </div>
+                                            </div>
+                                        </td>
+
+                                        {/* 🏢 STOCK POR SUCURSAL */}
+                                        {branches.map(b => {
+                                            const isCurrent = b.id === activeBranchId;
+                                            const stockVal = isCurrent ? p.stock : (globalStock[p.id]?.[b.id] || 0);
+                                            const cellNegative = stockVal < 0;
+                                            const cellLow = stockVal <= (p.minStock || 5);
+
+                                            return (
+                                                <td key={b.id} className={cn("p-3 text-center border-l border-sys-100", isCurrent ? "bg-brand/5" : "")}>
+                                                    {(!isCurrent && loadingStock) ? (
+                                                        <div className="w-4 h-1 bg-sys-200 rounded animate-pulse mx-auto"></div>
+                                                    ) : (
+                                                        <div className={cn(
+                                                            "inline-flex items-center justify-center px-2 py-1 rounded-lg min-w-[3rem]", 
+                                                            cellNegative ? "bg-red-600 text-white font-black" : 
+                                                            cellLow ? "text-orange-600 bg-orange-50 font-bold" : 
+                                                            "text-sys-700 font-medium"
+                                                        )}>
+                                                            {formatStock(stockVal)}
+                                                        </div>
+                                                    )}
+                                                </td>
+                                            );
+                                        })}
+
+                                        {/* Costo */}
+                                        <td className="p-3 text-right border-l border-sys-100">
+                                            <span className="text-xs font-medium text-sys-500">$ {formatMoney(p.cost)}</span>
+                                        </td>
+
+                                        {/* Precio (Con lógica Promo) */}
+                                        <td className="p-3 text-right">
+                                            {promo ? (
+                                                <div className="flex flex-col items-end justify-center">
+                                                    <span className="text-[10px] text-sys-400 line-through decoration-red-400 decoration-1">$ {formatMoney(p.price)}</span>
+                                                    <span className="text-sm font-black text-purple-600 bg-purple-50 px-1.5 rounded border border-purple-100 shadow-sm flex items-center gap-1">
+                                                        <Megaphone size={10}/> 
+                                                        {promo.name || 'Promo'}
+                                                    </span>
+                                                </div>
+                                            ) : (
+                                                <span className={cn("text-sm font-bold", hasMarginError ? "text-red-600" : "text-sys-900")}>
+                                                    $ {formatMoney(p.price)}
+                                                </span>
+                                            )}
+                                        </td>
+
+                                        {/* Actions */}
+                                        <td className="p-3 text-center" onClick={(e) => e.stopPropagation()}>
+                                            <div className="flex justify-center gap-2">
+                                                <button onClick={() => setStockEntryProduct(p)} className="p-1.5 rounded-lg text-green-600 hover:bg-green-50 hover:scale-110 transition-all border border-transparent hover:border-green-200" title="Ajuste Rápido">
+                                                    <Package size={16}/>
+                                                </button>
+                                                <button onClick={() => { setEditingProduct(p); setIsProductModalOpen(true); }} className="p-1.5 rounded-lg text-brand hover:bg-brand/10 transition-all" title="Editar">
+                                                    <Edit2 size={16}/>
+                                                </button>
+                                                {/* 🔥 Botón de eliminar solo para Admin */}
+                                                {isAdmin && (
+                                                    <button onClick={() => handleDelete(p.id)} className="p-1.5 rounded-lg text-red-400 hover:bg-red-50 hover:text-red-600 transition-all" title="Eliminar">
+                                                        <Trash2 size={16}/>
+                                                    </button>
+                                                )}
+                                            </div>
+                                        </td>
+                                    </tr>
+                                );
+                            })}
+                        </tbody>
+                    </table>
+                    
+                    {currentProducts.length === 0 && !loading && (
+                        <div className="flex flex-col items-center justify-center h-64 text-sys-400 opacity-50">
+                            <Package size={48} strokeWidth={1}/>
+                            <p className="mt-2 font-medium">No se encontraron productos</p>
+                        </div>
+                    )}
+                </div>
+
+                {/* PAGINATION */}
+                {totalPages > 1 && (
+                    <div className="p-3 bg-white border-t border-sys-200 flex justify-between items-center shrink-0 z-20">
+                        <span className="text-xs text-sys-500 font-medium">
+                            Página <b>{currentPage}</b> de <b>{totalPages}</b>
+                        </span>
+                        <div className="flex gap-1">
+                            <button onClick={() => setCurrentPage(p => Math.max(1, p - 1))} disabled={currentPage === 1} className="p-1.5 rounded hover:bg-sys-100 disabled:opacity-30 border border-sys-200"><ChevronLeft size={16}/></button>
+                            <button onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages} className="p-1.5 rounded hover:bg-sys-100 disabled:opacity-30 border border-sys-200"><ChevronRight size={16}/></button>
+                        </div>
+                    </div>
+                )}
             </div>
-        )}
-      </Card>
 
-      {/* MODALES */}
-      <ProductModal isOpen={isProductModalOpen} onClose={() => setIsProductModalOpen(false)} productToEdit={editingProduct} onSave={handleSaveProduct} />
-      <MastersModal isOpen={isMastersModalOpen} onClose={() => setIsMastersModalOpen(false)} />
-      <ProductHistoryModal isOpen={!!historyProduct} onClose={() => setHistoryProduct(null)} product={historyProduct} />
-      <BulkUpdateModal isOpen={isBulkUpdateOpen} onClose={() => setIsBulkUpdateOpen(false)} onConfirm={executeBulkUpdate} allProducts={products} masters={masters} manualSelectionIds={selectedIds} />
-      <StockEntryModal isOpen={!!stockEntryProduct} onClose={() => setStockEntryProduct(null)} product={stockEntryProduct} onConfirm={handleQuickStockEntry} />
-      
-      <ImportMapperModal 
-          isOpen={isImportModalOpen} 
-          onClose={() => setIsImportModalOpen(false)} 
-          branchId={activeBranchId || user?.branchId} 
-          onSuccess={loadData}     
-      />
+            {/* MODALES */}
+            <ProductModal 
+                isOpen={isProductModalOpen} 
+                onClose={() => setIsProductModalOpen(false)} 
+                productToEdit={editingProduct} 
+                onSave={handleSaveProduct} 
+            />
+            <StockEntryModal 
+                isOpen={!!stockEntryProduct}
+                onClose={() => setStockEntryProduct(null)}
+                product={stockEntryProduct}
+                onConfirm={handleQuickStockEntry}
+            />
+            <BulkUpdateModal 
+                isOpen={isBulkUpdateOpen}
+                onClose={() => setIsBulkUpdateOpen(false)}
+                onConfirm={executeBulkUpdate}
+                allProducts={products}
+                masters={masters}
+                manualSelectionIds={selectedIds}
+            />
+            <MastersModal 
+                isOpen={isMastersModalOpen} 
+                onClose={() => setIsMastersModalOpen(false)} 
+            />
+            <ImportMapperModal 
+                isOpen={isImportModalOpen} 
+                onClose={() => setIsImportModalOpen(false)} 
+                branchId={activeBranchId} 
+                onSuccess={loadData}    
+            />
 
-      <style>{`
-        .filter-select { @apply p-2 border border-sys-200 rounded-lg text-sm bg-white min-w-[120px] outline-none focus:border-brand; }
-        .badge { @apply inline-flex w-fit px-2 py-0.5 rounded bg-sys-100 text-[10px] text-sys-600 font-bold uppercase; }
-        .stock-badge { @apply inline-flex items-center gap-1 px-2 py-1 rounded-lg font-mono text-sm border; }
-        .action-btn { @apply p-2 rounded-lg transition shadow-sm; }
-      `}</style>
-    </div>
-  );
+            <style>{`
+                .filter-select { 
+                    @apply h-9 px-3 border border-sys-200 rounded-xl text-xs font-bold bg-white min-w-[140px] outline-none focus:border-brand cursor-pointer text-sys-700 shadow-sm hover:border-brand/30 transition-colors appearance-none; 
+                }
+                .no-scrollbar::-webkit-scrollbar { display: none; }
+                .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+            `}</style>
+        </div>
+    );
 };

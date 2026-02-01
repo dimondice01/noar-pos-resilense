@@ -4,13 +4,13 @@ import {
     Wallet, RefreshCw, DollarSign,
     Lock, Unlock, Monitor, FileText, CheckCircle2, History,
     ShoppingBag, Banknote, Shield, TrendingDown,
-    Activity, Settings, LayoutGrid, Building2, Plus, ArrowRight
+    Activity, Building2, Plus, ArrowRight, MapPin,
+    BarChart3, PieChart, LineChart
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
 // Stores & Repositorios
 import { useAuthStore } from '../../auth/store/useAuthStore'; 
-import { productRepository } from '../../inventory/repositories/productRepository';
 import { cashRepository } from '../../cash/repositories/cashRepository';
 import { salesRepository } from '../../sales/repositories/salesRepository';
 
@@ -30,13 +30,13 @@ import { ExpenseModal } from '../../cash/components/ExpenseModal';
 import { WithdrawalModal } from '../../cash/components/WithdrawalModal'; 
 import { CashClosingModal } from '../../cash/components/CashClosingModal';
 
-// Firestore
+// Firestore Logic
 import { collection, query, where, getDocs, addDoc, serverTimestamp } from 'firebase/firestore';
 import { db as firestoreDB } from '../../../database/firebase';
 import { db as localDb } from '../../../database/db'; 
 
 // =================================================================
-// 🧠 HELPER: LECTURA INTELIGENTE DE VALORES (FIX SNAPSHOT)
+// 🧠 HELPER: LECTURA INTELIGENTE DE VALORES
 // =================================================================
 const money = (val) => val ? val.toLocaleString('es-AR', {minimumFractionDigits: 2}) : '0.00';
 
@@ -53,22 +53,19 @@ const getShiftValues = (shift, calculatedDetails = null) => {
         return { expected, declared, diff, initial };
     }
 
-    // PRIORIDAD 2: PROPIEDADES RAÍZ O CÁLCULO
+    // PRIORIDAD 2: CÁLCULO EN TIEMPO REAL
     const isValid = (val) => val !== undefined && val !== null;
-
     let expected = 0;
+    
     if (calculatedDetails && isValid(calculatedDetails.totalCash)) {
         expected = Number(calculatedDetails.totalCash);
-    } 
-    else if (isValid(shift.systemAmount)) expected = Number(shift.systemAmount);
-    else if (isValid(shift.stats?.expectedTotal)) expected = Number(shift.stats.expectedTotal);
-    else if (isValid(shift.expectedCash)) expected = Number(shift.expectedCash);
+    } else if (isValid(shift.expectedCash)) {
+        expected = Number(shift.expectedCash);
+    }
 
     let declared = 0;
-    if (isValid(shift.finalAmount)) declared = Number(shift.finalAmount);
-    else if (isValid(shift.stats?.declaredCash)) declared = Number(shift.stats.declaredCash);
-    else if (isValid(shift.finalCash)) declared = Number(shift.finalCash);
-
+    if (isValid(shift.finalCash)) declared = Number(shift.finalCash);
+    
     const initial = Number(shift.initialAmount) || 0;
     const diff = declared - expected;
 
@@ -76,35 +73,25 @@ const getShiftValues = (shift, calculatedDetails = null) => {
 };
 
 // =================================================================
-// 🚑 COMPONENTE DE AUTO-CURACIÓN (SETUP WIZARD)
+// 🚑 SETUP WIZARD (AUTO-CURACIÓN)
 // =================================================================
 const NoBranchesSetupView = ({ onFix }) => {
     const [isFixing, setIsFixing] = useState(false);
-
-    const handleFix = async () => {
-        setIsFixing(true);
-        await onFix();
-        setIsFixing(false);
-    };
-
     return (
         <div className="w-full h-[80vh] flex flex-col items-center justify-center p-6 animate-in fade-in slide-in-from-bottom-8">
             <div className="bg-white p-8 rounded-3xl shadow-2xl text-center max-w-md border border-sys-100 relative overflow-hidden">
                 <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-brand to-purple-500"></div>
                 <div className="w-20 h-20 bg-brand/10 rounded-full flex items-center justify-center mx-auto mb-6">
-                    <Building2 size={40} className="text-brand" />
+                    <div className="bg-brand text-white p-4 rounded-full shadow-lg shadow-brand/30">
+                        <Building2 size={32} />
+                    </div>
                 </div>
                 <h2 className="text-2xl font-black text-sys-900 mb-2">Configuración Inicial</h2>
-                <p className="text-sys-500 mb-8 text-sm">
-                    Detectamos que tu empresa <b>no tiene sucursales configuradas</b>. 
-                    Para comenzar a operar, necesitamos crear la estructura base.
+                <p className="text-sys-500 mb-8 text-sm leading-relaxed">
+                    No se detectaron sucursales activas. Necesitamos crear la estructura base para comenzar a operar.
                 </p>
-                <Button onClick={handleFix} disabled={isFixing} className="w-full h-12 text-base shadow-xl shadow-brand/20 hover:scale-[1.02] transition-transform">
-                    {isFixing ? (
-                        <span className="flex items-center gap-2"><RefreshCw className="animate-spin" /> Creando Sucursales...</span>
-                    ) : (
-                        <span className="flex items-center gap-2"><Plus size={20} /> Generar Sucursales Default</span>
-                    )}
+                <Button onClick={async () => { setIsFixing(true); await onFix(); setIsFixing(false); }} disabled={isFixing} className="w-full h-12 text-base shadow-xl shadow-brand/20 bg-brand hover:bg-brand-dark text-white rounded-xl transition-all hover:scale-[1.02]">
+                    {isFixing ? <span className="flex items-center gap-2"><RefreshCw className="animate-spin" /> Configurando...</span> : <span className="flex items-center gap-2"><Plus size={20} /> Generar Sucursal Central</span>}
                 </Button>
             </div>
         </div>
@@ -112,13 +99,60 @@ const NoBranchesSetupView = ({ onFix }) => {
 };
 
 // =================================================================
-// 💎 COMPONENTES UI MICRO
+// 🛡️ PANEL DE SEGURIDAD (PIN POR SUCURSAL)
+// =================================================================
+const AdminSecurityPanel = ({ onUpdatePin, activeBranchName, activeBranchId }) => {
+    const [newPin, setNewPin] = useState('');
+    
+    // 🔥 BLOQUEO DE SEGURIDAD:
+    const isDisabled = !activeBranchId || activeBranchId === 'ALL';
+
+    return (
+        <Card className="p-5 border border-slate-200 bg-slate-50 shadow-none relative overflow-hidden">
+            <div className="flex items-center gap-2 mb-2">
+                <Shield size={16} className="text-slate-400" />
+                <h3 className="font-bold text-slate-700 text-sm">PIN de Seguridad</h3>
+            </div>
+            
+            <p className="text-[10px] text-slate-400 mb-4 font-medium">
+                {isDisabled 
+                    ? "Seleccione una sucursal específica arriba para configurar su PIN." 
+                    : `Configurando PIN para: ${activeBranchName}`
+                }
+            </p>
+            
+            <div className="flex gap-2 items-center">
+                <div className="relative flex-1">
+                    <input 
+                        type="password" placeholder="Nuevo PIN (4-6 dígitos)" 
+                        className="w-full px-3 py-2 rounded-lg border border-slate-200 focus:border-slate-400 outline-none text-xs font-mono tracking-widest bg-white shadow-sm transition-colors disabled:bg-slate-100 disabled:text-slate-300"
+                        maxLength={6} value={newPin} onChange={(e) => setNewPin(e.target.value)}
+                        disabled={isDisabled}
+                    />
+                </div>
+                <Button size="sm" className="bg-slate-800 hover:bg-slate-900 text-white h-9 text-xs font-bold shadow-md px-4 rounded-lg" onClick={() => { onUpdatePin(newPin); setNewPin(''); }} disabled={newPin.length < 4 || isDisabled}>
+                    Actualizar
+                </Button>
+            </div>
+            {isDisabled && (
+                <div className="absolute inset-0 bg-white/60 backdrop-blur-[1px] flex items-center justify-center border-l-4 border-slate-300 transition-all">
+                    <p className="text-[10px] font-bold text-slate-500 uppercase flex items-center gap-1 bg-white px-3 py-1.5 rounded-full shadow-sm border border-slate-200">
+                        <MapPin size={12} className="text-brand"/> Seleccione Sucursal Única
+                    </p>
+                </div>
+            )}
+        </Card>
+    );
+};
+
+// =================================================================
+// TARJETAS Y COMPONENTES VISUALES
 // =================================================================
 const StatCard = ({ title, value, subtext, icon: Icon, colorClass, borderClass }) => (
-    <div className={cn("p-5 rounded-xl border flex flex-col justify-between shadow-sm transition-all hover:shadow-md bg-white", borderClass)}>
+    <div className={cn("p-5 rounded-xl border flex flex-col justify-between shadow-sm transition-all hover:shadow-md bg-white group", borderClass)}>
         <div className="flex justify-between items-start mb-2">
             <p className={cn("text-[11px] font-bold uppercase tracking-wider text-slate-500")}>{title}</p>
-            <div className={cn("p-2 rounded-full bg-slate-50", colorClass)}><Icon size={18} /></div>
+            <div className={cn("p-2 rounded-full bg-slate-50 transition-colors group-hover:scale-110", colorClass)}><Icon size={18} /></div>
         </div>
         <div>
             <h3 className="text-2xl font-black tracking-tight text-slate-900">{value}</h3>
@@ -130,6 +164,8 @@ const StatCard = ({ title, value, subtext, icon: Icon, colorClass, borderClass }
 const KpiCard = ({ metrics, isAdmin, money, navigate, onTriggerClose, isCajeroActive, activeBranchName }) => (
     <div className={cn("lg:col-span-2 relative overflow-hidden rounded-3xl p-6 text-white shadow-2xl transition-all border border-white/5", isAdmin ? "bg-slate-900" : "bg-brand")}>
         <div className="absolute top-0 right-0 p-12 opacity-5 pointer-events-none"><Activity size={180} /></div>
+        
+        {/* HEADER DE LA TARJETA */}
         <div className="relative z-10 flex flex-col h-full justify-between gap-8">
             <div className="flex justify-between items-start">
                 <div>
@@ -142,8 +178,8 @@ const KpiCard = ({ metrics, isAdmin, money, navigate, onTriggerClose, isCajeroAc
                             {isAdmin ? "Ventas Globales (Hoy)" : (isCajeroActive ? "Turno Activo" : "Caja Cerrada")}
                         </p>
                         {activeBranchName && (
-                            <span className="ml-2 bg-white/20 px-2 py-0.5 rounded text-[9px] font-bold text-white border border-white/10 backdrop-blur-sm">
-                                {activeBranchName}
+                            <span className="ml-2 bg-white/20 px-2 py-0.5 rounded text-[9px] font-bold text-white border border-white/10 backdrop-blur-sm truncate max-w-[150px]">
+                                {activeBranchName === 'ALL' ? 'Todas las Sucursales' : activeBranchName}
                             </span>
                         )}
                     </div>
@@ -151,10 +187,12 @@ const KpiCard = ({ metrics, isAdmin, money, navigate, onTriggerClose, isCajeroAc
                         {isAdmin ? `$ ${money(metrics.todaySales)}` : (isCajeroActive ? 'OPERATIVO' : '---')}
                     </h1>
                 </div>
-                <div className="p-3 bg-white/10 hover:bg-white/20 rounded-2xl backdrop-blur-md border border-white/10 transition-colors">
-                    {isAdmin ? <Monitor size={24} className="text-white" /> : <Wallet size={24} className="text-white" />}
+                <div className="p-3 bg-white/10 hover:bg-white/20 rounded-2xl backdrop-blur-md border border-white/10 transition-colors cursor-pointer" onClick={() => isAdmin ? navigate('reports') : null}>
+                    {isAdmin ? <BarChart3 size={24} className="text-white" /> : <Wallet size={24} className="text-white" />}
                 </div>
             </div>
+
+            {/* DESGLOSE Y BOTONES DE ACCIÓN */}
             <div className="flex items-center gap-4 bg-black/20 p-4 rounded-2xl backdrop-blur-md border border-white/5">
                 <div className="flex-1 border-r border-white/10 pr-4">
                     <p className="text-[10px] uppercase font-bold text-white/50 mb-1">Efectivo</p>
@@ -164,12 +202,19 @@ const KpiCard = ({ metrics, isAdmin, money, navigate, onTriggerClose, isCajeroAc
                     <p className="text-[10px] uppercase font-bold text-white/50 mb-1">Digital</p>
                     <p className="text-lg font-bold font-mono tracking-tight text-white/90">{isAdmin ? `$ ${money(metrics.digitalSales)}` : '• • •'}</p>
                 </div>
-                <div className="pl-4">
+                <div className="pl-4 flex gap-2">
+                    {/* 🔥 ACCESO DIRECTO A MÉTRICAS PARA ADMIN */}
                     {isAdmin && (
-                        <Button onClick={() => navigate('sales')} variant="secondary" size="sm" className="bg-white text-slate-900 hover:bg-slate-200 border-none h-9 text-xs font-bold shadow-lg">
-                            <FileText size={14} className="mr-2" /> Historial
-                        </Button>
+                        <>
+                            <Button onClick={() => navigate('reports')} variant="secondary" size="sm" className="bg-emerald-500 text-white hover:bg-emerald-600 border-none h-9 text-xs font-bold shadow-lg transition-transform active:scale-95">
+                                <LineChart size={14} className="mr-2" /> Métricas
+                            </Button>
+                            <Button onClick={() => navigate('sales')} variant="secondary" size="sm" className="bg-white text-slate-900 hover:bg-slate-200 border-none h-9 text-xs font-bold shadow-lg transition-transform active:scale-95">
+                                <FileText size={14} className="mr-2" /> Historial
+                            </Button>
+                        </>
                     )}
+                    {/* ACCIÓN PARA CAJERO */}
                     {isCajeroActive && (
                         <Button size="sm" className="bg-rose-500 hover:bg-rose-600 text-white border-none h-9 text-xs font-bold shadow-lg" onClick={onTriggerClose}>
                             <Lock size={14} className="mr-2"/> Cerrar Caja
@@ -213,9 +258,7 @@ const MyShiftCard = ({ metrics, money, handleOpenShift }) => {
                     </div>
                     <div className="text-right">
                         <p className="text-[10px] text-slate-400 uppercase font-bold">Apertura</p>
-                        <p className="text-xs font-mono font-bold text-slate-600">
-                            {new Date(metrics.activeShift.openedAt).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
-                        </p>
+                        <p className="text-xs font-mono font-bold text-slate-600">{new Date(metrics.activeShift.openedAt).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</p>
                     </div>
                  </div>
             )}
@@ -223,69 +266,25 @@ const MyShiftCard = ({ metrics, money, handleOpenShift }) => {
     );
 };
 
-const ArcaMonitorCard = ({ stats, onManageClick }) => (
-    <div className="p-0 overflow-hidden border border-slate-200 shadow-sm bg-white group hover:shadow-md transition-all rounded-2xl">
-        <div className="bg-gradient-to-r from-slate-800 to-slate-900 p-3 flex justify-between items-center text-white relative overflow-hidden">
-            <div className="flex items-center gap-3 relative z-10">
-                <div className="p-1.5 bg-white/10 rounded-lg backdrop-blur-sm border border-white/10">
-                    <Shield size={16} className="text-emerald-400" /> 
-                </div>
-                <div>
-                    <p className="text-[9px] font-bold uppercase opacity-60 tracking-wider">Cumplimiento</p>
-                    <h3 className="font-bold text-sm leading-none">Fiscal ARCA</h3>
-                </div>
-            </div>
-            <button onClick={onManageClick} className="relative z-10 flex items-center gap-1.5 bg-white/10 hover:bg-white/20 border border-white/10 px-3 py-1.5 rounded-full text-[10px] font-bold uppercase transition-all backdrop-blur-md">
-                <Settings size={12} /> Panel
-            </button>
-        </div>
-        <div className="p-5 grid grid-cols-3 gap-4 text-center divide-x divide-slate-100">
-            <div><p className="text-[10px] uppercase font-bold text-slate-400 mb-1">Hoy</p><p className="text-2xl font-black text-slate-800">{stats.daily}</p></div>
-            <div><p className="text-[10px] uppercase font-bold text-slate-400 mb-1">Semana</p><p className="text-xl font-bold text-slate-600">{stats.weekly}</p></div>
-            <div><p className="text-[10px] uppercase font-bold text-slate-400 mb-1">Mes</p><p className="text-xl font-bold text-slate-600">{stats.monthly}</p></div>
-        </div>
-        <div className="bg-slate-50 p-2.5 px-4 border-t border-slate-100 flex justify-between items-center">
-            <div className="flex-1 text-center">
-                {stats.daily === 0 ? (
-                    <p className="text-[10px] font-bold text-rose-500 flex items-center justify-center gap-1.5"><AlertTriangle size={12}/> Sin actividad</p>
-                ) : (
-                    <p className="text-[10px] font-medium text-slate-500">Último tkt: <span className="font-mono font-bold text-slate-700">{stats.lastTime ? new Date(stats.lastTime).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : '-'}</span></p>
-                )}
-            </div>
-        </div>
-    </div>
-);
-
-// =================================================================
-// 🔎 PANEL DE AUDITORÍA (Admin - FIX FUSIÓN DE DATOS)
-// =================================================================
 const AdminCashAuditPanel = ({ allShifts, loadIntelligence, navigate, resolveName, pendingShifts }) => {
     const [isReportModalOpen, setIsReportModalOpen] = useState(false);
     const [reportData, setReportData] = useState(null);
     const [loadingAudit, setLoadingAudit] = useState(false);
     const [auditTarget, setAuditTarget] = useState(null);
 
-    // 🔥 FIX: FUSIÓN INTELIGENTE DE DATOS LOCALES Y NUBE
+    // FUSIÓN INTELIGENTE DE TURNOS (LOCAL + CLOUD)
     const localClosedUnAudited = allShifts.filter(s => s.status === 'CLOSED' && !s.audited);
     const cloudClosedUnAudited = Array.isArray(pendingShifts) ? pendingShifts : [];
-
     const combinedMap = new Map();
     cloudClosedUnAudited.forEach(s => combinedMap.set(s.id, s));
     localClosedUnAudited.forEach(s => combinedMap.set(s.id, s)); 
-
-    const shiftsToAudit = Array.from(combinedMap.values())
-        .sort((a, b) => new Date(b.closedAt || 0) - new Date(a.closedAt || 0));
+    const shiftsToAudit = Array.from(combinedMap.values()).sort((a, b) => new Date(b.closedAt || 0) - new Date(a.closedAt || 0));
 
     const openShifts = allShifts.filter(s => s.status === 'OPEN');
     const auditedShifts = allShifts.filter(s => s.status === 'CLOSED' && s.audited).sort((a, b) => new Date(b.closedAt) - new Date(a.closedAt));
 
     const prepareReportData = async (shift) => {
-        // 🔥 SI TIENE SNAPSHOT, NO RECALCULAMOS
-        if (shift.auditSnapshot && shift.status === 'CLOSED') {
-            return shift; // El TicketZModal ahora sabe leer esto directo
-        }
-
-        // Solo si es un turno viejo o abierto, recalculamos
+        if (shift.auditSnapshot && shift.status === 'CLOSED') return shift;
         const balance = await cashRepository.getShiftBalance(shift.id);
         const { expected, declared, diff, initial } = getShiftValues(shift, balance);
         
@@ -304,33 +303,25 @@ const AdminCashAuditPanel = ({ allShifts, loadIntelligence, navigate, resolveNam
             cashOut: balance.withdrawals + balance.expenses,
             salesByMethod: { cash: balance.salesCash, digital: balance.salesDigital },
             closeTime: shift.closedAt || new Date().toISOString(),
-            lastCbte: shift.stats?.lastCbte || 'N/A', 
-            totalAfip: shift.stats?.totalAfip || 0,
             audited: shift.audited
         };
     };
 
-    const handleStartAudit = async (shift) => {
+    const handleAction = async (shift, isAudit) => {
         setLoadingAudit(true);
         try {
             const data = await prepareReportData(shift);
-            setReportData(data); setAuditTarget(shift); setIsReportModalOpen(true);
-        } catch (error) { alert(`❌ Error: ${error.message}`); } finally { setLoadingAudit(false); }
-    };
-    
-    const handleViewClosedShift = async (shift) => {
-        setLoadingAudit(true);
-        try {
-            const data = await prepareReportData(shift);
-            setReportData(data); setAuditTarget(null); setIsReportModalOpen(true);
-        } catch (err) { alert(err.message); } finally { setLoadingAudit(false); }
+            setReportData(data); 
+            setAuditTarget(isAudit ? shift : null); 
+            setIsReportModalOpen(true);
+        } catch (error) { alert(`❌ Error: ${error.message}`); } 
+        finally { setLoadingAudit(false); }
     };
 
     const handleConfirmAuditAction = async () => {
         if (!auditTarget) return;
         if (!window.confirm(`¿Aprobar y cerrar auditoría?`)) return;
         try {
-            // Usamos la nueva función del repositorio que actualiza en nube y local
             await cashRepository.confirmShiftAudit(auditTarget.id);
             await loadIntelligence(); 
             setIsReportModalOpen(false); 
@@ -345,13 +336,10 @@ const AdminCashAuditPanel = ({ allShifts, loadIntelligence, navigate, resolveNam
                 <Button variant="ghost" size="sm" onClick={() => navigate('cash')} className="text-slate-500 hover:text-brand font-medium text-xs">Ver Historial</Button>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-                {/* LISTA PENDIENTES */}
                 <div className="md:col-span-2 space-y-4">
                     <p className="text-[10px] font-bold uppercase text-slate-400 tracking-wider mb-2">Pendientes ({shiftsToAudit.length})</p>
                     {shiftsToAudit.length === 0 ? (
-                        <div className="bg-emerald-50/50 text-emerald-700 p-5 rounded-xl border border-emerald-100 flex items-center gap-3 text-xs font-medium">
-                            <CheckCircle2 size={18} className="text-emerald-500"/> Todo al día.
-                        </div>
+                        <div className="bg-emerald-50/50 text-emerald-700 p-5 rounded-xl border border-emerald-100 flex items-center gap-3 text-xs font-medium"><CheckCircle2 size={18} className="text-emerald-500"/> Todo al día.</div>
                     ) : (
                         <div className="space-y-3 max-h-[300px] overflow-y-auto custom-scrollbar pr-2">
                             {shiftsToAudit.map(s => (
@@ -367,7 +355,7 @@ const AdminCashAuditPanel = ({ allShifts, loadIntelligence, navigate, resolveNam
                                             </span>
                                         </div>
                                     </div>
-                                    <Button size="sm" onClick={() => handleStartAudit(s)} disabled={loadingAudit} className="bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 hover:text-slate-900 text-xs h-8 shadow-sm">
+                                    <Button size="sm" onClick={() => handleAction(s, true)} disabled={loadingAudit} className="bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 text-xs h-8 shadow-sm rounded-lg">
                                         {loadingAudit ? <RefreshCw className="animate-spin" size={12}/> : "Auditar"}
                                     </Button>
                                 </div>
@@ -375,8 +363,6 @@ const AdminCashAuditPanel = ({ allShifts, loadIntelligence, navigate, resolveNam
                         </div>
                     )}
                 </div>
-                
-                {/* LATERAL: ACTIVAS + HISTORIAL */}
                 <div className="space-y-5">
                     <div className="bg-slate-50 p-4 rounded-xl border border-slate-100">
                         <p className="text-[10px] font-bold uppercase text-slate-400 mb-3 flex items-center gap-2"><Monitor size={12}/> Activas ({openShifts.length})</p>
@@ -395,7 +381,7 @@ const AdminCashAuditPanel = ({ allShifts, loadIntelligence, navigate, resolveNam
                         <div className="space-y-1 max-h-[200px] overflow-y-auto custom-scrollbar pr-1">
                             {auditedShifts.length === 0 && <p className="text-xs text-slate-400 italic px-1">Vacío.</p>}
                             {auditedShifts.slice(0, 10).map(shift => ( 
-                                <div key={shift.id} className="flex justify-between items-center text-xs p-2 hover:bg-slate-50 rounded-lg transition-colors group cursor-pointer" onClick={() => handleViewClosedShift(shift)}>
+                                <div key={shift.id} className="flex justify-between items-center text-xs p-2 hover:bg-slate-50 rounded-lg transition-colors group cursor-pointer" onClick={() => handleAction(shift, false)}>
                                     <div>
                                         <span className="font-medium text-slate-700 block truncate max-w-[120px]">{resolveName(shift.userId, shift.userName)}</span>
                                         <span className="text-[9px] text-slate-400">{new Date(shift.closedAt).toLocaleDateString()}</span>
@@ -412,35 +398,18 @@ const AdminCashAuditPanel = ({ allShifts, loadIntelligence, navigate, resolveNam
     );
 };
 
-const AdminSecurityPanel = ({ onUpdatePin }) => {
-    const [newPin, setNewPin] = useState('');
-    return (
-        <Card className="p-5 border border-slate-200 bg-slate-50 shadow-none">
-            <div className="flex items-center gap-2 mb-2"><Shield size={16} className="text-slate-400" /><h3 className="font-bold text-slate-700 text-sm">PIN Maestro (Global)</h3></div>
-            <p className="text-[10px] text-slate-400 mb-4">Permite autorizar operaciones sensibles (retiros, descuentos).</p>
-            <div className="flex gap-2 items-center">
-                <div className="relative flex-1">
-                    <input 
-                        type="password" placeholder="Nuevo PIN (4-6 dígitos)" 
-                        className="w-full px-3 py-2 rounded-lg border border-slate-200 focus:border-slate-400 outline-none text-xs font-mono tracking-widest bg-white shadow-sm transition-colors"
-                        maxLength={6} value={newPin} onChange={(e) => setNewPin(e.target.value)}
-                    />
-                </div>
-                <Button size="sm" className="bg-slate-800 hover:bg-slate-900 text-white h-9 text-xs font-bold shadow-md px-4" onClick={() => { onUpdatePin(newPin); setNewPin(''); }} disabled={newPin.length < 4}>
-                    Actualizar
-                </Button>
-            </div>
-        </Card>
-    );
-};
-
+// =================================================================
+// PANEL DE ACCIONES RÁPIDAS (CON ACCESO BI)
+// =================================================================
 const QuickActionsPanel = ({ navigate, onExpenseClick, onWithdrawalClick, isAdmin }) => (
-    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+    <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
         {[
             { label: 'Ir a Vender', icon: ShoppingBag, color: 'text-brand', bg: 'group-hover:bg-brand/10', action: () => navigate('pos') },
             { label: 'Registrar Gasto', icon: DollarSign, color: 'text-rose-500', bg: 'group-hover:bg-rose-50', action: onExpenseClick },
             { label: 'Retiro Efectivo', icon: Banknote, color: 'text-amber-500', bg: 'group-hover:bg-amber-50', action: onWithdrawalClick },
             { label: 'Ver Ventas', icon: FileText, color: 'text-blue-500', bg: 'group-hover:bg-blue-50', action: () => navigate('sales') },
+            // 🔥 BOTÓN NUEVO: REPORTES BI (Solo Admin)
+            ...(isAdmin ? [{ label: 'Reportes BI', icon: PieChart, color: 'text-purple-600', bg: 'group-hover:bg-purple-50', action: () => navigate('reports') }] : []),
         ].map((btn, i) => (
             <button key={i} onClick={btn.action} className="p-4 bg-white border border-slate-200 rounded-xl shadow-sm hover:shadow-md hover:border-slate-300 transition-all flex flex-col items-center gap-2 group">
                 <div className={cn("p-3 bg-slate-50 rounded-full transition-colors", btn.bg)}>
@@ -452,28 +421,12 @@ const QuickActionsPanel = ({ navigate, onExpenseClick, onWithdrawalClick, isAdmi
     </div>
 );
 
-// =================================================================
-// 5. VISTAS DE ROL
-// =================================================================
-const CajeroDashboardView = ({ metrics, money, handleOpenShift, onTriggerClose, navigate, onExpenseClick, onWithdrawalClick }) => {
-    return (
-        <div className="space-y-6 pb-20 animate-in fade-in">
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                <KpiCard metrics={metrics} isAdmin={false} money={money} navigate={navigate} onTriggerClose={onTriggerClose} isCajeroActive={!!metrics.activeShift} />
-                <div className="space-y-4">
-                    <MyShiftCard metrics={metrics} money={money} handleOpenShift={handleOpenShift} />
-                </div>
-            </div>
-            <QuickActionsPanel navigate={navigate} onExpenseClick={onExpenseClick} onWithdrawalClick={onWithdrawalClick} isAdmin={false} />
-        </div>
-    );
-};
-
-const AdminDashboardView = ({ metrics, money, navigate, loadIntelligence, handleUpdatePin, allShifts, cloudLoading, handleOpenShift, onTriggerClose, onExpenseClick, onWithdrawalClick, resolveName, activeBranchName, pendingShifts }) => (
+const AdminDashboardView = ({ metrics, money, navigate, loadIntelligence, handleUpdatePin, allShifts, cloudLoading, activeBranchId, activeBranchName, pendingShifts, handleOpenShift, onTriggerClose, onExpenseClick, onWithdrawalClick, resolveName }) => (
     <div className="space-y-6 pb-20 animate-in fade-in">
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
             <KpiCard metrics={metrics} isAdmin={true} money={money} navigate={navigate} onTriggerClose={onTriggerClose} isCajeroActive={!!metrics.activeShift} activeBranchName={activeBranchName} />
-            <StatCard title="Gastos Operativos" value={`$ ${money(metrics.totalExpenses)}`} subtext="Salidas del día" icon={TrendingDown} colorClass="bg-rose-50 text-rose-600" borderClass="border-slate-200" />
+            {/* 🔥 TARJETA DE GASTOS: Ahora muestra totalExpenses directamente desde cloudStats */}
+            <StatCard title="Gastos Operativos" value={`$ ${money(metrics.totalExpenses)}`} subtext="Salidas del día (Incl. Compras)" icon={TrendingDown} colorClass="bg-rose-50 text-rose-600" borderClass="border-slate-200" />
             <StatCard title="Cajas Activas" value={metrics.activeShiftsCount} subtext="En tiempo real" icon={Monitor} colorClass="bg-blue-50 text-blue-600" borderClass="border-slate-200" />
         </div>
 
@@ -502,58 +455,52 @@ const AdminDashboardView = ({ metrics, money, navigate, loadIntelligence, handle
         
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="lg:col-span-2 space-y-6">
-                 <ArcaMonitorCard stats={metrics.fiscalStats || { daily:0, weekly:0, monthly:0, lastTime: null }} onManageClick={() => navigate('fiscal')} />
                  <AdminCashAuditPanel allShifts={allShifts} pendingShifts={pendingShifts} loadIntelligence={loadIntelligence} navigate={navigate} resolveName={resolveName} />
-                 
-                 <Card className="p-0 overflow-hidden shadow-sm border border-slate-200 bg-white">
-                    <div className="p-3 border-b border-slate-100 bg-white flex justify-between items-center"><h3 className="font-bold text-xs text-slate-800 flex items-center gap-2"><Activity size={14}/> Actividad Reciente</h3></div>
-                    <div className="divide-y divide-slate-50 max-h-[250px] overflow-y-auto custom-scrollbar">
-                        {metrics.recentSales?.length > 0 ? metrics.recentSales.map((sale) => (
-                            <div key={sale.id} className="p-3 hover:bg-slate-50 transition-colors flex items-center justify-between text-xs">
-                                <div className="flex items-center gap-3">
-                                    <div className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-slate-500 border border-slate-200"><ShoppingBag size={14} /></div>
-                                    <div>
-                                        <p className="font-bold text-slate-800">{sale.number}</p>
-                                        <p className="text-[9px] text-slate-400">{sale.time} hs • {sale.items} un.</p>
-                                    </div>
-                                </div>
-                                <div className="text-right"><p className="font-bold text-slate-900">$ {money(sale.total)}</p><span className="text-[9px] uppercase font-bold text-slate-400 tracking-wide">{(sale.method || '').toUpperCase() === 'CASH' ? 'EFVO' : 'DIGITAL'}</span></div>
-                            </div>
-                        )) : <div className="p-6 text-center text-slate-400 text-[10px] italic">Sin ventas recientes hoy</div>}
-                    </div>
-                 </Card>
             </div>
             <div className="space-y-6">
-                <MyShiftCard metrics={metrics} money={money} handleOpenShift={handleOpenShift} />
                 <div className="grid grid-cols-2 gap-4">
                     <Card className="p-4 border-l-4 border-l-amber-500 cursor-pointer hover:shadow-md transition-all flex flex-col justify-between shadow-sm bg-white" onClick={() => navigate('clients')}>
                         <p className="text-[10px] text-slate-400 uppercase font-bold mb-1">Créditos</p>
-                        <div className="flex justify-between items-end"><p className="text-sm font-black text-slate-800">$ {money(metrics.totalDebt)}</p><Users className="text-amber-500 opacity-20" size={20}/></div>
+                        <div className="flex justify-between items-end"><p className="text-sm font-black text-slate-800">GESTIONAR</p><Users className="text-amber-500 opacity-20" size={20}/></div>
                     </Card>
                     <Card className="p-4 border-l-4 border-l-violet-500 cursor-pointer hover:shadow-md transition-all flex flex-col justify-between shadow-sm bg-white" onClick={() => navigate('inventory')}>
-                         <p className="text-[10px] text-slate-400 uppercase font-bold mb-1">Stock Bajo</p>
-                         <div className="flex justify-between items-end"><p className="text-sm font-black text-slate-800">{metrics.lowStockCount}</p><Package className="text-violet-500 opacity-20" size={20}/></div>
+                         <p className="text-[10px] text-slate-400 uppercase font-bold mb-1">Stock</p>
+                         <div className="flex justify-between items-end"><p className="text-sm font-black text-slate-800">GESTIONAR</p><Package className="text-violet-500 opacity-20" size={20}/></div>
                     </Card>
                 </div>
-                <AdminSecurityPanel onUpdatePin={handleUpdatePin} />
+                {/* 🔥 COMPONENTE BLINDADO DE PIN */}
+                <AdminSecurityPanel onUpdatePin={handleUpdatePin} activeBranchName={activeBranchName} activeBranchId={activeBranchId} />
             </div>
         </div>
-        <QuickActionsPanel navigate={navigate} isAdmin={true} onExpenseClick={onExpenseClick} onWithdrawalClick={onWithdrawalClick} />
+        <QuickActionsPanel navigate={navigate} onExpenseClick={onExpenseClick} onWithdrawalClick={onWithdrawalClick} isAdmin={true} />
+    </div>
+);
+
+const CajeroDashboardView = ({ metrics, money, handleOpenShift, onTriggerClose, navigate, onExpenseClick, onWithdrawalClick }) => (
+    <div className="space-y-6 pb-20 animate-in fade-in">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <KpiCard metrics={metrics} isAdmin={false} money={money} navigate={navigate} onTriggerClose={onTriggerClose} isCajeroActive={!!metrics.activeShift} />
+            <div className="space-y-4">
+                <MyShiftCard metrics={metrics} money={money} handleOpenShift={handleOpenShift} />
+            </div>
+        </div>
+        <QuickActionsPanel navigate={navigate} onExpenseClick={onExpenseClick} onWithdrawalClick={onWithdrawalClick} isAdmin={false} />
     </div>
 );
 
 // =================================================================
 // 6. CONTROLADOR PRINCIPAL
 // =================================================================
-const DashboardContent = () => {
+export const DashboardPage = () => {
     const navigate = useNavigate();
     const { user, activeBranchId, activeBranchName } = useAuthStore(); 
     const [loading, setLoading] = useState(true);
+    
+    // Estados Operativos
     const [metrics, setMetrics] = useState({ 
         todaySales: 0, cashInHand: 0, digitalSales: 0, totalExpenses: 0, 
         activeShiftsCount: 0, activeShift: null, allShifts: [], 
         recentSales: [], averageTicket: 0, topProducts: [],
-        fiscalStats: { daily: 0, weekly: 0, monthly: 0, lastTime: null } 
     });
 
     const [isExpenseModalOpen, setIsExpenseModalOpen] = useState(false);
@@ -563,11 +510,9 @@ const DashboardContent = () => {
     const [dbStatus, setDbStatus] = useState({ checked: false, hasBranches: false });
 
     const isAdmin = user?.role?.toUpperCase() === 'ADMIN' || user?.role === 'OWNER';
-    const cloudStats = useCloudDashboard();
+    const cloudStats = useCloudDashboard(); 
 
-    if (!user) return <div className="p-10 text-center text-slate-500">Error: Usuario no autenticado.</div>;
-    const money = (val) => val ? val.toLocaleString('es-AR', {minimumFractionDigits: 2}) : '0.00';
-
+    // 1. Verificación de Salud
     useEffect(() => {
         const checkHealth = async () => {
             if (!isAdmin || !user?.companyId) { setDbStatus({ checked: true, hasBranches: true }); return; }
@@ -582,19 +527,7 @@ const DashboardContent = () => {
         checkHealth();
     }, [user, isAdmin]);
 
-    const handleFixBranches = async () => {
-        try {
-            const defaults = [{ name: 'Casa Central', address: 'Main', type: 'physical' }];
-            const batchPromises = defaults.map(async (b) => {
-                const docRef = await addDoc(collection(firestoreDB, 'companies', user.companyId, 'branches'), { ...b, active: true, createdAt: serverTimestamp() });
-                return { id: docRef.id, ...b, active: true };
-            });
-            await Promise.all(batchPromises);
-            await localDb.branches.bulkPut(await Promise.all(batchPromises));
-            window.location.reload();
-        } catch (error) { alert(error.message); }
-    };
-
+    // 2. Carga de Cajeros
     useEffect(() => {
         if (user?.companyId && isAdmin) {
             const fetchCashiers = async () => {
@@ -612,8 +545,7 @@ const DashboardContent = () => {
         return shiftUserName !== 'Cajero' ? shiftUserName : "Cajero";
     };
 
-    useEffect(() => { if (user) loadIntelligence(); }, [user.name, user.role, activeBranchId]);
-
+    // 3. Carga de Inteligencia Local
     const loadIntelligence = async () => {
         if (isAdmin && !dbStatus.hasBranches) return;
         setLoading(true);
@@ -645,12 +577,15 @@ const DashboardContent = () => {
         setLoading(false);
     };
 
+    useEffect(() => { if (user) loadIntelligence(); }, [user.name, user.role, activeBranchId]);
+
+    // 4. Fusión de Métricas
     const finalMetrics = isAdmin ? {
         ...metrics,
         todaySales: cloudStats.totalSales, 
         cashInHand: cloudStats.cashTotal,
         digitalSales: cloudStats.digitalTotal,
-        fiscalCount: cloudStats.fiscalCount || 0,
+        totalExpenses: cloudStats.expenseTotal || 0, 
         recentSales: cloudStats.recentSales,
         averageTicket: cloudStats.averageTicket || 0,
         topProducts: cloudStats.topProducts || [],
@@ -658,6 +593,7 @@ const DashboardContent = () => {
         allShifts: metrics.allShifts 
     } : metrics;
 
+    // --- MANEJADORES ---
     const handleOpenShift = async () => {
         const input = prompt("Monto inicial:", "1000");
         if (input === null) return;
@@ -679,11 +615,7 @@ const DashboardContent = () => {
             alert("✅ Cierre registrado correctamente.");
             setShiftToClose(null);
             await loadIntelligence();
-        } catch (error) {
-            alert(`❌ Error: ${error.message}`);
-        } finally {
-            setLoading(false);
-        }
+        } catch (error) { alert(`❌ Error: ${error.message}`); } finally { setLoading(false); }
     };
 
     const handleRegisterExpense = async ({ amount, description }) => {
@@ -692,18 +624,37 @@ const DashboardContent = () => {
 
     const handleRegisterWithdrawal = async ({ amount, description, adminPin }) => {
         try {
-            const isValid = await securityService.verifyMasterPin(adminPin);
-            if (!isValid) return alert("⛔ PIN INCORRECTO.");
+            const isValid = await securityService.verifyPin(String(adminPin || ''));
+            if (!isValid) return alert("⛔ PIN INCORRECTO O SIN PERMISOS.");
             await cashRepository.registerWithdrawal(amount, description, 'Autorizado por PIN', user?.name);
             await loadIntelligence(); alert(`✅ Retiro autorizado.`);
         } catch (e) { alert(e.message); }
     };
 
     const handleUpdatePin = async (newPin) => {
+        if (!activeBranchId || activeBranchId === 'ALL') return alert("Seleccione una sucursal específica.");
         if (!newPin || newPin.length < 4) return alert("Mínimo 4 dígitos.");
-        await securityService.setMasterPin(newPin); alert("✅ PIN Maestro actualizado.");
+        
+        try {
+            await securityService.setBranchPin(newPin, activeBranchId);
+            alert(`✅ PIN actualizado para la sucursal: ${activeBranchName}`);
+        } catch (e) { alert("Error: " + e.message); }
     };
 
+    const handleFixBranches = async () => {
+        try {
+            const defaults = [{ name: 'Casa Central', address: 'Main', type: 'physical' }];
+            const batchPromises = defaults.map(async (b) => {
+                const docRef = await addDoc(collection(firestoreDB, 'companies', user.companyId, 'branches'), { ...b, active: true, createdAt: serverTimestamp() });
+                return { id: docRef.id, ...b, active: true };
+            });
+            await Promise.all(batchPromises);
+            await localDb.branches.bulkPut(await Promise.all(batchPromises));
+            window.location.reload();
+        } catch (error) { alert(error.message); }
+    };
+
+    if (!user) return <div className="p-10 text-center text-slate-500">Error: Usuario no autenticado.</div>;
     if (!dbStatus.checked) return <div className="w-full h-[80vh] flex flex-col items-center justify-center animate-pulse"><div className="w-16 h-16 border-4 border-slate-100 border-t-brand rounded-full animate-spin"></div></div>;
     if (!dbStatus.hasBranches && isAdmin) return <NoBranchesSetupView onFix={handleFixBranches} />;
 
@@ -719,11 +670,12 @@ const DashboardContent = () => {
                     metrics={finalMetrics} money={money} navigate={navigate} 
                     loadIntelligence={loadIntelligence} handleUpdatePin={handleUpdatePin}
                     allShifts={finalMetrics.allShifts} cloudLoading={cloudStats.loading}
+                    activeBranchId={activeBranchId} activeBranchName={activeBranchName}
+                    pendingShifts={cloudStats.pendingShifts} 
                     handleOpenShift={handleOpenShift} onTriggerClose={triggerCloseShift}
                     onExpenseClick={() => setIsExpenseModalOpen(true)}
                     onWithdrawalClick={() => setIsWithdrawalModalOpen(true)}
-                    resolveName={resolveCashierName} activeBranchName={activeBranchName}
-                    pendingShifts={cloudStats.pendingShifts} 
+                    resolveName={resolveCashierName}
                 />
             ) : (
                 <CajeroDashboardView 
@@ -761,5 +713,3 @@ const CashClosingWrapper = ({ shift, onClose, onConfirm }) => {
     if (!totals) return null;
     return <CashClosingModal isOpen={true} onClose={onClose} systemTotals={totals} onConfirm={onConfirm} />;
 };
-
-export const DashboardPage = DashboardContent;

@@ -1,9 +1,11 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
     Search, Printer, X, Plus, Trash2, 
-    Tag, Barcode, ArrowLeft, Download, Save 
+    Tag, Barcode, ArrowLeft, Download,
+    Palette, Type, Layout, Percent
 } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+// 🔥 Importamos useParams para capturar el slug
+import { useNavigate, useLocation, useParams } from 'react-router-dom';
 import JsBarcode from 'jsbarcode';
 import jsPDF from 'jspdf'; 
 
@@ -11,18 +13,26 @@ import { productRepository } from '../repositories/productRepository';
 import { Card } from '../../../core/ui/Card';
 import { Button } from '../../../core/ui/Button';
 import { cn } from '../../../core/utils/cn';
+import toast from 'react-hot-toast';
+
+// IMPORTACIÓN DEL MOTOR DE ETIQUETAS
+import { GondolaLabelEngine } from '../utils/LabelEngine'; 
 
 export const PrintLabelsPage = () => {
     const navigate = useNavigate();
+    const { state } = useLocation(); 
+    // 🔥 Capturamos el slug de la empresa
+    const { companySlug } = useParams();
     
     // Estados
     const [allProducts, setAllProducts] = useState([]);
     const [searchTerm, setSearchTerm] = useState('');
     const [printQueue, setPrintQueue] = useState([]); 
-    const [mode, setMode] = useState('gondola'); // 'gondola' | 'barcode'
+    const [mode, setMode] = useState('gondola'); 
+    const [printStyle, setPrintStyle] = useState('color'); 
     const [isGenerating, setIsGenerating] = useState(false);
+    const [showOnlyPromos, setShowOnlyPromos] = useState(false);
 
-    // Cargar productos
     useEffect(() => {
         const load = async () => {
             const data = await productRepository.getAll();
@@ -30,6 +40,17 @@ export const PrintLabelsPage = () => {
         };
         load();
     }, []);
+
+    // 🔥 LOGICA DE AUTO-CARGA DESDE COMPRAS O INVENTARIO
+    useEffect(() => {
+        if (state?.autoLoadItems && Array.isArray(state.autoLoadItems)) {
+            setPrintQueue(state.autoLoadItems);
+            toast.success(`${state.autoLoadItems.length} etiquetas cargadas automáticamente`);
+            
+            // Limpiar el estado de la ruta para que no se recargue al refrescar
+            window.history.replaceState({}, document.title);
+        }
+    }, [state]);
 
     // Efecto para visualizar códigos en pantalla (Preview HTML)
     useEffect(() => {
@@ -48,33 +69,24 @@ export const PrintLabelsPage = () => {
         }
     }, [printQueue, mode]);
 
-    const filteredProducts = allProducts.filter(p => 
-        p.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
-        (p.code && p.code.includes(searchTerm))
-    ).slice(0, 10); 
+    const filteredProducts = allProducts.filter(p => {
+        const matchesText = p.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
+                            (p.code && p.code.includes(searchTerm));
+        if (showOnlyPromos) {
+            const promoInfo = GondolaLabelEngine.calculatePromoDetails(p);
+            return matchesText && promoInfo.isPromo;
+        }
+        return matchesText;
+    }).slice(0, 20); 
 
-    // Agregar a la cola (Con auto-generación de código si falta)
     const addToQueue = async (product) => {
-        if (product.code && product.code.trim() !== '') {
-            setPrintQueue(prev => [...prev, product]);
-            return;
-        }
-
-        const autoCode = product.id.slice(0, 8).toUpperCase();
-        try {
-            const updatedProduct = { ...product, code: autoCode };
-            await productRepository.save(updatedProduct);
-            setAllProducts(prev => prev.map(p => p.id === product.id ? updatedProduct : p));
-            setPrintQueue(prev => [...prev, updatedProduct]);
-        } catch (error) {
-            alert("Error al asignar código automático.");
-        }
+        setPrintQueue(prev => [...prev, product]);
     };
 
     const removeFromQueue = (indexToRemove) => setPrintQueue(printQueue.filter((_, idx) => idx !== indexToRemove));
 
     // =========================================================================
-    // 🖨️ MOTOR DE GENERACIÓN PDF (AJUSTADO PARA VISIBILIDAD)
+    // 🖨️ GENERADOR PDF: MOTOR INDUSTRIAL
     // =========================================================================
     const handleDownloadPDF = () => {
         if (printQueue.length === 0) return;
@@ -82,261 +94,374 @@ export const PrintLabelsPage = () => {
 
         try {
             const doc = new jsPDF({ orientation: 'p', unit: 'mm', format: 'a4' });
-            const pageWidth = 210;
             const pageHeight = 297;
-            const margin = 10; 
-            const usableWidth = pageWidth - (margin * 2);
             
-            const cols = mode === 'gondola' ? 3 : 4;
-            const gap = 2; 
-            const labelWidth = (usableWidth - ((cols - 1) * gap)) / cols;
-            const labelHeight = mode === 'gondola' ? 45 : 25; 
+            // CONFIGURACIÓN DE GRILLA
+            let cols = 1;
+            let labelHeight = 99; // 297 / 3 = 99 EXACTO
+            let labelWidth = 210;
+            let marginX = 0; 
+            let marginY = 0;
 
-            let x = margin;
-            let y = margin;
+            if (mode === 'gondola') { 
+                cols = 3; 
+                labelHeight = 42; 
+                labelWidth = 70; // 210 / 3 = 70
+                marginX = 0; 
+                marginY = 0;
+            }
+            if (mode === 'barcode') { 
+                cols = 4; 
+                labelHeight = 25; 
+                labelWidth = 52.5; 
+            }
+
+            let x = marginX;
+            let y = marginY;
             let colCounter = 0;
 
-            const getBarcodeBase64 = (text) => {
-                const canvas = document.createElement("canvas");
-                JsBarcode(canvas, text, { format: "CODE128", displayValue: false, margin: 0, width: 2, height: 40 });
-                return canvas.toDataURL("image/png");
-            };
-
-            printQueue.forEach((p) => {
-                if (y + labelHeight > pageHeight - margin) {
+            printQueue.forEach((p, idx) => {
+                // Control de Salto de Página
+                if (y + labelHeight > pageHeight + 0.1) {
                     doc.addPage();
-                    x = margin;
-                    y = margin;
+                    x = marginX; 
+                    y = marginY; 
                     colCounter = 0;
                 }
 
-                doc.setDrawColor(0); 
-                doc.setTextColor(0); 
-                doc.setLineWidth(0.3); // Línea fina para mejor corte
+                const promo = GondolaLabelEngine.calculatePromoDetails(p);
+                const isPromo = promo.isPromo;
+                const isBW = printStyle === 'bw';
+
+                // Marco de corte
+                doc.setDrawColor(150); // Gris suave para guía de corte
+                doc.setLineWidth(0.1); 
                 doc.rect(x, y, labelWidth, labelHeight);
 
-                if (mode === 'gondola') {
-                    // === DISEÑO GÓNDOLA ===
-                    const headerHeight = 14;
-                    doc.setLineWidth(0.2);
-                    doc.line(x, y + headerHeight, x + labelWidth, y + headerHeight);
+                // =========================================================
+                // 🖼️ MODO SHELF TALKER (A4 dividido en 3 - GIGANTE)
+                // =========================================================
+                if (mode === 'shelf_talker') {
+                    
+                    // 1. HEADER (25mm)
+                    if (isPromo) {
+                        // ROJO IMPACTO (RGB: 200, 0, 0)
+                        doc.setFillColor(isBW ? 0 : 200, 0, 0); 
+                        doc.rect(x, y, labelWidth, 25, 'F');
+                        doc.setTextColor(255);
+                        doc.setFont("helvetica", "bold");
+                        doc.setFontSize(45);
+                        doc.text(promo.label, x + (labelWidth / 2), y + 18, { align: "center" });
+                    } else {
+                        // NEGRO INDUSTRIAL
+                        doc.setFillColor(0); 
+                        doc.rect(x, y, labelWidth, 25, 'F');
+                        doc.setTextColor(255);
+                        doc.setFont("helvetica", "bold");
+                        doc.setFontSize(35);
+                        doc.text("PRECIO DE LISTA", x + (labelWidth / 2), y + 18, { align: "center" });
+                    }
 
+                    // 2. PRECIO (Centrado Perfecto)
+                    doc.setTextColor(0);
+                    doc.setFont("helvetica", "bold");
+                    doc.setFontSize(120); 
+                    
+                    const priceStr = Math.floor(promo.currentPrice).toLocaleString('es-AR');
+                    const priceWidth = doc.getTextWidth(priceStr);
+                    const centerX = x + (labelWidth / 2);
+                    
+                    // Precio Entero
+                    doc.text(priceStr, centerX, y + 70, { align: "center" });
+                    
+                    // Signo $
+                    doc.setFontSize(40);
+                    doc.text("$", centerX - (priceWidth / 2) - 12, y + 55);
+                    
+                    // Centavos 00
+                    doc.setFontSize(30);
+                    doc.text("00", centerX + (priceWidth / 2) + 2, y + 55);
+
+                    // 3. PRODUCTO Y FOOTER
+                    doc.setFontSize(22);
+                    const splitName = doc.splitTextToSize(p.name.toUpperCase(), labelWidth - 10);
+                    const nameY = splitName.length > 1 ? y + 82 : y + 85;
+                    doc.text(splitName[0], centerX, nameY, { align: "center" });
+                    
+                    if (isPromo && promo.footer) {
+                        doc.setFontSize(14);
+                        doc.setTextColor(isBW ? 0 : 200, 0, 0); // Texto Rojo
+                        doc.text(promo.footer, centerX, y + 94, { align: "center" });
+                    } else {
+                        doc.setFontSize(10);
+                        doc.setTextColor(100);
+                        doc.text(`REF: ${p.code || p.id.slice(0,8)}`, centerX, y + 94, { align: "center" });
+                    }
+                } 
+                
+                // =========================================================
+                // 🏷️ MODO GÓNDOLA (ETIQUETA PEQUEÑA 70x42mm)
+                // =========================================================
+                else if (mode === 'gondola') {
+                    
+                    // 1. Header (9mm)
+                    if (isPromo) {
+                        doc.setFillColor(isBW ? 0 : 200, 0, 0); // Rojo
+                        doc.rect(x, y, labelWidth, 9, 'F');
+                        doc.setTextColor(255);
+                    } else {
+                        doc.setFillColor(0); // Negro
+                        doc.rect(x, y, labelWidth, 9, 'F');
+                        doc.setTextColor(255);
+                    }
+                    
+                    doc.setFont("helvetica", "bold");
+                    doc.setFontSize(isPromo ? 11 : 9);
+                    doc.text(isPromo ? promo.label : "PRECIO CONTADO", x + (labelWidth/2), y + 6.5, { align: "center" });
+
+                    // 2. Nombre
+                    doc.setTextColor(0);
                     doc.setFont("helvetica", "bold");
                     doc.setFontSize(10);
-                    const splitTitle = doc.splitTextToSize(p.name.toUpperCase(), labelWidth - 2);
-                    const textY = y + (headerHeight / 2) + (splitTitle.length > 1 ? -2 : 1);
-                    doc.text(splitTitle.slice(0, 2), x + (labelWidth / 2), textY, { align: "center" });
+                    const splitName = doc.splitTextToSize(p.name.toUpperCase(), labelWidth - 4);
+                    doc.text(splitName.slice(0, 2), x + (labelWidth/2), y + 14, { align: "center" });
 
-                    doc.setFont("helvetica", "bold");
+                    // 3. Precio
+                    doc.setFontSize(38);
+                    const priceStr = Math.floor(promo.currentPrice).toLocaleString('es-AR');
+                    const priceWidth = doc.getTextWidth(priceStr);
+                    const centerX = x + (labelWidth/2);
+
+                    doc.text(priceStr, centerX, y + 31, { align: "center" });
+                    
+                    doc.setFontSize(16);
+                    doc.text("$", centerX - (priceWidth/2) - 4, y + 26);
+                    
                     doc.setFontSize(12);
-                    doc.text("$", x + 3, y + 28);
-                    
-                    doc.setFontSize(40); 
-                    const priceInt = Math.floor(p.price).toLocaleString('es-AR');
-                    doc.text(priceInt, x + (labelWidth / 2) + 1, y + 32, { align: "center" });
+                    doc.text("00", centerX + (priceWidth/2) + 1, y + 23);
 
-                    doc.setFontSize(9);
-                    doc.text("00", x + labelWidth - 6, y + 21);
+                    // 4. Footer
+                    doc.setLineWidth(0.2);
+                    doc.line(x, y + 35, x + labelWidth, y + 35); 
 
-                    doc.setFontSize(6);
-                    doc.setFont("helvetica", "normal");
-                    doc.text("PRECIO CONTADO", x + (labelWidth / 2), y + 36, { align: "center" });
-
-                    const footerHeight = 6;
-                    const footerY = y + labelHeight - footerHeight;
-                    doc.line(x, footerY, x + labelWidth, footerY);
-                    
-                    doc.setFontSize(6);
-                    doc.setFont("helvetica", "bold");
-                    doc.text("NOAR POS", x + 2, y + labelHeight - 2);
-                    
-                    doc.setFont("courier", "bold");
-                    doc.setFontSize(8);
-                    doc.text(p.code || "S/C", x + labelWidth - 2, y + labelHeight - 2, { align: "right" });
-
-                } else {
-                    // === DISEÑO CÓDIGO DE BARRAS (AJUSTADO) ===
-                    
-                    // 1. Nombre (Arriba)
+                    if (isPromo) {
+                        doc.setFontSize(8);
+                        doc.setTextColor(isBW ? 0 : 200, 0, 0);
+                        doc.text(promo.footer || "OFERTA", x + 2, y + 39.5);
+                        
+                        // Precio anterior
+                        doc.setFontSize(7);
+                        doc.setTextColor(100);
+                        const oldP = `$${Math.round(p.price)}`;
+                        const oldW = doc.getTextWidth(oldP);
+                        doc.text(oldP, x + labelWidth - 2, y + 39.5, { align: "right" });
+                        doc.setLineWidth(0.3);
+                        doc.line(x + labelWidth - 2 - oldW, y + 38.5, x + labelWidth - 2, y + 38.5);
+                    } else {
+                        doc.setFontSize(7);
+                        doc.setTextColor(0);
+                        doc.setFont("courier", "bold");
+                        doc.text(p.code || p.id.slice(0,8), x + 2, y + 39.5);
+                        
+                        doc.setFont("helvetica", "normal");
+                        doc.setFontSize(6);
+                        doc.text(new Date().toLocaleDateString(), x + labelWidth - 2, y + 39.5, { align: "right" });
+                    }
+                }
+                
+                // MODO BARCODE
+                else if (mode === 'barcode') {
                     doc.setFont("helvetica", "bold");
                     doc.setFontSize(7);
                     const nameShort = p.name.length > 25 ? p.name.substring(0, 25) + '...' : p.name;
                     doc.text(nameShort, x + (labelWidth / 2), y + 4, { align: "center" });
-
-                    // 2. Barcode (Centro)
-                    // Usamos el código real. getBarcodeBase64 ya no pone texto, solo barras.
-                    const codeVal = p.code || p.id.slice(0,8).toUpperCase();
-                    const imgData = getBarcodeBase64(codeVal);
-                    
-                    const bcWidth = labelWidth - 4; // Margen lateral
-                    const bcHeight = 11; // Altura controlada para no pisar el texto
-                    doc.addImage(imgData, 'PNG', x + 2, y + 5.5, bcWidth, bcHeight);
-
-                    // 3. Texto Numérico (Abajo - ¡AQUÍ ESTABA EL PROBLEMA!)
-                    // Ajustamos Y a 22 para darle espacio debajo de las barras
                     doc.setFont("courier", "bold");
-                    doc.setFontSize(10); // Tamaño legible
-                    doc.text(codeVal, x + (labelWidth / 2), y + 22, { align: "center" });
+                    doc.setFontSize(10);
+                    doc.text(p.code || p.id.slice(0,8).toUpperCase(), x + (labelWidth / 2), y + 22, { align: "center" });
                 }
 
                 colCounter++;
                 if (colCounter < cols) {
-                    x += labelWidth + gap;
+                    x += labelWidth;
                 } else {
-                    x = margin;
-                    y += labelHeight + gap;
+                    x = marginX;
+                    y += labelHeight;
                     colCounter = 0;
                 }
             });
 
-            doc.save(`Etiquetas_${mode}_${new Date().toISOString().slice(0,10)}.pdf`);
+            doc.save(`Etiquetas_Nexus_${new Date().toISOString().slice(0,10)}.pdf`);
 
         } catch (error) {
-            console.error("Error PDF Nativo:", error);
-            alert("Error al generar PDF.");
+            console.error(error);
+            alert("Error al generar el PDF.");
         } finally {
             setIsGenerating(false);
         }
     };
 
+    // 🔥 FIX: Navegación de regreso segura
+    const handleBack = () => {
+        // Si tenemos slug, volvemos al inventario de la empresa
+        if (companySlug) {
+            navigate(`/${companySlug}/inventory`);
+        } else {
+            // Fallback: intentar ir atrás en el historial
+            navigate(-1);
+        }
+    };
+
     return (
-        <div className="h-[calc(100vh-2rem)] flex flex-col gap-4 animate-in fade-in">
+        <div className="h-[calc(100vh-2rem)] flex flex-col gap-4 animate-in fade-in p-4 bg-sys-50">
             
-            {/* Header */}
             <div className="flex justify-between items-center bg-white p-4 rounded-xl shadow-sm border border-sys-200">
                 <div className="flex items-center gap-4">
-                    <Button variant="ghost" onClick={() => navigate(-1)}>
+                    <Button variant="ghost" onClick={handleBack} className="rounded-full">
                         <ArrowLeft size={20} />
                     </Button>
                     <div>
-                        <h1 className="text-xl font-bold text-sys-900">Impresión de Etiquetas</h1>
-                        <p className="text-xs text-sys-500">Generador de precios y códigos de barra</p>
+                        <h1 className="text-xl font-black text-sys-900 uppercase">Nexus Label Engine</h1>
+                        <p className="text-[10px] font-bold text-sys-400 uppercase tracking-widest">Imprenta Digital de Góndola</p>
                     </div>
                 </div>
 
-                <div className="flex gap-3 bg-sys-100 p-1 rounded-lg">
-                    <button 
-                        onClick={() => setMode('gondola')}
-                        className={cn("px-4 py-2 text-sm font-bold rounded-md flex items-center gap-2 transition-all", mode === 'gondola' ? "bg-white shadow text-brand" : "text-sys-500 hover:text-sys-700")}
-                    >
-                        <Tag size={16}/> Góndola (Precio)
-                    </button>
-                    <button 
-                        onClick={() => setMode('barcode')}
-                        className={cn("px-4 py-2 text-sm font-bold rounded-md flex items-center gap-2 transition-all", mode === 'barcode' ? "bg-white shadow text-sys-900" : "text-sys-500 hover:text-sys-700")}
-                    >
-                        <Barcode size={16}/> Códigos de Barra
-                    </button>
+                <div className="flex gap-4">
+                    <div className="flex bg-sys-100 p-1 rounded-xl">
+                        <button onClick={() => setPrintStyle('color')} className={cn("px-4 py-2 text-[10px] font-bold rounded-lg flex items-center gap-2 transition-all", printStyle === 'color' ? "bg-white shadow text-brand" : "text-sys-500")}><Palette size={14}/> COLOR</button>
+                        <button onClick={() => setPrintStyle('bw')} className={cn("px-4 py-2 text-[10px] font-bold rounded-lg flex items-center gap-2 transition-all", printStyle === 'bw' ? "bg-sys-900 text-white shadow" : "text-sys-500")}><Type size={14}/> B&N</button>
+                    </div>
+
+                    <div className="flex gap-3 bg-sys-100 p-1 rounded-xl">
+                        <button onClick={() => setMode('shelf_talker')} className={cn("px-4 py-2 text-xs font-bold rounded-md flex items-center gap-2 transition-all", mode === 'shelf_talker' ? "bg-white shadow text-brand" : "text-sys-500")}><Layout size={14}/> MAXI (A4/3)</button>
+                        <button onClick={() => setMode('gondola')} className={cn("px-4 py-2 text-xs font-bold rounded-md flex items-center gap-2 transition-all", mode === 'gondola' ? "bg-white shadow text-brand" : "text-sys-500")}><Tag size={14}/> GÓNDOLA</button>
+                        <button onClick={() => setMode('barcode')} className={cn("px-4 py-2 text-xs font-bold rounded-md flex items-center gap-2", mode === 'barcode' ? "bg-white shadow text-sys-900" : "text-sys-500")}><Barcode size={16}/> Mini</button>
+                    </div>
                 </div>
             </div>
 
             <div className="flex gap-6 h-full min-h-0">
                 
-                {/* PANEL IZQUIERDO: SELECCIÓN */}
                 <div className="w-1/3 flex flex-col gap-4">
-                    <Card className="p-4 bg-sys-50 border-sys-200">
-                        <div className="relative group">
-                            <Search className="absolute left-3 top-3 text-sys-400 group-focus-within:text-brand" size={18} />
-                            <input 
-                                type="text" 
-                                placeholder="Buscar producto..." 
-                                className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-sys-200 outline-none focus:border-brand transition-all"
-                                value={searchTerm}
-                                onChange={e => setSearchTerm(e.target.value)}
-                                autoFocus
-                            />
+                    <Card className="p-4 border-sys-200">
+                        <div className="flex gap-2 mb-4">
+                            <div className="relative group flex-1">
+                                <Search className="absolute left-3 top-3 text-sys-400" size={18} />
+                                <input type="text" placeholder="Buscar producto..." className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-sys-50 border-none outline-none focus:ring-2 focus:ring-brand/20 transition-all font-medium" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} />
+                            </div>
+                            <button 
+                                onClick={() => setShowOnlyPromos(!showOnlyPromos)} 
+                                className={cn("p-2.5 rounded-xl border transition-all flex items-center justify-center", showOnlyPromos ? "bg-red-50 border-red-200 text-red-600 shadow-sm" : "bg-white border-sys-200 text-sys-400 hover:text-sys-600")}
+                                title="Mostrar solo Ofertas"
+                            >
+                                <Percent size={20} />
+                            </button>
                         </div>
-                        <div className="mt-3 flex flex-col gap-2 max-h-[300px] overflow-y-auto custom-scrollbar">
-                            {filteredProducts.map(p => (
-                                <button 
-                                    key={p.id} 
-                                    onClick={() => addToQueue(p)}
-                                    className="flex justify-between items-center p-2 hover:bg-white rounded-lg transition-colors border border-transparent hover:border-sys-200 group text-left"
-                                >
-                                    <div className="min-w-0">
-                                        <p className="text-sm font-bold text-sys-800 truncate">{p.name}</p>
-                                        <p className="text-[10px] text-sys-500 font-mono">
-                                            {p.code ? p.code : <span className="text-orange-500 font-bold flex items-center gap-1"><Save size={10}/> Auto-Generar</span>}
-                                        </p>
-                                    </div>
-                                    <Plus size={16} className="text-sys-400 group-hover:text-brand" />
-                                </button>
-                            ))}
+
+                        <div className="space-y-2 max-h-[350px] overflow-y-auto custom-scrollbar pr-2">
+                            {filteredProducts.map(p => {
+                                const promo = GondolaLabelEngine.calculatePromoDetails(p);
+                                return (
+                                    <button key={p.id} onClick={() => addToQueue(p)} className="w-full flex justify-between items-center p-3 bg-white hover:bg-brand/5 rounded-xl border border-sys-100 hover:border-brand/20 transition-all group">
+                                        <div className="min-w-0 text-left">
+                                            <p className="text-xs font-black text-sys-800 truncate uppercase">{p.name}</p>
+                                            <div className="flex items-center gap-2 mt-1">
+                                                <span className="text-[10px] font-mono text-sys-400">{p.code || 'S/C'}</span>
+                                                {promo.isPromo && <span className="bg-red-100 text-red-600 text-[9px] px-1.5 rounded-sm font-bold uppercase">{promo.label}</span>}
+                                            </div>
+                                        </div>
+                                        <div className="text-right">
+                                            <p className={cn("text-[11px] font-bold", promo.isPromo ? "text-red-600" : "text-sys-900")}>$ {Math.floor(promo.currentPrice)}</p>
+                                            {promo.isPromo && <p className="text-[9px] text-sys-400 line-through decoration-red-300">$ {p.price}</p>}
+                                        </div>
+                                        <Plus size={18} className="text-sys-300 group-hover:text-brand ml-2" />
+                                    </button>
+                                );
+                            })}
                         </div>
                     </Card>
 
-                    <div className="flex-1 bg-white rounded-2xl border border-sys-200 p-4 flex flex-col">
-                        <div className="flex justify-between items-center mb-2 pb-2 border-b border-sys-100">
-                            <span className="text-xs font-bold uppercase text-sys-500">Cola de Impresión ({printQueue.length})</span>
-                            {printQueue.length > 0 && (
-                                <button onClick={() => setPrintQueue([])} className="text-[10px] text-red-500 hover:underline">Limpiar</button>
-                            )}
+                    <div className="flex-1 bg-white rounded-2xl border border-sys-200 p-5 flex flex-col overflow-hidden">
+                        <div className="flex justify-between items-center mb-4">
+                            <h2 className="text-[10px] font-black uppercase text-sys-400 tracking-widest">Cola ({printQueue.length})</h2>
+                            <button onClick={() => setPrintQueue([])} className="text-[10px] font-bold text-red-500 hover:bg-red-50 px-2 py-1 rounded-lg transition-colors">LIMPIAR</button>
                         </div>
-                        
-                        <div className="flex-1 overflow-y-auto custom-scrollbar space-y-1">
+                        <div className="flex-1 overflow-y-auto custom-scrollbar space-y-2">
                             {printQueue.map((item, idx) => (
-                                <div key={`${item.id}-${idx}`} className="flex justify-between items-center p-2 bg-sys-50 rounded-lg text-xs">
-                                    <span className="truncate flex-1 pr-2">{item.name}</span>
-                                    <button onClick={() => removeFromQueue(idx)} className="text-sys-400 hover:text-red-500"><X size={14}/></button>
+                                <div key={`${item.id}-${idx}`} className="flex justify-between items-center p-3 bg-sys-50 rounded-xl border border-sys-100 group animate-in slide-in-from-left-2">
+                                    <span className="text-[10px] font-bold text-sys-700 truncate flex-1 uppercase">{item.name}</span>
+                                    <button onClick={() => removeFromQueue(idx)} className="ml-2 text-sys-300 hover:text-red-500 transition-all"><Trash2 size={14}/></button>
                                 </div>
                             ))}
-                            {printQueue.length === 0 && (
-                                <div className="h-full flex flex-col items-center justify-center text-sys-300 opacity-50">
-                                    <Printer size={32} className="mb-2"/>
-                                    <p>Lista vacía</p>
-                                </div>
-                            )}
                         </div>
-
-                        <Button 
-                            className="w-full mt-4 bg-sys-900 hover:bg-black text-white shadow-xl"
-                            onClick={handleDownloadPDF}
-                            disabled={printQueue.length === 0 || isGenerating}
-                        >
-                            {isGenerating ? "Generando..." : <><Download size={18} className="mr-2"/> Descargar PDF</>}
+                        <Button className="w-full mt-6 py-4 bg-sys-900 text-white font-black uppercase text-xs tracking-widest shadow-2xl hover:bg-black active:scale-95 transition-all" onClick={handleDownloadPDF} disabled={printQueue.length === 0 || isGenerating}>
+                            {isGenerating ? "PROCESANDO..." : <><Printer size={18} className="mr-2"/> GENERAR PDF</>}
                         </Button>
                     </div>
                 </div>
 
-                {/* PANEL DERECHO: VISTA PREVIA (Solo Visual HTML) */}
-                <div className="flex-1 bg-sys-200/50 rounded-2xl border border-sys-200 overflow-y-auto flex justify-center p-8 custom-scrollbar relative">
-                    <div className="bg-white shadow-2xl relative" style={{ width: '210mm', minHeight: '297mm', padding: '10mm', boxSizing: 'border-box' }}>
-                        {printQueue.length === 0 ? (
-                            <div className="absolute inset-0 flex items-center justify-center text-sys-200">
-                                <p className="text-4xl font-black opacity-20 uppercase rotate-45">Vista Previa</p>
-                            </div>
-                        ) : (
-                            <div style={{ display: 'grid', gap: '2mm', gridTemplateColumns: mode === 'gondola' ? 'repeat(3, 1fr)' : 'repeat(4, 1fr)', alignContent: 'start' }}>
-                                {printQueue.map((p, idx) => (
-                                    <div key={`${p.id}-${idx}`} className={cn("border border-black break-inside-avoid overflow-hidden relative bg-white", mode === 'gondola' ? "h-[45mm] flex flex-col justify-between" : "h-[25mm] p-1 flex flex-col items-center justify-center")}>
-                                        {mode === 'gondola' ? (
-                                            <div className="flex flex-col h-full">
-                                                <div className="h-[14mm] flex items-center justify-center px-1 border-b border-black pt-1">
-                                                    <p className="text-[10px] font-bold text-center text-black leading-tight line-clamp-2">{p.name.toUpperCase()}</p>
+                <div className="flex-1 bg-sys-200/30 rounded-3xl border border-sys-200 p-8 overflow-y-auto custom-scrollbar flex justify-center">
+                    <div className="bg-white shadow-2xl min-h-[297mm] w-[210mm] origin-top transform scale-90" style={{ padding: '0' }}>
+                        <div className="flex flex-col">
+                            {printQueue.length === 0 ? (
+                                <div className="h-[297mm] flex flex-col items-center justify-center text-sys-300 gap-4">
+                                    <Layout size={64} strokeWidth={1} className="opacity-20"/>
+                                    <p className="text-2xl font-black opacity-10 uppercase tracking-tighter">Vista Previa Nexus Engine</p>
+                                </div>
+                            ) : (
+                                <div style={{ display: 'grid', gridTemplateColumns: `repeat(${mode === 'shelf_talker' ? 1 : mode === 'gondola' ? 3 : 4}, 1fr)` }}>
+                                    {printQueue.map((p, idx) => {
+                                        const promo = GondolaLabelEngine.calculatePromoDetails(p);
+                                        const isPromo = promo.isPromo; 
+                                        const isBW = printStyle === 'bw';
+
+                                        return (
+                                            <div key={`${p.id}-${idx}`} className={cn(
+                                                "border border-sys-900 flex flex-col relative overflow-hidden",
+                                                mode === 'shelf_talker' ? "h-[99mm]" : mode === 'gondola' ? "h-[42mm]" : "h-[25mm]"
+                                            )}>
+                                                <div className={cn(
+                                                    "flex items-center justify-center",
+                                                    mode === 'shelf_talker' ? "h-[25mm]" : "h-[9mm]",
+                                                    isPromo 
+                                                        ? (isBW ? "bg-black text-white" : "bg-red-600 text-white") 
+                                                        : "bg-black text-white"
+                                                )}>
+                                                    <span className={cn("font-black uppercase", mode === 'shelf_talker' ? "text-5xl" : "text-xs")}>
+                                                        {isPromo ? promo.label : "PRECIO CONTADO"}
+                                                    </span>
                                                 </div>
-                                                <div className="flex-1 flex items-center justify-center relative">
-                                                    <span className="text-lg font-bold text-black mr-1 mt-1">$</span>
-                                                    <span className="text-5xl font-black text-black tracking-tighter leading-none">{Math.floor(p.price).toLocaleString('es-AR')}</span>
-                                                    <div className="flex flex-col ml-0.5 mt-1"><span className="text-xs font-bold text-black leading-none">00</span></div>
-                                                    <p className="text-[6px] font-normal text-black uppercase absolute bottom-1">Precio Contado</p>
+                                                
+                                                <div className="flex-1 flex flex-col items-center justify-center p-2">
+                                                    <h3 className={cn("font-bold text-center mb-1 line-clamp-2 leading-tight px-1 uppercase", mode === 'shelf_talker' ? "text-2xl" : "text-[9px]")}>{p.name}</h3>
+                                                    <div className="flex items-baseline gap-1">
+                                                        <span className={cn("font-black", mode === 'shelf_talker' ? "text-8xl" : "text-3xl")}>
+                                                            ${Math.floor(promo.currentPrice).toLocaleString('es-AR')}
+                                                        </span>
+                                                        <span className={cn("font-bold", mode === 'shelf_talker' ? "text-3xl" : "text-xs")}>00</span>
+                                                    </div>
+                                                    {isPromo && promo.type !== 'BUNDLE_DEAL' && (
+                                                        <span className={cn("text-sys-400 line-through font-bold", mode === 'shelf_talker' ? "text-2xl" : "text-[10px]")}>
+                                                            ${p.price.toLocaleString('es-AR')}
+                                                        </span>
+                                                    )}
                                                 </div>
-                                                <div className="h-[6mm] border-t border-black flex justify-between items-center px-2 bg-white">
-                                                    <span className="text-[8px] font-bold">NOAR POS</span>
-                                                    <span className="text-[9px] font-mono font-bold">{p.code || p.id.slice(0,6)}</span>
+
+                                                <div className={cn("p-1 bg-white border-t border-black flex flex-col items-center", mode === 'shelf_talker' ? "h-[15mm] justify-center" : "h-auto")}>
+                                                    {isPromo && promo.footer ? (
+                                                        <span className={cn("font-black text-red-600 uppercase", mode === 'shelf_talker' ? "text-lg" : "text-[8px]")}>{promo.footer}</span>
+                                                    ) : (
+                                                        <div className="w-full flex justify-between px-2 mt-1">
+                                                            <span className={cn("font-mono font-bold text-sys-500", mode === 'shelf_talker' ? "text-sm" : "text-[7px]")}>{p.code || 'S/C'}</span>
+                                                            <span className={cn("font-bold text-sys-400", mode === 'shelf_talker' ? "text-sm" : "text-[6px]")}>{new Date().toLocaleDateString()}</span>
+                                                        </div>
+                                                    )}
                                                 </div>
                                             </div>
-                                        ) : (
-                                            <>
-                                                <p className="text-[8px] font-bold text-black truncate w-full text-center mb-1">{p.name.slice(0,25)}</p>
-                                                <svg id={`preview-bc-${p.id}-${idx}`} className="w-full h-full max-h-[14mm]"></svg>
-                                                {/* Visualización del código en HTML también */}
-                                                <p className="text-[9px] font-mono font-bold text-center w-full leading-none mt-0.5">{p.code || p.id.slice(0,8).toUpperCase()}</p>
-                                            </>
-                                        )}
-                                    </div>
-                                ))}
-                            </div>
-                        )}
+                                        );
+                                    })}
+                                </div>
+                            )}
+                        </div>
                     </div>
                 </div>
             </div>

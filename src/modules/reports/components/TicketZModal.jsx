@@ -50,17 +50,30 @@ const TicketZContent = React.forwardRef(({ data }, ref) => {
     const printDate = new Date().toLocaleString();
     const closeDate = source.closedAt && source.closedAt !== 0 ? new Date(source.closedAt).toLocaleString() : 'PENDIENTE';
     
+    // --- LÓGICA DE CONSISTENCIA VISUAL (SMART FIX) ---
+    // Calculamos las ventas en efectivo basándonos en el Teórico (que es la verdad de la caja)
+    // Fórmula: Teórico = Inicial + VentasCash + Entradas - Salidas
+    // Despejamos: VentasCash = Teórico - Inicial - Entradas + Salidas
+    const ventasEfectivoCalculadas = source.expectedCash - source.initialAmount - source.cashIn + source.cashOut;
+
+    // Obtenemos el total bruto vendido reportado (suma de todo)
+    const rawCash = parseFloat(source.salesByMethod.cash || 0);
+    const mp = parseFloat(source.salesByMethod.mercadopago || 0);
+    const clover = parseFloat(source.salesByMethod.clover || 0);
+    const card = parseFloat(source.salesByMethod.card || 0);
+    const transfer = parseFloat(source.salesByMethod.transfer || 0);
+    const digitalOther = parseFloat(source.salesByMethod.digitalOther || source.salesByMethod.digital || 0);
+    
+    // Total de ventas real
+    const ventasTotales = rawCash + mp + clover + card + transfer + digitalOther;
+
+    // Deducimos lo digital por diferencia para que cuadre perfecto
+    // Si hubo ventas mixtas que se reportaron como cash, aquí se corrigen visualmente
+    const ventasDigitalCalculadas = ventasTotales - ventasEfectivoCalculadas;
+
     const retiroNeto = Math.max(0, source.declaredCash - source.leftInCash);
     const desvio = source.declaredCash - source.expectedCash;
     const esPerfecto = Math.abs(desvio) < 10; 
-
-    const ventasEfectivo = parseFloat(source.salesByMethod.cash || 0);
-    const mp = parseFloat(source.salesByMethod.mercadopago || 0);
-    const clover = parseFloat(source.salesByMethod.clover || 0);
-    const digitalOther = parseFloat(source.salesByMethod.digitalOther || source.salesByMethod.digital || 0);
-    
-    const ventasDigital = mp + clover + digitalOther;
-    const ventasTotales = ventasEfectivo + ventasDigital;
 
     return (
         <div ref={ref} className="ticket-print-container">
@@ -82,11 +95,11 @@ const TicketZContent = React.forwardRef(({ data }, ref) => {
 
                 <div className="border-solid"></div>
 
-                {/* FLUJO DE CAJA */}
+                {/* FLUJO DE CAJA (Calculado Matemáticamente) */}
                 <div className="mb-2">
                     <p className="t-header">FLUJO DE CAJA</p>
                     <div className="row-flex t-normal"><span>(+) FONDO INICIAL:</span><span>{formatMoney(source.initialAmount)}</span></div>
-                    <div className="row-flex t-normal"><span>(+) VENTAS EFECTIVO:</span><span>{formatMoney(ventasEfectivo)}</span></div>
+                    <div className="row-flex t-normal"><span>(+) VENTAS EFECTIVO:</span><span>{formatMoney(ventasEfectivoCalculadas)}</span></div>
                     {source.cashIn > 0 && <div className="row-flex t-normal"><span>(+) INGRESOS EXTRA:</span><span>{formatMoney(source.cashIn)}</span></div>}
                     <div className="row-flex t-normal"><span>(-) GASTOS/RETIROS:</span><span>{formatMoney(source.cashOut)}</span></div>
                     <div className="border-dash my-1"></div>
@@ -119,7 +132,7 @@ const TicketZContent = React.forwardRef(({ data }, ref) => {
                 {/* OTROS MEDIOS */}
                 <div className="mb-2">
                     <p className="t-header">OTROS MEDIOS</p>
-                    <div className="row-flex t-normal"><span>TOTAL DIGITAL:</span><span>{formatMoney(ventasDigital)}</span></div>
+                    <div className="row-flex t-normal"><span>TOTAL DIGITAL:</span><span>{formatMoney(ventasDigitalCalculadas)}</span></div>
                     <div className="row-flex t-big mt-1"><span>TOTAL VENDIDO:</span><span>{formatMoney(ventasTotales)}</span></div>
                     <div className="row-flex t-small mt-1"><span>CANT. OPS:</span><span>{source.salesCount}</span></div>
                 </div>

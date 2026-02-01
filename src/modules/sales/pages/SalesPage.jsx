@@ -2,7 +2,8 @@ import React, { useEffect, useState, useMemo } from 'react';
 import { 
     FileText, CheckCircle, AlertCircle, Printer, RefreshCw, Search, 
     ArrowDownLeft, ShoppingBag, XCircle, RotateCcw, Calendar, User,
-    ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Store
+    ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, 
+    TrendingUp, Tag, Percent, DollarSign, Store
 } from 'lucide-react';
 import { billingService } from '../../billing/services/billingService';
 import { Card } from '../../../core/ui/Card';
@@ -22,7 +23,7 @@ const toInputDate = (date) => {
 };
 
 export const SalesPage = () => {
-  const { user, activeBranchId } = useAuthStore(); 
+  const { user, activeBranchId, activeBranchName } = useAuthStore(); 
   const isAdmin = user?.role === 'ADMIN' || user?.role === 'OWNER'; 
 
   // Estado de Datos
@@ -57,7 +58,7 @@ export const SalesPage = () => {
                   );
                   const snapshot = await getDocs(q);
                   const users = snapshot.docs.map(doc => ({
-                      uid: doc.id, // ID de Firestore (Auth UID a veces es el ID del doc)
+                      uid: doc.id, 
                       ...doc.data()
                   }));
                   setCashiersList(users);
@@ -67,7 +68,7 @@ export const SalesPage = () => {
       }
   }, [user?.companyId]);
 
-  // 2. CARGAR OPERACIONES
+  // 2. CARGAR OPERACIONES (Con lógica Nexus Repository)
   const fetchOperations = async () => {
       setLoading(true);
       try {
@@ -115,24 +116,21 @@ export const SalesPage = () => {
       fetchOperations();
   }, [filterPeriod, customStart, customEnd]);
 
-  // 🔥 HELPER: RESOLUCIÓN INTELIGENTE DE NOMBRE
+  // 🔥 HELPER: RESOLUCIÓN INTELIGENTE DE NOMBRE CAJERO
   const resolveCashierName = (op) => {
       const idToCheck = op.userId || op.createdBy;
       
-      // 1. Buscamos match exacto en la lista de usuarios (por UID o Email)
       const matchedUser = cashiersList.find(u => u.uid === idToCheck || u.email === idToCheck);
       if (matchedUser) return matchedUser.name || matchedUser.email.split('@')[0];
 
-      // 2. Si no está en la lista, usamos lo que guardó la venta (snapshot histórico)
       if (op.sellerName && op.sellerName !== 'Cajero') return op.sellerName;
+      if (op.operatorName) return op.operatorName; // Nexus Pro field
       if (op.userName && op.userName !== 'Vendedor') return op.userName;
 
-      // 3. Si es un email suelto, lo formateamos
       if (typeof idToCheck === 'string' && idToCheck.includes('@')) {
           return idToCheck.split('@')[0];
       }
 
-      // 4. Último recurso
       return "Desconocido";
   };
 
@@ -149,23 +147,14 @@ export const SalesPage = () => {
 
           // C. Filtro Cajero
           if (filterCashier !== 'ALL') {
-             // filterCashier es el EMAIL del usuario seleccionado en el dropdown
-             const selectedUser = cashiersList.find(u => u.email === filterCashier);
-             
-             if (!selectedUser) return false;
-
-             // Comparamos contra UID
-             if (op.userId === selectedUser.uid) return true;
-             
-             // Comparamos contra Email
-             if (op.createdBy === selectedUser.email) return true;
-
-             // Comparamos contra Nombre guardado (Fallback para legacy)
-             const opName = (op.sellerName || op.userName || '').toLowerCase();
-             const selName = (selectedUser.name || '').toLowerCase();
-             if (opName && selName && opName === selName) return true;
-
-             return false;
+              const selectedUser = cashiersList.find(u => u.email === filterCashier);
+              if (!selectedUser) return false;
+              if (op.userId === selectedUser.uid) return true;
+              if (op.createdBy === selectedUser.email) return true;
+              const opName = (op.sellerName || op.userName || '').toLowerCase();
+              const selName = (selectedUser.name || '').toLowerCase();
+              if (opName && selName && opName === selName) return true;
+              return false;
           }
 
           // D. Búsqueda Texto
@@ -246,6 +235,15 @@ export const SalesPage = () => {
     setOperations(prev => prev.map(o => o.localId === op.localId ? ventaActualizada : o));
   };
 
+  // CÁLCULOS DE TOTALES VISIBLES
+  const totals = useMemo(() => {
+      const filtered = visibleOperations.filter(op => op.afip?.status !== 'VOIDED');
+      return {
+          gross: filtered.reduce((acc, op) => acc + (parseFloat(op.total) || 0), 0),
+          netProfit: filtered.reduce((acc, op) => acc + (parseFloat(op.netProfit) || 0), 0)
+      };
+  }, [visibleOperations]);
+
   return (
     <div className="space-y-6 pb-20 p-4 md:p-6 max-w-[1600px] mx-auto animate-in fade-in duration-500">
       
@@ -256,23 +254,38 @@ export const SalesPage = () => {
                 <h2 className="text-2xl font-bold text-sys-900 flex items-center gap-2">
                     <FileText className="text-brand"/> Historial de Operaciones
                 </h2>
-                <p className="text-sys-500 text-sm">Gestiona ventas, cobros y facturación electrónica.</p>
+                <div className="flex items-center gap-2 mt-1">
+                    <span className="bg-sys-100 text-sys-600 px-2 py-0.5 rounded text-xs font-bold border border-sys-200 flex items-center gap-1">
+                        <Store size={12}/> {activeBranchName || 'Sucursal'}
+                    </span>
+                    <span className="text-sys-400 text-xs">|</span>
+                    <p className="text-sys-500 text-xs">Gestión de ventas y facturación</p>
+                </div>
             </div>
             
             <div className="flex items-center gap-3">
                 <Button variant="outline" onClick={fetchOperations} className="h-10 w-10 p-0 rounded-xl border-sys-200 text-sys-500 hover:text-brand hover:bg-sys-50" title="Recargar listado">
                     <RefreshCw size={18} className={loading ? "animate-spin" : ""}/>
                 </Button>
-                <Card className="px-6 py-2 bg-white border border-sys-200 shadow-sm flex items-center gap-4">
+                
+                {/* 💳 TARJETA DE TOTALES (INTELIGENTE) */}
+                <Card className="px-5 py-2 bg-white border border-sys-200 shadow-sm flex items-center gap-6">
                     <div>
-                        <p className="text-[10px] text-sys-400 uppercase font-bold">Total Selección</p>
+                        <p className="text-[10px] text-sys-400 uppercase font-bold tracking-wider">Ventas Brutas</p>
                         <p className="text-xl font-black text-sys-900">
-                            $ {visibleOperations
-                                .filter(op => op.afip?.status !== 'VOIDED')
-                                .reduce((acc, op) => acc + (parseFloat(op.total) || 0), 0)
-                                .toLocaleString('es-AR', {minimumFractionDigits: 2})}
+                            $ {totals.gross.toLocaleString('es-AR', {minimumFractionDigits: 2})}
                         </p>
                     </div>
+                    {isAdmin && (
+                        <div className="border-l border-sys-100 pl-6">
+                            <p className="text-[10px] text-emerald-600 uppercase font-bold tracking-wider flex items-center gap-1">
+                                <TrendingUp size={10}/> Utilidad Neta
+                            </p>
+                            <p className="text-xl font-black text-emerald-600">
+                                $ {totals.netProfit.toLocaleString('es-AR', {minimumFractionDigits: 2})}
+                            </p>
+                        </div>
+                    )}
                 </Card>
             </div>
           </div>
@@ -365,13 +378,19 @@ export const SalesPage = () => {
                     const paymentMethod = op.payment?.method || op.paymentMethod || 'cash';
                     
                     const cajeroName = resolveCashierName(op);
+                    
+                    // Detectar si hubo promociones en la venta
+                    const hasPromo = !isReceipt && op.items?.some(i => i.appliedPromo || i.promoLabel);
+                    
+                    // Calcular margen si es admin
+                    const profit = parseFloat(op.netProfit || 0);
+                    const isProfitable = profit > 0;
 
                     return (
                       <tr key={op.localId} className={cn("transition-colors group", isAnulado ? "bg-red-50/30 opacity-60" : "hover:bg-sys-50/40")}>
                         <td className="p-4 text-sys-600 font-mono text-xs whitespace-nowrap">
                           <div className="font-bold text-sys-800">{new Date(op.date).toLocaleDateString()} {new Date(op.date).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</div>
-                          {/* 🔥 AQUI MOSTRAMOS EL NÚMERO DE TICKET REAL */}
-                          <div className="text-[11px] font-bold text-brand mt-0.5">{op.number || '---'}</div>
+                          <div className="text-[11px] font-bold text-brand mt-0.5">{op.number || op.afip?.cbteNumero || '---'}</div>
                           <div className="flex items-center gap-1 text-[10px] text-sys-400 mt-0.5">
                               <User size={10}/> {cajeroName}
                           </div>
@@ -386,15 +405,30 @@ export const SalesPage = () => {
                         <td className="p-4 text-sys-800 font-medium">
                           <div className="flex flex-col">
                             <span className="font-bold truncate max-w-[200px]">{op.client?.name || 'Consumidor Final'}</span>
-                            <span className="text-[10px] text-sys-400 font-normal truncate max-w-[250px]">
-                               {isReceipt ? "Pago a Cuenta" : `${op.itemCount || (op.items?.length) || 0} items`}
-                            </span>
+                            <div className="flex items-center gap-2 mt-0.5">
+                                <span className="text-[10px] text-sys-400 font-normal">
+                                    {isReceipt ? "Pago a Cuenta" : `${op.itemCount || (op.items?.length) || 0} items`}
+                                </span>
+                                {hasPromo && (
+                                    <span className="text-[9px] font-bold text-purple-600 bg-purple-50 px-1.5 rounded flex items-center gap-1 border border-purple-100">
+                                        <Percent size={8}/> PROMO
+                                    </span>
+                                )}
+                            </div>
                           </div>
                         </td>
                         <td className="p-4 text-right">
-                          <span className={cn("font-bold whitespace-nowrap text-sm", isAnulado ? "text-red-400 line-through decoration-red-400" : "text-sys-900")}>
-                            $ {(parseFloat(op.total) || 0).toLocaleString('es-AR', {minimumFractionDigits: 2})}
-                          </span>
+                          <div className="flex flex-col items-end">
+                              <span className={cn("font-bold whitespace-nowrap text-sm", isAnulado ? "text-red-400 line-through decoration-red-400" : "text-sys-900")}>
+                                $ {(parseFloat(op.total) || 0).toLocaleString('es-AR', {minimumFractionDigits: 2})}
+                              </span>
+                              {isAdmin && !isReceipt && !isAnulado && (
+                                  <span className={cn("text-[9px] font-bold flex items-center gap-1", isProfitable ? "text-emerald-600" : "text-red-500")}>
+                                      <TrendingUp size={8}/> 
+                                      ${profit.toLocaleString('es-AR', {minimumFractionDigits: 0, maximumFractionDigits: 0})}
+                                  </span>
+                              )}
+                          </div>
                         </td>
                         <td className="p-4 text-center">
                           <span className={cn("px-2 py-0.5 rounded text-[10px] font-bold uppercase border inline-block min-w-[60px]", 
