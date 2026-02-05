@@ -1,120 +1,172 @@
-import React, { useState } from 'react';
-import { useSmartImport } from '../hooks/useSmartImport';
-import { ArrowRight, X, AlertTriangle, Upload, Save } from 'lucide-react';
-
-// Opciones disponibles para mapear
-const DB_FIELDS = [
-    { value: 'ignore', label: 'Ignorar Columna' },
-    { value: 'name', label: 'Nombre Producto' },
-    { value: 'price', label: 'Precio Venta' },
-    { value: 'cost', label: 'Costo' },
-    { value: 'stock', label: 'Stock Inicial' },
-    { value: 'code', label: 'Código de Barras' },
-];
+import React, { useState, useEffect } from 'react';
+// 🔥 Importamos AVAILABLE_FIELDS para tener las opciones reales
+import { useSmartImport, AVAILABLE_FIELDS } from '../hooks/useSmartImport';
+import { X, Upload, Save, AlertTriangle, CheckCircle, FileSpreadsheet } from 'lucide-react';
+import { cn } from '../../../core/utils/cn';
 
 export const ImportMapperModal = ({ isOpen, onClose, branchId, onSuccess }) => {
-    const { parseFile, processImport, previewData, headers, isProcessing } = useSmartImport();
+    const { 
+        parseFile, 
+        processImport, 
+        previewData, 
+        isProcessing, 
+        progress 
+    } = useSmartImport();
+
     const [mapping, setMapping] = useState({});
+    const [headers, setHeaders] = useState([]);
+
+    // Extraer headers reales del preview cuando cambia
+    useEffect(() => {
+        if (previewData && previewData.length > 0) {
+            // Asumimos que la fila 0 son headers visuales si el usuario lo desea, 
+            // pero PapaParse header:false nos da arrays por índice.
+            // Generamos índices visuales "Columna A, B, C..." o usamos el contenido de la fila 0 como guía visual
+            const sampleRow = previewData[0];
+            setHeaders(sampleRow.map((_, i) => `Columna ${i + 1}`));
+        }
+    }, [previewData]);
 
     const handleFileChange = (e) => {
         const file = e.target.files[0];
         if (file) parseFile(file);
     };
 
-    const handleMapChange = (colIndex, field) => {
-        setMapping(prev => ({ ...prev, [colIndex]: field }));
+    const handleMapChange = (colIndex, fieldKey) => {
+        setMapping(prev => ({ ...prev, [colIndex]: fieldKey }));
     };
 
     const handleSave = async () => {
-        // Validar que seleccionó al menos el nombre
-        if (!Object.values(mapping).includes('name')) {
-            alert("⚠️ Error: Debes identificar cuál columna es el 'Nombre Producto'.");
-            return;
-        }
+        // Validación: Al menos Nombre y Precio son requeridos por el sistema
+        const selectedFields = Object.values(mapping);
+        if (!selectedFields.includes('name')) return alert("⚠️ Error: Falta asignar la columna 'Nombre'.");
+        if (!selectedFields.includes('price')) return alert("⚠️ Error: Falta asignar la columna 'Precio'.");
 
         try {
-            const count = await processImport(mapping, branchId);
-            alert(`✅ Éxito: Se procesaron ${count} productos.`);
+            const result = await processImport(mapping, branchId);
+            
+            // Mensaje de éxito detallado
+            let msg = `✅ ¡Importación Exitosa!\n\n`;
+            msg += `📦 Productos Procesados: ${result.processed}\n`;
+            if (result.categories > 0) msg += `📂 Categorías Creadas: ${result.categories}\n`;
+            if (result.brands > 0) msg += `🏷️ Marcas Creadas: ${result.brands}\n`;
+            if (result.stockMovements > 0) msg += `📈 Movimientos de Stock: ${result.stockMovements}`;
+
+            alert(msg);
+            
             if (onSuccess) onSuccess();
             onClose();
+            // Resetear estados internos si fuera necesario, o dejar que el desmontaje lo haga
         } catch (e) {
-            alert("❌ Error al importar: " + e.message);
+            console.error(e);
+            alert("❌ Ocurrió un error durante la importación. Revisa la consola.");
         }
     };
 
     if (!isOpen) return null;
 
     return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-            <div className="bg-white rounded-2xl w-full max-w-5xl h-[85vh] flex flex-col shadow-2xl overflow-hidden border border-gray-200">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-sys-900/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+            <div className="bg-white rounded-2xl w-full max-w-6xl h-[90vh] flex flex-col shadow-2xl overflow-hidden border border-sys-200">
                 
                 {/* Header */}
-                <div className="p-5 border-b border-gray-100 flex justify-between items-center bg-gray-50/50">
+                <div className="p-5 border-b border-sys-100 flex justify-between items-center bg-sys-50">
                     <div>
-                        <h2 className="text-xl font-black text-gray-900 flex items-center gap-2">
+                        <h2 className="text-xl font-black text-sys-900 flex items-center gap-2">
                             <Upload className="text-brand" size={24} /> Importador Inteligente
                         </h2>
-                        <p className="text-sm text-gray-500 mt-1">Sube tu Excel y dinos qué es cada columna.</p>
+                        <p className="text-sm text-sys-500 mt-1">Sube tu Excel/CSV y asigna las columnas correspondientes.</p>
                     </div>
-                    <button onClick={onClose} className="p-2 hover:bg-gray-200 rounded-full transition-colors text-gray-500">
+                    <button onClick={onClose} className="p-2 hover:bg-sys-200 rounded-full transition-colors text-sys-400 hover:text-sys-600">
                         <X size={24}/>
                     </button>
                 </div>
 
                 {/* Body */}
-                <div className="flex-1 overflow-y-auto p-6 bg-slate-50">
+                <div className="flex-1 overflow-hidden flex flex-col bg-slate-50 relative">
                     
+                    {/* Loading Overlay */}
+                    {isProcessing && (
+                        <div className="absolute inset-0 z-10 bg-white/90 flex flex-col items-center justify-center p-8 backdrop-blur-sm">
+                            <div className="w-16 h-16 border-4 border-sys-100 border-t-brand rounded-full animate-spin mb-4"></div>
+                            <h3 className="text-xl font-black text-sys-800 mb-2">{progress.stage}</h3>
+                            <div className="w-full max-w-md h-2 bg-sys-100 rounded-full overflow-hidden mb-2">
+                                <div 
+                                    className="h-full bg-brand transition-all duration-300 ease-out"
+                                    style={{ width: `${(progress.current / (progress.total || 1)) * 100}%` }}
+                                ></div>
+                            </div>
+                            <p className="text-sm font-medium text-sys-500">
+                                Procesando {progress.current} de {progress.total} filas...
+                            </p>
+                        </div>
+                    )}
+
                     {!previewData.length ? (
-                        <div className="h-full flex flex-col items-center justify-center border-2 border-dashed border-gray-300 rounded-2xl bg-white hover:bg-blue-50/50 transition-colors group cursor-pointer">
+                        <div className="flex-1 flex flex-col items-center justify-center p-12">
                             <input type="file" accept=".csv,.txt" onChange={handleFileChange} className="hidden" id="csvUpload"/>
-                            <label htmlFor="csvUpload" className="cursor-pointer flex flex-col items-center p-12 w-full h-full justify-center">
-                                <div className="w-20 h-20 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
-                                    <Upload size={40} />
+                            <label 
+                                htmlFor="csvUpload" 
+                                className="group cursor-pointer flex flex-col items-center justify-center p-12 border-2 border-dashed border-sys-300 rounded-3xl bg-white hover:border-brand hover:bg-brand/5 transition-all w-full max-w-2xl"
+                            >
+                                <div className="w-24 h-24 bg-sys-100 text-sys-400 group-hover:bg-brand/10 group-hover:text-brand rounded-full flex items-center justify-center mb-6 transition-colors">
+                                    <FileSpreadsheet size={48} />
                                 </div>
-                                <span className="text-2xl font-bold text-gray-700">Subir Archivo CSV</span>
-                                <p className="text-gray-400 mt-2">Formatos aceptados: .csv (separado por comas o punto y coma)</p>
+                                <span className="text-2xl font-black text-sys-700 group-hover:text-brand mb-2">Subir Archivo CSV</span>
+                                <p className="text-sys-400 text-center max-w-md">
+                                    Arrastra tu archivo aquí o haz clic para buscarlo.<br/>
+                                    <span className="text-xs mt-2 block opacity-70">Soporta separación por comas (,) o punto y coma (;)</span>
+                                </p>
                             </label>
                         </div>
                     ) : (
-                        <div className="space-y-6">
+                        <div className="flex-1 overflow-auto p-6">
+                            
                             {/* Warning Box */}
-                            <div className="bg-amber-50 border border-amber-200 p-4 rounded-xl flex gap-3 text-amber-800 text-sm shadow-sm">
-                                <AlertTriangle size={20} className="shrink-0 mt-0.5"/>
+                            <div className="bg-blue-50 border border-blue-100 p-4 rounded-xl flex gap-3 text-blue-800 text-sm shadow-sm mb-6">
+                                <AlertTriangle size={20} className="shrink-0 mt-0.5 text-blue-600"/>
                                 <div>
-                                    <strong className="block font-bold mb-1">¿Cómo funciona?</strong>
-                                    Si el producto ya existe (coincide Nombre o Código), actualizaremos sus datos. Si no, lo crearemos nuevo.
+                                    <strong className="block font-bold mb-1 text-blue-700">Mapeo de Columnas</strong>
+                                    Por favor, selecciona qué representa cada columna de tu archivo. Si el producto ya existe (por código), actualizaremos sus datos. Si la Categoría o Marca no existen, <strong>se crearán automáticamente</strong>.
                                 </div>
                             </div>
 
                             {/* Mapper Table */}
-                            <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                            <div className="bg-white rounded-xl shadow-sm border border-sys-200 overflow-hidden">
                                 <div className="overflow-x-auto">
                                     <table className="w-full text-sm text-left">
-                                        <thead className="bg-gray-100 text-gray-700">
+                                        <thead className="bg-sys-50 text-sys-700 border-b border-sys-200">
                                             <tr>
-                                                {headers.map((colName, index) => (
-                                                    <th key={index} className="p-4 min-w-[200px]">
-                                                        <div className="mb-3 text-xs font-bold uppercase text-gray-500 tracking-wider">
-                                                            {colName}
+                                                {headers.map((_, index) => (
+                                                    <th key={index} className="p-4 min-w-[220px] bg-sys-50">
+                                                        <div className="mb-3 text-[10px] font-black uppercase text-sys-400 tracking-widest">
+                                                            Columna {index + 1}
                                                         </div>
                                                         <select 
-                                                            className="w-full p-2.5 bg-white border-2 border-gray-300 rounded-lg focus:border-brand focus:ring-4 focus:ring-brand/10 font-bold text-gray-800 transition-all cursor-pointer hover:border-gray-400"
+                                                            className={cn(
+                                                                "w-full p-2.5 rounded-lg border-2 font-bold transition-all cursor-pointer outline-none",
+                                                                mapping[index] && mapping[index] !== 'ignore' 
+                                                                    ? "border-brand bg-brand/5 text-brand" 
+                                                                    : "border-sys-200 bg-white text-sys-600 hover:border-sys-300"
+                                                            )}
                                                             onChange={(e) => handleMapChange(index, e.target.value)}
                                                             defaultValue="ignore"
                                                         >
-                                                            {DB_FIELDS.map(f => (
-                                                                <option key={f.value} value={f.value}>{f.label}</option>
+                                                            {AVAILABLE_FIELDS.map(f => (
+                                                                <option key={f.key} value={f.key}>
+                                                                    {f.label} {f.required ? '*' : ''}
+                                                                </option>
                                                             ))}
                                                         </select>
                                                     </th>
                                                 ))}
                                             </tr>
                                         </thead>
-                                        <tbody className="divide-y divide-gray-100">
+                                        <tbody className="divide-y divide-sys-100">
                                             {previewData.slice(0, 5).map((row, rowIndex) => (
-                                                <tr key={rowIndex} className="hover:bg-gray-50 transition-colors">
+                                                <tr key={rowIndex} className="hover:bg-sys-50/50 transition-colors">
                                                     {row.map((cell, cellIndex) => (
-                                                        <td key={cellIndex} className="p-4 text-gray-600 truncate max-w-[200px] border-r border-gray-100 last:border-0">
+                                                        <td key={cellIndex} className="p-4 text-sys-600 truncate max-w-[200px] border-r border-sys-100 last:border-0 font-mono text-xs">
                                                             {cell}
                                                         </td>
                                                     ))}
@@ -123,8 +175,8 @@ export const ImportMapperModal = ({ isOpen, onClose, branchId, onSuccess }) => {
                                         </tbody>
                                     </table>
                                 </div>
-                                <div className="p-2 text-center text-xs text-gray-400 bg-gray-50 border-t border-gray-100">
-                                    Mostrando previsualización de las primeras 5 filas
+                                <div className="p-3 text-center text-xs font-medium text-sys-400 bg-sys-50 border-t border-sys-200 uppercase tracking-wider">
+                                    Vista previa de las primeras 5 filas
                                 </div>
                             </div>
                         </div>
@@ -132,22 +184,24 @@ export const ImportMapperModal = ({ isOpen, onClose, branchId, onSuccess }) => {
                 </div>
 
                 {/* Footer */}
-                <div className="p-5 border-t border-gray-200 bg-white flex justify-end gap-3 items-center">
+                <div className="p-5 border-t border-sys-200 bg-white flex justify-between gap-3 items-center">
                     <button 
                         onClick={onClose} 
-                        className="px-6 py-3 rounded-xl font-bold text-gray-600 hover:bg-gray-100 transition-colors"
+                        disabled={isProcessing}
+                        className="px-6 py-3 rounded-xl font-bold text-sys-500 hover:bg-sys-100 transition-colors disabled:opacity-50"
                     >
-                        Cancelar
+                        Cancelar Operación
                     </button>
+                    
                     <button 
                         onClick={handleSave} 
                         disabled={!previewData.length || isProcessing}
-                        className="px-8 py-3 rounded-xl bg-gray-900 text-white font-bold hover:bg-black shadow-xl shadow-gray-900/20 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 transition-all active:scale-95"
+                        className="px-8 py-3 rounded-xl bg-sys-900 text-white font-bold hover:bg-black shadow-lg shadow-sys-900/20 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 transition-all active:scale-95"
                     >
                         {isProcessing ? (
-                            <><span className="animate-spin">⏳</span> Procesando...</>
+                            <>Procesando...</>
                         ) : (
-                            <><Save size={20}/> Confirmar Importación</>
+                            <><CheckCircle size={20}/> Confirmar e Importar</>
                         )}
                     </button>
                 </div>

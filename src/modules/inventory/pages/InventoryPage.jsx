@@ -1,17 +1,20 @@
 import React, { useEffect, useState, useRef, useMemo } from 'react';
-// 🔥 Importamos useParams para capturar el slug de la empresa
 import { useNavigate, useParams } from 'react-router-dom'; 
 import { 
     Plus, Search, Edit2, Trash2, Package, AlertTriangle, 
     ArrowUpRight, Filter, CheckSquare, Square, X, History,
     Printer, ArrowRightLeft, Calendar, ChevronLeft, ChevronRight,
     Upload, RefreshCw, MoreVertical, Cloud, MapPin, 
-    Tag, Percent, Megaphone, MoreHorizontal, LayoutGrid, DollarSign
+    Tag, Percent, Megaphone, MoreHorizontal, LayoutGrid, DollarSign,
+    CalendarClock, Info, Scale 
 } from 'lucide-react';
+import toast from 'react-hot-toast'; 
 
 import { productRepository } from '../repositories/productRepository';
 import { masterRepository } from '../repositories/masterRepository';
 import { useAuthStore } from '../../auth/store/useAuthStore'; 
+import { syncService } from '../../sync/services/syncService'; 
+import { scaleService } from '../services/scaleService'; // 🔥 SERVICIO DE BALANZAS
 
 import { ProductModal } from '../components/ProductModal'; 
 import { MastersModal } from '../components/MastersModal';
@@ -21,9 +24,10 @@ import { Button } from '../../../core/ui/Button';
 
 import { collection, getDocs, query, where, documentId } from 'firebase/firestore';
 import { db as firestoreDB } from '../../../database/firebase';
+import { getDB } from '../../../database/db'; 
 
 // =================================================================
-// 🧠 HELPER FUNCTIONS (NEXUS UTILS)
+// 🧠 HELPER FUNCTIONS
 // =================================================================
 
 const formatMoney = (amount) => {
@@ -47,8 +51,12 @@ const getActivePromo = (product) => {
     return null;
 };
 
+const getLocalDate = () => {
+    return new Date().toLocaleDateString('sv-SE'); 
+};
+
 // =================================================================
-// 1. STOCK ENTRY MODAL (Ingreso Rápido)
+// 1. STOCK ENTRY MODAL
 // =================================================================
 const StockEntryModal = ({ isOpen, onClose, product, onConfirm }) => {
     if (!isOpen || !product) return null;
@@ -94,13 +102,64 @@ const StockEntryModal = ({ isOpen, onClose, product, onConfirm }) => {
                     </div>
                     <Button onClick={handleConfirm} className="w-full py-3 shadow-lg shadow-brand/20">Confirmar Ajuste</Button>
                 </div>
-             </div>
+              </div>
         </div>
     );
 };
 
 // =================================================================
-// 2. BULK UPDATE MODAL
+// 2. SCALE EXPORT MODAL (KRETZ / SYSTEL) 🔥
+// =================================================================
+const ScaleExportModal = ({ isOpen, onClose, onExport }) => {
+    if (!isOpen) return null;
+
+    return (
+        <div className="fixed inset-0 z-[95] flex items-center justify-center bg-sys-900/60 backdrop-blur-sm p-4 animate-in fade-in zoom-in-95">
+            <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden">
+                <div className="p-6 border-b border-sys-100 bg-sys-50 flex justify-between items-center">
+                    <div>
+                        <h3 className="font-black text-xl text-sys-900 flex items-center gap-2">
+                            <Scale className="text-brand" /> Exportar a Balanza
+                        </h3>
+                        <p className="text-xs text-sys-500 mt-1">Seleccione el modelo para generar el archivo</p>
+                    </div>
+                    <button onClick={onClose} className="p-2 hover:bg-sys-200 rounded-full"><X size={20} className="text-sys-400"/></button>
+                </div>
+                <div className="p-6 grid grid-cols-2 gap-4">
+                    <button 
+                        onClick={() => onExport('KRETZ')}
+                        className="flex flex-col items-center justify-center gap-3 p-6 border-2 border-sys-200 rounded-2xl hover:border-brand hover:bg-brand/5 hover:scale-[1.02] transition-all group"
+                    >
+                        <div className="w-12 h-12 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center group-hover:bg-brand group-hover:text-white transition-colors">
+                            <Scale size={24} />
+                        </div>
+                        <span className="font-black text-sys-800">KRETZ</span>
+                        <span className="text-[10px] text-sys-400 font-mono bg-sys-100 px-2 py-1 rounded">iTegra / Report</span>
+                    </button>
+
+                    <button 
+                        onClick={() => onExport('SYSTEL')}
+                        className="flex flex-col items-center justify-center gap-3 p-6 border-2 border-sys-200 rounded-2xl hover:border-purple-500 hover:bg-purple-50 hover:scale-[1.02] transition-all group"
+                    >
+                        <div className="w-12 h-12 rounded-full bg-purple-100 text-purple-600 flex items-center justify-center group-hover:bg-purple-600 group-hover:text-white transition-colors">
+                            <Scale size={24} />
+                        </div>
+                        <span className="font-black text-sys-800">SYSTEL</span>
+                        <span className="text-[10px] text-sys-400 font-mono bg-sys-100 px-2 py-1 rounded">Qendra / Cuora</span>
+                    </button>
+                </div>
+                <div className="px-6 pb-6 text-center">
+                    <p className="text-[10px] text-sys-400 bg-yellow-50 text-yellow-700 p-2 rounded-lg border border-yellow-100">
+                        ⚠️ Al descargar, guarde el archivo en la carpeta monitoreada por el software de la balanza.
+                    </p>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+// =================================================================
+// 3. BULK UPDATE MODAL
 // =================================================================
 const BulkUpdateModal = ({ isOpen, onClose, onConfirm, allProducts, masters, manualSelectionIds }) => {
     if (!isOpen) return null;
@@ -109,6 +168,10 @@ const BulkUpdateModal = ({ isOpen, onClose, onConfirm, allProducts, masters, man
     const [costPct, setCostPct] = useState(0);
     const [pricePct, setPricePct] = useState(0);
     const [targetList, setTargetList] = useState([]);
+    
+    // Estado para programación
+    const [activationDate, setActivationDate] = useState('');
+    const [isScheduled, setIsScheduled] = useState(false);
 
     useEffect(() => {
         let list = [];
@@ -118,63 +181,148 @@ const BulkUpdateModal = ({ isOpen, onClose, onConfirm, allProducts, masters, man
         setTargetList(list);
     }, [activeTab, targetId, manualSelectionIds, allProducts]);
 
+    const todayStr = getLocalDate();
+
     return (
       <div className="fixed inset-0 z-[80] flex items-center justify-center bg-sys-900/60 backdrop-blur-sm p-4 animate-in fade-in zoom-in-95">
-        <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[85vh]">
+        <div className="bg-white rounded-3xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]">
+          
+          {/* HEADER */}
           <div className="p-5 border-b border-sys-100 bg-sys-50 flex justify-between items-center shrink-0">
-             <h3 className="font-bold text-lg text-sys-900 flex items-center gap-2"><ArrowUpRight className="text-brand" /> Actualización Masiva</h3>
-             <button onClick={onClose}><X size={20} className="text-sys-400" /></button>
+             <div>
+                <h3 className="font-black text-xl text-sys-900 flex items-center gap-2"><ArrowUpRight className="text-brand" /> Actualización Masiva</h3>
+                <p className="text-[10px] text-sys-500 font-bold uppercase tracking-wider">Afectará a {targetList.length} productos</p>
+             </div>
+             <button onClick={onClose} className="p-2 hover:bg-sys-200 rounded-full transition-colors"><X size={20} className="text-sys-400" /></button>
           </div>
-          <div className="flex-1 overflow-hidden flex flex-col p-6">
-             <div className="flex bg-sys-100 p-1 rounded-xl mb-4 shrink-0">
+
+          {/* BODY */}
+          <div className="flex-1 overflow-y-auto p-6 space-y-6 custom-scrollbar">
+             <div className="flex bg-sys-100 p-1.5 rounded-2xl shrink-0">
                 {['manual', 'brand', 'category'].map(t => (
-                    <button key={t} onClick={() => { setActiveTab(t); setTargetId(''); }} className={cn("flex-1 py-2 text-xs font-bold rounded-lg capitalize transition-all", activeTab === t ? "bg-white shadow text-sys-900" : "text-sys-500")}>
-                        {t === 'manual' ? 'Selección' : t === 'brand' ? 'Marca' : 'Categoría'}
+                    <button 
+                        key={t} 
+                        onClick={() => { setActiveTab(t); setTargetId(''); }} 
+                        className={cn("flex-1 py-2.5 text-xs font-black rounded-xl capitalize transition-all", 
+                        activeTab === t ? "bg-white shadow-lg text-brand scale-[1.02]" : "text-sys-500 hover:text-sys-700")}
+                    >
+                        {t === 'manual' ? 'Seleccionados' : t === 'brand' ? 'Por Marca' : 'Por Categoría'}
                     </button>
                 ))}
              </div>
-             <div className="shrink-0 mb-4">
+
+             <div className="shrink-0">
                 {activeTab === 'brand' && (
-                    <select className="w-full p-3 border border-sys-200 rounded-xl text-sm bg-white outline-none focus:border-brand" onChange={(e) => setTargetId(e.target.value)}>
-                        <option value="">Selecciona Marca...</option>
+                    <select className="w-full p-3.5 border-2 border-sys-100 rounded-2xl text-sm font-bold bg-white outline-none focus:border-brand transition-all" onChange={(e) => setTargetId(e.target.value)}>
+                        <option value="">Selecciona una Marca...</option>
                         {masters.brands.map(b => <option key={b.id} value={b.name}>{b.name}</option>)}
                     </select>
                 )}
                 {activeTab === 'category' && (
-                    <select className="w-full p-3 border border-sys-200 rounded-xl text-sm bg-white outline-none focus:border-brand" onChange={(e) => setTargetId(e.target.value)}>
-                        <option value="">Selecciona Categoría...</option>
+                    <select className="w-full p-3.5 border-2 border-sys-100 rounded-2xl text-sm font-bold bg-white outline-none focus:border-brand transition-all" onChange={(e) => setTargetId(e.target.value)}>
+                        <option value="">Selecciona una Categoría...</option>
                         {masters.categories.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
                     </select>
                 )}
              </div>
-             <div className="flex-1 overflow-y-auto custom-scrollbar border border-sys-200 rounded-xl bg-sys-50 mb-4 relative">
-                {targetList.length === 0 ? (
-                    <div className="h-full flex flex-col items-center justify-center text-sys-400 p-4 text-center"><Package size={32} className="mb-2 opacity-50"/><p className="text-xs">Sin productos afectados.</p></div>
-                ) : (
-                    <div className="divide-y divide-sys-200">
-                        <div className="sticky top-0 bg-sys-100 p-2 text-xs font-bold text-sys-500 uppercase border-b border-sys-200 flex justify-between z-10">
-                            <span>Producto ({targetList.length})</span><span>Precio Hoy</span>
+
+             <div className="grid grid-cols-2 gap-4 shrink-0">
+                <div className="space-y-1.5">
+                    <label className="text-[10px] font-black text-sys-400 uppercase ml-1">Subir Costo %</label>
+                    <div className="relative">
+                        <Percent className="absolute left-3 top-3 text-sys-300" size={16}/>
+                        <input type="number" className="w-full p-3 pl-9 border-2 border-sys-100 rounded-2xl font-bold outline-none focus:border-sys-400 transition-all" value={costPct} onChange={e => setCostPct(parseFloat(e.target.value) || 0)} />
+                    </div>
+                </div>
+                <div className="space-y-1.5">
+                    <label className="text-[10px] font-black text-brand uppercase ml-1">Subir Precio %</label>
+                    <div className="relative">
+                        <Percent className="absolute left-3 top-3 text-brand/40" size={16}/>
+                        <input type="number" className="w-full p-3 pl-9 border-2 border-brand/10 bg-brand/5 rounded-2xl font-black text-brand outline-none focus:border-brand transition-all" value={pricePct} onChange={e => setPricePct(parseFloat(e.target.value) || 0)} />
+                    </div>
+                </div>
+             </div>
+
+             <div className={cn("p-4 rounded-2xl border-2 transition-all cursor-pointer select-none shrink-0", isScheduled ? "bg-orange-50 border-orange-300 ring-2 ring-orange-100" : "bg-white border-sys-200 hover:bg-sys-50")} onClick={() => setIsScheduled(!isScheduled)}>
+                <div className="flex items-center gap-3">
+                    <div className={cn("w-6 h-6 rounded-md flex items-center justify-center border-2 transition-colors shrink-0", isScheduled ? "bg-orange-500 border-orange-500 text-white" : "bg-white border-sys-300 text-transparent")}>
+                        <CheckSquare size={16} fill="currentColor" />
+                    </div>
+                    <div className="flex-1">
+                        <div className="flex items-center gap-2">
+                            <CalendarClock size={18} className={cn(isScheduled ? "text-orange-600" : "text-sys-400")} />
+                            <span className={cn("text-sm font-bold", isScheduled ? "text-orange-800" : "text-sys-600")}>
+                                Programar para fecha futura
+                            </span>
                         </div>
-                        {targetList.map(p => (
-                            <div key={p.id} className="p-3 flex justify-between items-center bg-sys-50/50">
-                                <div className="truncate flex-1 pr-2">
-                                    <p className="text-sm font-medium text-sys-800 truncate">{p.name}</p>
-                                    <p className="text-[10px] text-sys-400">{p.code}</p>
-                                </div>
-                                <span className="text-sm font-mono font-bold text-sys-600">$ {p.price}</span>
-                            </div>
-                        ))}
+                    </div>
+                </div>
+                
+                {isScheduled && (
+                    <div className="mt-4 pt-3 border-t border-orange-200" onClick={(e) => e.stopPropagation()}>
+                        <label className="text-[10px] font-bold text-orange-700 uppercase mb-1.5 block">Fecha de Aplicación</label>
+                        <input 
+                            type="date" 
+                            className="w-full p-3 border-2 border-orange-300 rounded-xl font-bold text-sm outline-none focus:border-orange-500 bg-white text-orange-900 shadow-sm"
+                            min={todayStr}
+                            value={activationDate}
+                            onChange={e => setActivationDate(e.target.value)}
+                        />
+                        <div className="flex gap-2 mt-3 p-2 bg-white/60 rounded-lg border border-orange-100">
+                            <Info size={14} className="text-orange-500 shrink-0 mt-0.5" /> 
+                            <p className="text-[10px] text-orange-800 font-medium leading-tight">
+                                {activationDate === todayStr 
+                                    ? "⚠️ ATENCIÓN: Si eliges HOY, el precio cambiará AHORA MISMO." 
+                                    : "Los precios se actualizarán automáticamente al comenzar ese día."
+                                }
+                            </p>
+                        </div>
                     </div>
                 )}
              </div>
-             <div className="grid grid-cols-2 gap-4 pt-4 border-t border-sys-100 shrink-0">
-                <div><label className="text-[10px] font-bold text-sys-500 uppercase block mb-1">Subir Costo</label><div className="relative"><input type="number" className="w-full p-2 pl-8 border border-sys-200 rounded-lg font-bold outline-none focus:border-brand" value={costPct} onChange={e => setCostPct(parseFloat(e.target.value) || 0)} /><span className="absolute left-3 top-2 text-sys-400">%</span></div></div>
-                <div><label className="text-[10px] font-bold text-brand uppercase block mb-1">Subir Precio</label><div className="relative"><input type="number" className="w-full p-2 pl-8 border border-sys-200 rounded-lg font-bold text-brand bg-brand/5 outline-none focus:border-brand" value={pricePct} onChange={e => setPricePct(parseFloat(e.target.value) || 0)} /><span className="absolute left-3 top-2 text-brand">%</span></div></div>
+
+             <div className="border border-sys-200 rounded-xl bg-sys-50 overflow-hidden shrink-0">
+                <div className="bg-sys-100 p-2 text-xs font-bold text-sys-500 uppercase border-b border-sys-200 flex justify-between">
+                    <span>Muestra (Primeros 50)</span><span>Proyección</span>
+                </div>
+                <div className="max-h-40 overflow-y-auto divide-y divide-sys-200 custom-scrollbar">
+                    {targetList.length === 0 ? (
+                        <div className="p-6 text-center text-sys-400 text-xs">Sin selección</div>
+                    ) : (
+                        targetList.slice(0, 50).map(p => {
+                             const calculatedPrice = p.price * (1 + pricePct / 100);
+                             const newPrice = Math.ceil(calculatedPrice / 10) * 10;
+                             return (
+                                <div key={p.id} className="p-3 flex justify-between items-center bg-white hover:bg-sys-50">
+                                    <div className="truncate flex-1 pr-2">
+                                        <p className="text-xs font-bold text-sys-800 truncate">{p.name}</p>
+                                    </div>
+                                    <div className="text-right">
+                                        <span className="text-[10px] line-through text-sys-400 mr-2">${p.price}</span>
+                                        <span className="text-xs font-mono font-black text-brand">${newPrice}</span>
+                                    </div>
+                                </div>
+                             )
+                        })
+                    )}
+                </div>
              </div>
+
           </div>
-          <div className="p-5 bg-sys-50 border-t border-sys-100 flex gap-3 shrink-0">
-            <Button variant="ghost" onClick={onClose} className="flex-1">Cancelar</Button>
-            <Button onClick={() => onConfirm(targetList, costPct, pricePct)} className="flex-1 shadow-lg shadow-brand/20" disabled={targetList.length === 0 || (costPct === 0 && pricePct === 0)}>Aplicar Aumento</Button>
+
+          {/* FOOTER */}
+          <div className="p-6 bg-sys-50 border-t border-sys-100 flex gap-3 shrink-0">
+            <Button variant="ghost" onClick={onClose} className="flex-1 rounded-2xl h-12 font-bold">Cancelar</Button>
+            <Button 
+                onClick={() => onConfirm(targetList, costPct, pricePct, isScheduled ? activationDate : null)} 
+                className={cn(
+                    "flex-1 shadow-xl rounded-2xl h-12 font-black transition-all",
+                    isScheduled ? "bg-orange-600 hover:bg-orange-700 shadow-orange-200 text-white" : "bg-brand hover:bg-brand-dark shadow-brand/20 text-white"
+                )} 
+                disabled={targetList.length === 0 || (costPct === 0 && pricePct === 0) || (isScheduled && !activationDate)}
+            >
+                {isScheduled && activationDate > todayStr ? 'CONFIRMAR PROGRAMACIÓN' : 'APLICAR AHORA'}
+            </Button>
           </div>
         </div>
       </div>
@@ -186,24 +334,21 @@ const BulkUpdateModal = ({ isOpen, onClose, onConfirm, allProducts, masters, man
 // =================================================================
 export const InventoryPage = () => {
     const navigate = useNavigate();
-    
-    // 🔥 CAPTURA DE SLUG Y AUTH (SEGURIDAD)
     const { companySlug } = useParams();
     const { user, activeBranchId, activeBranchName } = useAuthStore(); 
-    
     const isAdmin = user?.role === 'OWNER' || user?.role === 'ADMIN' || user?.role === 'SUPER_ADMIN';
+    const isOwner = user?.role === 'OWNER'; 
 
     // Data States
     const [products, setProducts] = useState([]);
     const [loading, setLoading] = useState(true);
     const [masters, setMasters] = useState({ categories: [], brands: [], suppliers: [] });
     
-    // Matrix Global State (Multi-Branch)
+    // Matrix Global State
     const [branches, setBranches] = useState([]); 
     const [globalStock, setGlobalStock] = useState({}); 
     const [loadingStock, setLoadingStock] = useState(false);
-    const lastFetchedIds = useRef(""); 
-
+    
     // Search & Filter
     const [inputValue, setInputValue] = useState(''); 
     const [searchTerm, setSearchTerm] = useState('');
@@ -220,59 +365,113 @@ export const InventoryPage = () => {
     const [isMastersModalOpen, setIsMastersModalOpen] = useState(false);
     const [isImportModalOpen, setIsImportModalOpen] = useState(false); 
     const [isBulkUpdateOpen, setIsBulkUpdateOpen] = useState(false);
+    const [isScaleModalOpen, setIsScaleModalOpen] = useState(false); // 🔥 Modal Balanza
     
     const [editingProduct, setEditingProduct] = useState(null);
     const [stockEntryProduct, setStockEntryProduct] = useState(null);
 
     // =================================================================
-    // 🔄 DATA LOADING & REFRESH
+    // 🔄 DATA LOADING
     // =================================================================
 
     const loadData = async () => {
         setLoading(true);
         try {
-            const [allProducts, cats, brands, supps] = await Promise.all([
-                productRepository.getAll(),
+            const [branchProducts, cats, brands, supps] = await Promise.all([
+                productRepository.getAllByBranch(activeBranchId), 
                 masterRepository.getAll('categories'),
                 masterRepository.getAll('brands'),
                 masterRepository.getAll('suppliers')
             ]);
             
-            lastFetchedIds.current = ""; 
-
-            setProducts([...allProducts].sort((a,b) => a.name.localeCompare(b.name)));
-            setMasters({ 
-                categories: cats || [], 
-                brands: brands || [], 
-                suppliers: supps || [] 
-            });
+            setProducts([...branchProducts].sort((a,b) => a.name.localeCompare(b.name)));
+            setMasters({ categories: cats || [], brands: brands || [], suppliers: supps || [] });
 
             if (isAdmin && user?.companyId) {
                  try {
-                    const q = collection(firestoreDB, 'companies', user.companyId, 'branches');
-                    const snap = await getDocs(q);
-                    const branchesData = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+                    const dbLocal = await getDB();
+                    let branchesData = await dbLocal.branches.toArray();
+                    
+                    if (branchesData.length === 0 && navigator.onLine) {
+                        const q = collection(firestoreDB, 'companies', user.companyId, 'branches');
+                        const snap = await getDocs(q);
+                        branchesData = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+                        await dbLocal.branches.bulkPut(branchesData);
+                    }
                     setBranches(branchesData.sort((a,b) => (a.id === activeBranchId ? -1 : 1)));
+                    
+                    if (isOwner) loadGlobalStock(branchesData, branchProducts);
+
                  } catch (e) { console.error("Error loading branches:", e); }
             } else {
                 setBranches([{ id: activeBranchId, name: activeBranchName }]);
             }
-        } catch (error) { 
-            console.error("Error loading data", error); 
-        } finally { 
-            setLoading(false); 
+        } catch (error) { console.error(error); } finally { setLoading(false); }
+    };
+
+    const loadGlobalStock = async (allBranches, allProducts) => {
+        setLoadingStock(true);
+        try {
+            const dbLocal = await getDB();
+            const stockMatrix = {};
+            await Promise.all(allBranches.map(async (branch) => {
+                const branchInv = await dbLocal.inventory.where('branchId').equals(branch.id).toArray();
+                branchInv.forEach(item => {
+                    if (!stockMatrix[item.productId]) stockMatrix[item.productId] = {};
+                    stockMatrix[item.productId][branch.id] = parseFloat(item.stock) || 0;
+                });
+            }));
+            setGlobalStock(stockMatrix);
+        } catch (e) { console.error("Error loading global stock:", e); }
+        finally { setLoadingStock(false); }
+    };
+
+    const handleForceSync = async () => {
+        if (!isOwner) return;
+        const toastId = toast.loading("Sincronizando inventario global...");
+        try {
+            await syncService.syncInitialData(user, 'ALL'); 
+            await loadData();
+            toast.success("Inventario actualizado de la nube", { id: toastId });
+        } catch (e) {
+            toast.error("Error al sincronizar", { id: toastId });
         }
     };
 
-    useEffect(() => { loadData(); }, [user, isAdmin, activeBranchId]);
+    // 🔥 HANDLER PARA BALANZA (CORREGIDO)
+    const handleScaleExport = (brand) => {
+        try {
+            const weighableProducts = products.filter(p => p.isWeighable);
+            
+            if (weighableProducts.length === 0) {
+                toast.error("No hay productos marcados como 'Pesable' en esta sucursal.");
+                return;
+            }
+
+            // 🔥 FIX: Llamar a los nombres correctos del servicio
+            const fileContent = scaleService.generateScaleFile(weighableProducts, brand);
+            scaleService.downloadFile(fileContent, brand);
+            
+            toast.success(`Exportado para ${brand}: ${weighableProducts.length} productos.`);
+            setIsScaleModalOpen(false);
+        } catch (e) {
+            console.error(e);
+            toast.error("Error exportando balanza: " + e.message);
+        }
+    };
+
+    useEffect(() => { loadData(); }, [user, activeBranchId]);
 
     useEffect(() => {
-        const timer = setTimeout(() => setSearchTerm(inputValue), 300);
+        const timer = setTimeout(() => {
+            setSearchTerm(inputValue);
+            setCurrentPage(1);
+        }, 300);
         return () => clearTimeout(timer);
     }, [inputValue]);
 
     // =================================================================
-    // 🔍 FILTERING & PAGINATION ENGINE
+    // 🔍 FILTERING & PAGINATION
     // =================================================================
 
     const filteredProducts = useMemo(() => {
@@ -281,92 +480,43 @@ export const InventoryPage = () => {
             const name = (p.name || '').toLowerCase();
             const code = (p.code || '').toString().toLowerCase();
             const barcodeStr = Array.isArray(p.barcode) ? p.barcode.join(' ') : (p.barcode || '');
-            
             const matchesSearch = name.includes(term) || code.includes(term) || barcodeStr.toLowerCase().includes(term);
             const matchesCat = filters.category ? p.category === filters.category : true;
             const matchesBrand = filters.brand ? p.brand === filters.brand : true;
-            
             return matchesSearch && matchesCat && matchesBrand;
         });
     }, [products, searchTerm, filters]);
 
     const totalPages = Math.ceil(filteredProducts.length / ITEMS_PER_PAGE);
     const currentProducts = useMemo(() => {
-        return filteredProducts.slice(
-            (currentPage - 1) * ITEMS_PER_PAGE, 
-            currentPage * ITEMS_PER_PAGE
-        );
+        return filteredProducts.slice((currentPage - 1) * ITEMS_PER_PAGE, currentPage * ITEMS_PER_PAGE);
     }, [filteredProducts, currentPage]);
 
-    // =================================================================
-    // 🌐 GLOBAL MATRIX FETCHING
-    // =================================================================
-    
-    useEffect(() => {
-        if (!isAdmin || branches.length <= 1 || currentProducts.length === 0) return;
-
-        const currentIdsString = currentProducts.map(p => p.id).sort().join(',');
-        if (lastFetchedIds.current === currentIdsString) return;
-        lastFetchedIds.current = currentIdsString;
-
-        const fetchMatrix = async () => {
-            setLoadingStock(true);
-            const visibleIds = currentProducts.map(p => p.id);
-            const newStockMap = { ...globalStock };
-
-            const chunks = [];
-            for (let i = 0; i < visibleIds.length; i += 10) {
-                chunks.push(visibleIds.slice(i, i + 10));
-            }
-
-            try {
-                const otherBranches = branches.filter(b => b.id !== activeBranchId);
-                for (const branch of otherBranches) {
-                    for (const chunk of chunks) {
-                        const q = query(
-                            collection(firestoreDB, 'companies', user.companyId, 'branches', branch.id, 'inventory'),
-                            where(documentId(), 'in', chunk)
-                        );
-                        const snap = await getDocs(q);
-                        
-                        snap.docs.forEach(doc => {
-                            const prodId = doc.id;
-                            const data = doc.data();
-                            if (!newStockMap[prodId]) newStockMap[prodId] = {};
-                            newStockMap[prodId][branch.id] = data.stock;
-                        });
-                        
-                        chunk.forEach(prodId => {
-                             if (!newStockMap[prodId]) newStockMap[prodId] = {};
-                             if (newStockMap[prodId][branch.id] === undefined) {
-                                 newStockMap[prodId][branch.id] = 0;
-                             }
-                        });
-                    }
-                }
-                setGlobalStock(newStockMap);
-            } catch (e) { console.error("Matrix error:", e); } 
-            finally { setLoadingStock(false); }
-        };
-
-        fetchMatrix();
-    }, [currentProducts, branches, isAdmin]);
-
-    // =================================================================
-    // 🎮 HANDLERS
-    // =================================================================
-
-    const handleSaveProduct = async (productData) => {
-        await productRepository.save(productData); 
-        await loadData();
-        setIsProductModalOpen(false);
+    const toggleSelection = (id) => {
+        const newSet = new Set(selectedIds);
+        if (newSet.has(id)) newSet.delete(id); else newSet.add(id);
+        setSelectedIds(newSet);
     };
 
-    const handleDelete = async (id) => {
-        if (window.confirm("¿Confirma eliminación del Catálogo Global?")) {
-            await productRepository.delete(id);
-            loadData();
+    const toggleSelectAll = () => {
+        if (selectedIds.size >= filteredProducts.length && filteredProducts.length > 0) {
+            setSelectedIds(new Set());
+        } else {
+            setSelectedIds(new Set(filteredProducts.map(p => p.id)));
+            toast.success(`Seleccionados ${filteredProducts.length} productos`);
         }
+    };
+
+    // =================================================================
+    // 🚀 HANDLERS
+    // =================================================================
+
+    const handleSaveProduct = async (masterPayload, promoPayload) => {
+        const savedProduct = await productRepository.save(masterPayload);
+        if (promoPayload) await productRepository.setPromotion(savedProduct.id, promoPayload);
+        else if (promoPayload === null && activeBranchId) await productRepository.setPromotion(savedProduct.id, null);
+        await loadData();
+        setIsProductModalOpen(false);
     };
 
     const handleQuickStockEntry = async (productId, qty, reason) => {
@@ -377,81 +527,93 @@ export const InventoryPage = () => {
         } catch (e) { console.error(e); }
     };
 
-    const executeBulkUpdate = async (targetProducts, costPct, pricePct) => {
+    const executeBulkUpdate = async (targetProducts, costPct, pricePct, activationDate = null) => {
         if (targetProducts.length === 0) return alert("No hay productos seleccionados.");
-        if (!window.confirm(`⚠️ CONFIRMACIÓN:\nSe actualizarán ${targetProducts.length} productos.\nCost: +${costPct}% | Precio: +${pricePct}%`)) return;
+        const todayStr = getLocalDate(); 
+        const isFutureScheduled = activationDate && activationDate > todayStr;
+        const confirmMsg = isFutureScheduled
+            ? `⚠️ ¿Programar aumento para el ${activationDate}?\nAfectará a ${targetProducts.length} productos.`
+            : `⚠️ ¿Aplicar aumento INMEDIATO?\nAfectará a ${targetProducts.length} productos.`;
+
+        if (!window.confirm(confirmMsg)) return;
+
         setLoading(true);
         try {
-            const updates = targetProducts.map(p => {
+            for (const p of targetProducts) {
                 const newCost = p.cost * (1 + costPct / 100);
-                let calculatedPrice = p.price * (1 + pricePct / 100);
-                const newPrice = Math.ceil(calculatedPrice / 50) * 50; 
-                return { ...p, cost: newCost, price: newPrice }; 
-            });
-            for (const p of updates) { await productRepository.save(p); }
-            alert(`✅ Éxito: ${updates.length} productos actualizados.`);
+                const calculatedPrice = p.price * (1 + pricePct / 100);
+                const roundedPrice = Math.ceil(calculatedPrice / 10) * 10; 
+                const productUpdate = { ...p };
+
+                if (isFutureScheduled) {
+                    productUpdate.nextPrice = roundedPrice;
+                    productUpdate.nextCost = newCost;
+                    productUpdate.priceActivationDate = activationDate;
+                    productUpdate.syncStatus = 'pending';
+                } else {
+                    productUpdate.cost = newCost;
+                    productUpdate.price = roundedPrice;
+                    productUpdate.nextPrice = null;
+                    productUpdate.nextCost = null;
+                    productUpdate.priceActivationDate = null;
+                    productUpdate.syncStatus = 'pending';
+                }
+                await productRepository.save(productUpdate);
+            }
+            toast.success(isFutureScheduled ? "Precios programados con éxito" : "Precios actualizados inmediatamente");
             setSelectedIds(new Set());
             setIsBulkUpdateOpen(false);
             loadData();
-        } catch (error) { alert("Error al actualizar."); } 
-        finally { setLoading(false); }
+        } catch (error) { toast.error("Error en proceso masivo"); } finally { setLoading(false); }
     };
 
-    const toggleSelection = (id) => {
-        const newSet = new Set(selectedIds);
-        if (newSet.has(id)) newSet.delete(id); else newSet.add(id);
-        setSelectedIds(newSet);
-    };
-
-    const toggleSelectAll = () => {
-        if (selectedIds.size === currentProducts.length && currentProducts.length > 0) {
-            setSelectedIds(new Set());
-        } else {
-            setSelectedIds(new Set(currentProducts.map(p => p.id)));
-        }
-    };
-
-    // 🔥 FIX: Navegación Segura a Etiquetas
-    // Usamos el slug capturado para no perder el contexto de la empresa
-    const goToLabels = () => {
-        const targetSlug = companySlug || activeBranchId || 'main';
-        navigate(`/${targetSlug}/inventory/print-labels`);
-    };
-
-    const goToMovements = () => {
-        const targetSlug = companySlug || activeBranchId || 'main';
-        navigate(`/${targetSlug}/inventory/movements`);
-    };
+    const goToLabels = () => navigate(`/${companySlug}/inventory/print-labels`);
+    const goToMovements = () => navigate(`/${companySlug}/inventory/movements`);
 
     return (
         <div className="flex h-[calc(100vh-4rem)] overflow-hidden bg-sys-50 relative">
-            
-            {/* MAIN CONTENT AREA */}
             <div className="flex-1 flex flex-col w-full">
                 
-                {/* HEADER (ACTIONS) */}
+                {/* ACTIONS HEADER */}
                 <div className="px-6 py-5 bg-white border-b border-sys-200 flex flex-col md:flex-row justify-between items-start md:items-center gap-4 shrink-0 shadow-sm z-20">
                     <div>
                         <h1 className="text-2xl font-black text-sys-900 tracking-tight flex items-center gap-2">
-                            <LayoutGrid className="text-brand" size={28} /> 
-                            {isAdmin ? 'Inventario Global' : 'Mi Inventario'}
+                            <LayoutGrid className="text-brand" size={28} /> Inventario Global
                         </h1>
                         <div className="flex items-center gap-3 text-[10px] font-bold text-sys-500 uppercase mt-1">
                             <span className="flex items-center gap-1 bg-sys-100 px-2 py-0.5 rounded text-sys-600 border border-sys-200">
                                 <MapPin size={10}/> {activeBranchName}
                             </span>
                             <span className="text-sys-300">|</span>
-                            <span>{filteredProducts.length} Items Visibles</span>
+                            <span>{filteredProducts.length} filtrados</span>
+                            {selectedIds.size > 0 && (
+                                <span className="text-brand font-black ml-2 animate-pulse">
+                                    • {selectedIds.size} seleccionados
+                                </span>
+                            )}
                         </div>
                     </div>
                     
                     <div className="flex flex-wrap gap-2">
-                        {/* 🔥 FIX: Botones con navegación segura */}
-                        <Button variant="secondary" className="border-purple-200 text-purple-700 bg-purple-50 hover:bg-purple-100" onClick={goToLabels}>
+                        {isOwner && (
+                            <Button variant="ghost" onClick={handleForceSync} className="text-sys-400 hover:text-brand hover:bg-brand/5 border border-transparent hover:border-brand/20">
+                                <RefreshCw size={18} className="mr-2"/> Sync Global
+                            </Button>
+                        )}
+
+                        <div className="w-px h-8 bg-sys-200 mx-2 hidden md:block"></div>
+
+                        {isAdmin && (
+                            <Button variant="secondary" className="border-green-200 text-green-700 bg-green-50 hover:bg-green-100" onClick={() => setIsScaleModalOpen(true)}>
+                                <Scale size={18} className="mr-2" /> Balanzas
+                            </Button>
+                        )}
+
+                        <Button variant="secondary" className="border-purple-200 text-purple-700 bg-purple-50" onClick={goToLabels}>
                             <Printer size={18} className="mr-2" /> Etiquetas
                         </Button>
-                        <Button variant="secondary" className="border-blue-200 text-blue-700 bg-blue-50 hover:bg-blue-100" onClick={goToMovements}>
-                            <ArrowRightLeft size={18} className="mr-2" /> Movimientos
+                        <Button variant="secondary" className="border-blue-200 text-blue-700 bg-blue-50" onClick={goToMovements}>
+                            <ArrowRightLeft size={18} className="mr-2" /> Kardex
                         </Button>
                         
                         <div className="w-px h-8 bg-sys-200 mx-2 hidden md:block"></div>
@@ -459,176 +621,141 @@ export const InventoryPage = () => {
                         <Button variant="secondary" onClick={() => setIsImportModalOpen(true)}>
                             <Upload size={18} className="mr-2"/> Importar
                         </Button>
+                        
                         {selectedIds.size > 0 && (
-                            <Button variant="secondary" className="border-brand/30 text-brand bg-brand/5 hover:bg-brand/10" onClick={() => setIsBulkUpdateOpen(true)}>
-                                <ArrowUpRight size={18} className="mr-2"/> Aumento Masivo ({selectedIds.size})
+                            <Button variant="secondary" className="border-orange-200 text-orange-700 bg-orange-50 hover:bg-orange-100 animate-in zoom-in" onClick={() => setIsBulkUpdateOpen(true)}>
+                                <ArrowUpRight size={18} className="mr-2"/> Aumento Masivo
                             </Button>
                         )}
-                        <Button variant="secondary" onClick={() => setIsMastersModalOpen(true)}>
-                            <Filter size={18} className="mr-2"/> Maestros
-                        </Button>
-                        <Button onClick={() => { setEditingProduct(null); setIsProductModalOpen(true); }} className="shadow-lg shadow-brand/20 ml-2">
-                            <Plus size={20} className="mr-2"/> Nuevo
+                        
+                        <Button onClick={() => { setEditingProduct(null); setIsProductModalOpen(true); }} className="shadow-xl shadow-brand/20 ml-2">
+                            <Plus size={20} className="mr-2"/> Nuevo Producto
                         </Button>
                     </div>
                 </div>
 
-                {/* FILTERS TOOLBAR */}
+                {/* FILTERS */}
                 <div className="px-6 py-3 bg-sys-50 border-b border-sys-200 flex gap-3 overflow-x-auto no-scrollbar items-center shrink-0">
                     <div className="relative w-72 group shrink-0">
-                        <Search className="absolute left-3 top-2.5 text-sys-400 group-focus-within:text-brand transition-colors" size={16} />
+                        <Search className="absolute left-3.5 top-2.5 text-sys-400 group-focus-within:text-brand transition-colors" size={18} />
                         <input 
                             ref={searchInputRef}
                             type="text" 
-                            placeholder="Buscar código, nombre, barras..." 
-                            className="w-full pl-9 pr-3 py-2 bg-white border border-sys-200 rounded-xl text-sm font-bold outline-none focus:border-brand shadow-sm transition-all focus:ring-4 focus:ring-brand/10"
+                            placeholder="Buscar en todo el catálogo..." 
+                            className="w-full pl-10 pr-3 py-2.5 bg-white border-2 border-sys-100 rounded-2xl text-sm font-bold outline-none focus:border-brand transition-all"
                             value={inputValue} 
                             onChange={e => setInputValue(e.target.value)} 
                         />
                     </div>
                     
                     <select className="filter-select" value={filters.category} onChange={e => setFilters({...filters, category: e.target.value})}>
-                        <option value="">Todas las Categorías</option>
+                        <option value="">Categorías</option>
                         {masters.categories.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
                     </select>
                     
                     <select className="filter-select" value={filters.brand} onChange={e => setFilters({...filters, brand: e.target.value})}>
-                        <option value="">Todas las Marcas</option>
+                        <option value="">Marcas</option>
                         {masters.brands.map(b => <option key={b.id} value={b.name}>{b.name}</option>)}
                     </select>
 
-                    {(filters.category || filters.brand) && (
-                        <button onClick={() => setFilters({category:'', brand:''})} className="p-2 text-red-500 hover:bg-red-50 rounded-lg transition-colors border border-transparent hover:border-red-100" title="Limpiar Filtros">
-                            <X size={18} />
+                    {(filters.category || filters.brand || searchTerm) && (
+                        <button onClick={() => { setFilters({category:'', brand:''}); setInputValue(''); }} className="p-2 text-red-500 hover:bg-red-50 rounded-xl transition-all border-2 border-transparent hover:border-red-100">
+                            <X size={20} />
                         </button>
                     )}
                 </div>
 
-                {/* DATA TABLE */}
+                {/* TABLE */}
                 <div className="flex-1 overflow-auto bg-white relative">
                     <table className="w-full text-left border-collapse">
                         <thead className="sticky top-0 bg-sys-50 z-10 shadow-sm">
                             <tr className="text-[10px] uppercase font-black text-sys-400 tracking-wider border-b border-sys-200">
-                                <th className="p-3 w-10 text-center">
+                                <th className="p-4 w-12 text-center">
                                     <button onClick={toggleSelectAll} className="hover:text-brand transition-colors">
-                                        {selectedIds.size === currentProducts.length && currentProducts.length > 0 ? <CheckSquare size={16} /> : <Square size={16} />}
+                                        {selectedIds.size >= filteredProducts.length && filteredProducts.length > 0 ? <CheckSquare className="text-brand" size={18} /> : <Square size={18} />}
                                     </button>
                                 </th>
-                                <th className="p-3 font-bold">Producto / SKU</th>
-                                
-                                {/* 🏢 COLUMNAS DINÁMICAS DE SUCURSALES */}
+                                <th className="p-4 font-bold">Detalle Producto</th>
                                 {branches.map(b => (
-                                    <th key={b.id} className={cn("p-3 text-center border-l border-sys-100 min-w-[100px]", b.id === activeBranchId ? "bg-brand/5 text-brand" : "")}>
+                                    <th key={b.id} className={cn("p-4 text-center border-l border-sys-100", b.id === activeBranchId ? "bg-brand/5 text-brand" : "")}>
                                         {b.name}
                                     </th>
                                 ))}
-
-                                <th className="p-3 text-right border-l border-sys-100">Costo Neto</th>
-                                <th className="p-3 text-right">Precio Final</th>
-                                <th className="p-3 text-center w-20">Acciones</th>
+                                <th className="p-4 text-right border-l border-sys-100">Costo Neto</th>
+                                <th className="p-4 text-right">Precio Actual</th>
+                                <th className="p-4 text-center w-24">Acciones</th>
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-sys-100">
                             {currentProducts.map(p => {
                                 const promo = getActivePromo(p);
                                 const isSelected = selectedIds.has(p.id);
-                                
-                                const isNegativeStock = p.stock < 0;
-                                const isLowStock = p.stock <= (p.minStock || 5);
-                                const hasMarginError = parseFloat(p.cost) > parseFloat(p.price);
+                                const currentStock = p.stock; 
+                                const hasPendingPrice = p.priceActivationDate && p.nextPrice !== undefined && p.nextPrice !== null;
 
                                 return (
                                     <tr 
                                         key={p.id} 
                                         onClick={() => { setEditingProduct(p); setIsProductModalOpen(true); }}
-                                        className={cn(
-                                            "cursor-pointer transition-colors group h-[60px]",
-                                            hasMarginError ? "bg-red-50 hover:bg-red-100" : "hover:bg-sys-50",
-                                            isSelected ? "bg-brand/5" : ""
-                                        )}
+                                        className={cn("cursor-pointer transition-all h-[70px]", isSelected ? "bg-brand/5" : "hover:bg-sys-50")}
                                     >
-                                        <td className="p-3 text-center" onClick={(e) => e.stopPropagation()}>
-                                            <button onClick={() => toggleSelection(p.id)} className={cn("transition-colors", isSelected ? "text-brand" : "text-sys-300 hover:text-sys-500")}>
-                                                {isSelected ? <CheckSquare size={16} /> : <Square size={16} />}
+                                        <td className="p-4 text-center" onClick={(e) => e.stopPropagation()}>
+                                            <button onClick={() => toggleSelection(p.id)} className={cn("transition-colors", isSelected ? "text-brand" : "text-sys-300")}>
+                                                {isSelected ? <CheckSquare size={18} /> : <Square size={18} />}
                                             </button>
                                         </td>
-
-                                        {/* Info Producto */}
-                                        <td className="p-3 max-w-[300px]">
-                                            <div className="flex flex-col justify-center h-full relative">
-                                                <span className="text-sm font-bold text-sys-900 truncate flex items-center gap-2" title={p.name}>
-                                                    {p.name}
-                                                    {hasMarginError && <AlertTriangle size={14} className="text-red-600 animate-pulse" title="Costo mayor a precio"/>}
-                                                </span>
-                                                <div className="flex items-center gap-2 mt-0.5">
-                                                    <span className="text-[9px] font-mono text-sys-500 bg-sys-100 px-1.5 rounded border border-sys-200">{p.code || 'S/C'}</span>
-                                                    {p.category && <span className="text-[9px] font-bold text-sys-500 bg-sys-50 px-1.5 rounded uppercase border border-sys-100">{p.category}</span>}
+                                        <td className="p-4">
+                                            <div className="flex flex-col">
+                                                <span className="text-sm font-black text-sys-900 leading-tight uppercase">{p.name}</span>
+                                                <div className="flex items-center gap-2 mt-1">
+                                                    <span className="text-[10px] font-mono font-bold text-sys-400 bg-sys-100 px-1.5 py-0.5 rounded border border-sys-200">{p.code || 'S/C'}</span>
+                                                    <span className="text-[10px] font-black text-sys-400 uppercase tracking-tighter opacity-60">{p.brand}</span>
                                                 </div>
                                             </div>
                                         </td>
-
-                                        {/* 🏢 STOCK POR SUCURSAL */}
+                                        
                                         {branches.map(b => {
-                                            const isCurrent = b.id === activeBranchId;
-                                            const stockVal = isCurrent ? p.stock : (globalStock[p.id]?.[b.id] || 0);
-                                            const cellNegative = stockVal < 0;
-                                            const cellLow = stockVal <= (p.minStock || 5);
+                                            let stockVal = 0;
+                                            if (b.id === activeBranchId && activeBranchId !== 'ALL') {
+                                                stockVal = currentStock;
+                                            } else {
+                                                stockVal = globalStock[p.id]?.[b.id] || 0;
+                                            }
 
                                             return (
-                                                <td key={b.id} className={cn("p-3 text-center border-l border-sys-100", isCurrent ? "bg-brand/5" : "")}>
-                                                    {(!isCurrent && loadingStock) ? (
-                                                        <div className="w-4 h-1 bg-sys-200 rounded animate-pulse mx-auto"></div>
-                                                    ) : (
-                                                        <div className={cn(
-                                                            "inline-flex items-center justify-center px-2 py-1 rounded-lg min-w-[3rem]", 
-                                                            cellNegative ? "bg-red-600 text-white font-black" : 
-                                                            cellLow ? "text-orange-600 bg-orange-50 font-bold" : 
-                                                            "text-sys-700 font-medium"
-                                                        )}>
-                                                            {formatStock(stockVal)}
-                                                        </div>
-                                                    )}
+                                                <td key={b.id} className={cn("p-4 text-center border-l border-sys-100", b.id === activeBranchId ? "bg-brand/5" : "")}>
+                                                    <span className={cn("inline-block px-2.5 py-1 rounded-xl text-xs font-black min-w-[50px]", 
+                                                        stockVal < 0 ? "bg-red-600 text-white shadow-lg shadow-red-200" : 
+                                                        stockVal <= (p.minStock || 5) ? "bg-orange-100 text-orange-600 border border-orange-200" : 
+                                                        "bg-sys-50 text-sys-700 border border-sys-200"
+                                                    )}>{formatStock(stockVal)}</span>
                                                 </td>
                                             );
                                         })}
 
-                                        {/* Costo */}
-                                        <td className="p-3 text-right border-l border-sys-100">
-                                            <span className="text-xs font-medium text-sys-500">$ {formatMoney(p.cost)}</span>
+                                        <td className="p-4 text-right border-l border-sys-100 font-mono text-xs font-bold text-sys-500">
+                                            $ {formatMoney(p.cost)}
                                         </td>
-
-                                        {/* Precio (Con lógica Promo) */}
-                                        <td className="p-3 text-right">
-                                            {promo ? (
-                                                <div className="flex flex-col items-end justify-center">
-                                                    <span className="text-[10px] text-sys-400 line-through decoration-red-400 decoration-1">$ {formatMoney(p.price)}</span>
-                                                    <span className="text-sm font-black text-purple-600 bg-purple-50 px-1.5 rounded border border-purple-100 shadow-sm flex items-center gap-1">
-                                                        <Megaphone size={10}/> 
-                                                        {promo.name || 'Promo'}
+                                        <td className="p-4 text-right">
+                                            <div className="flex flex-col items-end">
+                                                <div className="flex items-center gap-1.5">
+                                                    {hasPendingPrice && (
+                                                        <div className="text-orange-500 animate-pulse cursor-help" title={`CAMBIO PROGRAMADO:\nNuevo Precio: $${p.nextPrice}\nFecha: ${p.priceActivationDate}`}>
+                                                            <CalendarClock size={16} />
+                                                        </div>
+                                                    )}
+                                                    <span className={cn("text-base font-black", promo ? "text-purple-600" : "text-sys-900")}>
+                                                        $ {formatMoney(p.price)}
                                                     </span>
                                                 </div>
-                                            ) : (
-                                                <span className={cn("text-sm font-bold", hasMarginError ? "text-red-600" : "text-sys-900")}>
-                                                    $ {formatMoney(p.price)}
-                                                </span>
-                                            )}
+                                                {promo && <span className="text-[8px] font-black bg-purple-600 text-white px-1.5 rounded-full">{promo.name}</span>}
+                                            </div>
                                         </td>
-
-                                        {/* Actions */}
-                                        <td className="p-3 text-center" onClick={(e) => e.stopPropagation()}>
-                                            <div className="flex justify-center gap-2">
-                                                <button onClick={() => setStockEntryProduct(p)} className="p-1.5 rounded-lg text-green-600 hover:bg-green-50 hover:scale-110 transition-all border border-transparent hover:border-green-200" title="Ajuste Rápido">
-                                                    <Package size={16}/>
-                                                </button>
-                                                <button onClick={() => { setEditingProduct(p); setIsProductModalOpen(true); }} className="p-1.5 rounded-lg text-brand hover:bg-brand/10 transition-all" title="Editar">
-                                                    <Edit2 size={16}/>
-                                                </button>
-                                                {/* 🔥 Botón de eliminar solo para Admin */}
-                                                {isAdmin && (
-                                                    <button onClick={() => handleDelete(p.id)} className="p-1.5 rounded-lg text-red-400 hover:bg-red-50 hover:text-red-600 transition-all" title="Eliminar">
-                                                        <Trash2 size={16}/>
-                                                    </button>
-                                                )}
+                                        <td className="p-4" onClick={(e) => e.stopPropagation()}>
+                                            <div className="flex justify-center gap-1">
+                                                <button onClick={() => setStockEntryProduct(p)} className="p-2 rounded-xl text-green-600 hover:bg-green-50 transition-all border border-transparent hover:border-green-100"><Package size={18}/></button>
+                                                <button onClick={() => { setEditingProduct(p); setIsProductModalOpen(true); }} className="p-2 rounded-xl text-brand hover:bg-brand/5 transition-all"><Edit2 size={18}/></button>
+                                                {isAdmin && <button onClick={() => productRepository.delete(p.id).then(() => loadData())} className="p-2 rounded-xl text-red-300 hover:text-red-600 hover:bg-red-50 transition-all"><Trash2 size={18}/></button>}
                                             </div>
                                         </td>
                                     </tr>
@@ -636,27 +763,18 @@ export const InventoryPage = () => {
                             })}
                         </tbody>
                     </table>
-                    
-                    {currentProducts.length === 0 && !loading && (
-                        <div className="flex flex-col items-center justify-center h-64 text-sys-400 opacity-50">
-                            <Package size={48} strokeWidth={1}/>
-                            <p className="mt-2 font-medium">No se encontraron productos</p>
-                        </div>
-                    )}
                 </div>
 
                 {/* PAGINATION */}
-                {totalPages > 1 && (
-                    <div className="p-3 bg-white border-t border-sys-200 flex justify-between items-center shrink-0 z-20">
-                        <span className="text-xs text-sys-500 font-medium">
-                            Página <b>{currentPage}</b> de <b>{totalPages}</b>
-                        </span>
-                        <div className="flex gap-1">
-                            <button onClick={() => setCurrentPage(p => Math.max(1, p - 1))} disabled={currentPage === 1} className="p-1.5 rounded hover:bg-sys-100 disabled:opacity-30 border border-sys-200"><ChevronLeft size={16}/></button>
-                            <button onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages} className="p-1.5 rounded hover:bg-sys-100 disabled:opacity-30 border border-sys-200"><ChevronRight size={16}/></button>
-                        </div>
+                <div className="p-4 bg-white border-t border-sys-200 flex justify-between items-center z-20">
+                    <span className="text-xs font-bold text-sys-500 uppercase tracking-widest">
+                        Página {currentPage} de {totalPages} <span className="ml-2 opacity-30">|</span> Total {filteredProducts.length} items
+                    </span>
+                    <div className="flex gap-2">
+                        <button onClick={() => setCurrentPage(p => Math.max(1, p - 1))} disabled={currentPage === 1} className="p-2 rounded-xl border-2 border-sys-100 hover:bg-sys-50 disabled:opacity-30"><ChevronLeft size={20}/></button>
+                        <button onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages} className="p-2 rounded-xl border-2 border-sys-100 hover:bg-sys-50 disabled:opacity-30"><ChevronRight size={20}/></button>
                     </div>
-                )}
+                </div>
             </div>
 
             {/* MODALES */}
@@ -666,35 +784,25 @@ export const InventoryPage = () => {
                 productToEdit={editingProduct} 
                 onSave={handleSaveProduct} 
             />
-            <StockEntryModal 
-                isOpen={!!stockEntryProduct}
-                onClose={() => setStockEntryProduct(null)}
-                product={stockEntryProduct}
-                onConfirm={handleQuickStockEntry}
-            />
+            <StockEntryModal isOpen={!!stockEntryProduct} onClose={() => setStockEntryProduct(null)} product={stockEntryProduct} onConfirm={handleQuickStockEntry} />
             <BulkUpdateModal 
-                isOpen={isBulkUpdateOpen}
-                onClose={() => setIsBulkUpdateOpen(false)}
-                onConfirm={executeBulkUpdate}
-                allProducts={products}
-                masters={masters}
-                manualSelectionIds={selectedIds}
+                isOpen={isBulkUpdateOpen} 
+                onClose={() => setIsBulkUpdateOpen(false)} 
+                onConfirm={executeBulkUpdate} 
+                allProducts={products} 
+                masters={masters} 
+                manualSelectionIds={selectedIds} 
             />
-            <MastersModal 
-                isOpen={isMastersModalOpen} 
-                onClose={() => setIsMastersModalOpen(false)} 
+            <ScaleExportModal 
+                isOpen={isScaleModalOpen}
+                onClose={() => setIsScaleModalOpen(false)}
+                onExport={handleScaleExport}
             />
-            <ImportMapperModal 
-                isOpen={isImportModalOpen} 
-                onClose={() => setIsImportModalOpen(false)} 
-                branchId={activeBranchId} 
-                onSuccess={loadData}    
-            />
-
+            <MastersModal isOpen={isMastersModalOpen} onClose={() => setIsMastersModalOpen(false)} />
+            <ImportMapperModal isOpen={isImportModalOpen} onClose={() => setIsImportModalOpen(false)} branchId={activeBranchId} onSuccess={loadData} />
+            
             <style>{`
-                .filter-select { 
-                    @apply h-9 px-3 border border-sys-200 rounded-xl text-xs font-bold bg-white min-w-[140px] outline-none focus:border-brand cursor-pointer text-sys-700 shadow-sm hover:border-brand/30 transition-colors appearance-none; 
-                }
+                .filter-select { @apply h-11 px-4 border-2 border-sys-100 rounded-2xl text-xs font-black bg-white min-w-[160px] outline-none focus:border-brand cursor-pointer text-sys-700 hover:border-brand/20 transition-all appearance-none shadow-sm; }
                 .no-scrollbar::-webkit-scrollbar { display: none; }
                 .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
             `}</style>

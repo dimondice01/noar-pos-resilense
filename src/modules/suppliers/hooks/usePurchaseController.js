@@ -168,7 +168,7 @@ export const usePurchaseController = () => {
                 userName: user.name || user.email // "Quién hizo la compra"
             };
 
-            // 2. Limpiar Items para el Repositorio
+            // 2. Limpiar Items para el Repositorio (SOPORTE PROGRAMACIÓN PRECIOS)
             const cleanItems = items.map(item => ({
                 id: item.product.id,
                 code: item.product.code,
@@ -182,6 +182,11 @@ export const usePurchaseController = () => {
                 // Datos fiscales
                 tax: item.product.taxRate || 0,
                 isTaxIncluded: item.includesTax,
+                
+                // 🔥 LOGICA DE FECHA DE IMPACTO
+                // Si paymentData.effectiveDate existe, significa que el cambio de precio es futuro.
+                // Si es null, el cambio es inmediato.
+                activationDate: paymentData?.effectiveDate || null,
                 
                 expiryDate: null 
             }));

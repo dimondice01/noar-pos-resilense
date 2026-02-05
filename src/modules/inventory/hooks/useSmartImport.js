@@ -1,32 +1,34 @@
 import { useState } from 'react';
 import Papa from 'papaparse';
-import { getDB } from '../../../database/db'; // Usamos Dexie directo para velocidad
-import { productRepository } from '../repositories/productRepository';
+import { getDB } from '../../../database/db'; // Dexie
+import { collection, doc, writeBatch, serverTimestamp } from 'firebase/firestore';
+import { db as firestoreDB } from '../../../database/firebase';
+import { useAuthStore } from '../../auth/store/useAuthStore';
 
 // =================================================================
-// 🧠 CONFIGURACIÓN CENTRAL DE CAMPOS (La "Magia")
+// 🧠 CONFIGURACIÓN CENTRAL DE CAMPOS
 // =================================================================
-// Esto define qué entiende el sistema y cómo lo procesa.
 export const AVAILABLE_FIELDS = [
     { key: 'ignore', label: '(Ignorar Columna)', type: 'none' },
-    { key: 'code', label: 'Código de Barras / Interno', type: 'text', required: true },
+    { key: 'code', label: 'Código de Barras / PLU (Balanzas)', type: 'text', required: true },
     { key: 'name', label: 'Nombre / Descripción', type: 'text', required: true },
     { key: 'cost', label: 'Costo', type: 'money' },
     { key: 'price', label: 'Precio Final', type: 'money', required: true },
-    { key: 'stock', label: 'Stock Actual', type: 'number' },
-    { key: 'category', label: 'Categoría (Auto-Crear)', type: 'master' }, // ✨ Crea categoría si no existe
-    { key: 'brand', label: 'Marca (Auto-Crear)', type: 'master' },       // ✨ Crea marca si no existe
-    { key: 'tax', label: 'IVA / Alicuota (%)', type: 'tax' },            // ✨ Detecta 21, 10.5, etc
-    { key: 'unit', label: 'Unidad (Un/Kg)', type: 'boolean_unit' }       // ✨ Detecta si es pesable
+    { key: 'stock', label: 'Stock Inicial (Solo esta Sucursal)', type: 'number' },
+    { key: 'category', label: 'Categoría (Auto-Crear)', type: 'master' },
+    { key: 'brand', label: 'Marca (Auto-Crear)', type: 'master' },
+    { key: 'tax', label: 'IVA / Alicuota (%)', type: 'tax' },
+    { key: 'unit', label: 'Unidad (Kg/Un)', type: 'boolean_unit' }
 ];
 
 export const useSmartImport = () => {
+    const { user } = useAuthStore();
     const [isProcessing, setIsProcessing] = useState(false);
     const [previewData, setPreviewData] = useState([]);
     const [file, setFile] = useState(null);
     const [progress, setProgress] = useState({ current: 0, total: 0, stage: '' });
 
-    // 1. Previsualización Rápida
+    // 1. Previsualización
     const parseFile = (uploadedFile) => {
         setFile(uploadedFile);
         Papa.parse(uploadedFile, {
@@ -38,41 +40,53 @@ export const useSmartImport = () => {
     };
 
     // =================================================================
-    // ⚙️ MOTORES DE NORMALIZACIÓN (Parsers)
+    // ⚙️ PARSERS BLINDADOS (Evitan NaN y undefined)
     // =================================================================
     
     const normalizeMoney = (val) => {
         if (!val) return 0;
-        // Quita $, espacios y maneja coma decimal europea/latina si es necesario
-        const clean = String(val).replace(/[^0-9.,-]/g, ''); 
-        return parseFloat(clean.replace(',', '.')) || 0;
+        let clean = String(val).replace(/[^0-9.,-]/g, '');
+        if (clean.includes(',') && clean.includes('.')) {
+            clean = clean.replace(/\./g, '').replace(',', '.');
+        } else if (clean.includes(',')) {
+            clean = clean.replace(',', '.');
+        }
+        const num = parseFloat(clean);
+        return isNaN(num) ? 0 : num;
     };
 
     const normalizeTax = (val) => {
-        if (!val) return 21; // Default Argentina
+        if (!val) return 21;
         const str = String(val).toLowerCase();
         if (str.includes('10.5') || str.includes('10,5')) return 10.5;
         if (str.includes('27')) return 27;
         if (str.includes('0') || str.includes('exento')) return 0;
-        return 21; // Default
+        return 21;
     };
 
-    const isWeighableUnit = (val) => {
-        if (!val) return false;
-        const str = String(val).toLowerCase();
-        // Palabras clave que indican "Pesable"
-        return ['kg', 'kilo', 'gramo', 'gr', 'lt', 'litro', 'mt', 'metro'].some(k => str.includes(k));
+    const normalizeUnit = (val) => {
+        if (!val) return { unit: 'UN', isWeighable: false };
+        const str = String(val).toLowerCase().trim();
+        const weighableKeywords = ['kg', 'kilo', 'gramo', 'gr', 'lt', 'litro', 'mt', 'metro', 'pesable'];
+        if (weighableKeywords.some(k => str.includes(k))) {
+            return { unit: 'KG', isWeighable: true };
+        }
+        return { unit: 'UN', isWeighable: false };
     };
 
     // =================================================================
     // 🚀 PROCESADOR PRINCIPAL
     // =================================================================
     const processImport = async (columnMapping, branchId) => {
-        if (!file) return;
+        if (!file || !user?.companyId) return;
+        
+        // 🔥 VALIDACIÓN OBLIGATORIA
+        if (!branchId) throw new Error("Falta el ID de la sucursal destino.");
+
         setIsProcessing(true);
         setProgress({ current: 0, total: 0, stage: 'Iniciando...' });
 
-        const db = await getDB();
+        const localDB = await getDB();
 
         return new Promise((resolve, reject) => {
             Papa.parse(file, {
@@ -81,160 +95,180 @@ export const useSmartImport = () => {
                 complete: async (results) => {
                     try {
                         const rows = results.data;
-                        setProgress({ current: 0, total: rows.length, stage: 'Analizando Maestros...' });
+                        setProgress({ current: 0, total: rows.length, stage: 'Analizando Datos...' });
 
-                        // 1. CARGAR MAESTROS EN MEMORIA (Para no consultar DB por cada fila)
-                        const existingCats = await db.categories.toArray();
-                        const existingBrands = await db.brands.toArray();
-                        
-                        // Mapas de Búsqueda Rápida: "NOMBRE" -> ID
+                        // 1. CARGA DE MAESTROS
+                        const existingCats = await localDB.categories.toArray();
+                        const existingBrands = await localDB.brands.toArray();
                         const catMap = new Map(existingCats.map(c => [c.name.toUpperCase(), c.id]));
                         const brandMap = new Map(existingBrands.map(b => [b.name.toUpperCase(), b.id]));
 
-                        // Colas de Creación
+                        const existingProducts = await localDB.products.toArray();
+                        const productCodeMap = new Map(existingProducts.map(p => [String(p.code).trim().toUpperCase(), p]));
+
                         const newCategories = [];
                         const newBrands = [];
-                        const productsToSave = [];
-                        const inventoryUpdates = []; // { productId, stock }
+                        const productsToUpsert = [];
+                        const stockUpdates = [];
 
-                        // 2. ITERAR Y PROCESAR
+                        // 3. BUCLE DE PROCESAMIENTO
                         for (let i = 0; i < rows.length; i++) {
                             const row = rows[i];
-                            const rawData = {}; // Objeto temporal { code: '...', name: '...' }
+                            const rawData = {}; 
 
-                            // Mapear columnas CSV a Keys del Sistema
                             Object.keys(columnMapping).forEach(colIndex => {
                                 const fieldKey = columnMapping[colIndex];
-                                if (fieldKey !== 'ignore') {
-                                    rawData[fieldKey] = row[colIndex];
-                                }
+                                if (fieldKey !== 'ignore') rawData[fieldKey] = row[colIndex];
                             });
 
-                            // Validación Mínima
                             if (!rawData.name || !rawData.price) continue; 
 
-                            // --- MAGIA DE MAESTROS ---
-                            
-                            // A. Categorías
-                            let categoryId = 'general'; // Default ID
+                            // --- CATEGORÍAS ---
+                            let categoryId = 'general';
+                            let categoryName = 'GENERAL'; 
+
                             if (rawData.category) {
-                                const catName = String(rawData.category).trim().toUpperCase();
-                                if (catName) {
-                                    if (catMap.has(catName)) {
-                                        categoryId = catMap.get(catName);
+                                const rawCatName = String(rawData.category).trim().toUpperCase();
+                                if (rawCatName) {
+                                    categoryName = rawCatName;
+                                    if (catMap.has(rawCatName)) {
+                                        categoryId = catMap.get(rawCatName);
                                     } else {
-                                        // ¡Nueva Categoría Detectada!
                                         const newId = `cat_${crypto.randomUUID().split('-')[0]}`;
-                                        catMap.set(catName, newId); // Agregamos al mapa para no duplicar en este loop
-                                        newCategories.push({ id: newId, name: catName, syncStatus: 'pending' });
+                                        catMap.set(rawCatName, newId);
+                                        newCategories.push({ id: newId, name: rawCatName, syncStatus: 'pending' });
                                         categoryId = newId;
                                     }
                                 }
                             }
 
-                            // B. Marcas
+                            // --- MARCAS ---
                             let brandId = null;
+                            let brandName = null;
+
                             if (rawData.brand) {
-                                const brandName = String(rawData.brand).trim().toUpperCase();
-                                if (brandName) {
-                                    if (brandMap.has(brandName)) {
-                                        brandId = brandMap.get(brandName);
+                                const rawBrandName = String(rawData.brand).trim().toUpperCase();
+                                if (rawBrandName) {
+                                    brandName = rawBrandName;
+                                    if (brandMap.has(rawBrandName)) {
+                                        brandId = brandMap.get(rawBrandName);
                                     } else {
                                         const newId = `brand_${crypto.randomUUID().split('-')[0]}`;
-                                        brandMap.set(brandName, newId);
-                                        newBrands.push({ id: newId, name: brandName, syncStatus: 'pending' });
+                                        brandMap.set(rawBrandName, newId);
+                                        newBrands.push({ id: newId, name: rawBrandName, syncStatus: 'pending' });
                                         brandId = newId;
                                     }
                                 }
                             }
 
-                            // 3. CONSTRUCCIÓN DEL PRODUCTO
-                            const productCode = rawData.code ? String(rawData.code).trim() : `GEN-${Date.now()}-${i}`;
-                            const isWeighable = isWeighableUnit(rawData.unit);
+                            // --- PRODUCTO ---
+                            const code = rawData.code ? String(rawData.code).trim() : `GEN-${Date.now()}-${i}`;
+                            const { unit, isWeighable } = normalizeUnit(rawData.unit);
                             
+                            const existingProduct = productCodeMap.get(code.toUpperCase());
+                            const productId = existingProduct ? existingProduct.id : crypto.randomUUID();
+                            const stockQty = normalizeMoney(rawData.stock);
+
+                            // 🔥 Sanitize: Aseguramos que ningún campo sea undefined
                             const product = {
-                                id: crypto.randomUUID(), // Generamos ID nuevo (luego se puede chequear duplicados por código)
-                                code: productCode,
-                                name: String(rawData.name).trim().toUpperCase(),
+                                id: productId,
+                                code: code || '',
+                                name: String(rawData.name).trim().toUpperCase() || 'SIN NOMBRE',
                                 price: normalizeMoney(rawData.price),
                                 cost: normalizeMoney(rawData.cost),
                                 taxRate: normalizeTax(rawData.tax),
-                                category: categoryId, // Guardamos ID, no String
-                                brand: brandId,       // Guardamos ID, no String
+                                category: categoryName,
+                                categoryId: categoryId,
+                                brand: brandName,
+                                brandId: brandId,
+                                unit: unit,
                                 isWeighable: isWeighable,
+                                stock: 0, // 🔥 SIEMPRE 0 EN GLOBAL
                                 active: true,
-                                syncStatus: 'pending'
+                                syncStatus: 'pending',
+                                updatedAt: new Date().toISOString()
                             };
 
-                            productsToSave.push(product);
+                            productsToUpsert.push(product);
 
-                            // 4. PREPARAR STOCK (Si corresponde)
-                            const stockQty = normalizeMoney(rawData.stock);
-                            if (stockQty !== 0 && branchId) {
-                                inventoryUpdates.push({
-                                    productId: product.id,
-                                    qty: stockQty
+                            if (stockQty > 0) {
+                                stockUpdates.push({
+                                    productId: productId,
+                                    qty: stockQty,
+                                    name: product.name,
+                                    targetBranchId: branchId // 🔥 Aseguramos el destino
                                 });
                             }
 
-                            // Update UI cada 50 filas
                             if (i % 50 === 0) setProgress(p => ({ ...p, current: i }));
                         }
 
-                        // 5. GUARDADO ATÓMICO EN LOTES (Dexie es rápido, pero ordenado es mejor)
-                        setProgress({ current: rows.length, total: rows.length, stage: 'Guardando Datos...' });
+                        // 4. GUARDADO LOCAL (Dexie)
+                        setProgress({ current: rows.length, total: rows.length, stage: 'Guardando Catálogo...' });
 
-                        await db.transaction('rw', [db.products, db.categories, db.brands, db.movements, db.inventory], async () => {
-                            // A. Guardar Maestros Nuevos
-                            if (newCategories.length) await db.categories.bulkPut(newCategories);
-                            if (newBrands.length) await db.brands.bulkPut(newBrands);
-
-                            // B. Guardar Productos (Upsert podría ser mejor si chequeamos código antes, pero bulkPut es seguro)
-                            // Nota: En un caso real, deberíamos chequear si el código ya existe para hacer update en vez de insert.
-                            // Por ahora, asumimos importación limpia o usamos put para sobreescribir por ID si lo tuviéramos.
-                            // Como generamos ID nuevo, esto creará duplicados si el código existe.
-                            // 🔥 MEJORA: Chequeo de duplicados por código.
-                            
-                            const existingCodes = new Set(await db.products.toCollection().primaryKeys());
-                            // Esto es complejo en bulk. Para simplicidad de este paso, usamos bulkPut.
-                            // El productRepository maneja mejor la lógica uno a uno, pero para 2000 productos necesitamos bulk.
-                            await db.products.bulkPut(productsToSave); 
+                        await localDB.transaction('rw', [localDB.products, localDB.categories, localDB.brands], async () => {
+                            if (newCategories.length) await localDB.categories.bulkPut(newCategories);
+                            if (newBrands.length) await localDB.brands.bulkPut(newBrands);
+                            if (productsToUpsert.length) await localDB.products.bulkPut(productsToUpsert);
                         });
 
-                        // 6. PROCESAR STOCK (Usando el Repository para generar movimientos y consistencia)
-                        // Esto se hace fuera de la transacción masiva para no bloquear, o en lotes pequeños.
-                        if (inventoryUpdates.length > 0 && branchId) {
-                            setProgress({ current: rows.length, total: rows.length, stage: 'Actualizando Stock...' });
+                        // 5. SINCRONIZACIÓN NUBE (Firestore Batch)
+                        if (stockUpdates.length > 0) {
+                            setProgress({ current: rows.length, total: rows.length, stage: 'Sincronizando Stock...' });
                             
-                            // Usamos un bucle for-of para asegurar orden, o Promise.all para velocidad
-                            // Dado que addStock escribe en Firebase, hagámoslo con cuidado.
-                            // 🔥 OPTIMIZACIÓN: Solo actualizamos localmente el stock inicial
-                            // y dejamos que el sync service se encargue, o hacemos un batch manual aquí.
+                            // Guardado local de inventario
+                            await localDB.inventory.bulkPut(stockUpdates.map(s => ({
+                                branchId: s.targetBranchId,
+                                productId: s.productId,
+                                stock: s.qty,
+                                updatedAt: new Date().toISOString()
+                            })));
+
+                            // 🔥 FIX IMPORTANTE: Reducimos el lote a 200 items
+                            // 200 items * 2 operaciones (Update + Log) = 400 operaciones (Seguro bajo 500)
+                            const chunkSize = 200; 
                             
-                            const inventoryBatch = inventoryUpdates.map(item => ({
-                                branchId: branchId,
-                                productId: item.productId,
-                                stock: item.qty,
-                                updatedAt: new Date().toISOString(),
-                                location: 'Salón'
-                            }));
-                            
-                            await db.inventory.bulkPut(inventoryBatch);
-                            
-                            // Actualizar campo 'stock' en producto para cache visual
-                            // Esto requiere iterar de nuevo o hacer un update complejo.
-                            // Por ahora, confiamos en que el usuario recargará o el sync actuará.
+                            for (let i = 0; i < stockUpdates.length; i += chunkSize) {
+                                const chunk = stockUpdates.slice(i, i + chunkSize);
+                                const batch = writeBatch(firestoreDB);
+                                const companyRef = doc(firestoreDB, 'companies', user.companyId);
+
+                                chunk.forEach(item => {
+                                    // Op 1: Actualizar Stock
+                                    const invRef = doc(collection(companyRef, 'branches', item.targetBranchId, 'inventory'), item.productId);
+                                    batch.set(invRef, {
+                                        stock: item.qty,
+                                        updatedAt: serverTimestamp()
+                                    }, { merge: true });
+
+                                    // Op 2: Registrar Movimiento
+                                    const movRef = doc(collection(companyRef, 'stock_movements'));
+                                    batch.set(movRef, {
+                                        productId: item.productId || 'unknown',
+                                        productName: item.name || 'Desconocido',
+                                        branchId: item.targetBranchId,
+                                        type: 'IN',
+                                        reason: 'Importación Masiva',
+                                        quantity: item.qty,
+                                        date: serverTimestamp(),
+                                        userId: user.uid || 'system'
+                                    });
+                                });
+
+                                await batch.commit(); // 🔥 Si esto falla, ahora sí saltará al catch
+                            }
                         }
 
                         resolve({ 
-                            processed: productsToSave.length, 
-                            categories: newCategories.length,
-                            brands: newBrands.length 
+                            processed: productsToUpsert.length, 
+                            categories: newCategories.length, 
+                            brands: newBrands.length,
+                            stockMovements: stockUpdates.length
                         });
 
                     } catch (error) {
-                        console.error(error);
-                        reject(error);
+                        console.error("Error Importación:", error);
+                        reject(error); // 🔥 Esto asegura que la UI muestre el error rojo
                     } finally {
                         setIsProcessing(false);
                     }
@@ -247,12 +281,5 @@ export const useSmartImport = () => {
         });
     };
 
-    return { 
-        parseFile, 
-        processImport, 
-        previewData, 
-        file,
-        isProcessing,
-        progress
-    };
+    return { parseFile, processImport, previewData, file, isProcessing, progress };
 };

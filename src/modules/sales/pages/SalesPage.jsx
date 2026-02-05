@@ -47,28 +47,41 @@ export const SalesPage = () => {
   const [loadingMap, setLoadingMap] = useState({}); 
   const [selectedOpForTicket, setSelectedOpForTicket] = useState(null); 
 
-  // 1. CARGAR LISTA DE CAJEROS (Usuarios reales de la empresa)
+  // 1. CARGAR LISTA DE CAJEROS (FILTRADO ESTRICTO POR SUCURSAL)
   useEffect(() => {
-      if (user?.companyId) {
+      if (user?.companyId && activeBranchId) {
           const fetchCashiers = async () => {
               try {
-                  const q = query(
+                  // Consulta base: Usuarios de la empresa
+                  let q = query(
                       collection(firestoreDB, 'users'), 
                       where('companyId', '==', user.companyId)
                   );
+                  
                   const snapshot = await getDocs(q);
                   const users = snapshot.docs.map(doc => ({
                       uid: doc.id, 
                       ...doc.data()
                   }));
-                  setCashiersList(users);
+
+                  // 🔥 BLINDAJE DE SELECTOR: Filtro estricto en memoria
+                  const branchUsers = users.filter(u => {
+                      // 1. Owners y Admins siempre son visibles (pueden haber operado)
+                      if (u.role === 'OWNER' || u.role === 'ADMIN') return true;
+                      
+                      // 2. Sellers solo si pertenecen a la sucursal activa
+                      // Normalizamos a string para evitar errores de tipo
+                      return String(u.branchId) === String(activeBranchId);
+                  });
+
+                  setCashiersList(branchUsers);
               } catch (error) { console.error("Error cargando cajeros:", error); }
           };
           fetchCashiers();
       }
-  }, [user?.companyId]);
+  }, [user?.companyId, activeBranchId]); 
 
-  // 2. CARGAR OPERACIONES (Con lógica Nexus Repository)
+  // 2. CARGAR OPERACIONES
   const fetchOperations = async () => {
       setLoading(true);
       try {
@@ -134,7 +147,22 @@ export const SalesPage = () => {
       return "Desconocido";
   };
 
-  // 3. FILTRADO (LÓGICA CORREGIDA)
+  // 🔥 HELPER: RECONSTRUCCIÓN DE NÚMERO DE TICKET (BLINDAJE VISUAL)
+  const getDisplayNumber = (op) => {
+      const directNumber = op.ticketNumber || op.invoiceNumber || op.number;
+      if (directNumber && directNumber !== '---') return directNumber;
+
+      if (op.afip && op.afip.cbteNumero) {
+          const letra = op.afip.cbteLetra || 'FC';
+          const pto = String(op.afip.ptoVta || '1').padStart(4, '0');
+          const num = String(op.afip.cbteNumero).padStart(8, '0');
+          return `${letra}-${pto}-${num}`;
+      }
+
+      return `ID:${(op.localId || op.id || '????').slice(-6)}`;
+  };
+
+  // 3. FILTRADO
   const visibleOperations = useMemo(() => {
       return operations.filter(op => {
           
@@ -163,20 +191,20 @@ export const SalesPage = () => {
               const clientName = (op.client?.name || '').toLowerCase();
               const totalStr = (op.total || '').toString();
               const docNum = (op.afip?.cbteNumero || '').toString();
-              const ticketNum = (op.number || '').toLowerCase();
+              const ticketNum = getDisplayNumber(op).toLowerCase();
               const cashierName = resolveCashierName(op).toLowerCase();
               
               return clientName.includes(search) || 
-                     totalStr.includes(search) || 
-                     docNum.includes(search) ||
-                     ticketNum.includes(search) ||
-                     cashierName.includes(search);
+                      totalStr.includes(search) || 
+                      docNum.includes(search) ||
+                      ticketNum.includes(search) ||
+                      cashierName.includes(search);
           }
           return true;
       });
   }, [operations, filterType, filterCashier, searchTerm, cashiersList, activeBranchId]);
 
-  // 🔥 4. LÓGICA DE PAGINACIÓN
+  // 4. LÓGICA DE PAGINACIÓN
   const totalPages = Math.ceil(visibleOperations.length / itemsPerPage);
   const paginatedOperations = useMemo(() => {
       const startIndex = (currentPage - 1) * itemsPerPage;
@@ -218,8 +246,15 @@ export const SalesPage = () => {
     const { getDB } = await import('../../../database/db'); 
     const db = await getDB();
     
+    const newNumber = afipData?.numero ? 
+        `FC-${afipData.letra}-${String(afipData.ptoVta).padStart(4,'0')}-${String(afipData.numero).padStart(8,'0')}` : 
+        op.number;
+
     const ventaActualizada = {
       ...op,
+      number: newNumber,
+      ticketNumber: newNumber, 
+      invoiceNumber: newNumber,
       afip: {
         status: status || 'PENDING',
         cae: afipData?.cae || null,
@@ -268,15 +303,15 @@ export const SalesPage = () => {
                     <RefreshCw size={18} className={loading ? "animate-spin" : ""}/>
                 </Button>
                 
-                {/* 💳 TARJETA DE TOTALES (INTELIGENTE) */}
-                <Card className="px-5 py-2 bg-white border border-sys-200 shadow-sm flex items-center gap-6">
-                    <div>
-                        <p className="text-[10px] text-sys-400 uppercase font-bold tracking-wider">Ventas Brutas</p>
-                        <p className="text-xl font-black text-sys-900">
-                            $ {totals.gross.toLocaleString('es-AR', {minimumFractionDigits: 2})}
-                        </p>
-                    </div>
-                    {isAdmin && (
+                {/* 💳 TARJETA DE TOTALES (SOLO ADMIN/OWNER) */}
+                {isAdmin && (
+                    <Card className="px-5 py-2 bg-white border border-sys-200 shadow-sm flex items-center gap-6 animate-in slide-in-from-right-2">
+                        <div>
+                            <p className="text-[10px] text-sys-400 uppercase font-bold tracking-wider">Ventas Brutas</p>
+                            <p className="text-xl font-black text-sys-900">
+                                $ {totals.gross.toLocaleString('es-AR', {minimumFractionDigits: 2})}
+                            </p>
+                        </div>
                         <div className="border-l border-sys-100 pl-6">
                             <p className="text-[10px] text-emerald-600 uppercase font-bold tracking-wider flex items-center gap-1">
                                 <TrendingUp size={10}/> Utilidad Neta
@@ -285,8 +320,8 @@ export const SalesPage = () => {
                                 $ {totals.netProfit.toLocaleString('es-AR', {minimumFractionDigits: 2})}
                             </p>
                         </div>
-                    )}
-                </Card>
+                    </Card>
+                )}
             </div>
           </div>
 
@@ -378,19 +413,16 @@ export const SalesPage = () => {
                     const paymentMethod = op.payment?.method || op.paymentMethod || 'cash';
                     
                     const cajeroName = resolveCashierName(op);
-                    
-                    // Detectar si hubo promociones en la venta
                     const hasPromo = !isReceipt && op.items?.some(i => i.appliedPromo || i.promoLabel);
-                    
-                    // Calcular margen si es admin
                     const profit = parseFloat(op.netProfit || 0);
                     const isProfitable = profit > 0;
+                    const displayTicketNumber = getDisplayNumber(op);
 
                     return (
                       <tr key={op.localId} className={cn("transition-colors group", isAnulado ? "bg-red-50/30 opacity-60" : "hover:bg-sys-50/40")}>
                         <td className="p-4 text-sys-600 font-mono text-xs whitespace-nowrap">
                           <div className="font-bold text-sys-800">{new Date(op.date).toLocaleDateString()} {new Date(op.date).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</div>
-                          <div className="text-[11px] font-bold text-brand mt-0.5">{op.number || op.afip?.cbteNumero || '---'}</div>
+                          <div className="text-[11px] font-bold text-brand mt-0.5">{displayTicketNumber}</div>
                           <div className="flex items-center gap-1 text-[10px] text-sys-400 mt-0.5">
                               <User size={10}/> {cajeroName}
                           </div>

@@ -2,7 +2,8 @@ import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { 
     Search, Trash2, ShoppingCart, PackageOpen, 
     Keyboard, User, DollarSign, ChevronRight, Plus, 
-    Lock, Wallet, ArrowRight, Loader2, X, Store
+    Lock, Wallet, ArrowRight, Loader2, X, Store,
+    Tag 
 } from 'lucide-react';
 
 // Controlador Maestro (Cerebro)
@@ -41,7 +42,7 @@ export const PosPage = () => {
       searchProduct,
       setSearchResults, 
       processSale,
-      isProcessing // 🔥 AHORA SÍ OBTENEMOS EL ESTADO DE CARGA
+      isProcessing
   } = usePosController();
 
   // Estados Locales de UI
@@ -117,8 +118,6 @@ export const PosPage = () => {
   useEffect(() => {
       const loadInitialProducts = async () => {
           if (hasOpenShift) {
-              // Aquí podrías filtrar por sucursal si tu repositorio lo soporta, 
-              // pero generalmente los productos son globales de la empresa.
               const all = await productRepository.getAll();
               setDefaultProducts(all.slice(0, 15));
           }
@@ -246,10 +245,6 @@ export const PosPage = () => {
   // 💰 PROCESAR VENTA + AUTO-CIERRE DE PESTAÑA
   // =================================================================
   const handleProcessSale = async (paymentData) => {
-    // 🕵️‍♂️ AUDITORÍA: Verificamos que la data del Surcharge Engine llegue
-    // console.log("💰 Procesando Venta:", paymentData); 
-    
-    // paymentData YA contiene: totalSale (con interés), baseAmount (sin interés), surcharge (interés), branchId
     const result = await processSale(paymentData);
     
     if (result) {
@@ -257,8 +252,7 @@ export const PosPage = () => {
         const enrichedTicket = {
             ...result,
             companySnapshot: {
-                nombre: user?.activeBranchName || 'MI NEGOCIO', // Fallback visual
-                // Otros datos si los tuviéramos en el user store
+                nombre: user?.activeBranchName || 'MI NEGOCIO', 
             }
         };
 
@@ -370,6 +364,7 @@ export const PosPage = () => {
                   </div>
               </div>
 
+              {/* 🔥 LISTA DE ITEMS CON BADGE DE PROMOCIÓN */}
               <div className="flex-1 overflow-y-auto p-2 bg-sys-50/20">
                   {activeTab.items.length === 0 ? (
                       <div className="h-full flex flex-col items-center justify-center text-sys-200 gap-4 select-none opacity-40">
@@ -386,10 +381,26 @@ export const PosPage = () => {
                                   </div>
                                   <div className="flex-1 min-w-0">
                                       <div className="text-sm font-black text-sys-800 truncate uppercase tracking-tight">{item.name}</div>
-                                      <div className="text-xs text-sys-400 font-mono mt-0.5">${item.price.toLocaleString()} x unid.</div>
+                                      
+                                      {/* 🔥 VISUALIZACIÓN DE PROMO PURPURA */}
+                                      {item.appliedPromo && (
+                                          <div className="inline-flex items-center gap-1.5 bg-purple-100 text-purple-700 px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wide mt-1 animate-pulse">
+                                              <Tag size={10} className="fill-purple-700"/>
+                                              {item.promoLabel || "OFERTA"}
+                                          </div>
+                                      )}
+
+                                      <div className="text-xs text-sys-400 font-mono mt-0.5 flex items-center gap-2">
+                                          {/* 🔥 FIX: Ahora el tachado es el ORIGINAL (Mayor) y el normal es el FINAL (Menor) */}
+                                        
+                                     
+                                          <span className={cn(item.appliedPromo ? "text-purple-700 font-bold" : "")}>
+                                              ${item.price.toLocaleString('es-AR', {minimumFractionDigits: 2})} x unid.
+                                          </span>
+                                      </div>
                                   </div>
                                   <div className="text-right pl-3">
-                                      <div className="text-base font-black text-sys-900 tracking-tight">${item.subtotal.toLocaleString()}</div>
+                                      <div className="text-base font-black text-sys-900 tracking-tight">${item.subtotal.toLocaleString('es-AR', {minimumFractionDigits: 2})}</div>
                                       <button onClick={() => removeFromCart(item.id)} className="text-[10px] text-red-400 font-bold hover:text-red-600 transition-colors">ELIMINAR</button>
                                   </div>
                               </div>
@@ -403,6 +414,12 @@ export const PosPage = () => {
                       <div>
                           <p className="text-[10px] font-black text-sys-400 uppercase tracking-widest mb-1">Subtotal de Venta</p>
                           <p className="text-5xl font-black text-sys-900 tracking-tighter tabular-nums leading-none">${totals.total.toLocaleString('es-AR', {minimumFractionDigits: 2})}</p>
+                          {/* Feedback de Ahorro en Carrito */}
+                          {totals.discountAmount > 0 && (
+                              <p className="text-xs font-bold text-green-600 mt-1 animate-bounce">
+                                  Ahorro aplicado: -${totals.discountAmount.toLocaleString('es-AR', {minimumFractionDigits: 2})}
+                              </p>
+                          )}
                       </div>
                       <div className="flex gap-3">
                           <Button variant="ghost" className="h-14 w-14 rounded-xl border border-red-100 text-red-500 hover:bg-red-50 p-0" onClick={() => { if(confirm('¿Vacíar venta?')) clearCart(); }}><Trash2 size={24}/></Button>
@@ -448,10 +465,19 @@ export const PosPage = () => {
                       >
                           <div className="flex-1 min-w-0 pr-3">
                               <div className={cn("font-black text-sm truncate uppercase tracking-tight", idx === focusedIndex ? "text-white" : "text-sys-900")}>{product.name}</div>
-                              <div className={cn("text-[10px] mt-1 font-mono font-bold uppercase", idx === focusedIndex ? "text-white/80" : "text-sys-400")}>{product.barcode || product.code || 'S/C'}</div>
+                              <div className="flex gap-2 items-center mt-1">
+                                  <div className={cn("text-[10px] font-mono font-bold uppercase", idx === focusedIndex ? "text-white/80" : "text-sys-400")}>{product.barcode || product.code || 'S/C'}</div>
+                                  
+                                  {/* Indicador de Promo en la lista de búsqueda */}
+                                  {product.promo && (
+                                      <div className={cn("text-[9px] px-1.5 py-0.5 rounded font-black uppercase flex items-center gap-1", idx === focusedIndex ? "bg-white/20 text-white" : "bg-purple-100 text-purple-700")}>
+                                          <Tag size={8} /> {product.promo.type === 'PERCENTAGE' ? 'OFERTA' : 'PROMO'}
+                                      </div>
+                                  )}
+                              </div>
                           </div>
                           <div className="text-right">
-                              <div className={cn("font-black text-xl tracking-tighter", idx === focusedIndex ? "text-white" : "text-sys-900")}>${product.price.toLocaleString()}</div>
+                              <div className={cn("font-black text-xl tracking-tighter", idx === focusedIndex ? "text-white" : "text-sys-900")}>${product.price.toLocaleString('es-AR', {minimumFractionDigits: 2})}</div>
                               <div className={cn("text-[9px] font-black uppercase px-2 py-0.5 rounded mt-1.5 inline-block", idx === focusedIndex ? "bg-white/20" : parseFloat(product.stock) > 0 ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700")}>
                                   {parseFloat(product.stock) > 0 ? `${product.stock} DISP.` : 'S/ STOCK'}
                               </div>
@@ -497,10 +523,12 @@ export const PosPage = () => {
       <PaymentModal 
         isOpen={isPaymentOpen} 
         total={totals.total} 
+        subtotal={totals.subtotal} 
+        discount={totals.discountAmount} 
         client={activeTab.client} 
         onClose={() => { setIsPaymentOpen(false); maintainFocus(); }} 
         onConfirm={handleProcessSale} 
-        isProcessing={isProcessing} // 🔥 AHORA SÍ CONECTADO
+        isProcessing={isProcessing} 
       />
 
       <ClientSelectionModal isOpen={isClientSelectorOpen} onClose={() => { setIsClientSelectorOpen(false); maintainFocus(); }} onSelect={(c) => { setClient(c); setIsClientSelectorOpen(false); maintainFocus(); }} />

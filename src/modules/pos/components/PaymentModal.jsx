@@ -2,7 +2,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import { 
     X, Banknote, QrCode, Loader2, CheckCircle2, 
     AlertCircle, Wallet, ArrowRight, CreditCard, Landmark, 
-    ShieldCheck, Calculator, ChevronLeft, Layers, Info, Megaphone, Trash2, Plus, Split
+    ShieldCheck, Calculator, ChevronLeft, Layers, Info, Megaphone, Trash2, Plus, Split,
+    Tag
 } from 'lucide-react';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../../../database/firebase';
@@ -80,7 +81,7 @@ export const PaymentModal = ({ isOpen, onClose, total, subtotal, discount, clien
     const debtValue = (!isSplitMode && difference > 0.5) ? difference : 0;
     const changeValue = difference < -0.5 ? Math.abs(difference) : 0;
 
-    // 🔥 FIX: Definición explícita de isPartialPayment
+    // Lógica de Pago Parcial
     const isPartialPayment = debtValue > 0;
 
     // Validaciones
@@ -128,6 +129,19 @@ export const PaymentModal = ({ isOpen, onClose, total, subtotal, discount, clien
             if (pollingRef.current) clearInterval(pollingRef.current);
         }
     }, [isOpen, total, isRI, disableAfip]);
+
+    // Auto-actualizar monto a pagar cuando cambia el interés en Modo Simple
+    useEffect(() => {
+        if (!isSplitMode) {
+            if (selectedRate) {
+                // Si seleccionamos un plan, el monto a pagar debe igualar al total con interés automáticamente
+                setAmountToPay(effectiveTotal.toFixed(2));
+            } else {
+                // Si deseleccionamos el plan, volvemos al total original (redondeado por UX)
+                setAmountToPay(Math.round(total).toString());
+            }
+        }
+    }, [selectedRate, effectiveTotal, isSplitMode, total]);
 
     // Auto-rellenar monto restante en modo Split
     useEffect(() => {
@@ -340,31 +354,10 @@ export const PaymentModal = ({ isOpen, onClose, total, subtotal, discount, clien
 
     if (!isOpen) return null;
 
-    const PaymentOption = ({ id, label, icon: Icon, colorClass, shortcut }) => (
-        <button 
-            onClick={() => {
-                setMethod(id);
-                if (id !== 'manual_card') {
-                    setSelectedBrand(null);
-                    setSelectedRate(null);
-                }
-            }} 
-            disabled={digitalState === 'creating' || digitalState === 'waiting' || digitalState === 'approved' || isProcessing || (isSplitMode && isFullyPaid)} 
-            className={cn(
-                "flex flex-col items-center justify-center p-3 rounded-xl border-2 transition-all duration-200 h-24 relative overflow-hidden active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed group", 
-                method === id ? `bg-sys-50 border-${colorClass} shadow-md` : "bg-white border-sys-100 hover:border-sys-300 text-sys-500"
-            )}
-        >
-            <div className="absolute top-1 right-2 text-[9px] font-mono text-sys-400 opacity-50 group-hover:opacity-100 font-bold">{shortcut}</div>
-            <Icon size={28} className={cn("mb-1 transition-colors", method === id ? `text-${colorClass}` : "text-sys-400")} />
-            <span className={cn("font-semibold text-xs leading-tight", method === id ? "text-sys-900" : "")}>{label}</span>
-            {method === id && <div className={`absolute top-2 right-2 w-2 h-2 rounded-full bg-${colorClass}`}></div>}
-        </button>
-    );
-
     return (
+        /* 🔥 FIX VISUAL: Aumentamos min-h para que el modal no quede corto con listas largas */
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-sys-900/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-            <div className="bg-white rounded-3xl shadow-2xl w-full max-w-5xl overflow-hidden flex flex-col md:flex-row min-h-[550px]">
+            <div className="bg-white rounded-3xl shadow-2xl w-full max-w-5xl overflow-hidden flex flex-col md:flex-row min-h-[600px] md:h-[650px]">
                 
                 {/* 🟢 IZQUIERDA: RESUMEN FINANCIERO (CON TOGGLE SPLIT) */}
                 <div className="w-full md:w-1/3 bg-sys-50 p-6 flex flex-col justify-between border-r border-sys-200 relative">
@@ -387,20 +380,25 @@ export const PaymentModal = ({ isOpen, onClose, total, subtotal, discount, clien
                                 </div>
                             )}
                             
-                            {/* Feedback de Promo */}
+                            {/* 🔥 VISUALIZACIÓN CLARA DE PROMO LOCAL */}
                             {discount > 0 && (
-                                <div className="mb-2 bg-green-50 border border-green-200 p-2 rounded-lg flex items-center gap-2 animate-pulse">
-                                    <Megaphone size={16} className="text-green-600" />
-                                    <div>
-                                        <p className="text-[10px] font-bold text-green-700 uppercase">¡Descuento Aplicado!</p>
-                                        <p className="text-xs font-black text-green-600">Ahorras ${discount.toLocaleString('es-AR')}</p>
+                                <div className="mb-3 bg-green-50 border border-green-200 p-3 rounded-xl flex items-start gap-3 animate-in slide-in-from-top-2">
+                                    <div className="bg-green-100 p-2 rounded-lg text-green-700 mt-0.5">
+                                        <Tag size={18} />
+                                    </div>
+                                    <div className="flex-1">
+                                        <p className="text-[10px] font-black text-green-800 uppercase tracking-wide leading-tight">PROMOCIÓN SUCURSAL</p>
+                                        <div className="flex justify-between items-baseline mt-1">
+                                            <p className="text-xs font-medium text-green-700">Ahorro total:</p>
+                                            <p className="text-sm font-black text-green-700">-${discount.toLocaleString('es-AR')}</p>
+                                        </div>
                                     </div>
                                 </div>
                             )}
 
                             <div className="flex justify-between items-end mb-1">
                                 <p className="text-xs text-sys-500 uppercase font-bold">{disableAfip ? "Monto a Saldar" : "Total Final"}</p>
-                                {discount > 0 && <span className="text-[10px] text-sys-400 line-through">${subtotal.toLocaleString('es-AR')}</span>}
+                                {discount > 0 && <span className="text-[10px] text-sys-400 line-through decoration-red-400">${subtotal.toLocaleString('es-AR')}</span>}
                             </div>
                             
                             {/* SI ES SPLIT, MOSTRAMOS EL RESTANTE AQUÍ PARA CLARIDAD */}
@@ -522,7 +520,6 @@ export const PaymentModal = ({ isOpen, onClose, total, subtotal, discount, clien
                                     method === opt.id ? `bg-sys-50 border-${opt.color} shadow-md` : "bg-white border-sys-100 hover:border-sys-300 text-sys-500"
                                 )}
                             >
-                                <div className="absolute top-1 right-2 text-[9px] font-mono text-sys-400 opacity-50 group-hover:opacity-100 font-bold">{opt.shortcut}</div>
                                 <opt.icon size={28} className={cn("mb-1 transition-colors", method === opt.id ? `text-${opt.color}` : "text-sys-400")} />
                                 <span className={cn("font-semibold text-xs leading-tight", method === opt.id ? "text-sys-900" : "")}>{opt.label}</span>
                                 {method === opt.id && <div className={`absolute top-2 right-2 w-2 h-2 rounded-full bg-${opt.color}`}></div>}
@@ -534,7 +531,8 @@ export const PaymentModal = ({ isOpen, onClose, total, subtotal, discount, clien
                     <div className="flex-1 bg-sys-50 rounded-2xl border-2 border-dashed border-sys-200 p-4 flex flex-col items-center justify-center overflow-hidden relative">
                         
                         {method === 'manual_card' && (
-                            <div className="w-full h-full flex flex-col absolute inset-0 p-4">
+                            /* 🔥 FIX: Eliminado absolute inset-0. Usamos flex full natural para respetar el padding */
+                            <div className="w-full h-full flex flex-col">
                                 {loadingPlans ? (
                                     <div className="flex flex-col items-center justify-center h-full">
                                         <Loader2 size={32} className="animate-spin text-indigo-500 mb-2"/>
@@ -546,30 +544,38 @@ export const PaymentModal = ({ isOpen, onClose, total, subtotal, discount, clien
                                         <p className="font-bold text-sm">Sin tarjetas configuradas</p>
                                     </div>
                                 ) : !selectedBrand ? (
-                                    /* VISTA LISTA DE MARCAS (GRID SCROLLABLE) */
-                                    <div className="flex-1 overflow-y-auto custom-scrollbar pr-2">
-                                        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                                    /* 🔥 FIX: VISTA LISTA DE MARCAS - SCROLLABLE INDEPENDIENTE */
+                                    <div className="flex-1 w-full overflow-y-auto custom-scrollbar p-1">
+                                        <div className="flex flex-col gap-2">
                                             {paymentMethods.map((m) => (
-                                                <button key={m.brand} onClick={() => setSelectedBrand(m)} className="p-4 rounded-xl border border-sys-200 bg-white hover:border-indigo-400 hover:shadow-md transition-all flex flex-col items-center justify-center h-24 group">
-                                                    <span className="font-black text-sm uppercase text-sys-700 group-hover:text-indigo-600 text-center w-full truncate">{m.brand}</span>
-                                                    <span className="text-[9px] text-sys-400 mt-1">{m.rates?.length || 0} Planes</span>
+                                                <button key={m.brand} onClick={() => setSelectedBrand(m)} className="p-3 rounded-xl border border-sys-200 bg-white hover:border-indigo-400 hover:shadow-md transition-all flex items-center justify-between group w-full">
+                                                    <div className="flex items-center gap-3">
+                                                        <CreditCard className="text-sys-400 group-hover:text-indigo-500" size={20} />
+                                                        <span className="font-black text-sm uppercase text-sys-700 group-hover:text-indigo-600">{m.brand}</span>
+                                                    </div>
+                                                    <span className="text-[10px] bg-sys-100 px-2 py-1 rounded text-sys-500 group-hover:bg-indigo-50 group-hover:text-indigo-600 font-bold">
+                                                        {m.rates?.length || 0} Planes
+                                                    </span>
                                                 </button>
                                             ))}
                                         </div>
                                     </div>
                                 ) : (
-                                    /* VISTA PLANES DE CUOTAS */
-                                    <div className="w-full h-full flex flex-col">
-                                        <div className="flex items-center gap-2 mb-3 w-full bg-sys-50 pb-2 z-10">
+                                    /* 🔥 FIX: VISTA PLANES DE CUOTAS - HEADER FIJO + SCROLL */
+                                    <div className="flex flex-col w-full h-full">
+                                        {/* HEADER FIJO */}
+                                        <div className="flex items-center gap-2 mb-3 w-full flex-none z-10">
                                             <Button variant="ghost" size="sm" onClick={() => { setSelectedBrand(null); setSelectedRate(null); }} className="text-sys-500 hover:bg-sys-200 h-8 px-2">
                                                 <ChevronLeft size={16} />
                                             </Button>
                                             <span className="font-bold text-indigo-900 bg-indigo-100 px-3 py-1.5 rounded-lg text-xs flex-1 text-center truncate">{selectedBrand.brand}</span>
                                         </div>
-                                        <div className="flex-1 overflow-y-auto custom-scrollbar pr-2">
-                                            <div className="grid grid-cols-1 md:grid-cols-2 gap-2 pb-2">
+                                        
+                                        {/* LISTA SCROLLABLE */}
+                                        <div className="flex-1 overflow-y-auto custom-scrollbar p-1">
+                                            <div className="flex flex-col gap-2 pb-2">
                                                 {selectedBrand.rates.map((rate) => (
-                                                    <button key={rate.qty} onClick={() => setSelectedRate(selectedRate?.qty === rate.qty ? null : rate)} className={cn("p-3 rounded-xl border text-left transition-all", selectedRate?.qty === rate.qty ? "bg-indigo-600 text-white shadow-md ring-2 ring-indigo-300" : "bg-white border-sys-200 text-sys-700 hover:border-indigo-300")}>
+                                                    <button key={rate.qty} onClick={() => setSelectedRate(selectedRate?.qty === rate.qty ? null : rate)} className={cn("w-full p-3 rounded-xl border text-left transition-all", selectedRate?.qty === rate.qty ? "bg-indigo-600 text-white shadow-md ring-2 ring-indigo-300" : "bg-white border-sys-200 text-sys-700 hover:border-indigo-300")}>
                                                         <div className="flex justify-between items-start w-full">
                                                             <span className={cn("text-lg font-black leading-none", selectedRate?.qty === rate.qty ? "text-white" : "text-sys-900")}>{rate.qty}</span>
                                                             <span className={cn("text-[9px] font-bold uppercase px-1.5 py-0.5 rounded", selectedRate?.qty === rate.qty ? "bg-white/20 text-white" : "bg-sys-100 text-sys-600")}>{rate.interest === 0 ? "S/INT" : `+${rate.interest}%`}</span>
@@ -618,9 +624,24 @@ export const PaymentModal = ({ isOpen, onClose, total, subtotal, discount, clien
                         )}
                         
                         {(method === 'mercadopago' || method === 'point' || method === 'clover') && (
+                            /* 🔥 FIX: MANEJO VISUAL DE ERROR EN HARDWARE */
                             <div className="flex flex-col items-center gap-3 animate-in fade-in">
-                                {digitalState === 'waiting' ? <div className="w-16 h-16 rounded-full border-4 border-brand border-t-transparent animate-spin"/> : digitalState === 'approved' ? <div className="w-16 h-16 rounded-full bg-green-500 text-white flex items-center justify-center animate-in zoom-in"><CheckCircle2 size={32}/></div> : <Loader2 className="animate-spin text-sys-300" />}
-                                {method === 'mercadopago' && <p className="text-xs font-bold text-sys-500 mt-2">Escanee el QR en el visor</p>}
+                                {digitalState === 'error' ? (
+                                    <div className="flex flex-col items-center text-center animate-in zoom-in">
+                                        <AlertCircle size={48} className="text-red-500 mb-2"/>
+                                        <p className="font-bold text-red-600 mb-1">Error de Operación</p>
+                                        <p className="text-xs text-sys-500 max-w-[250px]">{errorMessage}</p>
+                                        <Button variant="ghost" size="sm" onClick={() => { setMethod('cash'); setDigitalState('idle'); }} className="mt-4 text-sys-400 hover:text-sys-700">
+                                            Cancelar / Volver
+                                        </Button>
+                                    </div>
+                                ) : (
+                                    <>
+                                        {digitalState === 'waiting' ? <div className="w-16 h-16 rounded-full border-4 border-brand border-t-transparent animate-spin"/> : digitalState === 'approved' ? <div className="w-16 h-16 rounded-full bg-green-500 text-white flex items-center justify-center animate-in zoom-in"><CheckCircle2 size={32}/></div> : <Loader2 className="animate-spin text-sys-300" />}
+                                        {(digitalState === 'creating' || digitalState === 'waiting') && method === 'mercadopago' && <p className="text-xs font-bold text-sys-500 mt-2">Escanee el QR en el visor</p>}
+                                        {(digitalState === 'creating' || digitalState === 'waiting') && method === 'point' && <p className="text-xs font-bold text-sys-500 mt-2">Acerque tarjeta al lector</p>}
+                                    </>
+                                )}
                             </div>
                         )}
                     </div>
@@ -639,16 +660,16 @@ export const PaymentModal = ({ isOpen, onClose, total, subtotal, discount, clien
                             <>
                                 {!disableAfip && (
                                     <div className={cn("flex items-center justify-between mb-4 p-3 rounded-xl border transition-all", isRI ? "bg-indigo-50 border-indigo-200" : "bg-sys-50 border-sys-100")}>
-                                        <div className="flex items-center gap-2">
-                                            <ShieldCheck className={cn(withAfip ? "text-brand" : "text-sys-300")} size={20}/>
-                                            <div>
-                                                <span className="text-xs font-bold text-sys-700 uppercase block">Facturación Electrónica</span>
-                                                <span className="text-[9px] text-sys-400 block flex items-center gap-1">
-                                                    {isRI ? <span className="text-indigo-600 font-bold flex items-center gap-1"><Info size={10}/> CLIENTE RI: FACTURA A</span> : withAfip ? "Se emitirá ticket fiscal (CAE)" : "Solo ticket interno"}
-                                                </span>
+                                            <div className="flex items-center gap-2">
+                                                <ShieldCheck className={cn(withAfip ? "text-brand" : "text-sys-300")} size={20}/>
+                                                <div>
+                                                    <span className="text-xs font-bold text-sys-700 uppercase block">Facturación Electrónica</span>
+                                                    <span className="text-[9px] text-sys-400 block flex items-center gap-1">
+                                                        {isRI ? <span className="text-indigo-600 font-bold flex items-center gap-1"><Info size={10}/> CLIENTE RI: FACTURA A</span> : withAfip ? "Se emitirá ticket fiscal (CAE)" : "Solo ticket interno"}
+                                                    </span>
+                                                </div>
                                             </div>
-                                        </div>
-                                        <Switch checked={withAfip} onCheckedChange={handleAfipChange} disabled={isRI || isProcessing} />
+                                            <Switch checked={withAfip} onCheckedChange={handleAfipChange} disabled={isRI || isProcessing} />
                                     </div>
                                 )}
                                 

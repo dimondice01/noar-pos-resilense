@@ -3,14 +3,14 @@ import { useNavigate } from 'react-router-dom';
 import { 
     Store, Zap, ArrowRight, CheckCircle2, Loader2, Package, 
     ShoppingBag, AlertCircle, Upload, Image as ImageIcon, ShieldCheck,
-    PartyPopper, UserCheck, LayoutGrid
+    PartyPopper, UserCheck, LayoutGrid, MapPin
 } from 'lucide-react';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { doc, updateDoc } from 'firebase/firestore';
 import { storage, db } from '../../../database/firebase'; 
 
 // 🔥 SERVICIOS Y STORES
-import { authService } from '../services/authService'; // Tu nuevo servicio atómico
+import { authService } from '../services/authService'; 
 import { useAuthStore } from '../store/useAuthStore';
 import { useDbSeeder } from '../../../core/hooks/useDbSeeder';
 
@@ -33,11 +33,9 @@ const CATALOG_OPTIONS = [
 
 export const ValeriaRegisterPage = () => {
     const navigate = useNavigate();
-    // Usamos el login del store para actualizar el estado global tras el registro
-    const { login: storeLogin } = useAuthStore();
     const { seedFromUrl, loadingMsg, isSeeding } = useDbSeeder();
 
-    const [step, setStep] = useState(1);
+    const [step, setStep] = useState(1); // 1: Datos, 2: Sucursales (Solo Enterprise), 3: Catálogo, 4: Éxito
     
     // Estados del Formulario
     const [formData, setFormData] = useState({
@@ -46,10 +44,13 @@ export const ValeriaRegisterPage = () => {
         password: '',
         confirmPassword: '',
         ownerName: '',
-        planType: 'single', // Por defecto
-        branchesCount: 1,   // Por defecto
+        planType: 'single', 
+        branchesCount: 1,   
         captcha: '' 
     });
+
+    // Nombres de Sucursales (Solo Enterprise)
+    const [branchNames, setBranchNames] = useState(['Sucursal Central']);
 
     const [logoFile, setLogoFile] = useState(null);
     const [logoPreview, setLogoPreview] = useState(null);
@@ -57,7 +58,7 @@ export const ValeriaRegisterPage = () => {
     const [error, setError] = useState('');
     const [selectedOption, setSelectedOption] = useState(CATALOG_OPTIONS[0]);
 
-    // Desafío matemático simple (Anti-Spam)
+    // Desafío matemático
     const [mathChallenge] = useState({ 
         q: `${Math.floor(Math.random() * 5) + 1} + ${Math.floor(Math.random() * 5) + 1}`, 
     });
@@ -94,118 +95,128 @@ export const ValeriaRegisterPage = () => {
 
     // --- MANEJO DE SELECCIÓN DE PLAN ---
     const handlePlanSelect = (plan) => {
-        setFormData({
-            ...formData,
-            planType: plan.id,
-            // Si elige Multi, sugerimos 3 sucursales, si no 1.
-            branchesCount: plan.id === 'single' ? 1 : 3 
-        });
+        const count = plan.id === 'single' ? 1 : 2; // Mínimo 2 para enterprise
+        setFormData({ ...formData, planType: plan.id, branchesCount: count });
+        
+        // Regenerar array de nombres
+        const names = Array(count).fill('').map((_, i) => i === 0 ? 'Sucursal Central' : `Sucursal ${i + 1}`);
+        setBranchNames(names);
     };
 
-    // --- PASO 1: CREAR CUENTA (CON NUEVO ARCHITECTURE) ---
-    const handleRegister = async (e) => {
+    const handleBranchCountChange = (count) => {
+        setFormData({ ...formData, branchesCount: count });
+        // Ajustar array de nombres manteniendo los que ya escribió
+        const newNames = [...branchNames];
+        if (count > newNames.length) {
+            for (let i = newNames.length; i < count; i++) newNames.push(`Sucursal ${i + 1}`);
+        } else {
+            newNames.length = count;
+        }
+        setBranchNames(newNames);
+    };
+
+    const handleBranchNameChange = (index, value) => {
+        const newNames = [...branchNames];
+        newNames[index] = value;
+        setBranchNames(newNames);
+    };
+
+    // --- PASO 1: VALIDACIÓN Y AVANCE ---
+    const handleNextStep = (e) => {
         e.preventDefault();
         setError('');
 
-        // Validaciones
         if (formData.password !== formData.confirmPassword) return setError("Las contraseñas no coinciden.");
         if (formData.password.length < 6) return setError("La contraseña debe tener al menos 6 caracteres.");
         if (parseInt(formData.captcha) !== realAnswer) return setError("La verificación anti-robot es incorrecta.");
         
-        if (formData.planType === 'multi' && (formData.branchesCount < 2 || formData.branchesCount > 10)) {
-            return setError("El plan Enterprise requiere entre 2 y 10 sucursales.");
+        // Si es Enterprise, vamos al paso de configuración de sucursales
+        if (formData.planType === 'multi') {
+            setStep(2);
+        } else {
+            // Si es Single, registramos directo
+            handleRegister();
         }
+    };
 
+    // --- REGISTRO FINAL (DESDE PASO 1 O 2) ---
+    const handleRegister = async (e) => {
+        if (e) e.preventDefault();
         setLoading(true);
+        setError('');
 
         try {
-            // 1. REGISTRO ATÓMICO EN FIREBASE (User + Company + Branches)
-            // Usamos el servicio directo, no la Cloud Function
+            // Preparar payload de sucursales
+            const finalBranches = formData.planType === 'single' 
+                ? ['Sucursal Central'] 
+                : branchNames;
+
+            // 1. REGISTRO ATÓMICO EN FIREBASE
+            // 🔥 AQUÍ ESTÁ EL CAMBIO: Forzamos el rol 'OWNER'
             await authService.register({
                 email: formData.email,
                 password: formData.password,
                 name: formData.ownerName,
                 companyName: formData.businessName,
-                branchCount: formData.branchesCount // 🔥 Aquí pasamos la cantidad elegida
+                branchCount: formData.branchesCount,
+                branchNames: finalBranches, 
+                role: 'OWNER' // 👑 El creador de la cuenta ES el dueño
             });
 
-            // 2. AUTO-LOGIN INMEDIATO
-            // Esto recupera el perfil completo (incluyendo el companyId generado)
+            // 2. AUTO-LOGIN
             const userProfile = await authService.login(formData.email, formData.password);
             
-            // Actualizar estado global de la app
-            if (userProfile) {
-                // Forzamos update en el store de Zustand
-                // Nota: `storeLogin` en tu store actual solo toma email/pass, 
-                // pero como ya hicimos login con el servicio, el listener del store lo captará.
-                // Sin embargo, para obtener el ID de empresa YA MISMO para el logo, usamos userProfile.
-                
-                const newCompanyId = userProfile.companyId;
-
-                // 3. SUBIR LOGO (Si existe)
-                if (logoFile && newCompanyId) {
-                    try {
-                        const storageRef = ref(storage, `companies/${newCompanyId}/logo/brand_logo`);
-                        await uploadBytes(storageRef, logoFile);
-                        const logoUrl = await getDownloadURL(storageRef);
-                        // Actualizamos el documento de la empresa con la URL del logo
-                        await updateDoc(doc(db, 'companies', newCompanyId), { logoUrl });
-                    } catch (logoErr) { 
-                        console.error("Error subiendo logo (no bloqueante):", logoErr); 
-                    }
-                }
+            // 3. SUBIR LOGO
+            if (userProfile && logoFile) {
+                try {
+                    const storageRef = ref(storage, `companies/${userProfile.companyId}/logo/brand_logo`);
+                    await uploadBytes(storageRef, logoFile);
+                    const logoUrl = await getDownloadURL(storageRef);
+                    await updateDoc(doc(db, 'companies', userProfile.companyId), { logoUrl });
+                } catch (logoErr) { console.error("Logo error:", logoErr); }
             }
 
-            // Todo éxito -> Siguiente paso
-            setStep(2);
+            setStep(3); // Ir a Catálogo
 
         } catch (err) {
             console.error(err);
-            // Mensajes de error amigables
             if (err.code === 'auth/email-already-in-use') {
                 setError("Este correo electrónico ya está registrado.");
             } else {
                 setError("Error al crear la cuenta: " + err.message);
             }
+            // Si falló en paso 2, volvemos para que corrija
+            if (step === 2) setStep(2); 
+            else setStep(1);
         } finally {
             setLoading(false);
         }
     };
 
-    // --- PASO 2: CARGA DE MAESTROS ---
+    // --- PASO 3: CARGA DE MAESTROS ---
     const handleFinish = async () => {
         if (!selectedOption) return;
         
         try {
-            // Si eligió una plantilla predefinida (ej. Kiosco), la cargamos ahora
             if (selectedOption.file) {
-                // Recuperamos el usuario actual del store (ya debe estar logueado)
                 const currentUser = useAuthStore.getState().user;
-                
-                if (!currentUser?.companyId) {
-                    throw new Error("No se detectó la sesión activa. Por favor recarga.");
-                }
-                
-                // Ejecutamos el Seeder
+                if (!currentUser?.companyId) throw new Error("Sesión no detectada.");
                 await seedFromUrl(currentUser.companyId, selectedOption.file);
             }
             
-            // 🔥 ÉXITO FINAL
-            setStep(3);
+            setStep(4);
             triggerCelebration(); 
-
         } catch (err) {
             setError("Error configurando catálogo: " + err.message);
         }
     };
 
     return (
-        <div className="min-h-screen flex bg-sys-50">
+        <div className="min-h-screen flex bg-sys-50 font-sans">
             
-            {/* IZQUIERDA: Branding Ejecutivo */}
+            {/* IZQUIERDA: Branding */}
             <div className="hidden lg:flex w-1/2 bg-slate-900 text-white flex-col justify-between p-12 relative overflow-hidden border-r border-slate-800">
                 <div className="absolute top-0 right-0 w-96 h-96 bg-brand/10 rounded-full blur-3xl -translate-y-1/2 translate-x-1/3"></div>
-                <div className="absolute bottom-0 left-0 w-64 h-64 bg-indigo-500/10 rounded-full blur-3xl translate-y-1/3 -translate-x-1/3"></div>
                 
                 <div className="z-10">
                     <h1 className="text-3xl font-black tracking-tight flex items-center gap-3">
@@ -224,29 +235,22 @@ export const ValeriaRegisterPage = () => {
                         Alta de Cliente <span className="text-brand">Premium</span>.
                     </h2>
                     <div className="space-y-4 text-slate-300">
-                        <div className="flex items-center gap-3">
-                            <CheckCircle2 className="text-brand" /> <span>Multi-Sucursal Nativo</span>
-                        </div>
-                        <div className="flex items-center gap-3">
-                            <CheckCircle2 className="text-brand" /> <span>Inventario Distribuido</span>
-                        </div>
-                        <div className="flex items-center gap-3">
-                            <CheckCircle2 className="text-brand" /> <span>Auditoría en Tiempo Real</span>
-                        </div>
+                        <div className="flex items-center gap-3"><CheckCircle2 className="text-brand" /> <span>Multi-Sucursal Nativo</span></div>
+                        <div className="flex items-center gap-3"><CheckCircle2 className="text-brand" /> <span>Inventario Distribuido</span></div>
+                        <div className="flex items-center gap-3"><CheckCircle2 className="text-brand" /> <span>Auditoría en Tiempo Real</span></div>
                     </div>
                 </div>
 
-                <div className="text-xs text-slate-500 z-10 flex justify-between items-center border-t border-white/5 pt-4">
-                    <span>© 2026 Noar Technology.</span>
-                    <span className="font-mono text-white/20">ID: VG-REP-001</span>
+                <div className="text-xs text-slate-500 z-10 border-t border-white/5 pt-4">
+                    <span>© 2026 Noar Technology. ID: VG-REP-001</span>
                 </div>
             </div>
 
             {/* DERECHA: Formulario */}
-            <div className="w-full lg:w-1/2 flex items-center justify-center p-6 overflow-y-auto">
+            <div className="w-full lg:w-1/2 flex items-center justify-center p-6 overflow-y-auto bg-white">
                 <div className="w-full max-w-md space-y-6 py-8">
                     
-                    {/* PASO 1: REGISTRO */}
+                    {/* PASO 1: DATOS BÁSICOS */}
                     {step === 1 && (
                         <div className="animate-in fade-in slide-in-from-right-8 duration-500">
                             <div className="text-center mb-6">
@@ -256,14 +260,13 @@ export const ValeriaRegisterPage = () => {
 
                             {error && (
                                 <div className="bg-red-50 text-red-600 p-4 rounded-xl text-sm flex gap-2 items-start mb-6 animate-in shake">
-                                    <AlertCircle size={18} className="shrink-0 mt-0.5"/>
-                                    {error}
+                                    <AlertCircle size={18} className="shrink-0 mt-0.5"/> {error}
                                 </div>
                             )}
 
-                            <form onSubmit={handleRegister} className="space-y-4">
+                            <form onSubmit={handleNextStep} className="space-y-4">
                                 
-                                {/* SELECTOR DE PLAN */}
+                                {/* PLAN SELECTOR */}
                                 <div className="grid grid-cols-2 gap-4">
                                     {PLAN_OPTIONS.map((plan) => (
                                         <div 
@@ -283,28 +286,6 @@ export const ValeriaRegisterPage = () => {
                                     ))}
                                 </div>
 
-                                {/* CONFIGURACIÓN EXTRA PARA MULTI-SUCURSAL */}
-                                {formData.planType === 'multi' && (
-                                    <div className="bg-blue-50 p-4 rounded-xl border border-blue-100 animate-in zoom-in-95 duration-200">
-                                        <div className="flex justify-between items-center mb-2">
-                                            <label className="text-xs font-bold uppercase text-blue-800">Cantidad de Sucursales</label>
-                                            <span className="text-xs font-bold bg-white text-blue-600 px-2 py-0.5 rounded border border-blue-200">
-                                                {formData.branchesCount}
-                                            </span>
-                                        </div>
-                                        <input 
-                                            type="range" 
-                                            min="2" max="10" 
-                                            value={formData.branchesCount}
-                                            onChange={(e) => setFormData({...formData, branchesCount: parseInt(e.target.value)})}
-                                            className="w-full accent-brand h-2 bg-blue-200 rounded-lg appearance-none cursor-pointer"
-                                        />
-                                        <p className="text-[10px] text-blue-500 mt-2 text-center">
-                                            Se crearán automáticamente {formData.branchesCount} sucursales (S1, S2...)
-                                        </p>
-                                    </div>
-                                )}
-
                                 {/* LOGO UPLOAD */}
                                 <div className="flex justify-center my-6">
                                     <div className="relative group cursor-pointer">
@@ -321,19 +302,12 @@ export const ValeriaRegisterPage = () => {
                                                 </div>
                                             )}
                                         </div>
-                                        <input 
-                                            type="file" 
-                                            accept="image/*" 
-                                            onChange={handleLogoChange}
-                                            className="absolute inset-0 opacity-0 cursor-pointer"
-                                        />
-                                        <div className="absolute bottom-0 right-0 bg-sys-900 text-white p-1 rounded-full shadow-lg">
-                                            <Upload size={10} />
-                                        </div>
+                                        <input type="file" accept="image/*" onChange={handleLogoChange} className="absolute inset-0 opacity-0 cursor-pointer" />
+                                        <div className="absolute bottom-0 right-0 bg-sys-900 text-white p-1 rounded-full shadow-lg"><Upload size={10} /></div>
                                     </div>
                                 </div>
 
-                                {/* CAMPOS BÁSICOS */}
+                                {/* INPUTS */}
                                 <div>
                                     <label className="text-xs font-bold uppercase text-sys-500 ml-1">Nombre del Negocio</label>
                                     <input type="text" required className="w-full input-std" placeholder="Ej: Supermercados del Sur"
@@ -366,7 +340,6 @@ export const ValeriaRegisterPage = () => {
                                     </div>
                                 </div>
 
-                                {/* ANTI-BOT SIMPLE */}
                                 <div className="bg-sys-100 p-3 rounded-xl border border-sys-200 flex items-center justify-between">
                                     <div className="flex items-center gap-2 text-sm text-sys-600">
                                         <ShieldCheck size={18} className="text-brand"/>
@@ -376,25 +349,74 @@ export const ValeriaRegisterPage = () => {
                                         value={formData.captcha} onChange={e => setFormData({...formData, captcha: e.target.value})} />
                                 </div>
 
-                                <Button type="submit" disabled={loading} className="w-full py-4 text-base shadow-xl shadow-brand/20 bg-slate-900 hover:bg-black text-white transition-all hover:scale-[1.02]">
-                                    {loading ? <Loader2 className="animate-spin"/> : <>Registrar Comercio <ArrowRight size={18} className="ml-2"/></>}
+                                <Button type="submit" className="w-full py-4 text-base shadow-xl shadow-brand/20 bg-slate-900 hover:bg-black text-white transition-all hover:scale-[1.02]">
+                                    Continuar <ArrowRight size={18} className="ml-2"/>
                                 </Button>
                             </form>
                         </div>
                     )}
 
-                    {/* PASO 2: CATÁLOGO MAESTRO */}
+                    {/* PASO 2: CONFIGURACIÓN SUCURSALES (Solo Enterprise) */}
                     {step === 2 && (
+                        <div className="animate-in fade-in slide-in-from-right-8 duration-500">
+                            <div className="text-center mb-6">
+                                <h2 className="text-3xl font-bold text-sys-900">Estructura Enterprise</h2>
+                                <p className="text-sys-500 mt-2 font-medium">Define tus sucursales.</p>
+                            </div>
+
+                            <div className="bg-blue-50 p-6 rounded-2xl border border-blue-100 mb-6">
+                                <div className="flex justify-between items-center mb-4">
+                                    <label className="text-sm font-bold uppercase text-blue-800">Cantidad de Sucursales</label>
+                                    <span className="text-lg font-black bg-white text-blue-600 px-3 py-1 rounded-lg border border-blue-200 shadow-sm">
+                                        {formData.branchesCount}
+                                    </span>
+                                </div>
+                                <input 
+                                    type="range" min="2" max="10" 
+                                    value={formData.branchesCount}
+                                    onChange={(e) => handleBranchCountChange(parseInt(e.target.value))}
+                                    className="w-full accent-brand h-2 bg-blue-200 rounded-lg appearance-none cursor-pointer"
+                                />
+                            </div>
+
+                            <div className="space-y-3 mb-8 max-h-[300px] overflow-y-auto custom-scrollbar pr-2">
+                                {branchNames.map((name, idx) => (
+                                    <div key={idx} className="flex items-center gap-3">
+                                        <div className="w-8 h-10 flex items-center justify-center bg-sys-100 rounded text-sys-500 font-bold text-xs border border-sys-200">
+                                            S{idx + 1}
+                                        </div>
+                                        <div className="flex-1 relative">
+                                            <MapPin size={14} className="absolute left-3 top-3 text-sys-400"/>
+                                            <input 
+                                                type="text" 
+                                                className="w-full pl-9 pr-4 py-2.5 bg-white border border-sys-200 rounded-xl text-sm font-medium focus:border-brand outline-none"
+                                                value={name}
+                                                onChange={(e) => handleBranchNameChange(idx, e.target.value)}
+                                                placeholder={`Nombre Sucursal ${idx + 1}`}
+                                            />
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+
+                            <div className="flex gap-3">
+                                <Button variant="ghost" onClick={() => setStep(1)} className="flex-1">Atrás</Button>
+                                <Button onClick={handleRegister} disabled={loading} className="flex-[2] bg-brand hover:bg-brand-dark text-white shadow-lg">
+                                    {loading ? <Loader2 className="animate-spin"/> : "Finalizar Registro"}
+                                </Button>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* PASO 3: CATÁLOGO MAESTRO */}
+                    {step === 3 && (
                         <div className="animate-in fade-in slide-in-from-right-8 duration-500">
                             <div className="text-center mb-8">
                                 <div className="w-20 h-20 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4 text-green-600 border-4 border-white shadow-lg relative">
                                     <CheckCircle2 size={40} />
-                                    {logoPreview && <img src={logoPreview} className="absolute inset-0 w-full h-full object-cover rounded-full opacity-50" alt="" />}
                                 </div>
                                 <h2 className="text-2xl font-bold text-sys-900">¡Cuenta Activa!</h2>
-                                <p className="text-sys-500 mt-2 max-w-xs mx-auto">
-                                    Ahora definamos el <b>Catálogo Maestro</b> que compartirán las sucursales.
-                                </p>
+                                <p className="text-sys-500 mt-2">Ahora definamos el <b>Catálogo Maestro</b>.</p>
                             </div>
 
                             {isSeeding ? (
@@ -438,8 +460,8 @@ export const ValeriaRegisterPage = () => {
                         </div>
                     )}
 
-                    {/* 🔥 PASO 3: BIENVENIDA (FIESTA) */}
-                    {step === 3 && (
+                    {/* PASO 4: ÉXITO */}
+                    {step === 4 && (
                         <div className="animate-in zoom-in duration-500 text-center py-10">
                             <div className="w-24 h-24 bg-yellow-100 rounded-full flex items-center justify-center mx-auto mb-6 text-yellow-600 shadow-xl shadow-yellow-100/50 animate-bounce">
                                 <PartyPopper size={48} />
@@ -447,27 +469,10 @@ export const ValeriaRegisterPage = () => {
                             
                             <h2 className="text-4xl font-black text-sys-900 mb-2">¡Todo Listo!</h2>
                             <p className="text-sys-500 text-lg mb-8 max-w-xs mx-auto">
-                                El sistema <strong>{formData.planType === 'multi' ? 'Enterprise' : 'Comercio'}</strong> está operativo.
+                                Sistema <strong>{formData.planType === 'multi' ? 'Enterprise' : 'Comercio'}</strong> configurado.
                             </p>
 
-                            <div className="bg-sys-50 p-6 rounded-2xl border border-sys-200 mb-8 text-left space-y-3">
-                                <div className="flex gap-3 items-center text-sys-700">
-                                    <CheckCircle2 size={18} className="text-green-500" /> <span>Usuario Admin Configurado</span>
-                                </div>
-                                <div className="flex gap-3 items-center text-sys-700">
-                                    <CheckCircle2 size={18} className="text-green-500" /> <span>Estructura de Base de Datos Lista</span>
-                                </div>
-                                {formData.planType === 'multi' && (
-                                    <div className="flex gap-3 items-center text-sys-700">
-                                        <CheckCircle2 size={18} className="text-green-500" /> <span>{formData.branchesCount} Sucursales Creadas</span>
-                                    </div>
-                                )}
-                            </div>
-
-                            <Button 
-                                onClick={() => navigate('/')} 
-                                className="w-full h-16 text-xl bg-sys-900 hover:bg-black text-white shadow-2xl shadow-sys-900/30 transition-all hover:scale-105"
-                            >
+                            <Button onClick={() => navigate('/')} className="w-full h-16 text-xl bg-sys-900 hover:bg-black text-white shadow-2xl shadow-sys-900/30 transition-all hover:scale-105">
                                 Ingresar al Sistema <ArrowRight size={24} className="ml-2"/>
                             </Button>
                         </div>
@@ -480,6 +485,8 @@ export const ValeriaRegisterPage = () => {
                 .input-std { width: 100%; background: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 0.75rem; padding: 0.8rem 1rem; font-size: 0.95rem; outline: none; transition: all 0.2s; color: #1E293B; font-weight: 500; }
                 .input-std:focus { border-color: #0F172A; box-shadow: 0 0 0 3px rgba(15,23,42,0.05); background: white; }
                 @keyframes loading { 0% { width: 0%; margin-left: 0; } 50% { width: 100%; margin-left: 0; } 100% { width: 0%; margin-left: 100%; } }
+                .custom-scrollbar::-webkit-scrollbar { width: 4px; }
+                .custom-scrollbar::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 4px; }
             `}</style>
         </div>
     );

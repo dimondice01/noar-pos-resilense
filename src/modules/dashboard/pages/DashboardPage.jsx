@@ -43,7 +43,6 @@ const money = (val) => val ? val.toLocaleString('es-AR', {minimumFractionDigits:
 const getShiftValues = (shift, calculatedDetails = null) => {
     if (!shift) return { expected: 0, declared: 0, diff: 0, initial: 0 };
     
-    // 🔥 PRIORIDAD 1: SNAPSHOT (FOTO CONGELADA)
     if (shift.auditSnapshot) {
         const snap = shift.auditSnapshot;
         const declared = Number(shift.finalCash ?? snap.declaredCash ?? 0);
@@ -53,7 +52,6 @@ const getShiftValues = (shift, calculatedDetails = null) => {
         return { expected, declared, diff, initial };
     }
 
-    // PRIORIDAD 2: CÁLCULO EN TIEMPO REAL
     const isValid = (val) => val !== undefined && val !== null;
     let expected = 0;
     
@@ -103,8 +101,6 @@ const NoBranchesSetupView = ({ onFix }) => {
 // =================================================================
 const AdminSecurityPanel = ({ onUpdatePin, activeBranchName, activeBranchId }) => {
     const [newPin, setNewPin] = useState('');
-    
-    // 🔥 BLOQUEO DE SEGURIDAD:
     const isDisabled = !activeBranchId || activeBranchId === 'ALL';
 
     return (
@@ -165,7 +161,6 @@ const KpiCard = ({ metrics, isAdmin, money, navigate, onTriggerClose, isCajeroAc
     <div className={cn("lg:col-span-2 relative overflow-hidden rounded-3xl p-6 text-white shadow-2xl transition-all border border-white/5", isAdmin ? "bg-slate-900" : "bg-brand")}>
         <div className="absolute top-0 right-0 p-12 opacity-5 pointer-events-none"><Activity size={180} /></div>
         
-        {/* HEADER DE LA TARJETA */}
         <div className="relative z-10 flex flex-col h-full justify-between gap-8">
             <div className="flex justify-between items-start">
                 <div>
@@ -177,12 +172,13 @@ const KpiCard = ({ metrics, isAdmin, money, navigate, onTriggerClose, isCajeroAc
                         <p className="text-white/60 font-bold uppercase tracking-wider text-[10px]">
                             {isAdmin ? "Ventas Globales (Hoy)" : (isCajeroActive ? "Turno Activo" : "Caja Cerrada")}
                         </p>
-                        {activeBranchName && (
+                        {activeBranchName && isAdmin && (
                             <span className="ml-2 bg-white/20 px-2 py-0.5 rounded text-[9px] font-bold text-white border border-white/10 backdrop-blur-sm truncate max-w-[150px]">
                                 {activeBranchName === 'ALL' ? 'Todas las Sucursales' : activeBranchName}
                             </span>
                         )}
                     </div>
+                    {/* 🔥 CIERRE CIEGO: Cajero no ve monto total de ventas */}
                     <h1 className="text-5xl font-black tracking-tighter tabular-nums">
                         {isAdmin ? `$ ${money(metrics.todaySales)}` : (isCajeroActive ? 'OPERATIVO' : '---')}
                     </h1>
@@ -192,10 +188,10 @@ const KpiCard = ({ metrics, isAdmin, money, navigate, onTriggerClose, isCajeroAc
                 </div>
             </div>
 
-            {/* DESGLOSE Y BOTONES DE ACCIÓN */}
             <div className="flex items-center gap-4 bg-black/20 p-4 rounded-2xl backdrop-blur-md border border-white/5">
                 <div className="flex-1 border-r border-white/10 pr-4">
                     <p className="text-[10px] uppercase font-bold text-white/50 mb-1">Efectivo</p>
+                    {/* 🔥 CIERRE CIEGO: Cajero no ve detalles */}
                     <p className="text-lg font-bold font-mono tracking-tight text-white/90">{isAdmin ? `$ ${money(metrics.cashInHand)}` : '• • •'}</p>
                 </div>
                 <div className="flex-1">
@@ -203,7 +199,6 @@ const KpiCard = ({ metrics, isAdmin, money, navigate, onTriggerClose, isCajeroAc
                     <p className="text-lg font-bold font-mono tracking-tight text-white/90">{isAdmin ? `$ ${money(metrics.digitalSales)}` : '• • •'}</p>
                 </div>
                 <div className="pl-4 flex gap-2">
-                    {/* 🔥 ACCESO DIRECTO A MÉTRICAS PARA ADMIN */}
                     {isAdmin && (
                         <>
                             <Button onClick={() => navigate('reports')} variant="secondary" size="sm" className="bg-emerald-500 text-white hover:bg-emerald-600 border-none h-9 text-xs font-bold shadow-lg transition-transform active:scale-95">
@@ -214,7 +209,6 @@ const KpiCard = ({ metrics, isAdmin, money, navigate, onTriggerClose, isCajeroAc
                             </Button>
                         </>
                     )}
-                    {/* ACCIÓN PARA CAJERO */}
                     {isCajeroActive && (
                         <Button size="sm" className="bg-rose-500 hover:bg-rose-600 text-white border-none h-9 text-xs font-bold shadow-lg" onClick={onTriggerClose}>
                             <Lock size={14} className="mr-2"/> Cerrar Caja
@@ -272,7 +266,6 @@ const AdminCashAuditPanel = ({ allShifts, loadIntelligence, navigate, resolveNam
     const [loadingAudit, setLoadingAudit] = useState(false);
     const [auditTarget, setAuditTarget] = useState(null);
 
-    // FUSIÓN INTELIGENTE DE TURNOS (LOCAL + CLOUD)
     const localClosedUnAudited = allShifts.filter(s => s.status === 'CLOSED' && !s.audited);
     const cloudClosedUnAudited = Array.isArray(pendingShifts) ? pendingShifts : [];
     const combinedMap = new Map();
@@ -399,7 +392,7 @@ const AdminCashAuditPanel = ({ allShifts, loadIntelligence, navigate, resolveNam
 };
 
 // =================================================================
-// PANEL DE ACCIONES RÁPIDAS (CON ACCESO BI)
+// PANEL DE ACCIONES RÁPIDAS
 // =================================================================
 const QuickActionsPanel = ({ navigate, onExpenseClick, onWithdrawalClick, isAdmin }) => (
     <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
@@ -407,9 +400,11 @@ const QuickActionsPanel = ({ navigate, onExpenseClick, onWithdrawalClick, isAdmi
             { label: 'Ir a Vender', icon: ShoppingBag, color: 'text-brand', bg: 'group-hover:bg-brand/10', action: () => navigate('pos') },
             { label: 'Registrar Gasto', icon: DollarSign, color: 'text-rose-500', bg: 'group-hover:bg-rose-50', action: onExpenseClick },
             { label: 'Retiro Efectivo', icon: Banknote, color: 'text-amber-500', bg: 'group-hover:bg-amber-50', action: onWithdrawalClick },
-            { label: 'Ver Ventas', icon: FileText, color: 'text-blue-500', bg: 'group-hover:bg-blue-50', action: () => navigate('sales') },
-            // 🔥 BOTÓN NUEVO: REPORTES BI (Solo Admin)
-            ...(isAdmin ? [{ label: 'Reportes BI', icon: PieChart, color: 'text-purple-600', bg: 'group-hover:bg-purple-50', action: () => navigate('reports') }] : []),
+            // 🔥 SI NO ES ADMIN, NO VE "VER VENTAS" NI "REPORTES BI"
+            ...(isAdmin ? [
+                { label: 'Ver Ventas', icon: FileText, color: 'text-blue-500', bg: 'group-hover:bg-blue-50', action: () => navigate('sales') },
+                { label: 'Reportes BI', icon: PieChart, color: 'text-purple-600', bg: 'group-hover:bg-purple-50', action: () => navigate('reports') }
+            ] : [])
         ].map((btn, i) => (
             <button key={i} onClick={btn.action} className="p-4 bg-white border border-slate-200 rounded-xl shadow-sm hover:shadow-md hover:border-slate-300 transition-all flex flex-col items-center gap-2 group">
                 <div className={cn("p-3 bg-slate-50 rounded-full transition-colors", btn.bg)}>
@@ -425,7 +420,6 @@ const AdminDashboardView = ({ metrics, money, navigate, loadIntelligence, handle
     <div className="space-y-6 pb-20 animate-in fade-in">
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
             <KpiCard metrics={metrics} isAdmin={true} money={money} navigate={navigate} onTriggerClose={onTriggerClose} isCajeroActive={!!metrics.activeShift} activeBranchName={activeBranchName} />
-            {/* 🔥 TARJETA DE GASTOS: Ahora muestra totalExpenses directamente desde cloudStats */}
             <StatCard title="Gastos Operativos" value={`$ ${money(metrics.totalExpenses)}`} subtext="Salidas del día (Incl. Compras)" icon={TrendingDown} colorClass="bg-rose-50 text-rose-600" borderClass="border-slate-200" />
             <StatCard title="Cajas Activas" value={metrics.activeShiftsCount} subtext="En tiempo real" icon={Monitor} colorClass="bg-blue-50 text-blue-600" borderClass="border-slate-200" />
         </div>
@@ -468,7 +462,6 @@ const AdminDashboardView = ({ metrics, money, navigate, loadIntelligence, handle
                          <div className="flex justify-between items-end"><p className="text-sm font-black text-slate-800">GESTIONAR</p><Package className="text-violet-500 opacity-20" size={20}/></div>
                     </Card>
                 </div>
-                {/* 🔥 COMPONENTE BLINDADO DE PIN */}
                 <AdminSecurityPanel onUpdatePin={handleUpdatePin} activeBranchName={activeBranchName} activeBranchId={activeBranchId} />
             </div>
         </div>
@@ -476,13 +469,14 @@ const AdminDashboardView = ({ metrics, money, navigate, loadIntelligence, handle
     </div>
 );
 
+// 🔥 VISTA CAJERO: LIMPIA, CIEGA Y OPERATIVA
 const CajeroDashboardView = ({ metrics, money, handleOpenShift, onTriggerClose, navigate, onExpenseClick, onWithdrawalClick }) => (
-    <div className="space-y-6 pb-20 animate-in fade-in">
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+    <div className="space-y-6 pb-20 animate-in fade-in max-w-2xl mx-auto">
+        <div className="grid grid-cols-1 gap-6">
+            {/* KPI CARD SIMPLIFICADA (SIN MONTOS DE VENTA) */}
             <KpiCard metrics={metrics} isAdmin={false} money={money} navigate={navigate} onTriggerClose={onTriggerClose} isCajeroActive={!!metrics.activeShift} />
-            <div className="space-y-4">
-                <MyShiftCard metrics={metrics} money={money} handleOpenShift={handleOpenShift} />
-            </div>
+            
+            <MyShiftCard metrics={metrics} money={money} handleOpenShift={handleOpenShift} />
         </div>
         <QuickActionsPanel navigate={navigate} onExpenseClick={onExpenseClick} onWithdrawalClick={onWithdrawalClick} isAdmin={false} />
     </div>
@@ -509,13 +503,17 @@ export const DashboardPage = () => {
     const [cashiersList, setCashiersList] = useState([]); 
     const [dbStatus, setDbStatus] = useState({ checked: false, hasBranches: false });
 
-    const isAdmin = user?.role?.toUpperCase() === 'ADMIN' || user?.role === 'OWNER';
+    // 🔥 ROLES: Solo OWNER y ADMIN son "Administradores" del dashboard
+    // Pero el OWNER es el único que ve el selector de Branches
+    const isAdminView = user?.role === 'OWNER' || user?.role === 'ADMIN';
+    const isOwner = user?.role === 'OWNER';
+    
     const cloudStats = useCloudDashboard(); 
 
     // 1. Verificación de Salud
     useEffect(() => {
         const checkHealth = async () => {
-            if (!isAdmin || !user?.companyId) { setDbStatus({ checked: true, hasBranches: true }); return; }
+            if (!isAdminView || !user?.companyId) { setDbStatus({ checked: true, hasBranches: true }); return; }
             try {
                 const count = await localDb.branches.count();
                 if (count > 0) { setDbStatus({ checked: true, hasBranches: true }); return; }
@@ -525,11 +523,11 @@ export const DashboardPage = () => {
             } catch (e) { setDbStatus({ checked: true, hasBranches: true }); }
         };
         checkHealth();
-    }, [user, isAdmin]);
+    }, [user, isAdminView]);
 
     // 2. Carga de Cajeros
     useEffect(() => {
-        if (user?.companyId && isAdmin) {
+        if (user?.companyId && isAdminView) {
             const fetchCashiers = async () => {
                 const q = query(collection(firestoreDB, 'users'), where('companyId', '==', user.companyId));
                 const snap = await getDocs(q);
@@ -537,7 +535,7 @@ export const DashboardPage = () => {
             };
             fetchCashiers();
         }
-    }, [user?.companyId, isAdmin]);
+    }, [user?.companyId, isAdminView]);
 
     const resolveCashierName = (shiftUserId, shiftUserName) => {
         const matchedUser = cashiersList.find(u => u.uid === shiftUserId || u.email === shiftUserId);
@@ -547,28 +545,19 @@ export const DashboardPage = () => {
 
     // 3. Carga de Inteligencia Local
     const loadIntelligence = async () => {
-        if (isAdmin && !dbStatus.hasBranches) return;
+        if (isAdminView && !dbStatus.hasBranches) return;
         setLoading(true);
         try {
             const allShifts = await cashRepository.getAllShifts();
             const myActiveShift = allShifts.find(s => s.status === 'OPEN' && s.userId === user.uid);
             
-            if (!isAdmin) {
-                const sales = await salesRepository.getTodaySales();
-                const mSales = sales.reduce((acc, s) => {
-                    const total = parseFloat(s.total) || 0;
-                    acc.total += total;
-                    if (s.payment?.method === 'cash') acc.cash += total; else acc.digital += total;
-                    return acc;
-                }, { total: 0, cash: 0, digital: 0 });
-
+            if (!isAdminView) {
+                // Lógica Cajero: Solo necesito saber si mi turno está abierto y el monto inicial
+                // NO calculo ventas totales aquí para el cierre ciego
                 setMetrics(prev => ({
                     ...prev,
-                    todaySales: mSales.total,
-                    cashInHand: mSales.cash,
-                    digitalSales: mSales.digital,
                     activeShift: myActiveShift,
-                    allShifts: allShifts 
+                    allShifts: [] // Cajero no ve historial global
                 }));
             } else {
                  setMetrics(prev => ({ ...prev, activeShift: myActiveShift, allShifts }));
@@ -579,8 +568,8 @@ export const DashboardPage = () => {
 
     useEffect(() => { if (user) loadIntelligence(); }, [user.name, user.role, activeBranchId]);
 
-    // 4. Fusión de Métricas
-    const finalMetrics = isAdmin ? {
+    // 4. Fusión de Métricas (Solo si es Admin View)
+    const finalMetrics = isAdminView ? {
         ...metrics,
         todaySales: cloudStats.totalSales, 
         cashInHand: cloudStats.cashTotal,
@@ -656,16 +645,24 @@ export const DashboardPage = () => {
 
     if (!user) return <div className="p-10 text-center text-slate-500">Error: Usuario no autenticado.</div>;
     if (!dbStatus.checked) return <div className="w-full h-[80vh] flex flex-col items-center justify-center animate-pulse"><div className="w-16 h-16 border-4 border-slate-100 border-t-brand rounded-full animate-spin"></div></div>;
-    if (!dbStatus.hasBranches && isAdmin) return <NoBranchesSetupView onFix={handleFixBranches} />;
+    if (!dbStatus.hasBranches && isAdminView) return <NoBranchesSetupView onFix={handleFixBranches} />;
 
     return (
         <div className="w-full space-y-8 pb-20 max-w-7xl mx-auto">
             <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-                <div><h1 className="text-3xl font-black text-slate-900 tracking-tight flex items-center gap-3">Hola, {user?.name?.split(' ')[0] || 'Admin'} <span className="text-2xl">👋</span></h1><p className="text-slate-500 font-medium text-sm mt-1">Resumen operativo.</p></div>
-                {isAdmin && <BranchSelector allowAll={true} />}
+                <div>
+                    <h1 className="text-3xl font-black text-slate-900 tracking-tight flex items-center gap-3">
+                        Hola, {user?.name?.split(' ')[0] || 'Usuario'} <span className="text-2xl">👋</span>
+                    </h1>
+                    <p className="text-slate-500 font-medium text-sm mt-1">
+                        {isAdminView ? "Resumen operativo global." : "Panel de control de caja."}
+                    </p>
+                </div>
+                {/* 🔥 SOLO EL OWNER VE EL SELECTOR DE SUCURSALES */}
+                {isOwner && <BranchSelector allowAll={true} />}
             </div>
 
-            {isAdmin ? (
+            {isAdminView ? (
                 <AdminDashboardView 
                     metrics={finalMetrics} money={money} navigate={navigate} 
                     loadIntelligence={loadIntelligence} handleUpdatePin={handleUpdatePin}

@@ -17,7 +17,7 @@ import { PaymentRequiredPage } from './modules/auth/pages/PaymentRequiredPage';
 import { ProtectedRoute } from './core/components/ProtectedRoute';
 import { SubscriptionGuard } from './core/guards/SubscriptionGuard'; 
 
-// ✅ LANDING PAGE
+// ✅ LANDING PAGE (Opcional, ahora oculta en root)
 import { LandingPage } from './modules/landing/pages/LandingPage';
 
 // Páginas del Sistema
@@ -78,11 +78,20 @@ function App() {
         <BrowserRouter>
             <Routes>
                 {/* === ZONA PÚBLICA === */}
-                <Route path="/" element={<LandingPage />} />
+                
+                {/* 🔥 CAMBIO CLAVE: La raíz ahora es el LOGIN */}
+                <Route path="/" element={<LoginPage />} />
+                
+                {/* Si quieres mantener la landing accesible, usa otra ruta */}
+                <Route path="/info" element={<LandingPage />} />
+
                 <Route path="/register" element={<RegisterPage />} /> 
                 <Route path="/valeria" element={<ValeriaRegisterPage />} /> 
+                
+                {/* Rutas de login específicas (slug) */}
                 <Route path="/login" element={<LoginPage />} />
                 <Route path="/login/:companySlug" element={<LoginPage />} />
+                
                 <Route path="/plan-expired" element={<PaymentRequiredPage />} />
 
                 {/* === ZONA PRIVADA === */}

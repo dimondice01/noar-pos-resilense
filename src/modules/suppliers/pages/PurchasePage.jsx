@@ -4,7 +4,7 @@ import {
     AlertCircle, PackagePlus, 
     RefreshCw, Globe, MapPin, 
     Info, Printer, CheckCircle,
-    Trash2, Percent
+    Trash2, Percent, CalendarClock
 } from 'lucide-react';
 import { usePurchaseController } from '../hooks/usePurchaseController';
 import { masterRepository } from '../../inventory/repositories/masterRepository';
@@ -15,7 +15,6 @@ import { cn } from '../../../core/utils/cn';
 import toast from 'react-hot-toast';
 import { QuickProductModal } from '../components/QuickProductModal';
 import { SupplierPaymentModal } from '../components/SupplierPaymentModal';
-// 🔥 Importamos useParams para capturar el slug de la empresa
 import { useLocation, useNavigate, useParams } from 'react-router-dom'; 
 
 export const PurchasePage = () => {
@@ -24,7 +23,7 @@ export const PurchasePage = () => {
     const { state: navState } = useLocation(); 
     const navigate = useNavigate();
     
-    // 🔥 Capturamos el slug de la URL (ej: 'novademo')
+    // 🔥 Capturamos el slug de la URL
     const { companySlug } = useParams();
 
     // 🧠 Conexión con el Cerebro de Compras
@@ -50,7 +49,9 @@ export const PurchasePage = () => {
     const [newProductBarcode, setNewProductBarcode] = useState('');
     const [changedProducts, setChangedProducts] = useState([]);
     
+    // 🔥 REFS PARA NAVEGACIÓN MATRICIAL
     const searchInputRef = useRef(null);
+    const rowRefs = useRef({}); // Mapa de referencias: { "itemId-field": ref }
 
     // 1. Carga Inicial
     useEffect(() => {
@@ -63,6 +64,8 @@ export const PurchasePage = () => {
             }
         };
         loadMasters();
+        // Foco inicial al buscador
+        setTimeout(() => searchInputRef.current?.focus(), 100);
     }, [navState]);
 
     // 2. Buscador con Debounce
@@ -80,13 +83,77 @@ export const PurchasePage = () => {
         return () => clearTimeout(timer);
     }, [searchTerm]);
 
+    // 🔥 3. AUTO-FOCO AL AGREGAR ITEM (AHORA EN CANTIDAD)
+    useEffect(() => {
+        if (items.length > 0) {
+            const lastItem = items[items.length - 1];
+            // 🔥 CAMBIO CLAVE: Enfocamos "quantity" por defecto para carga rápida
+            const targetRef = rowRefs.current[`${lastItem.product.id}-quantity`];
+            if (targetRef) {
+                setTimeout(() => {
+                    targetRef.focus();
+                    targetRef.select(); // Selecciona el "1" para sobrescribirlo al tipear
+                }, 50);
+            }
+        }
+    }, [items.length]);
+
+    // =================================================================
+    // 🚀 LÓGICA DE NAVEGACIÓN POR TECLADO (MATRIX NAV)
+    // =================================================================
+    
+    const handleRowKeyDown = (e, itemId, field, index) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            // 🔥 CAMBIO CLAVE: Volver al buscador y SELECCIONAR TODO para sobre-escritura inmediata
+            if (searchInputRef.current) {
+                searchInputRef.current.focus();
+                searchInputRef.current.select();
+            }
+        } else if (e.key === 'ArrowRight' || e.key === 'ArrowLeft' || e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+            e.preventDefault();
+            
+            // Orden lógico de navegación (Quantity está al final visualmente, pero es el start point lógico ahora)
+            // Si el usuario presiona flechas, puede moverse libremente.
+            const fields = ['costInput', 'markup', 'newPrice', 'quantity'];
+            const currentFieldIndex = fields.indexOf(field);
+            
+            let nextField = field;
+            let nextIndex = index;
+
+            if (e.key === 'ArrowRight') {
+                if (currentFieldIndex < fields.length - 1) {
+                    nextField = fields[currentFieldIndex + 1];
+                }
+            } else if (e.key === 'ArrowLeft') {
+                if (currentFieldIndex > 0) {
+                    nextField = fields[currentFieldIndex - 1];
+                }
+            } else if (e.key === 'ArrowDown') {
+                if (index < items.length - 1) {
+                    nextIndex = index + 1;
+                }
+            } else if (e.key === 'ArrowUp') {
+                if (index > 0) {
+                    nextIndex = index - 1;
+                }
+            }
+
+            // Enfocar el siguiente elemento calculado
+            const nextItem = items[nextIndex];
+            const targetRef = rowRefs.current[`${nextItem.product.id}-${nextField}`];
+            if (targetRef) {
+                targetRef.focus();
+                targetRef.select();
+            }
+        }
+    };
+
     // =================================================================
     // 🚀 FLUJO DE GUARDADO, PAGO E IMPRESIÓN
     // =================================================================
     
-    // Paso A: Abrir Modal de Pago
     const handleInitSave = () => {
-        // 🔥 VALIDACIÓN DE SUCURSAL
         if (!activeBranchId || activeBranchId === 'ALL') {
             return toast.error("⚠️ Seleccione una sucursal específica para ingresar stock.");
         }
@@ -96,9 +163,7 @@ export const PurchasePage = () => {
         setIsPaymentModalOpen(true);
     };
 
-    // Paso B: Confirmar Pago y Guardar en DB
     const handleConfirmPayment = async (paymentData) => {
-        // 1. Detectar cambios de precio para etiquetas
         const listToPrint = items.filter(item => {
             const oldPrice = parseFloat(item.product.price || 0);
             const newPrice = parseFloat(item.newPrice || 0);
@@ -110,10 +175,10 @@ export const PurchasePage = () => {
         }));
 
         try {
-            // 2. 🔥 INYECTAR BRANCH ID AL PAYLOAD
             const finalPayload = {
                 ...paymentData,
-                branchId: activeBranchId // CRÍTICO: Vincula la compra a la sucursal actual
+                branchId: activeBranchId,
+                priceEffectiveDate: paymentData.effectiveDate || null 
             };
 
             const success = await submitPurchase(finalPayload); 
@@ -121,14 +186,11 @@ export const PurchasePage = () => {
             if (success) {
                 setIsPaymentModalOpen(false);
                 
-                // 3. Flujo Post-Guardado
                 if (listToPrint.length > 0) {
                     setChangedProducts(listToPrint);
                     setShowPrintPrompt(true); 
                 } else {
                     toast.success("Compra guardada correctamente");
-                    // 🔥 FIX CRÍTICO: Navegación relativa a la empresa
-                    // Usamos el slug capturado para no salirnos del tenant
                     navigate(`/${companySlug}/suppliers`); 
                 }
             }
@@ -138,19 +200,14 @@ export const PurchasePage = () => {
         }
     };
 
-    // Paso C: Ir a Imprimir
-   const handleGoToPrint = () => {
-        // 🔥 FIX: Navegación segura usando el slug
+    const handleGoToPrint = () => {
         navigate(`/${companySlug}/inventory/print-labels`, { 
             state: { autoLoadItems: changedProducts } 
         });
     };
 
-    // Paso D: Navegación Manual
     const handleBack = () => {
-        // 🔥 FIX: Navegación segura
         const targetPath = `/${companySlug}/suppliers`;
-
         if (items.length > 0) {
             if (confirm("¿Salir sin guardar la compra? Se perderán los datos ingresados.")) {
                 navigate(targetPath);
@@ -160,7 +217,6 @@ export const PurchasePage = () => {
         }
     };
 
-    // 3. Scanner Handler
     const handleSearchKeyDown = async (e) => {
         if (e.key === 'Enter' && searchTerm) {
             e.preventDefault();
@@ -181,6 +237,8 @@ export const PurchasePage = () => {
             }
         }
     };
+
+    const priceChangesCount = items.filter(item => Math.abs(parseFloat(item.product.price || 0) - parseFloat(item.newPrice || 0)) > 0.01).length;
 
     return (
         <div className="h-[calc(100vh-4rem)] flex flex-col bg-sys-50 overflow-hidden relative">
@@ -214,6 +272,18 @@ export const PurchasePage = () => {
                 </div>
 
                 <div className="flex items-center gap-6">
+                    {priceChangesCount > 0 && (
+                        <div className="hidden lg:flex flex-col items-end gap-0.5 animate-in fade-in">
+                            <div className="flex items-center gap-1.5 text-orange-600 bg-orange-50 px-2 py-1 rounded-lg border border-orange-100">
+                                <CalendarClock size={14} />
+                                <span className="text-[10px] font-bold">{priceChangesCount} Precios Modificados</span>
+                            </div>
+                            <span className="text-[9px] text-sys-400 font-medium">Podrás programar la fecha al guardar</span>
+                        </div>
+                    )}
+
+                    <div className="h-10 w-px bg-sys-200 hidden lg:block"></div>
+
                     <div className="flex flex-col items-end gap-1">
                         <span className="text-[9px] font-black text-sys-400 uppercase tracking-widest">Condición IVA</span>
                         <div className="flex bg-sys-100 p-1 rounded-xl border border-sys-200">
@@ -286,7 +356,7 @@ export const PurchasePage = () => {
                                 <p className="text-xl font-black text-sys-500">Escanea productos para comenzar</p>
                             </div>
                         ) : (
-                            items.map((item) => {
+                            items.map((item, index) => {
                                 const hasPriceChange = Math.abs(parseFloat(item.product.price) - parseFloat(item.newPrice)) > 0.01;
                                 return (
                                     <div key={item.product.id} className="bg-white border border-sys-200 rounded-2xl p-4 shadow-sm hover:shadow-md transition-all group animate-in slide-in-from-right-4">
@@ -301,25 +371,49 @@ export const PurchasePage = () => {
                                             </div>
 
                                             <div className="flex-1 grid grid-cols-4 gap-4 bg-sys-50 p-3 rounded-xl border border-sys-100">
+                                                {/* COSTO INPUT (NAV) */}
                                                 <div>
                                                     <label className="text-[8px] font-black text-sys-400 uppercase mb-1 block">Costo Unit.</label>
                                                     <div className="relative">
                                                         <span className="absolute left-2 top-2 text-sys-400 text-[10px] font-bold">$</span>
-                                                        <input type="number" className="w-full pl-5 pr-2 py-1.5 border border-sys-200 rounded-lg font-bold text-sm outline-none" value={item.costInput} onChange={(e) => updateItem(item.product.id, 'costInput', e.target.value)} />
+                                                        <input 
+                                                            ref={el => rowRefs.current[`${item.product.id}-costInput`] = el}
+                                                            type="number" 
+                                                            className="w-full pl-5 pr-2 py-1.5 border border-sys-200 rounded-lg font-bold text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/20 transition-all" 
+                                                            value={item.costInput} 
+                                                            onChange={(e) => updateItem(item.product.id, 'costInput', e.target.value)}
+                                                            onKeyDown={(e) => handleRowKeyDown(e, item.product.id, 'costInput', index)}
+                                                        />
                                                     </div>
                                                 </div>
+                                                {/* MARGEN INPUT (NAV) */}
                                                 <div>
                                                     <label className="text-[8px] font-black text-sys-400 uppercase mb-1 block">Margen %</label>
                                                     <div className="relative">
                                                         <Percent className="absolute right-2 top-2.5 text-sys-300 pointer-events-none" size={12}/>
-                                                        <input type="number" className="w-full pl-2 pr-6 py-1.5 border border-sys-200 rounded-lg font-black text-brand text-sm outline-none text-center" value={item.markup} onChange={(e) => updateItem(item.product.id, 'markup', e.target.value)} />
+                                                        <input 
+                                                            ref={el => rowRefs.current[`${item.product.id}-markup`] = el}
+                                                            type="number" 
+                                                            className="w-full pl-2 pr-6 py-1.5 border border-sys-200 rounded-lg font-black text-brand text-sm outline-none text-center focus:border-brand focus:ring-2 focus:ring-brand/20 transition-all" 
+                                                            value={item.markup} 
+                                                            onChange={(e) => updateItem(item.product.id, 'markup', e.target.value)}
+                                                            onKeyDown={(e) => handleRowKeyDown(e, item.product.id, 'markup', index)}
+                                                        />
                                                     </div>
                                                 </div>
+                                                {/* PRECIO INPUT (NAV) */}
                                                 <div>
                                                     <label className="text-[8px] font-black text-emerald-600 uppercase mb-1 block">P. Venta</label>
                                                     <div className="relative">
                                                         <span className="absolute left-2 top-2 text-emerald-400 text-[10px] font-bold">$</span>
-                                                        <input type="number" className="w-full pl-5 pr-2 py-1.5 border-2 border-emerald-100 bg-white rounded-lg font-black text-emerald-700 text-sm outline-none focus:border-emerald-500" value={item.newPrice} onChange={(e) => updateItem(item.product.id, 'newPrice', e.target.value)} />
+                                                        <input 
+                                                            ref={el => rowRefs.current[`${item.product.id}-newPrice`] = el}
+                                                            type="number" 
+                                                            className="w-full pl-5 pr-2 py-1.5 border-2 border-emerald-100 bg-white rounded-lg font-black text-emerald-700 text-sm outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-200 transition-all" 
+                                                            value={item.newPrice} 
+                                                            onChange={(e) => updateItem(item.product.id, 'newPrice', e.target.value)}
+                                                            onKeyDown={(e) => handleRowKeyDown(e, item.product.id, 'newPrice', index)}
+                                                        />
                                                     </div>
                                                 </div>
                                                 <div className="flex flex-col justify-center items-center border-l border-sys-200 pl-4">
@@ -330,9 +424,18 @@ export const PurchasePage = () => {
                                                 </div>
                                             </div>
 
+                                            {/* CANTIDAD INPUT (NAV - DEFAULT FOCUS) */}
                                             <div className="w-28">
                                                 <label className="text-[8px] font-black text-sys-400 uppercase mb-1 block text-center">Cantidad</label>
-                                                <input type="number" className="w-full h-10 px-3 border-2 border-sys-100 rounded-xl font-black text-center text-sys-900 bg-white" value={item.quantity} onChange={(e) => updateItem(item.product.id, 'quantity', e.target.value)} min="1" />
+                                                <input 
+                                                    ref={el => rowRefs.current[`${item.product.id}-quantity`] = el}
+                                                    type="number" 
+                                                    className="w-full h-10 px-3 border-2 border-sys-100 rounded-xl font-black text-center text-sys-900 bg-white outline-none focus:border-brand focus:ring-2 focus:ring-brand/20 transition-all" 
+                                                    value={item.quantity} 
+                                                    onChange={(e) => updateItem(item.product.id, 'quantity', e.target.value)} 
+                                                    min="1" 
+                                                    onKeyDown={(e) => handleRowKeyDown(e, item.product.id, 'quantity', index)}
+                                                />
                                             </div>
 
                                             <button onClick={() => removeItem(item.product.id)} className="p-2.5 text-sys-300 hover:text-red-500 hover:bg-red-50 rounded-xl transition-all"><Trash2 size={20} /></button>
@@ -436,6 +539,7 @@ export const PurchasePage = () => {
                 onClose={() => setIsPaymentModalOpen(false)}
                 total={totals}
                 supplierName={supplier?.name || "Proveedor"}
+                hasPriceChanges={priceChangesCount > 0} 
                 onConfirm={handleConfirmPayment}
             />
 

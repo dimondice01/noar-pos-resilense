@@ -7,7 +7,7 @@ import {
     Eye, Trash2
 } from 'lucide-react';
 
-// 🔥 USAMOS EL ÚNICO REPOSITORIO VÁLIDO
+// 🔥 REPOSITORIO
 import { purchaseRepository } from '../repositories/purchaseRepository'; 
 
 import { useAuthStore } from '../../auth/store/useAuthStore';
@@ -22,6 +22,10 @@ export const PurchaseHistoryPage = () => {
     const { companySlug } = useParams(); 
     const { activeBranchName, activeBranchId, user } = useAuthStore();
     
+    // --- CONTROL DE PERMISOS ---
+    // Cajero solo ve (READ ONLY). Owner/Admin operan (FULL ACCESS).
+    const canOperate = user?.role === 'OWNER' || user?.role === 'ADMIN' || user?.role === 'SUPER_ADMIN';
+
     // Estados
     const [history, setHistory] = useState([]);
     const [loading, setLoading] = useState(true);
@@ -93,6 +97,7 @@ export const PurchaseHistoryPage = () => {
     // ACCIONES
     const handleOpenPayment = (e, purchase) => {
         e.stopPropagation();
+        if (!canOperate) return; // Doble check
         setSelectedPurchase(purchase);
         setIsPaymentModalOpen(true);
     };
@@ -118,8 +123,7 @@ export const PurchaseHistoryPage = () => {
     const handleVoidPurchase = async (e, purchase) => {
         e.stopPropagation();
         
-        // 🛡️ SEGURIDAD: Solo Admins pueden eliminar
-        if (user?.role !== 'ADMIN' && user?.role !== 'SUPER_ADMIN' && user?.role !== 'OWNER') {
+        if (!canOperate) {
             return toast.error("⛔ Acción no autorizada para tu perfil.");
         }
 
@@ -154,6 +158,8 @@ export const PurchaseHistoryPage = () => {
     };
 
     const handleNewPurchase = () => {
+        if (!canOperate) return;
+        
         if (!activeBranchId || activeBranchId === 'ALL') {
             return toast.error("Por favor, seleccione una sucursal específica arriba.");
         }
@@ -161,13 +167,9 @@ export const PurchaseHistoryPage = () => {
             ? { selectedSupplier: { id: activeSupplierFilter.id, name: activeSupplierFilter.name } }
             : null;
         
-        // Usamos ruta segura con el slug
         const targetSlug = companySlug || 'main';
         navigate(`/${targetSlug}/suppliers/purchases/new`, { state });
     };
-
-    // Helper para verificar permisos de borrado
-    const canDelete = user?.role === 'ADMIN' || user?.role === 'SUPER_ADMIN' || user?.role === 'OWNER';
 
     return (
         <div className="h-full flex flex-col bg-sys-50 overflow-hidden animate-in fade-in duration-300">
@@ -192,15 +194,20 @@ export const PurchaseHistoryPage = () => {
                         </div>
                     </div>
                     
-                    <Button 
-                        onClick={handleNewPurchase} 
-                        className="h-12 px-8 text-lg shadow-xl shadow-brand/20 bg-brand hover:bg-brand-dark transition-all hover:scale-105"
-                    >
-                        <Plus className="mr-2" strokeWidth={3} />
-                        Nueva Compra
-                    </Button>
+                    {/* 🔥 BOTÓN NUEVA COMPRA (SOLO ADMIN/OWNER) */}
+                    {canOperate && (
+                        <Button 
+                            onClick={handleNewPurchase} 
+                            className="h-12 px-8 text-lg shadow-xl shadow-brand/20 bg-brand hover:bg-brand-dark transition-all hover:scale-105"
+                        >
+                            <Plus className="mr-2" strokeWidth={3} />
+                            Nueva Compra
+                        </Button>
+                    )}
                 </div>
 
+                {/* KPI CARDS (Solo visibles si tienes permiso o quizás limitadas para cajero) */}
+                {/* Asumimos que el cajero PUEDE ver qué llegó, pero quizás no le importan las deudas globales */}
                 <div className="grid grid-cols-4 gap-4">
                     <div className="bg-sys-50 border border-sys-200 p-4 rounded-2xl flex items-center gap-4 group hover:border-brand/30 transition-all">
                         <div className="w-10 h-10 rounded-xl bg-white flex items-center justify-center text-emerald-600 shadow-sm group-hover:scale-110 transition-transform">
@@ -370,7 +377,8 @@ export const PurchaseHistoryPage = () => {
                                                 </td>
                                                 <td className="px-6 py-4 text-right">
                                                     <div className="flex justify-end gap-2">
-                                                        {isDebt && (
+                                                        {/* 🔥 BOTÓN PAGAR (SOLO ADMIN) */}
+                                                        {isDebt && canOperate && (
                                                             <Button 
                                                                 size="xs" 
                                                                 onClick={(e) => handleOpenPayment(e, purchase)} 
@@ -379,11 +387,14 @@ export const PurchaseHistoryPage = () => {
                                                                 <DollarSign size={14}/>
                                                             </Button>
                                                         )}
+                                                        
+                                                        {/* 👀 BOTÓN VER (TODOS) */}
                                                         <Button size="xs" variant="secondary" onClick={(e) => handleViewDetail(e, purchase)}>
                                                             <Eye size={14} className="text-sys-600"/>
                                                         </Button>
-                                                        {/* 🛡️ Botón Borrar: Solo visible si es ADMIN */}
-                                                        {canDelete && (
+                                                        
+                                                        {/* 🔥 BOTÓN BORRAR (SOLO ADMIN) */}
+                                                        {canOperate && (
                                                             <Button size="xs" variant="ghost" onClick={(e) => handleVoidPurchase(e, purchase)} className="text-sys-400 hover:text-red-500 hover:bg-red-50">
                                                                 <Trash2 size={14}/>
                                                             </Button>
@@ -423,7 +434,7 @@ export const PurchaseHistoryPage = () => {
             </div>
 
             {/* MODAL PAGO */}
-            {selectedPurchase && (
+            {selectedPurchase && canOperate && (
                 <SupplierPaymentModal 
                     isOpen={isPaymentModalOpen}
                     onClose={() => setIsPaymentModalOpen(false)}
@@ -440,7 +451,7 @@ export const PurchaseHistoryPage = () => {
                 />
             )}
 
-            {/* MODAL DETALLE */}
+            {/* MODAL DETALLE (READ ONLY) */}
             {viewDetail && (
                 <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in">
                     <div className="bg-white w-full max-w-2xl rounded-2xl shadow-2xl flex flex-col max-h-[80vh]">

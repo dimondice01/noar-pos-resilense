@@ -2,12 +2,13 @@ import React, { useEffect, useState, useMemo } from 'react';
 import { 
     Search, Filter, ArrowDownLeft, ArrowUpRight, 
     History, DollarSign, Tag, AlertCircle, CheckCircle2, Package,
-    BarChart3, List, Users, Calendar, Layers, X
+    BarChart3, List, Users, Calendar, Layers, X, MapPin
 } from 'lucide-react';
 
-// Repositorios
+// Repositorios y Stores
 import { productRepository } from '../repositories/productRepository';
 import { masterRepository } from '../../inventory/repositories/masterRepository'; 
+import { useAuthStore } from '../../auth/store/useAuthStore';
 import { Card } from '../../../core/ui/Card';
 import { Button } from '../../../core/ui/Button';
 import { cn } from '../../../core/utils/cn';
@@ -19,8 +20,10 @@ const TYPE_CONFIG = {
   'PRICE_CHANGE': { label: 'Cambio Precio', icon: DollarSign, color: 'text-blue-600', bg: 'bg-blue-50', border: 'border-blue-200' },
   'COST_CHANGE': { label: 'Cambio Costo', icon: Tag, color: 'text-orange-600', bg: 'bg-orange-50', border: 'border-orange-200' },
   'STOCK_IN': { label: 'Ingreso Stock', icon: ArrowDownLeft, color: 'text-green-600', bg: 'bg-green-50', border: 'border-green-200' },
+  'IN': { label: 'Ingreso Manual', icon: ArrowDownLeft, color: 'text-green-600', bg: 'bg-green-50', border: 'border-green-200' },
   'STOCK_ADJUST_IN': { label: 'Ajuste (+)', icon: CheckCircle2, color: 'text-green-600', bg: 'bg-green-50', border: 'border-green-200' },
   'STOCK_ADJUST_OUT': { label: 'Ajuste (-)', icon: AlertCircle, color: 'text-red-600', bg: 'bg-red-50', border: 'border-red-200' },
+  'OUT': { label: 'Salida Manual', icon: AlertCircle, color: 'text-red-600', bg: 'bg-red-50', border: 'border-red-200' },
   'CREATION': { label: 'Alta Producto', icon: Package, color: 'text-purple-600', bg: 'bg-purple-50', border: 'border-purple-200' },
   'STOCK_OUT': { label: 'Venta', icon: ArrowUpRight, color: 'text-sys-600', bg: 'bg-sys-100', border: 'border-sys-200' },
 };
@@ -64,15 +67,15 @@ const ProductHistoryModal = ({ productData, movements, onClose }) => {
                                             </span>
                                         </div>
                                         <p className="text-xs text-sys-600 truncate">{mov.description || 'Sin descripción'}</p>
-                                        <div className="flex items-center gap-1 mt-1 text-[10px] text-sys-400">
-                                            <Users size={10} /> 
-                                            <span className="font-bold text-sys-600">{mov.user || 'Sistema'}</span>
+                                        <div className="flex items-center gap-2 mt-1 text-[10px] text-sys-400">
+                                            <span className="flex items-center gap-1"><Users size={10} /> {mov.user || 'Sistema'}</span>
+                                            {mov.branchId && <span className="flex items-center gap-1"><MapPin size={10} /> {mov.branchId}</span>}
                                         </div>
                                     </div>
                                     {mov.amount && (
                                         <div className="text-right pl-2 border-l border-sys-100 min-w-[60px]">
-                                            <p className={cn("text-lg font-black", String(mov.amount).startsWith('-') ? 'text-red-600' : 'text-green-600')}>
-                                                {Number(mov.amount) > 0 ? '+' : ''}{Number(mov.amount)}
+                                            <p className={cn("text-lg font-black", (mov.type.includes('OUT') || mov.amount < 0) ? 'text-red-600' : 'text-green-600')}>
+                                                {(mov.type.includes('OUT') || mov.amount < 0) ? '-' : '+'}{Math.abs(Number(mov.amount))}
                                             </p>
                                         </div>
                                     )}
@@ -92,6 +95,7 @@ const ProductHistoryModal = ({ productData, movements, onClose }) => {
 
 export const MovementsPage = () => {
     // ===================== ESTADOS =====================
+    const { user, activeBranchId } = useAuthStore();
     const [data, setData] = useState([]);
     const [categories, setCategories] = useState([]);
     const [userList, setUserList] = useState([]); 
@@ -109,7 +113,7 @@ export const MovementsPage = () => {
     const [filterUser, setFilterUser] = useState('ALL'); 
     const [filterCategory, setFilterCategory] = useState('ALL');
 
-    // ===================== CARGA OPTIMIZADA =====================
+    // ===================== CARGA OPTIMIZADA BLINDADA =====================
     useEffect(() => {
         const loadData = async () => {
             try {
@@ -123,14 +127,31 @@ export const MovementsPage = () => {
                 
                 setCategories(allCats);
 
-                // 2. Cargar Movimientos Masivos
+                // 2. Cargar Movimientos Masivos desde Dexie
                 const { getDB } = await import('../../../database/db');
                 const db = await getDB();
-                const allMovements = await db.movements.toArray();
+                
+                let allMovements = [];
+
+                // 🔥 LÓGICA MULTI-SUCURSAL
+                if (user?.role === 'OWNER') {
+                    // Owner ve TODO (o podría filtrar si activeBranchId !== 'ALL')
+                    if (activeBranchId && activeBranchId !== 'ALL') {
+                        allMovements = await db.movements.where('branchId').equals(activeBranchId).toArray();
+                    } else {
+                        allMovements = await db.movements.toArray();
+                    }
+                } else {
+                    // Cajero/Admin solo ve su sucursal
+                    if (activeBranchId) {
+                        allMovements = await db.movements.where('branchId').equals(activeBranchId).toArray();
+                    } else {
+                        allMovements = []; // Sin sucursal asignada no ve nada
+                    }
+                }
 
                 // 3. Enriquecer Movimientos
                 const productMap = new Map(allProducts.map(p => [String(p.id), p])); 
-                
                 const uniqueUsers = new Set();
 
                 const enrichedData = allMovements.map(mov => {
@@ -141,7 +162,6 @@ export const MovementsPage = () => {
                     uniqueUsers.add(cleanUser);
 
                     // 🔥 FIX: Leemos el NOMBRE de la categoría directo del producto
-                    // Si el producto guarda "Bebidas", usamos "Bebidas".
                     const catName = product ? (product.category || 'Sin Categoría') : 'Eliminado';
 
                     return {
@@ -149,7 +169,7 @@ export const MovementsPage = () => {
                         user: cleanUser,
                         productName: product ? product.name : 'Producto Eliminado',
                         productCode: product ? product.code : '---',
-                        categoryName: catName, // Usamos esto para filtrar
+                        categoryName: catName, 
                         priceAtMoment: product ? product.price : 0, 
                         dateObj: new Date(mov.date)
                     };
@@ -165,7 +185,7 @@ export const MovementsPage = () => {
             }
         };
         loadData();
-    }, []);
+    }, [user, activeBranchId]); // Recarga si cambia la sucursal o el usuario
 
     // ===================== LÓGICA DE FILTRADO =====================
     const filteredData = useMemo(() => {
@@ -186,7 +206,7 @@ export const MovementsPage = () => {
             // 2. Usuario
             if (filterUser !== 'ALL' && item.user !== filterUser) return false;
 
-            // 3. Categoría 🔥 FIX: Comparamos Nombres
+            // 3. Categoría
             if (filterCategory !== 'ALL' && item.categoryName !== filterCategory) return false;
 
             // 4. Búsqueda
@@ -204,9 +224,9 @@ export const MovementsPage = () => {
     const categoryStats = useMemo(() => {
         const stats = {}; 
         filteredData.forEach(mov => {
-            if (mov.type !== 'STOCK_OUT') return;
+            // Consideramos ventas o salidas para estadística de movimiento
+            if (mov.type !== 'STOCK_OUT' && mov.type !== 'OUT') return;
             
-            // Usamos el nombre como clave
             const catName = mov.categoryName;
             if (!stats[catName]) stats[catName] = { name: catName, money: 0, items: 0 };
             
@@ -237,9 +257,15 @@ export const MovementsPage = () => {
             const entry = grouping[mov.productId];
             const qty = parseFloat(mov.amount || 0);
             
-            if (qty < 0) {
+            // Lógica de dirección basada en el tipo de movimiento
+            const isOut = mov.type.includes('OUT') || qty < 0;
+
+            if (isOut) {
                 entry.soldQty += Math.abs(qty);
-                entry.revenue += Math.abs(qty) * (mov.priceAtMoment || 0);
+                // Solo sumamos revenue si es venta real, no ajuste
+                if (mov.type === 'STOCK_OUT') {
+                    entry.revenue += Math.abs(qty) * (mov.priceAtMoment || 0);
+                }
             } else {
                 entry.addedQty += qty;
             }
@@ -266,17 +292,18 @@ export const MovementsPage = () => {
                 <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
                     <div>
                         <h2 className="text-2xl font-bold text-sys-900 tracking-tight flex items-center gap-2">
-                            <History className="text-brand" /> Control de Stock
+                            <History className="text-brand" /> Control de Movimientos
                         </h2>
                         <p className="text-sys-500 text-sm mt-1">
                            {dateRange === 'TODAY' ? 'Mostrando actividad de HOY' : 'Historial de movimientos'}
+                           {activeBranchId && activeBranchId !== 'ALL' && <span className="ml-2 font-bold text-brand">• Sucursal: {activeBranchId}</span>}
                         </p>
                     </div>
                     <div className="bg-white px-5 py-2 rounded-xl border border-sys-200 shadow-sm flex items-center gap-4">
                         <div className="text-right">
-                            <p className="text-[10px] text-sys-400 font-bold uppercase">Unidades Vendidas</p>
+                            <p className="text-[10px] text-sys-400 font-bold uppercase">Movimientos Totales</p>
                             <p className="text-2xl font-black text-sys-900 leading-none">
-                                {aggregatedData.reduce((acc, i) => acc + i.soldQty, 0).toLocaleString('es-AR')}
+                                {filteredData.length.toLocaleString('es-AR')}
                             </p>
                         </div>
                         <div className="h-8 w-8 rounded-full bg-brand/10 text-brand flex items-center justify-center">
@@ -292,7 +319,7 @@ export const MovementsPage = () => {
                                 <span className="text-[10px] uppercase font-bold text-sys-400 truncate" title={cat.name}>{cat.name}</span>
                                 <div>
                                     <p className="text-lg font-black text-sys-800">$ {cat.money.toLocaleString('es-AR', {maximumFractionDigits: 0})}</p>
-                                    <p className="text-[10px] text-sys-500">{cat.items} u. vendidas</p>
+                                    <p className="text-[10px] text-sys-500">{cat.items} u. movidas</p>
                                 </div>
                             </Card>
                         ))}
@@ -328,7 +355,6 @@ export const MovementsPage = () => {
                            ))}
                         </div>
 
-                        {/* 🔥 FILTRO CATEGORÍA CORREGIDO (Valor = Nombre) */}
                         <div className="relative min-w-[140px] shrink-0">
                             <Layers className="absolute left-3 top-1/2 -translate-y-1/2 text-sys-400 w-4 h-4" />
                             <select 
@@ -338,12 +364,11 @@ export const MovementsPage = () => {
                             >
                                 <option value="ALL">Todas las Categorías</option>
                                 {categories.map(c => (
-                                    <option key={c.id} value={c.name}>{c.name}</option> // Value es NAME
+                                    <option key={c.id} value={c.name}>{c.name}</option> 
                                 ))}
                             </select>
                         </div>
 
-                        {/* FILTRO USUARIO */}
                         <div className="relative min-w-[140px] shrink-0">
                             <Users className="absolute left-3 top-1/2 -translate-y-1/2 text-sys-400 w-4 h-4" />
                             <select 
@@ -445,13 +470,14 @@ export const MovementsPage = () => {
                                      <span className="text-[9px] text-sys-400 flex items-center gap-1">
                                        <Users size={8}/> {mov.user}
                                      </span>
+                                     {mov.branchId && <span className="text-[9px] font-bold text-brand bg-brand/5 px-1 rounded flex items-center gap-0.5"><MapPin size={8}/> {mov.branchId}</span>}
                                   </div>
                                   <h4 className="text-xs font-bold text-sys-800 truncate" title={mov.productName}>{mov.productName}</h4>
                                </div>
                                {mov.amount && (
                                  <div className="text-right pl-3 border-l border-sys-100 min-w-[70px]">
-                                    <span className={cn("text-sm font-black tracking-tight", String(mov.amount).startsWith('-') ? "text-red-600" : "text-green-600")}>
-                                      {Number(mov.amount) > 0 ? '+' : ''}{Number(mov.amount)}
+                                    <span className={cn("text-sm font-black tracking-tight", (mov.type.includes('OUT') || mov.amount < 0) ? "text-red-600" : "text-green-600")}>
+                                      {(mov.type.includes('OUT') || mov.amount < 0) ? '-' : '+'}{Math.abs(Number(mov.amount))}
                                     </span>
                                  </div>
                                )}

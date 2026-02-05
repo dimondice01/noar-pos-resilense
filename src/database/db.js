@@ -1,124 +1,102 @@
 import Dexie from 'dexie';
 
 // =================================================================
-// 🏛️ ARQUITECTURA NOAR POS ENTERPRISE (DEXIE v13 - NEXUS CORE)
+// 🏛️ ARQUITECTURA NOAR POS ENTERPRISE (DEXIE v17 - LOCAL-FIRST CORE)
 // =================================================================
 
-export const db = new Dexie('NoarPosDB');
-
 /**
- * ESQUEMA DE DATOS v13 - NEXUS CORE EDITION
- * * Cambios Estratégicos:
- * 1. Indices 'updatedAt': Agregados en tablas maestras para permitir Sync Incremental.
- * 2. Indice '*barcode': Multi-Entry index para soportar array de códigos en productos.
- * 3. Inventario Blindado: Clave compuesta [branchId+productId].
+ * ESQUEMA DE DATOS v17 - BLINDAJE OFFLINE PRO MAX
+ * Principios de Diseño Local-First:
+ * 1. Cero Latencia: Índices compuestos para recuperación inmediata de sesiones.
+ * 2. Autonomía Total: Tablas 'config' y 'shifts' priorizadas para inicio sin internet.
+ * 3. Consistencia JIT: updatedAt en cada registro para sincronización delta eficiente.
  */
-db.version(13).stores({
-  // 🏢 ESTRUCTURA CORPORATIVA (Tenant)
-  companies: 'id, name', 
-  
-  // 📍 SUCURSALES (Branch Control)
-  branches: 'id, companyId, name, cuit, taxCategory, afipPtoVenta, active', 
 
-  // 📦 CATÁLOGO MAESTRO (Global por Tenant)
-  // '*barcode': Permite búsqueda rápida en arrays de códigos (Multi-Barcode).
-  // 'updatedAt': Crítico para el Delta Sync.
-  products: 'id, companyId, code, *barcode, name, category, brand, supplier, taxRate, active, syncStatus, stock, isWeighable, cost, price, promoId, updatedAt', 
+export const db = new Dexie('NoarPosDB_V17');
+
+db.version(1).stores({
+  // 🏢 ESTRUCTURA CORPORATIVA & SESSION CACHE
+  // Guardamos datos de empresa y sucursal activa localmente para evitar flashes de carga
+  companies: 'id, name, updatedAt, syncStatus', 
   
-  // Maestros Globales (Con updatedAt para Sync)
+  // 📍 SUCURSALES (Indexadas para acceso rápido por ID)
+  branches: 'id, companyId, name, active, updatedAt, syncStatus', 
+
+  // 📦 CATÁLOGO MAESTRO (Global - Alto Rendimiento)
+  // priceActivationDate: para activar precios programados localmente sin esperar a la nube.
+  products: 'id, code, *barcode, name, category, categoryId, brand, brandId, active, syncStatus, updatedAt, priceActivationDate', 
+  
+  // Maestros Globales (Carga diferida)
   categories: 'id, name, updatedAt, syncStatus',
   brands: 'id, name, updatedAt, syncStatus',
   
   // 🚛 PROVEEDORES
-  suppliers: 'id, name, docNumber, taxId, updatedAt, syncStatus',
+  suppliers: 'id, name, docNumber, updatedAt, syncStatus',
 
-  // 🏥 INVENTARIO FÍSICO (Localizado por Sucursal)
-  // [branchId+productId]: Clave única compuesta.
-  inventory: '[branchId+productId], productId, branchId, stock, minStock, updatedAt',
+  // 🏥 INVENTARIO FÍSICO Y PROMOS (Localizado por Sucursal)
+  // Clave compuesta [branchId+productId] para búsquedas directas de stock local.
+  inventory: '[branchId+productId], branchId, productId, stock, hasPromo, updatedAt, syncStatus',
 
-  // 🏷️ MOTOR DE PROMOCIONES
-  promotions: 'id, companyId, name, type, startDate, endDate, active, syncStatus',
+  // 🏷️ MOTOR DE PROMOCIONES GENERALES
+  promotions: 'id, branchId, name, type, active, updatedAt, syncStatus',
 
-  // 🧾 MOTOR DE COMPRAS (Ingreso de Mercadería)
-  purchases: 'id, companyId, branchId, supplierId, invoiceNumber, date, status, total, syncStatus',
-  purchase_items: '++id, purchaseId, productId, quantity, cost, newPrice',
+  // 🧾 MOTOR DE COMPRAS (Recepción de mercadería)
+  purchases: 'id, branchId, supplierId, date, status, updatedAt, syncStatus',
+  purchase_items: '++id, purchaseId, productId',
 
-  // 💳 FINANZAS & TASAS
-  payment_methods: 'id, branchId, type, name, active', 
-  installments_config: '++id, paymentMethodId, installments, interestRate',
+  // 💰 VENTAS (Blindaje de Operación Offline)
+  // userId y branchId indexados para filtrar historial local rápidamente.
+  sales: 'id, date, number, ticketNumber, invoiceNumber, branchId, userId, status, updatedAt, syncStatus', 
+  sale_items: '++id, saleId, productId',
 
-  // 💰 VENTAS (Numeración Profesional)
-  sales: 'localId, firestoreId, companyId, branchId, userId, type, number, date, status, syncStatus', 
-  sale_items: '++id, saleId, productId, quantity, price, subtotal',
+  // 💸 CAJA Y TURNOS (EL CORAZÓN DEL LOCAL-FIRST)
+  // 🔥 MEJORA: Índice compuesto [userId+status] para rehidratación INSTANTÁNEA al recargar F5.
+  shifts: 'id, userId, branchId, status, [userId+status], openedAt, closedAt, updatedAt, syncStatus',
+  cash_movements: '++id, shiftId, branchId, type, date, updatedAt, syncStatus',
 
-  // 💸 CAJA Y TURNOS OPERATIVOS
-  shifts: 'id, userId, branchId, status, openedAt, syncStatus',
-  cash_movements: '++id, shiftId, branchId, type, amount, date, syncStatus',
+  // 👥 CRM (Clientes - Búsqueda rápida por documento o nombre)
+  clients: 'id, docNumber, name, email, updatedAt, syncStatus',
 
-  // 👥 CRM (Clientes)
-  clients: 'id, companyId, docNumber, name, email, syncStatus',
+  // 📉 CUENTAS CORRIENTES (Saldos locales para venta a crédito offline)
+  customer_ledger: '++id, clientId, date, updatedAt, syncStatus',
+  supplier_ledger: '++id, supplierId, date, updatedAt, syncStatus',
 
-  // 📉 CUENTAS CORRIENTES (LEDGERS)
-  customer_ledger: '++id, clientId, date, type, amount, syncStatus',
-  supplier_ledger: '++id, supplierId, date, type, amount, syncStatus',
-
-  // 📈 KARDEX & AUDITORÍA DE MOVIMIENTOS
-  movements: '++id, productId, branchId, userId, type, date, amount, syncStatus',
+  // 📈 KARDEX (Log de Movimientos de Stock local)
+  movements: '++id, productId, branchId, date, type, updatedAt, syncStatus',
   
-  // ⚙️ SISTEMA & CONFIGURACIÓN
+  // ⚙️ CONFIGURACIÓN & ESTADO DE LA APP
+  // Almacenamos aquí el 'last_sync_timestamp' para no re-descargar todo.
   config: 'key',
   
-  // 👤 USUARIOS (Cache para Offline)
-  users: 'email, uid, companyId, branchId, role, name, password'
+  // Usuarios con acceso a esta terminal (Offline Auth Support)
+  users: 'uid, email, role, companyId, activeBranchId'
 });
 
-// Middlewares: Inicialización de datos críticos
+// Middlewares: Inicialización de Configuración Base
 db.on('populate', (tx) => {
   tx.table('config').add({ key: 'theme', value: 'light' });
-  tx.table('config').add({ key: 'offline_mode', value: true });
-  tx.table('config').add({ key: 'last_migration', value: 'v13_nexus_core' });
+  tx.table('config').add({ key: 'offline_mode', value: false });
+  tx.table('config').add({ key: 'last_full_sync', value: null });
+  tx.table('config').add({ key: 'install_date', value: new Date().toISOString() });
 });
 
 // =================================================================
-// 🚀 GESTIÓN DE MIGRACIÓN Y ACCESO SEGURO
+// 🚀 ACCESO SEGURO & SINGLETON PATTERN
 // =================================================================
 
 export const getDB = async () => {
-  const MIGRATION_KEY = 'NOAR_MIGRATION_V13_NEXUS_CORE_FIXED'; // Cambié la key para forzar re-indexado
-  const isMigrated = localStorage.getItem(MIGRATION_KEY);
-
-  // 🛑 SAFETY CHECK: Migración de Estructura
-  if (!isMigrated) {
-      console.warn("🔄 NEXUS CORE: Re-indexando base de datos v13...");
-
-      try {
-          if (db.isOpen()) db.close();
-
-          // Reseteamos para aplicar los nuevos índices limpios
-          await Dexie.delete('NoarPosDB');
-          await db.open();
-
-          localStorage.setItem(MIGRATION_KEY, 'true');
-          console.log("✅ Estructura NEXUS CORE actualizada y re-indexada.");
-          
-          window.location.reload(); 
-          return; 
-      
-      } catch (error) {
-          console.error("🔴 Error crítico en migración NEXUS CORE:", error);
-      }
-  }
-
-  // APERTURA Y FALLSAFE
   if (!db.isOpen()) {
       try {
         await db.open();
+        console.log("💽 Motor Local-First (Dexie) V17 operativo.");
       } catch (err) {
+        console.error("💥 Falla Crítica en Motor Local:", err);
         if (err.name === 'VersionError' || err.name === 'OpenFailedError') {
-             console.error("💥 Corrupción detectada. Ejecutando reset de fábrica.");
-             await Dexie.delete('NoarPosDB');
+             console.warn("⚠️ Ejecutando Auto-Reparación de Base de Datos...");
+             // Borramos versiones que podrían causar colisión de esquemas
+             await Dexie.delete('NoarPosDB_V16'); 
+             await Dexie.delete('NoarPosDB_V17');
              await db.open();
-             localStorage.setItem(MIGRATION_KEY, 'true');
         }
       }
   }

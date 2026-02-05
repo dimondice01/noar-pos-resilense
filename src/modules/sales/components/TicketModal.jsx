@@ -267,12 +267,13 @@ const TicketContent = forwardRef(({
 });
 
 // =========================================================
-// 3. MODAL PRINCIPAL
+// 3. MODAL PRINCIPAL (CON KEYBOARD LISTENERS)
 // =========================================================
 export const TicketModal = ({ isOpen, onClose, sale, receipt }) => {
     const data = sale || receipt;
     const { user, activeBranchId } = useAuthStore(); 
     const componentRef = useRef(null);
+    const modalRef = useRef(null); // Ref para el foco
     const [branchConfig, setBranchConfig] = useState(null);
 
     const handlePrint = useReactToPrint({
@@ -280,6 +281,27 @@ export const TicketModal = ({ isOpen, onClose, sale, receipt }) => {
         documentTitle: `Ticket-${data?.number || 'venta'}`,
         onAfterPrint: () => console.log("✅ Impresión finalizada"),
     });
+
+    // 🔥 KEYBOARD LISTENER (ENTER = PRINT, ESC = CLOSE)
+    useEffect(() => {
+        if (!isOpen) return;
+
+        // Enfocar el modal para capturar teclas inmediatamente
+        setTimeout(() => modalRef.current?.focus(), 50);
+
+        const handleKeyDown = (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                handlePrint();
+            } else if (e.key === 'Escape') {
+                e.preventDefault();
+                onClose();
+            }
+        };
+
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, [isOpen, handlePrint, onClose]);
 
     // Cargar Configuración de Sucursal para el Header del Ticket
     useEffect(() => {
@@ -329,8 +351,12 @@ export const TicketModal = ({ isOpen, onClose, sale, receipt }) => {
     const logoSrc = EMPRESA.logoUrl || defaultLogo;
 
     return (
-        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
-            <div className="bg-sys-100 p-6 rounded-3xl shadow-2xl w-full max-w-sm flex flex-col max-h-[95vh] print:hidden animate-in fade-in zoom-in duration-200">
+        <div 
+            className="fixed inset-0 z-[70] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 outline-none"
+            tabIndex={-1} // Permite recibir foco
+            ref={modalRef} // Referencia para focus()
+        >
+            <div className="bg-sys-100 p-6 rounded-3xl shadow-2xl w-full max-w-sm flex flex-col max-h-[95vh] print:hidden animate-in fade-in zoom-in duration-200 border-4 border-transparent focus-within:border-brand/20 transition-colors">
                 <div className="flex justify-between items-center mb-4">
                     <div className="flex items-center gap-2">
                         <Ticket className="text-brand" size={24} />
@@ -353,12 +379,13 @@ export const TicketModal = ({ isOpen, onClose, sale, receipt }) => {
                 <div className="flex flex-col gap-2">
                     <Button 
                         onClick={handlePrint} 
-                        className="w-full py-4 bg-brand hover:bg-brand-dark text-white font-black rounded-xl flex justify-center gap-2 shadow-lg shadow-brand/20 transition-all active:scale-95"
+                        className="w-full py-4 bg-brand hover:bg-brand-dark text-white font-black rounded-xl flex justify-center gap-2 shadow-lg shadow-brand/20 transition-all active:scale-95 group"
                     >
-                        <Printer size={22}/> IMPRIMIR TICKET
+                        <Printer size={22} className="group-hover:animate-bounce"/> 
+                        <span>IMPRIMIR (ENTER)</span>
                     </Button>
-                    <button onClick={onClose} className="w-full py-3 text-sys-500 font-bold uppercase text-xs hover:bg-sys-200 rounded-xl">
-                        Cerrar Vista Previa
+                    <button onClick={onClose} className="w-full py-3 text-sys-500 font-bold uppercase text-xs hover:bg-sys-200 rounded-xl transition-colors">
+                        Cerrar Vista Previa (ESC)
                     </button>
                 </div>
             </div>

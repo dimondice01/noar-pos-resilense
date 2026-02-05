@@ -2,13 +2,12 @@ import React, { useState, useEffect, useRef } from 'react';
 import { 
     X, Save, ScanLine, Scale, Package, DollarSign, Tag, Truck, 
     AlertTriangle, Award, ChevronDown, Check, Calendar, Plus, 
-    Trash2, Megaphone, Clock, Barcode, Edit2, Percent, Layers, ShoppingBag
+    Trash2, Megaphone, Clock, Barcode, Edit2, Percent, Layers, ShoppingBag, MapPin
 } from 'lucide-react';
 import { Button } from '../../../core/ui/Button';
 import { Switch } from '../../../core/ui/Switch';
 import { cn } from '../../../core/utils/cn';
 import { masterRepository } from '../repositories/masterRepository';
-import { productRepository } from '../repositories/productRepository';
 import { useAuthStore } from '../../auth/store/useAuthStore'; 
 import toast from 'react-hot-toast';
 
@@ -122,7 +121,7 @@ const PremiumInput = ({ label, icon: Icon, rightIcon, className, readOnly, ...pr
 // ==========================================
 
 export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
-  const { user } = useAuthStore();
+  const { user, activeBranchName } = useAuthStore();
   const [activeTab, setActiveTab] = useState('general'); 
   const [lists, setLists] = useState({ categories: [], brands: [], suppliers: [] });
   const [isSaving, setIsSaving] = useState(false);
@@ -188,9 +187,8 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
           : (productToEdit.barcode ? [productToEdit.barcode] : []);
 
         // 🛡️ RE-HIDRATACIÓN DEL OBJETO PROMO
-        // Si productToEdit.promo es null/undefined, promoActive será false
         const promo = productToEdit.promo || {};
-        const hasPromo = !!productToEdit.promo; // Chequeo explícito
+        const hasPromo = !!productToEdit.promo;
 
         setFormData({
             ...productToEdit,
@@ -206,7 +204,6 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
             // MAPEO EXPLÍCITO DE CAMPOS PROMO
             promoActive: hasPromo,
             promoType: hasPromo ? (promo.type || 'PERCENTAGE') : 'PERCENTAGE',
-            // Usamos String() para asegurar que el input reciba texto y no null/undefined
             promoValue: hasPromo ? String(promo.value || '') : '', 
             promoDiscount: hasPromo ? String(promo.discountValue || '') : '',
             promoPayValue: hasPromo ? String(promo.payValue || '') : '',
@@ -263,7 +260,7 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
       setFormData(prev => ({ ...prev, barcodes: prev.barcodes.filter(b => b !== code) }));
   };
 
-  // 💾 GUARDADO MAESTRO
+  // 💾 GUARDADO MAESTRO + PROMO LOCAL
   const handleSubmit = async (e) => { 
     if (e) e.preventDefault(); 
     
@@ -271,7 +268,6 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
       return toast.error("Nombre y Precio son obligatorios");
     }
     
-    // Validación de Promociones
     if (formData.promoActive) {
         if (!formData.promoValue) return toast.error("Falta el valor de la promoción");
         if (!formData.promoEndDate) return toast.error("Falta la fecha de fin de la promoción");
@@ -280,10 +276,9 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
     setIsSaving(true); 
 
     try {
-        // 1. Construcción Objeto Base
+        // 1. Construcción Objeto Maestro (Global)
         const masterPayload = {
             ...formData,
-            // Mantenemos campos planos por si acaso el repo los necesita temporalmente
             barcode: formData.barcodes, 
             price: parseFloat(formData.price),
             cost: parseFloat(formData.cost || 0),
@@ -293,10 +288,22 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
             isWeighable: Boolean(formData.isWeighable),
             user: user?.name || 'Sistema'
         };
+        
+        // Eliminamos campos de promo del maestro para no ensuciarlo
+        // (La promo ahora viaja aparte)
+        delete masterPayload.promo;
+        delete masterPayload.promoActive;
+        delete masterPayload.promoType;
+        delete masterPayload.promoValue;
+        delete masterPayload.promoDiscount;
+        delete masterPayload.promoPayValue;
+        delete masterPayload.promoStartDate;
+        delete masterPayload.promoEndDate;
 
-        // 2. Construcción Objeto Promo
+        // 2. Construcción Objeto Promo (Local)
+        let promoPayload = null;
         if (formData.promoActive) {
-            masterPayload.promo = {
+            promoPayload = {
                 type: formData.promoType,
                 value: parseFloat(formData.promoValue) || 0,
                 discountValue: parseFloat(formData.promoDiscount) || 0,
@@ -309,8 +316,6 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
                     formData.promoType === 'QUANTITY_LIMIT' ? `Primeras ${formData.promoValue} un. al ${formData.promoDiscount}%` :
                     formData.promoType === 'BUNDLE_DEAL' ? `${formData.promoValue}x${formData.promoPayValue}` : 'Oferta'
             };
-        } else {
-            masterPayload.promo = null; // Limpiar promo si se desactivó
         }
 
         // 3. Limpieza de Stock en Edición
@@ -320,7 +325,9 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
             masterPayload.stock = parseFloat(formData.stock || 0);
         }
 
-        await onSave(masterPayload);
+        // 🔥 Callback con DOS argumentos: Maestro y Promo Local
+        await onSave(masterPayload, promoPayload);
+        
         toast.success("Producto guardado correctamente");
         onClose();
 
@@ -332,7 +339,6 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
     }
   };
 
-  // Opciones de Tipos de Promo
   const promoOptions = [
       { value: 'PERCENTAGE', label: 'Descuento Directo (%)', icon: Percent },
       { value: 'BULK_THRESHOLD', label: 'Descuento por Volumen', icon: Layers },
@@ -517,7 +523,6 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
                     </div>
                 </div>
 
-                {/* Alerta de Pérdida */}
                 {parseFloat(formData.cost) > parseFloat(formData.price) && (
                     <div className="bg-red-50 border border-red-200 rounded-xl p-3 flex items-center gap-3 text-red-700 animate-pulse">
                         <AlertTriangle size={20}/>
@@ -543,9 +548,22 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
              </div>
           )}
 
-          {/* --- TAB PROMOCIONES (COMPLEX ENGINE) --- */}
+          {/* --- TAB PROMOCIONES (LOCALIZADO POR SUCURSAL) --- */}
           {activeTab === 'promociones' && (
              <div className="space-y-6 animate-in slide-in-from-right-8 duration-300 fade-in">
+                
+                {/* 🔥 AVISO DE SUCURSAL ACTIVA */}
+                <div className="bg-brand/5 border border-brand/20 p-3 rounded-xl flex items-center gap-3">
+                    <MapPin className="text-brand" size={20} />
+                    <div>
+                        <p className="text-xs font-bold text-brand-dark">Promoción Localizada</p>
+                        <p className="text-[10px] text-sys-600">
+                            Esta configuración afectará únicamente a la sucursal: 
+                            <span className="font-black text-sys-800 ml-1 uppercase">{activeBranchName || 'Actual'}</span>
+                        </p>
+                    </div>
+                </div>
+
                 <div className="flex items-center justify-between bg-purple-50 p-4 rounded-xl border border-purple-100">
                     <div className="flex items-center gap-3">
                         <div className="p-2 bg-purple-100 text-purple-600 rounded-lg"><Megaphone size={20}/></div>

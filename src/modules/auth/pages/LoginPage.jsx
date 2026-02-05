@@ -61,6 +61,7 @@ export const LoginPage = () => {
       // ---------------------------------------------------------
       // PASO 1: AUTENTICACIÓN (Firebase Auth)
       // ---------------------------------------------------------
+      // Esto actualiza el usuario de Firebase internamente
       await login(email, password);
       
       // ---------------------------------------------------------
@@ -75,11 +76,13 @@ export const LoginPage = () => {
       // ---------------------------------------------------------
       // PASO 3: REDIRECCIÓN USUARIOS NORMALES (Empresas)
       // ---------------------------------------------------------
+      // Esperamos un microtick para asegurar que auth.currentUser esté poblado
       const currentUser = auth.currentUser;
       
       if (!currentUser) throw new Error("No se pudo obtener la sesión.");
 
       // Buscamos los datos completos del usuario (Rol, CompanyID, etc)
+      // Esto es vital porque auth.currentUser NO tiene el rol custom de Firestore
       const userDocRef = doc(db, "users", currentUser.uid);
       const userSnap = await getDoc(userDocRef);
 
@@ -88,6 +91,7 @@ export const LoginPage = () => {
           
           // 🔥 FIX CRÍTICO: INYECTAMOS LOS DATOS AL STORE AHORA MISMO
           // Esto evita que ProtectedRoute vea el usuario incompleto y nos expulse.
+          // Al hacerlo manual aquí, garantizamos que el estado global esté listo ANTES del navigate.
           updateUser({ ...userData, uid: currentUser.uid });
 
           // A. Si tiene empresa asignada (Cajero / Dueño)
@@ -111,6 +115,7 @@ export const LoginPage = () => {
           }
       }
       
+      // Si llegamos aquí, el usuario existe en Auth pero no en Firestore
       console.warn("⚠️ Usuario sin rol ni empresa detectado.");
       navigate('/');
 

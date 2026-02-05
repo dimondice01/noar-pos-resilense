@@ -1,15 +1,18 @@
 import React, { useState, useEffect } from 'react';
-import { X, DollarSign, CreditCard, AlertCircle, ArrowRight, Wallet } from 'lucide-react';
+import { X, DollarSign, CreditCard, AlertCircle, ArrowRight, Wallet, CalendarClock, CheckSquare, Square } from 'lucide-react';
 import { Button } from '../../../core/ui/Button';
-import { supplierRepository } from '../repositories/supplierRepository';
 import { cn } from '../../../core/utils/cn';
 
-export const SupplierPaymentModal = ({ isOpen, onClose, total, supplierName, onConfirm }) => {
+export const SupplierPaymentModal = ({ isOpen, onClose, total, supplierName, hasPriceChanges, onConfirm }) => {
     
-    // Estado
+    // Estado de Pago
     const [amount, setAmount] = useState('');
     const [method, setMethod] = useState('cash');
     const [loading, setLoading] = useState(false);
+
+    // Estado de Programación de Precios
+    const [scheduleUpdate, setScheduleUpdate] = useState(false);
+    const [effectiveDate, setEffectiveDate] = useState('');
 
     // Reset al abrir
     useEffect(() => {
@@ -17,6 +20,12 @@ export const SupplierPaymentModal = ({ isOpen, onClose, total, supplierName, onC
             setAmount(total ? total.toString() : '');
             setMethod('cash');
             setLoading(false);
+            setScheduleUpdate(false);
+            
+            // Fecha por defecto mañana
+            const tomorrow = new Date();
+            tomorrow.setDate(tomorrow.getDate() + 1);
+            setEffectiveDate(tomorrow.toISOString().split('T')[0]);
         }
     }, [isOpen, total]);
 
@@ -44,7 +53,10 @@ export const SupplierPaymentModal = ({ isOpen, onClose, total, supplierName, onC
                 amountPaid: payValue,
                 amountDebt: debtValue,
                 total: total,
-                status: isFullPayment ? 'PAID' : (isNoPayment ? 'UNPAID' : 'PARTIAL')
+                status: isFullPayment ? 'PAID' : (isNoPayment ? 'UNPAID' : 'PARTIAL'),
+                
+                // 🔥 DATA DE PROGRAMACIÓN DE PRECIOS
+                effectiveDate: (hasPriceChanges && scheduleUpdate) ? effectiveDate : null
             };
 
             // Ejecutamos el callback
@@ -53,7 +65,7 @@ export const SupplierPaymentModal = ({ isOpen, onClose, total, supplierName, onC
         } catch (error) {
             console.error(error);
             alert("Error al procesar el pago: " + error.message);
-            setLoading(false); // Solo bajamos el loading si hubo error, si no, se desmonta
+            setLoading(false); 
         }
     };
 
@@ -61,10 +73,10 @@ export const SupplierPaymentModal = ({ isOpen, onClose, total, supplierName, onC
 
     return (
         <div className="fixed inset-0 z-[80] flex items-center justify-center bg-sys-900/60 backdrop-blur-sm p-4 animate-in fade-in zoom-in-95">
-            <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden flex flex-col">
+            <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden flex flex-col max-h-[90vh] overflow-y-auto">
                 
                 {/* Header */}
-                <div className="p-6 bg-sys-50 border-b border-sys-100 flex justify-between items-start">
+                <div className="p-6 bg-sys-50 border-b border-sys-100 flex justify-between items-start sticky top-0 z-10">
                     <div>
                         <p className="text-[10px] font-black uppercase text-sys-400 tracking-widest mb-1">Pago a Proveedor</p>
                         <h3 className="font-black text-xl text-sys-900 leading-none">{supplierName}</h3>
@@ -150,12 +162,48 @@ export const SupplierPaymentModal = ({ isOpen, onClose, total, supplierName, onC
                         </div>
                     )}
 
+                    {/* 🔥 SECCIÓN DE PROGRAMACIÓN DE PRECIOS */}
+                    {hasPriceChanges && (
+                        <div className="border-t border-sys-100 pt-4 animate-in slide-in-from-bottom-2">
+                            <div 
+                                className="flex items-start gap-3 cursor-pointer group"
+                                onClick={() => setScheduleUpdate(!scheduleUpdate)}
+                            >
+                                <div className={cn("mt-0.5 transition-colors", scheduleUpdate ? "text-brand" : "text-sys-300 group-hover:text-sys-400")}>
+                                    {scheduleUpdate ? <CheckSquare size={20} /> : <Square size={20} />}
+                                </div>
+                                <div className="flex-1">
+                                    <p className="text-sm font-bold text-sys-800 leading-none mb-1">Programar cambio de precios</p>
+                                    <p className="text-[10px] text-sys-500 leading-tight">
+                                        Si no activas esto, los nuevos precios impactarán <strong>inmediatamente</strong>.
+                                    </p>
+                                </div>
+                            </div>
+
+                            {scheduleUpdate && (
+                                <div className="mt-3 pl-8 animate-in fade-in">
+                                    <label className="block text-[10px] font-black text-sys-500 uppercase mb-1.5">Fecha de Impacto</label>
+                                    <div className="relative">
+                                        <CalendarClock size={16} className="absolute left-3 top-3 text-brand"/>
+                                        <input 
+                                            type="date" 
+                                            className="w-full pl-9 p-2.5 bg-brand/5 border border-brand/20 rounded-xl text-sm font-bold text-sys-800 outline-none focus:border-brand"
+                                            value={effectiveDate}
+                                            min={new Date().toISOString().split('T')[0]}
+                                            onChange={(e) => setEffectiveDate(e.target.value)}
+                                        />
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    )}
+
                     {/* Botón de Acción Dinámico */}
                     <Button 
                         type="submit" 
                         disabled={loading}
                         className={cn(
-                            "w-full h-14 text-base shadow-xl transition-all active:scale-95",
+                            "w-full h-14 text-base shadow-xl transition-all active:scale-95 mt-2",
                             isNoPayment 
                                 ? "bg-sys-800 hover:bg-black text-white shadow-sys-900/20" 
                                 : "bg-brand hover:bg-brand-dark text-white shadow-brand/20"

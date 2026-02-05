@@ -7,42 +7,62 @@ const DEFAULT_PIN = '1234';
 export const securityService = {
   
   /**
-   * 🔥 VERIFICACIÓN POR SUCURSAL
+   * 🔥 VERIFICACIÓN POR SUCURSAL (Offline-First)
+   * Valida el PIN contra la base de datos local (Dexie)
    */
   async verifyPin(inputPin) {
     try {
-      const { activeBranchId } = useAuthStore.getState();
+      const { activeBranchId, user } = useAuthStore.getState();
       
-      // Si estamos en modo "Todas las Sucursales" o sin sucursal, usamos Default por ahora
-      // (Opcional: Podrías requerir seleccionar sucursal obligatoriamente)
-      if (!activeBranchId || activeBranchId === 'ALL') {
-          console.warn("Security: PIN verificado sin sucursal específica. Usando Default.");
-          return inputPin === DEFAULT_PIN;
+      // Determinar qué Branch ID verificar
+      // Si el usuario es cajero, tiene su branchId en el perfil. Si es Admin/Owner, usa la activa.
+      let targetBranchId = activeBranchId;
+
+      if (!targetBranchId || targetBranchId === 'ALL') {
+          if (user?.branchId) {
+              targetBranchId = user.branchId;
+          } else {
+              console.warn("Security: PIN verificado en modo Global/Sin Sucursal. Usando Default.");
+              // En modo global, podríamos validar un MASTER_PIN, por ahora fallback a default
+              return String(inputPin) === DEFAULT_PIN;
+          }
       }
 
       const db = await getDB();
-      const configKey = `BRANCH_PIN_${activeBranchId}`;
+      const configKey = `BRANCH_PIN_${targetBranchId}`;
       
-      // Buscamos en la tabla config por ID
+      // 1. Buscamos en la tabla 'config' local (Dexie)
+      // Esto garantiza velocidad y funcionamiento sin internet
       const configEntry = await db.config.get(configKey);
       
-      // Lógica de verdad: Si existe en DB usa ese, sino el Default
+      // 2. Lógica de verdad: Si existe en DB local usa ese, sino el Default
       const realPin = configEntry ? configEntry.value : DEFAULT_PIN;
       
-      // 🔍 DEBUG: Ver en consola qué pasa (borrar en producción)
-      console.log(`🔐 Verificando PIN Sucursal [${activeBranchId}]`);
-      console.log(`   Expectativa: ${realPin} | Ingresado: ${inputPin}`);
+      // Compara como strings para evitar errores de tipo
+      const isValid = String(inputPin).trim() === String(realPin).trim();
+
+      if (!isValid) {
+          console.warn(`🔐 Intento de acceso fallido en Sucursal [${targetBranchId}]`);
+      }
       
-      return String(inputPin) === String(realPin);
+      return isValid;
 
     } catch (error) {
-      console.error("Error verificando PIN sucursal:", error);
-      return false; // Ante la duda, bloquear
+      console.error("Error crítico verificando PIN:", error);
+      return false; // Ante error de sistema, bloquear por seguridad
     }
   },
 
   /**
-   * Valida autorización para acciones críticas
+   * 🛡️ ALIAS DE COMPATIBILIDAD
+   * Evita crashes si algún componente antiguo llama a verifyMasterPin
+   */
+  async verifyMasterPin(inputPin) {
+      return this.verifyPin(inputPin);
+  },
+
+  /**
+   * Valida autorización para acciones críticas (Managers)
    */
   async authorizeManager(inputPin) {
     const isValid = await this.verifyPin(inputPin);
@@ -54,18 +74,22 @@ export const securityService = {
 
   /**
    * Actualiza el PIN
+   * Guarda en Dexie y empuja a Firebase
    */
   async setBranchPin(newPin, branchId) {
-    if (!branchId || branchId === 'ALL') throw new Error("Se requiere una sucursal específica.");
+    if (!branchId || branchId === 'ALL') throw new Error("Se requiere una sucursal específica para configurar el PIN.");
     
     const configKey = `BRANCH_PIN_${branchId}`;
     
-    // Guardamos usando el servicio corregido
+    // Usamos syncService para garantizar que el cambio impacte local y suba a la nube
     await syncService.pushGlobalConfig(configKey, newPin);
     
-    console.log(`🔒 PIN para sucursal ${branchId} actualizado a: ${newPin}`);
+    console.log(`🔒 PIN para sucursal ${branchId} actualizado y sincronizado.`);
   },
 
+  /**
+   * Login simple por PIN (Para modo Kiosco/Rápido)
+   */
   async login(pin) {
     const isValid = await this.verifyPin(pin);
     if (isValid) {

@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import { doc, onSnapshot } from 'firebase/firestore'; 
 
+// 🔥 CORRECCIÓN DE RUTAS DE IMPORTACIÓN
 import { cn } from '../core/utils/cn'; 
 import { useAutoSync } from '../core/hooks/useAutoSync';
 import { useAuthStore } from '../modules/auth/store/useAuthStore';
@@ -37,7 +38,7 @@ const MenuLink = ({ to, icon: Icon, label, onClick, isRestricted }) => {
     const content = (
         <>
             <Icon className="w-5 h-5" />
-            <span className="flex-1">{label}</span>
+            <span className="flex-1 text-sm">{label}</span>
             {isActiveRoute && (
                 <div className="absolute right-2 w-1.5 h-1.5 rounded-full bg-brand" />
             )}
@@ -63,7 +64,7 @@ const MenuLink = ({ to, icon: Icon, label, onClick, isRestricted }) => {
 };
 
 // ============================================================================
-// 2. COMPONENTE: MODAL PIN
+// 2. COMPONENTE: MODAL PIN (NECESARIO PARA INVENTARIO CAJEROS)
 // ============================================================================
 const PinRequestModal = ({ isOpen, onClose, onSuccess }) => {
     const [pin, setPin] = useState('');
@@ -88,7 +89,13 @@ const PinRequestModal = ({ isOpen, onClose, onSuccess }) => {
         setError(false);
 
         try {
-            const isValid = await securityService.verifyMasterPin(pin);
+            // 🔥 FIX: Usamos verifyPin en lugar de verifyMasterPin para consistencia con el Dashboard
+            if (typeof securityService.verifyPin !== 'function') {
+                throw new Error("El servicio de seguridad no está configurado correctamente (verifyPin missing).");
+            }
+
+            const isValid = await securityService.verifyPin(pin);
+            
             if (isValid === true) {
                 onSuccess();
             } else {
@@ -98,7 +105,7 @@ const PinRequestModal = ({ isOpen, onClose, onSuccess }) => {
             }
         } catch (err) {
             console.error("Error validando PIN:", err);
-            alert("Error de conexión al validar el PIN.");
+            alert("Error al validar el PIN: " + err.message);
         } finally {
             setVerifying(false);
         }
@@ -111,12 +118,12 @@ const PinRequestModal = ({ isOpen, onClose, onSuccess }) => {
             <div className="bg-white rounded-2xl shadow-2xl w-full max-w-xs overflow-hidden transform transition-all scale-100">
                 <div className="p-5 flex justify-between items-center border-b border-sys-100">
                     <h3 className="font-bold text-sys-800 flex items-center gap-2">
-                        <ShieldCheck size={18} className="text-brand"/> Acceso Admin
+                        <ShieldCheck size={18} className="text-brand"/> Acceso Restringido
                     </h3>
                     <button onClick={onClose} className="text-sys-400 hover:text-sys-600"><X size={18}/></button>
                 </div>
                 <form onSubmit={handleSubmit} className="p-6">
-                    <p className="text-xs text-sys-500 mb-4">Esta sección requiere autorización. Ingrese el PIN Maestro.</p>
+                    <p className="text-xs text-sys-500 mb-4">Esta sección requiere autorización de un Supervisor.</p>
                     <div className="relative mb-4">
                         <input 
                             ref={inputRef}
@@ -125,7 +132,7 @@ const PinRequestModal = ({ isOpen, onClose, onSuccess }) => {
                             className={cn(
                                 "w-full text-center text-2xl font-black tracking-widest py-3 rounded-xl border-2 outline-none transition-all placeholder:text-2xl placeholder:tracking-normal",
                                 error 
-                                    ? "border-red-300 bg-red-50 text-red-600 focus:border-red-500 focus:ring-4 focus:ring-red-500/10 animate-shake" 
+                                    ? "border-red-300 bg-red-50 text-red-600 focus:border-red-500 animate-shake" 
                                     : "border-sys-200 bg-sys-50 text-sys-900 focus:border-brand focus:bg-white"
                             )}
                             placeholder="••••"
@@ -151,7 +158,7 @@ const PinRequestModal = ({ isOpen, onClose, onSuccess }) => {
 };
 
 // ============================================================================
-// 3. COMPONENTE WRAPPER: CIERRE DE CAJA (CORREGIDO)
+// 3. WRAPPER CIERRE CAJA
 // ============================================================================
 const CloseShiftModalWrapper = ({ isOpen, onClose, onShiftClosed }) => {
     const [balance, setBalance] = useState(null);
@@ -165,14 +172,12 @@ const CloseShiftModalWrapper = ({ isOpen, onClose, onShiftClosed }) => {
                 setLoading(true);
                 try {
                     const currentShift = await cashRepository.getCurrentShift(); 
-                    
                     if (currentShift) {
                         setShift(currentShift);
-                        // Aseguramos que el repositorio esté corregido antes de esto
                         const currentBalance = await cashRepository.getShiftBalance(currentShift.id);
                         setBalance(currentBalance);
                     } else {
-                        alert("⚠️ No hay un turno abierto para cerrar en esta sucursal.");
+                        alert("⚠️ No hay un turno abierto para cerrar.");
                         onClose();
                     }
                 } catch (error) {
@@ -188,44 +193,33 @@ const CloseShiftModalWrapper = ({ isOpen, onClose, onShiftClosed }) => {
     }, [isOpen]);
 
     const handleConfirm = async (data) => {
-        if (!shift || !balance || processing) return;
-        
+        if (!shift || processing) return;
         setProcessing(true); 
         try {
             await cashRepository.closeShift(shift.id, data);
-            
             alert("✅ Turno Cerrado Correctamente.");
-            // Primero cerramos el modal visualmente
             onClose();
-            
-            // Luego notificamos al padre para refrescar estado
             if (onShiftClosed) onShiftClosed();
-            
         } catch (e) {
             console.error("Error closing shift:", e);
             alert(`Error al cerrar turno: ${e.message}`);
         } finally {
-            // 🔥 SIEMPRE liberamos el estado de procesamiento
             setProcessing(false);
         }
     };
 
     if (!isOpen) return null;
-    
     if (loading || processing) return (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-sys-900/60 backdrop-blur-sm">
             <div className="bg-white p-8 rounded-2xl shadow-2xl flex flex-col items-center gap-4 animate-in zoom-in-95">
                 <Loader2 size={40} className="animate-spin text-brand"/>
                 <div className="text-center">
-                    <p className="text-lg font-bold text-sys-900">
-                        {processing ? "Cerrando Turno..." : "Calculando Balance..."}
-                    </p>
-                    <p className="text-xs text-sys-500 mt-1">Sincronizando con la sucursal...</p>
+                    <p className="text-lg font-bold text-sys-900">{processing ? "Cerrando Turno..." : "Calculando Balance..."}</p>
+                    <p className="text-xs text-sys-500 mt-1">Sincronizando operaciones...</p>
                 </div>
             </div>
         </div>
     );
-    
     if (!balance) return null;
 
     return (
@@ -239,7 +233,7 @@ const CloseShiftModalWrapper = ({ isOpen, onClose, onShiftClosed }) => {
 };
 
 // ============================================================================
-// 4. COMPONENTE PRINCIPAL: SIDEBAR (AUTO-REPAIR)
+// 4. COMPONENTE PRINCIPAL: SIDEBAR
 // ============================================================================
 export const Sidebar = () => {
     const { isSyncing } = useAutoSync(15000);
@@ -256,7 +250,10 @@ export const Sidebar = () => {
     const navigate = useNavigate();
     const { companySlug } = useParams(); 
     
-    const isAdmin = user?.role?.toUpperCase() === 'ADMIN' || user?.role === 'OWNER';
+    // 🔥 ROLES DEFINIDOS
+    const isOwner = user?.role === 'OWNER';
+    const isAdmin = user?.role === 'ADMIN';
+    const canManage = isOwner || isAdmin;
 
     const [companyInfo, setCompanyInfo] = useState({ name: 'MAXI KIOSCO', logo: defaultLogo });
 
@@ -272,25 +269,23 @@ export const Sidebar = () => {
         navigate(`/login/${redirectSlug}`);
     };
 
+    // --- MONITOREO DE CAJA ---
     const checkShiftStatus = async () => {
         if (!user) return;
         
-        if (!activeBranchId) {
+        if (!activeBranchId && !isOwner) {
             if (user.branchId) {
-                console.log("🔧 Sidebar: Contexto perdido. Auto-restaurando sucursal del cajero...");
                 switchBranch(user.branchId, "Mi Sucursal");
-                return; 
-            } else {
-                setCheckingShift(true); 
                 return;
             }
         }
         
+        setCheckingShift(true); 
         try {
             const current = await cashRepository.getCurrentShift();
             setHasActiveShift(!!current);
         } catch (e) { 
-            console.error("🔴 Error checkShiftStatus:", e); 
+            console.error("Error checkShiftStatus:", e); 
             setHasActiveShift(false);
         } finally {
             setCheckingShift(false);
@@ -298,17 +293,20 @@ export const Sidebar = () => {
     };
 
     useEffect(() => {
-        setCheckingShift(true); 
         checkShiftStatus();
-        
-        const interval = setInterval(checkShiftStatus, 5000);
+        const interval = setInterval(checkShiftStatus, 10000);
         return () => clearInterval(interval);
     }, [user, activeBranchId]); 
 
-    // 🔥 ACCIÓN: Abrir Turno
+    // 🔥 ABRIR CAJA (Respetando Branch Activo)
     const handleOpenShiftDirectly = async () => {
-        if (!activeBranchId) {
-            alert("⚠️ Error de contexto: No se ha detectado la sucursal. Recargue la página.");
+        if (!activeBranchId && !isOwner) {
+            alert("⚠️ Error: No tiene una sucursal asignada.");
+            return;
+        }
+        if (isOwner && activeBranchId === 'ALL') {
+            alert("⚠️ Seleccione una sucursal específica en el Dashboard para abrir caja.");
+            navigate(getLink(''));
             return;
         }
 
@@ -323,7 +321,7 @@ export const Sidebar = () => {
             alert("✅ Caja abierta correctamente.");
             await checkShiftStatus();
         } catch (e) { 
-            console.error("🔴 Error fatal al abrir caja:", e);
+            console.error("Error abriendo caja:", e);
             alert(`Error al abrir caja: ${e.message}`); 
         }
     };
@@ -353,10 +351,12 @@ export const Sidebar = () => {
         };
     }, []);
 
+    // Navegación Protegida (Inventario para cajeros)
     const handleRestrictedNavigation = (route) => {
-        if (isAdmin) {
+        if (canManage) {
             navigate(route);
         } else {
+            // Cajero queriendo entrar a inventario -> Pide PIN
             setPendingRoute(route);
             setIsPinModalOpen(true);
         }
@@ -396,8 +396,8 @@ export const Sidebar = () => {
 
                     {/* User Card */}
                     <div className="w-full text-left flex items-center gap-2.5 bg-sys-50 p-2 rounded-xl border border-sys-200 mt-5">
-                        <div className={cn("w-7 h-7 rounded-full flex items-center justify-center text-white shadow-sm shrink-0", isAdmin ? "bg-sys-900" : "bg-brand")}>
-                            {isAdmin ? <ShieldCheck size={14} /> : <User size={14} />}
+                        <div className={cn("w-7 h-7 rounded-full flex items-center justify-center text-white shadow-sm shrink-0", isOwner ? "bg-purple-600" : isAdmin ? "bg-sys-900" : "bg-brand")}>
+                            {isOwner ? <ShieldCheck size={14} /> : <User size={14} />}
                         </div>
                         <div className="flex-1 min-w-0">
                             <p className="text-[11px] font-bold text-sys-800 truncate leading-tight">{user?.name || user?.email}</p>
@@ -431,10 +431,11 @@ export const Sidebar = () => {
                             label="Inventario" 
                             icon={Package} 
                             onClick={() => handleRestrictedNavigation(getLink('inventory'))}
-                            isRestricted={!isAdmin} 
+                            isRestricted={!canManage} 
                         />
 
-                        {isAdmin && (
+                        {/* 🔥 MENÚS SOLO PARA ADMINS Y OWNERS */}
+                        {canManage && (
                             <div className="animate-in slide-in-from-left-4 fade-in duration-300 space-y-1 mt-1">
                                 <MenuLink to={getLink('cash')} icon={Wallet} label="Control de Caja" />
                                 <MenuLink to={getLink('settings/integrations')} icon={Plug} label="Integraciones" />
@@ -448,7 +449,7 @@ export const Sidebar = () => {
                 {/* Footer: Smart Button */}
                 <div className="p-4 border-t border-sys-100 bg-sys-50/50 space-y-3">
                     
-                    {checkingShift || (!activeBranchId && !hasActiveShift) ? (
+                    {checkingShift ? (
                         <div className="w-full h-10 bg-sys-100 animate-pulse rounded-xl flex items-center justify-center">
                             <span className="text-xs text-sys-400">Verificando...</span>
                         </div>
@@ -493,6 +494,7 @@ export const Sidebar = () => {
                 </div>
             </aside>
 
+            {/* MODALES */}
             <PinRequestModal 
                 isOpen={isPinModalOpen} 
                 onClose={() => { setIsPinModalOpen(false); setPendingRoute(null); }}
@@ -503,7 +505,6 @@ export const Sidebar = () => {
                 isOpen={isCloseModalOpen} 
                 onClose={() => setIsCloseModalOpen(false)} 
                 onShiftClosed={() => {
-                    // Refresco suave
                     setTimeout(() => checkShiftStatus(), 500); 
                 }}
             />

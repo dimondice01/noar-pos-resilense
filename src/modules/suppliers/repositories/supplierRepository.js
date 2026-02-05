@@ -153,13 +153,27 @@ export const supplierRepository = {
 
             const productUpdate = {
                 ...product,
-                cost: newWeightedCost,
-                price: financials.price > 0 ? financials.price : product.price,
+                cost: newWeightedCost, // El costo SIEMPRE se actualiza (histórico)
                 lastPurchaseDate: timestamp,
                 supplierId: purchaseHeader.supplierId,
                 updatedAt: timestamp,
                 syncStatus: 'pending'
             };
+
+            // 🔥 LÓGICA DE PROGRAMACIÓN DE PRECIOS
+            if (item.activationDate) {
+                // Si hay fecha futura, NO tocamos el precio actual
+                productUpdate.nextPrice = financials.price;
+                productUpdate.priceActivationDate = item.activationDate;
+                // Mantenemos el precio actual intacto
+                productUpdate.price = product.price; 
+            } else {
+                // Si no hay fecha, impacto inmediato
+                productUpdate.price = financials.price > 0 ? financials.price : product.price;
+                // Limpiamos programación anterior si existía
+                productUpdate.nextPrice = null;
+                productUpdate.priceActivationDate = null;
+            }
             
             const newBatch = {
                 id: `batch_${Date.now()}_${Math.random().toString(36).substr(2,3)}`,
