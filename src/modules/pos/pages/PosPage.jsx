@@ -22,6 +22,15 @@ import { TicketModal } from '../../sales/components/TicketModal';
 import { Button } from '../../../core/ui/Button';
 import { cn } from '../../../core/utils/cn';
 
+// =================================================================
+// ⚙️ CONFIGURACIÓN GLOBAL DEL POS (LISTA PARA INYECCIÓN)
+// =================================================================
+const POS_CONFIG = {
+    // true: Permite agregar productos con stock <= 0 sin preguntar.
+    // false: Bloquea la venta si el stock es <= 0.
+    ALLOW_OUT_OF_STOCK_SALES: true, 
+};
+
 export const PosPage = () => {
   const { user } = useAuthStore();
   
@@ -65,19 +74,22 @@ export const PosPage = () => {
   const searchInputRef = useRef(null);
   const openingInputRef = useRef(null);
   const productsListRef = useRef(null);
+  
+  // 🔥 BLINDAJE DE ESCÁNER (TIMESTAMP)
+  const lastScanTime = useRef(0);
 
   // =================================================================
   // 🛡️ REGLA DE ORO: FOCO PERSISTENTE (Scanner & Teclado)
   // =================================================================
   const maintainFocus = useCallback(() => {
-      // Solo forzar foco si NO hay modales abiertos y la caja está abierta
       const anyModalOpen = isPaymentOpen || isClientSelectorOpen || !!selectedProduct || !!lastSaleTicket;
       if (!anyModalOpen && hasOpenShift) {
-          searchInputRef.current?.focus();
+          setTimeout(() => {
+              searchInputRef.current?.focus();
+          }, 50);
       }
   }, [isPaymentOpen, isClientSelectorOpen, selectedProduct, lastSaleTicket, hasOpenShift]);
 
-  // Escucha clics fuera para devolver el foco al input
   useEffect(() => {
       const handleGlobalClick = (e) => {
           if (e.target.tagName !== 'INPUT' && e.target.tagName !== 'BUTTON' && !e.target.closest('button')) {
@@ -88,7 +100,6 @@ export const PosPage = () => {
       return () => document.removeEventListener('mousedown', handleGlobalClick);
   }, [maintainFocus]);
 
-  // Asegurar foco al cerrar cualquier modal
   useEffect(() => {
     maintainFocus();
   }, [isPaymentOpen, isClientSelectorOpen, selectedProduct, lastSaleTicket, maintainFocus]);
@@ -167,10 +178,21 @@ export const PosPage = () => {
       return () => clearTimeout(timer);
   }, [searchTerm]);
 
+  // 🔥 LÓGICA DE SELECCIÓN SIN CONFIRMACIONES MOLESTAS
   const handleSelectProduct = (product) => {
-      if (parseFloat(product.stock || 0) <= 0) {
-          if(!confirm(`⚠️ STOCK 0: ${product.name}\n¿Agregar igual?`)) return;
+      if (!product || !product.id) return;
+
+      const currentStock = parseFloat(product.stock || 0);
+
+      // Si NO se permite vender sin stock y el stock es 0 o menos
+      if (!POS_CONFIG.ALLOW_OUT_OF_STOCK_SALES && currentStock <= 0) {
+          // Bloqueo silencioso: limpiamos y devolvemos foco
+          setSearchTerm(''); 
+          maintainFocus();
+          return; 
       }
+      
+      // Si pasa la validación (o está permitido), agregamos sin preguntar
       if (product.isWeighable) {
           setSelectedProduct(product);
       } else {
@@ -181,7 +203,7 @@ export const PosPage = () => {
       }
   };
 
-  const handleKeyDownInput = (e) => {
+  const handleKeyDownInput = async (e) => {
       if (e.key === 'ArrowDown') {
           e.preventDefault();
           const list = searchTerm.length > 1 ? searchResults : defaultProducts;
@@ -191,43 +213,64 @@ export const PosPage = () => {
           setFocusedIndex(prev => (prev > 0 ? prev - 1 : prev));
       } else if (e.key === 'Enter') {
           e.preventDefault();
-          const list = searchTerm.length > 1 ? searchResults : defaultProducts;
-          if (focusedIndex >= 0 && list[focusedIndex]) {
-              handleSelectProduct(list[focusedIndex]);
-          } else if (list.length === 1) {
-              handleSelectProduct(list[0]);
+          e.stopPropagation();
+
+          const now = Date.now();
+          if (now - lastScanTime.current < 500) return; 
+
+          if (!searchTerm.trim()) return;
+          lastScanTime.current = now;
+
+          try {
+              const exactMatchInList = searchResults.find(p => 
+                  String(p.barcode) === searchTerm || String(p.code) === searchTerm
+              );
+
+              if (exactMatchInList) {
+                  handleSelectProduct(exactMatchInList);
+                  return;
+              }
+
+              if (searchResults.length === 1) {
+                  handleSelectProduct(searchResults[0]);
+                  return;
+              }
+
+              if (focusedIndex >= 0 && searchResults[focusedIndex]) {
+                  handleSelectProduct(searchResults[focusedIndex]);
+                  return;
+              }
+
+              const directResults = await productRepository.search(searchTerm);
+              const exactMatchDb = directResults.find(p => 
+                  String(p.barcode) === searchTerm || String(p.code) === searchTerm
+              );
+
+              if (exactMatchDb) {
+                  handleSelectProduct(exactMatchDb);
+              } else if (directResults.length === 1) {
+                  handleSelectProduct(directResults[0]);
+              } else {
+                  setSearchTerm('');
+              }
+          } catch (err) {
+              console.error("Error en escaneo:", err);
           }
       }
   };
 
   // =================================================================
-  // ⚡ TECLAS GLOBALES (F-KEYS & PREVENTION)
+  // ⚡ TECLAS GLOBALES
   // =================================================================
   useEffect(() => {
       const handleGlobalKeys = (e) => {
           if (!hasOpenShift) return;
-
           switch(e.key) {
-              case 'F1': 
-                  e.preventDefault(); 
-                  addTab(); 
-                  break;
-              case 'F2': 
-                  e.preventDefault(); 
-                  maintainFocus(); 
-                  break;
-              case 'F3': 
-                  e.preventDefault(); 
-                  setIsClientSelectorOpen(true); 
-                  break;
-              case 'F4': 
-                  e.preventDefault(); 
-                  if(confirm('¿Anular ticket actual?')) clearCart(); 
-                  break;
-              case 'F12': 
-                  e.preventDefault(); 
-                  if (activeTab.items.length > 0) setIsPaymentOpen(true); 
-                  break;
+              case 'F1': e.preventDefault(); addTab(); break;
+              case 'F2': e.preventDefault(); maintainFocus(); break;
+              case 'F3': e.preventDefault(); setIsClientSelectorOpen(true); break;
+              case 'F4': e.preventDefault(); if(confirm('¿Anular ticket actual?')) clearCart(); break;
+              case 'F12': e.preventDefault(); if (activeTab.items.length > 0) setIsPaymentOpen(true); break;
               case 'Escape': 
                   e.preventDefault();
                   setSearchTerm(''); 
@@ -241,31 +284,18 @@ export const PosPage = () => {
       return () => window.removeEventListener('keydown', handleGlobalKeys);
   }, [hasOpenShift, isPaymentOpen, activeTab.items, maintainFocus, addTab, clearCart]);
 
-  // =================================================================
-  // 💰 PROCESAR VENTA + AUTO-CIERRE DE PESTAÑA
-  // =================================================================
   const handleProcessSale = async (paymentData) => {
     const result = await processSale(paymentData);
-    
     if (result) {
-        // 🔥 INYECCIÓN DE DATOS DE SUCURSAL PARA TICKET
         const enrichedTicket = {
             ...result,
-            companySnapshot: {
-                nombre: user?.activeBranchName || 'MI NEGOCIO', 
-            }
+            companySnapshot: { nombre: user?.activeBranchName || 'MI NEGOCIO' }
         };
-
         setLastSaleTicket(enrichedTicket);
         setIsPaymentOpen(false);
         setSearchTerm('');
-        
-        // Auto-cierre de pestañas secundarias
         const activeIndex = tabs.findIndex(t => t.id === activeTabId);
-        if (tabs.length > 1 && activeIndex !== 0) {
-            removeTab(activeTabId);
-        }
-        
+        if (tabs.length > 1 && activeIndex !== 0) removeTab(activeTabId);
         setTimeout(maintainFocus, 100);
     }
   };
@@ -320,12 +350,8 @@ export const PosPage = () => {
                   <span className="truncate text-[11px] uppercase font-black tracking-tight">
                     {index === 0 ? "1. " : `${index + 1}. `}{tab.client ? tab.client.name.split(' ')[0] : tab.name}
                   </span>
-                  
                   {index !== 0 && (
-                      <button 
-                          onClick={(e) => { e.stopPropagation(); removeTab(tab.id); }}
-                          className="opacity-0 group-hover:opacity-100 hover:text-red-500 p-0.5 rounded-full hover:bg-red-50 transition-all ml-2"
-                      >
+                      <button onClick={(e) => { e.stopPropagation(); removeTab(tab.id); }} className="opacity-0 group-hover:opacity-100 hover:text-red-500 p-0.5 rounded-full hover:bg-red-50 transition-all ml-2">
                           <X size={12} />
                       </button>
                   )}
@@ -343,13 +369,7 @@ export const PosPage = () => {
           <div className="flex-1 flex flex-col bg-white shadow-xl z-10 relative">
               <div className="p-3 border-b border-sys-100 flex items-center justify-between bg-white shrink-0">
                   <div className="flex items-center gap-3 w-full">
-                      <button 
-                          onClick={() => setIsClientSelectorOpen(true)}
-                          className={cn(
-                              "flex-1 flex items-center gap-3 px-3 py-2 rounded-xl border transition-all text-left",
-                              activeTab.client ? "bg-brand-light/5 border-brand/20 text-brand-dark" : "bg-sys-50 border-sys-200 hover:border-sys-300 text-sys-500"
-                          )}
-                      >
+                      <button onClick={() => setIsClientSelectorOpen(true)} className={cn("flex-1 flex items-center gap-3 px-3 py-2 rounded-xl border transition-all text-left", activeTab.client ? "bg-brand-light/5 border-brand/20 text-brand-dark" : "bg-sys-50 border-sys-200 hover:border-sys-300 text-sys-500")}>
                           <div className={cn("w-8 h-8 rounded-full flex items-center justify-center shrink-0 shadow-sm", activeTab.client ? "bg-brand text-white" : "bg-white border text-sys-400")}>
                               <User size={16} />
                           </div>
@@ -364,7 +384,6 @@ export const PosPage = () => {
                   </div>
               </div>
 
-              {/* 🔥 LISTA DE ITEMS CON BADGE DE PROMOCIÓN */}
               <div className="flex-1 overflow-y-auto p-2 bg-sys-50/20">
                   {activeTab.items.length === 0 ? (
                       <div className="h-full flex flex-col items-center justify-center text-sys-200 gap-4 select-none opacity-40">
@@ -381,26 +400,22 @@ export const PosPage = () => {
                                   </div>
                                   <div className="flex-1 min-w-0">
                                       <div className="text-sm font-black text-sys-800 truncate uppercase tracking-tight">{item.name}</div>
-                                      
-                                      {/* 🔥 VISUALIZACIÓN DE PROMO PURPURA */}
                                       {item.appliedPromo && (
                                           <div className="inline-flex items-center gap-1.5 bg-purple-100 text-purple-700 px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wide mt-1 animate-pulse">
                                               <Tag size={10} className="fill-purple-700"/>
                                               {item.promoLabel || "OFERTA"}
                                           </div>
                                       )}
-
                                       <div className="text-xs text-sys-400 font-mono mt-0.5 flex items-center gap-2">
-                                          {/* 🔥 FIX: Ahora el tachado es el ORIGINAL (Mayor) y el normal es el FINAL (Menor) */}
-                                        
-                                     
                                           <span className={cn(item.appliedPromo ? "text-purple-700 font-bold" : "")}>
-                                              ${item.price.toLocaleString('es-AR', {minimumFractionDigits: 2})} x unid.
+                                              ${(Number(item.price) || 0).toLocaleString('es-AR', {minimumFractionDigits: 2})} x unid.
                                           </span>
                                       </div>
                                   </div>
                                   <div className="text-right pl-3">
-                                      <div className="text-base font-black text-sys-900 tracking-tight">${item.subtotal.toLocaleString('es-AR', {minimumFractionDigits: 2})}</div>
+                                      <div className="text-base font-black text-sys-900 tracking-tight">
+                                        ${(Number(item.subtotal) || 0).toLocaleString('es-AR', {minimumFractionDigits: 2})}
+                                      </div>
                                       <button onClick={() => removeFromCart(item.id)} className="text-[10px] text-red-400 font-bold hover:text-red-600 transition-colors">ELIMINAR</button>
                                   </div>
                               </div>
@@ -413,11 +428,12 @@ export const PosPage = () => {
                   <div className="flex justify-between items-end mb-4">
                       <div>
                           <p className="text-[10px] font-black text-sys-400 uppercase tracking-widest mb-1">Subtotal de Venta</p>
-                          <p className="text-5xl font-black text-sys-900 tracking-tighter tabular-nums leading-none">${totals.total.toLocaleString('es-AR', {minimumFractionDigits: 2})}</p>
-                          {/* Feedback de Ahorro en Carrito */}
-                          {totals.discountAmount > 0 && (
+                          <p className="text-5xl font-black text-sys-900 tracking-tighter tabular-nums leading-none">
+                            ${(Number(totals?.total) || 0).toLocaleString('es-AR', {minimumFractionDigits: 2})}
+                          </p>
+                          {(Number(totals?.discountAmount) || 0) > 0 && (
                               <p className="text-xs font-bold text-green-600 mt-1 animate-bounce">
-                                  Ahorro aplicado: -${totals.discountAmount.toLocaleString('es-AR', {minimumFractionDigits: 2})}
+                                  Ahorro aplicado: -${(Number(totals.discountAmount) || 0).toLocaleString('es-AR', {minimumFractionDigits: 2})}
                               </p>
                           )}
                       </div>
@@ -431,23 +447,12 @@ export const PosPage = () => {
               </div>
           </div>
 
-          {/* 👉 DERECHA: BUSCADOR Y RESULTADOS */}
+          {/* 👉 DERECHA: BUSCADOR */}
           <div className="w-[440px] border-l border-sys-200 bg-white hidden md:flex flex-col z-0">
               <div className="p-4 border-b border-sys-100 bg-white">
                   <div className="relative group">
                       <Search className="absolute left-3 top-3.5 text-sys-400 group-focus-within:text-brand transition-colors" size={22} />
-                      <input 
-                          ref={searchInputRef}
-                          type="text" 
-                          className="w-full pl-11 pr-4 py-3.5 bg-sys-50 border-2 border-transparent rounded-2xl outline-none focus:bg-white focus:border-brand transition-all font-black text-sys-900 uppercase text-lg placeholder:text-sys-300"
-                          placeholder="ESCANEÉ O BUSQUE..."
-                          value={searchTerm}
-                          onChange={(e) => setSearchTerm(e.target.value)}
-                          onKeyDown={handleKeyDownInput}
-                          autoFocus
-                          autoComplete="off"
-                          onBlur={maintainFocus} 
-                      />
+                      <input ref={searchInputRef} type="text" className="w-full pl-11 pr-4 py-3.5 bg-sys-50 border-2 border-transparent rounded-2xl outline-none focus:bg-white focus:border-brand transition-all font-black text-sys-900 uppercase text-lg placeholder:text-sys-300" placeholder="ESCANEÉ O BUSQUE..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} onKeyDown={handleKeyDownInput} autoFocus autoComplete="off" onBlur={maintainFocus} />
                   </div>
               </div>
 
@@ -460,15 +465,15 @@ export const PosPage = () => {
                               "group flex items-center justify-between p-5 rounded-2xl border-2 transition-all cursor-pointer shadow-sm",
                               idx === focusedIndex 
                                 ? "bg-brand text-white border-brand shadow-xl scale-[1.02] translate-x-1" 
-                                : "bg-white border-transparent hover:border-brand/30"
+                                : "bg-white border-transparent hover:border-brand/30",
+                              // UI: Si no hay stock y NO está permitido vender sin stock, bajar opacidad y mostrar bloqueado
+                              parseFloat(product.stock || 0) <= 0 && !POS_CONFIG.ALLOW_OUT_OF_STOCK_SALES && "opacity-60 grayscale-[0.5]"
                           )}
                       >
                           <div className="flex-1 min-w-0 pr-3">
                               <div className={cn("font-black text-sm truncate uppercase tracking-tight", idx === focusedIndex ? "text-white" : "text-sys-900")}>{product.name}</div>
                               <div className="flex gap-2 items-center mt-1">
                                   <div className={cn("text-[10px] font-mono font-bold uppercase", idx === focusedIndex ? "text-white/80" : "text-sys-400")}>{product.barcode || product.code || 'S/C'}</div>
-                                  
-                                  {/* Indicador de Promo en la lista de búsqueda */}
                                   {product.promo && (
                                       <div className={cn("text-[9px] px-1.5 py-0.5 rounded font-black uppercase flex items-center gap-1", idx === focusedIndex ? "bg-white/20 text-white" : "bg-purple-100 text-purple-700")}>
                                           <Tag size={8} /> {product.promo.type === 'PERCENTAGE' ? 'OFERTA' : 'PROMO'}
@@ -477,26 +482,36 @@ export const PosPage = () => {
                               </div>
                           </div>
                           <div className="text-right">
-                              <div className={cn("font-black text-xl tracking-tighter", idx === focusedIndex ? "text-white" : "text-sys-900")}>${product.price.toLocaleString('es-AR', {minimumFractionDigits: 2})}</div>
-                              <div className={cn("text-[9px] font-black uppercase px-2 py-0.5 rounded mt-1.5 inline-block", idx === focusedIndex ? "bg-white/20" : parseFloat(product.stock) > 0 ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700")}>
-                                  {parseFloat(product.stock) > 0 ? `${product.stock} DISP.` : 'S/ STOCK'}
+                              <div className={cn("font-black text-xl tracking-tighter", idx === focusedIndex ? "text-white" : "text-sys-900")}>
+                                ${(Number(product.price) || 0).toLocaleString('es-AR', {minimumFractionDigits: 2})}
+                              </div>
+                              {/* BADGE DE STOCK CON LOGICA VISUAL */}
+                              <div className={cn(
+                                  "text-[9px] font-black uppercase px-2 py-0.5 rounded mt-1.5 inline-block",
+                                  idx === focusedIndex 
+                                    ? "bg-white/20" 
+                                    : parseFloat(product.stock || 0) > 0 
+                                        ? "bg-emerald-100 text-emerald-700" 
+                                        : POS_CONFIG.ALLOW_OUT_OF_STOCK_SALES ? "bg-amber-100 text-amber-700" : "bg-rose-100 text-rose-700"
+                              )}>
+                                  {parseFloat(product.stock || 0) > 0 ? `${product.stock} DISP.` : POS_CONFIG.ALLOW_OUT_OF_STOCK_SALES ? 'S/ STOCK (VENDE)' : 'SIN STOCK'}
                               </div>
                           </div>
                       </div>
                   ))}
                   {searchTerm.length > 1 && searchResults.length === 0 && (
                       <div className="text-center py-20 text-sys-400 uppercase font-black text-xs opacity-30">
-                        <PackageOpen size={60} className="mx-auto mb-4" strokeWidth={1} />
-                        <p>Sin resultados</p>
+                          <PackageOpen size={60} className="mx-auto mb-4" strokeWidth={1} />
+                          <p>Sin resultados</p>
                       </div>
                   )}
               </div>
           </div>
       </div>
 
-      {/* 🕹️ FOOTER DE COMANDOS */}
+      {/* FOOTER */}
       <div className="h-10 bg-sys-900 border-t border-white/10 flex items-center px-4 gap-8 text-[11px] font-black text-white shrink-0 select-none uppercase tracking-[0.1em]">
-          <div className="flex items-center gap-2"><Keyboard size={16} className="text-brand"/> <span>ATAJOS DE TERMINAL:</span></div>
+          <div className="flex items-center gap-2"><Keyboard size={16} className="text-brand"/> <span>ATAJOS:</span></div>
           <div className="flex items-center gap-6">
             <div className="flex items-center gap-2"><span className="bg-white/10 px-2 py-0.5 rounded text-brand border border-brand/30 font-mono">F1</span> NUEVA</div>
             <div className="flex items-center gap-2"><span className="bg-white/10 px-2 py-0.5 rounded text-white font-mono">F2</span> BUSCAR</div>
@@ -504,7 +519,6 @@ export const PosPage = () => {
             <div className="flex items-center gap-2"><span className="bg-white/10 px-2 py-0.5 rounded text-white font-mono">F12</span> COBRAR</div>
           </div>
           <div className="ml-auto flex items-center gap-4">
-              {/* INDICADOR DE SUCURSAL */}
               <div className="flex items-center gap-2 opacity-60 hover:opacity-100 transition-opacity">
                   <Store size={14} className="text-brand"/>
                   <span className="font-bold">{user?.activeBranchName || "SUCURSAL PRINCIPAL"}</span>
@@ -519,27 +533,9 @@ export const PosPage = () => {
 
       {/* MODALES */}
       <QuantityModal isOpen={!!selectedProduct} product={selectedProduct} onClose={() => { setSelectedProduct(null); maintainFocus(); }} onConfirm={(product, qty) => { addToCart(product, qty); setSelectedProduct(null); maintainFocus(); }} />
-      
-      <PaymentModal 
-        isOpen={isPaymentOpen} 
-        total={totals.total} 
-        subtotal={totals.subtotal} 
-        discount={totals.discountAmount} 
-        client={activeTab.client} 
-        onClose={() => { setIsPaymentOpen(false); maintainFocus(); }} 
-        onConfirm={handleProcessSale} 
-        isProcessing={isProcessing} 
-      />
-
+      <PaymentModal isOpen={isPaymentOpen} total={Number(totals?.total) || 0} subtotal={Number(totals?.subtotal) || 0} discount={Number(totals?.discountAmount) || 0} client={activeTab.client} onClose={() => { setIsPaymentOpen(false); maintainFocus(); }} onConfirm={handleProcessSale} isProcessing={isProcessing} />
       <ClientSelectionModal isOpen={isClientSelectorOpen} onClose={() => { setIsClientSelectorOpen(false); maintainFocus(); }} onSelect={(c) => { setClient(c); setIsClientSelectorOpen(false); maintainFocus(); }} />
-      
-      {/* TICKET: Recibe el objeto enriquecido con Surcharge y Datos Fiscales */}
-      <TicketModal 
-        isOpen={!!lastSaleTicket} 
-        sale={lastSaleTicket} 
-        onClose={() => { setLastSaleTicket(null); maintainFocus(); }} 
-        companyConfig={{ nombre: user?.activeBranchName }} // Fallback de seguridad
-      />
+      <TicketModal isOpen={!!lastSaleTicket} sale={lastSaleTicket} onClose={() => { setLastSaleTicket(null); maintainFocus(); }} companyConfig={{ nombre: user?.activeBranchName }} />
     </div>
   );
 };

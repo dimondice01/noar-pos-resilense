@@ -141,12 +141,10 @@ export const usePosController = () => {
             
             let updatedCount = 0;
             const updatedItems = await Promise.all(activeTab.items.map(async (item) => {
-                // Al buscar por código, el Repositorio dispara la Activación JIT si corresponde
                 const freshProduct = await productRepository.findByCode(item.code);
                 
                 if (freshProduct && Math.abs(freshProduct.price - item.originalPrice) > 0.01) {
                     updatedCount++;
-                    // Recalculamos con el nuevo precio
                     const newItem = { ...item, ...freshProduct, originalPrice: parseFloat(freshProduct.price) };
                     const promoResult = _calculatePromo(newItem, item.quantity);
                     
@@ -167,7 +165,7 @@ export const usePosController = () => {
             }
         };
 
-        const interval = setInterval(checkPrices, 60000); // Chequeo cada 1 minuto
+        const interval = setInterval(checkPrices, 60000); 
         return () => clearInterval(interval);
     }, [activeTab.items, activeTabId]);
 
@@ -277,18 +275,16 @@ export const usePosController = () => {
             
             if (!currentShift || currentShift.status !== 'OPEN') {
                 console.log("🔍 [POS] Shift no en RAM o cerrado. Verificando base local...");
-                // Intentamos recuperar desde Dexie
                 currentShift = await cashRepository.getCurrentShift();
                 
                 if (currentShift && currentShift.status === 'OPEN') {
                     console.log("✅ [POS] Turno recuperado desde Dexie:", currentShift.id);
-                    setActiveShift(currentShift); // Reparamos la RAM
+                    setActiveShift(currentShift); 
                 } else {
                     throw new Error("⚠️ DEBE ABRIR CAJA ANTES DE VENDER");
                 }
             }
 
-            // Normalización de IDs para la comparación
             const shiftBranch = String(currentShift.branchId).trim();
             const activeBranch = String(activeBranchId).trim();
 
@@ -403,16 +399,18 @@ export const usePosController = () => {
     };
 
     // =================================================================
-    // 🔎 BUSCADOR & KEYBOARD (BLINDADO A LOCAL)
+    // 🔎 BUSCADOR & KEYBOARD (CORREGIDO - SIN EFECTO SECUNDARIO)
     // =================================================================
     const searchProduct = async (query) => {
         if (!query) return setSearchResults([]);
         try {
-            // 🔥 JIT TRIGGER: Al buscar, el repositorio verifica si el precio debe cambiar
+            // 🔥 CORRECCIÓN: Buscamos exacto pero YA NO AGREGAMOS automáticamente
+            // Solo devolvemos los resultados visuales.
             const exactMatch = await productRepository.findByCode(query);
             if (exactMatch) {
-                addToCart(exactMatch, 1);
-                setSearchResults([]);
+                // ANTES: addToCart(exactMatch, 1);  <-- ESTO CAUSABA EL DOBLE ADD
+                // AHORA: Solo lo mostramos como resultado único
+                setSearchResults([exactMatch]); 
                 return true;
             }
             if (query.length > 2) {
@@ -426,21 +424,35 @@ export const usePosController = () => {
         }
     };
 
+    // 🔥 GLOBAL KEYBOARD LISTENER (Cuando el input NO tiene foco)
+    // Aquí sí debemos agregar explícitamente porque searchProduct ya no lo hace.
     useEffect(() => {
         let buffer = '';
         let lastKeyTime = Date.now();
-        const handleKeyDown = (e) => {
+        const handleKeyDown = async (e) => {
             if (['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName)) return;
+            
             const currentTime = Date.now();
             if (currentTime - lastKeyTime > 100) buffer = '';
             lastKeyTime = currentTime;
+            
             if (e.key === 'Enter') {
-                if (buffer.length > 2) { searchProduct(buffer); buffer = ''; }
+                if (buffer.length > 2) { 
+                    // INTENTO DE COMPRA DIRECTA (Scanner Global)
+                    const exactProduct = await productRepository.findByCode(buffer);
+                    if (exactProduct) {
+                        addToCart(exactProduct, 1);
+                        setSearchResults([]);
+                    } else {
+                        searchProduct(buffer); // Fallback visual
+                    }
+                    buffer = ''; 
+                }
             } else if (e.key.length === 1) buffer += e.key;
         };
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [activeTabId]);
+    }, [activeTabId, addToCart]); // Agregué addToCart a dependencias
 
     return { 
         tabs, activeTab, activeTabId, totals, searchResults, isProcessing, 
