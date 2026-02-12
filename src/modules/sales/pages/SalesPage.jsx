@@ -3,17 +3,20 @@ import {
     FileText, CheckCircle, AlertCircle, Printer, RefreshCw, Search, 
     ArrowDownLeft, ShoppingBag, XCircle, RotateCcw, Calendar, User,
     ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, 
-    TrendingUp, Tag, Percent, DollarSign, Store
+    TrendingUp, Tag, Percent, DollarSign, Store, CreditCard, Banknote,
+    PackageMinus, Save, X, Loader2
 } from 'lucide-react';
 import { billingService } from '../../billing/services/billingService';
 import { Card } from '../../../core/ui/Card';
 import { Button } from '../../../core/ui/Button';
 import { cn } from '../../../core/utils/cn';
 import { salesRepository } from '../repositories/salesRepository'; 
+import { productRepository } from '../../inventory/repositories/productRepository'; 
 import { TicketModal } from '../components/TicketModal';
 import { useAuthStore } from '../../auth/store/useAuthStore'; 
 import { collection, query, where, getDocs } from 'firebase/firestore';
 import { db as firestoreDB } from '../../../database/firebase';
+import toast from 'react-hot-toast';
 
 // Helper de fechas seguro
 const toInputDate = (date) => {
@@ -22,6 +25,106 @@ const toInputDate = (date) => {
     } catch (e) { return new Date().toISOString().split('T')[0]; }
 };
 
+// =================================================================
+// 🛍️ MODAL DE DEVOLUCIÓN PARCIAL (CON FEEDBACK DE CARGA)
+// =================================================================
+const RefundModal = ({ isOpen, onClose, sale, onConfirm, isProcessing }) => {
+    const [returnMap, setReturnMap] = useState({}); // { itemId: qtyToReturn }
+    const [refundTotal, setRefundTotal] = useState(0);
+
+    useEffect(() => {
+        if (isOpen) {
+            setReturnMap({});
+            setRefundTotal(0);
+        }
+    }, [isOpen, sale]);
+
+    const handleQtyChange = (item, change) => {
+        if (isProcessing) return; // Bloquear cambios durante proceso
+        const currentReturn = returnMap[item.id] || 0;
+        const newReturn = Math.max(0, Math.min(item.quantity, currentReturn + change));
+        
+        const newMap = { ...returnMap, [item.id]: newReturn };
+        setReturnMap(newMap);
+
+        // Recalcular total a devolver
+        let total = 0;
+        sale.items.forEach(i => {
+            const qty = newMap[i.id] || 0;
+            total += qty * i.price;
+        });
+        setRefundTotal(total);
+    };
+
+    if (!isOpen || !sale) return null;
+
+    return (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-sys-900/60 backdrop-blur-sm p-4 animate-in fade-in">
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[80vh]">
+                <div className="p-5 border-b border-sys-100 bg-sys-50 flex justify-between items-center">
+                    <div>
+                        <h3 className="font-bold text-lg text-sys-900 flex items-center gap-2">
+                            <PackageMinus className="text-orange-500" /> Devolución / Edición
+                        </h3>
+                        <p className="text-xs text-sys-500">Seleccione los artículos que el cliente devuelve.</p>
+                    </div>
+                    <button onClick={onClose} disabled={isProcessing} className="p-2 hover:bg-sys-200 rounded-full disabled:opacity-50"><X size={20}/></button>
+                </div>
+                
+                <div className="flex-1 overflow-y-auto p-4 space-y-3 custom-scrollbar">
+                    {sale.items.map(item => {
+                        const returnQty = returnMap[item.id] || 0;
+                        
+                        return (
+                            <div key={item.id} className={cn("flex items-center justify-between p-3 rounded-xl border transition-all", returnQty > 0 ? "border-orange-200 bg-orange-50" : "border-sys-100 bg-white")}>
+                                <div className="flex-1">
+                                    <p className="text-sm font-bold text-sys-800">{item.name}</p>
+                                    <p className="text-xs text-sys-500">
+                                        Vendidos: <b>{item.quantity}</b> x ${item.price}
+                                    </p>
+                                </div>
+                                <div className="flex items-center gap-3">
+                                    <div className="flex items-center border border-sys-200 rounded-lg bg-white">
+                                        <button onClick={() => handleQtyChange(item, -1)} disabled={isProcessing} className="px-2 py-1 hover:bg-sys-100 text-sys-600 disabled:opacity-50">-</button>
+                                        <span className="w-8 text-center text-sm font-bold text-orange-600">{returnQty}</span>
+                                        <button onClick={() => handleQtyChange(item, 1)} disabled={isProcessing} className="px-2 py-1 hover:bg-sys-100 text-sys-600 disabled:opacity-50">+</button>
+                                    </div>
+                                </div>
+                            </div>
+                        );
+                    })}
+                </div>
+
+                <div className="p-5 border-t border-sys-100 bg-sys-50">
+                    <div className="flex justify-between items-center mb-4">
+                        <span className="text-sm font-bold text-sys-600 uppercase">Monto a Reintegrar:</span>
+                        <span className="text-2xl font-black text-orange-600">
+                            $ {refundTotal.toLocaleString('es-AR', {minimumFractionDigits: 2})}
+                        </span>
+                    </div>
+                    <div className="flex gap-3">
+                        <Button variant="ghost" onClick={onClose} disabled={isProcessing} className="flex-1">Cancelar</Button>
+                        <Button 
+                            onClick={() => onConfirm(sale, returnMap, refundTotal)} 
+                            disabled={refundTotal === 0 || isProcessing}
+                            className="flex-1 bg-orange-500 hover:bg-orange-600 text-white shadow-lg shadow-orange-200"
+                        >
+                            {isProcessing ? (
+                                <><Loader2 className="animate-spin mr-2" size={18}/> Procesando...</>
+                            ) : (
+                                "Confirmar Devolución"
+                            )}
+                        </Button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+// =================================================================
+// 🏭 SALES PAGE (MAIN)
+// =================================================================
 export const SalesPage = () => {
   const { user, activeBranchId, activeBranchName } = useAuthStore(); 
   const isAdmin = user?.role === 'ADMIN' || user?.role === 'OWNER'; 
@@ -37,43 +140,34 @@ export const SalesPage = () => {
   const [customEnd, setCustomEnd] = useState(toInputDate(new Date()));
   const [filterType, setFilterType] = useState('ALL'); 
   const [filterCashier, setFilterCashier] = useState('ALL'); 
+  const [filterPaymentMethod, setFilterPaymentMethod] = useState('ALL'); 
   const [searchTerm, setSearchTerm] = useState('');
 
-  // 🔥 ESTADO DE PAGINACIÓN
+  // Estado de Paginación
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 20; 
 
   // Estados UI
   const [loadingMap, setLoadingMap] = useState({}); 
   const [selectedOpForTicket, setSelectedOpForTicket] = useState(null); 
+  const [refundData, setRefundData] = useState(null); 
+  const [isProcessingRefund, setIsProcessingRefund] = useState(false); // 🔥 ESTADO DE CARGA DEVOLUCIÓN
 
-  // 1. CARGAR LISTA DE CAJEROS (FILTRADO ESTRICTO POR SUCURSAL)
+  // 1. CARGAR LISTA DE CAJEROS
   useEffect(() => {
       if (user?.companyId && activeBranchId) {
           const fetchCashiers = async () => {
               try {
-                  // Consulta base: Usuarios de la empresa
                   let q = query(
                       collection(firestoreDB, 'users'), 
                       where('companyId', '==', user.companyId)
                   );
-                  
                   const snapshot = await getDocs(q);
-                  const users = snapshot.docs.map(doc => ({
-                      uid: doc.id, 
-                      ...doc.data()
-                  }));
-
-                  // 🔥 BLINDAJE DE SELECTOR: Filtro estricto en memoria
+                  const users = snapshot.docs.map(doc => ({ uid: doc.id, ...doc.data() }));
                   const branchUsers = users.filter(u => {
-                      // 1. Owners y Admins siempre son visibles (pueden haber operado)
                       if (u.role === 'OWNER' || u.role === 'ADMIN') return true;
-                      
-                      // 2. Sellers solo si pertenecen a la sucursal activa
-                      // Normalizamos a string para evitar errores de tipo
                       return String(u.branchId) === String(activeBranchId);
                   });
-
                   setCashiersList(branchUsers);
               } catch (error) { console.error("Error cargando cajeros:", error); }
           };
@@ -114,10 +208,8 @@ export const SalesPage = () => {
           } else {
                rawData = await salesRepository.getTodaySales();
           }
-          
           setOperations(rawData || []);
           setCurrentPage(1); 
-
       } catch (error) {
           console.error("Error cargando historial:", error);
       } finally {
@@ -125,55 +217,41 @@ export const SalesPage = () => {
       }
   };
 
-  useEffect(() => {
-      fetchOperations();
-  }, [filterPeriod, customStart, customEnd]);
+  useEffect(() => { fetchOperations(); }, [filterPeriod, customStart, customEnd]);
 
   // 🔥 HELPER: RESOLUCIÓN INTELIGENTE DE NOMBRE CAJERO
   const resolveCashierName = (op) => {
       const idToCheck = op.userId || op.createdBy;
-      
       const matchedUser = cashiersList.find(u => u.uid === idToCheck || u.email === idToCheck);
       if (matchedUser) return matchedUser.name || matchedUser.email.split('@')[0];
-
       if (op.sellerName && op.sellerName !== 'Cajero') return op.sellerName;
-      if (op.operatorName) return op.operatorName; // Nexus Pro field
+      if (op.operatorName) return op.operatorName;
       if (op.userName && op.userName !== 'Vendedor') return op.userName;
-
       if (typeof idToCheck === 'string' && idToCheck.includes('@')) {
           return idToCheck.split('@')[0];
       }
-
       return "Desconocido";
   };
 
-  // 🔥 HELPER: RECONSTRUCCIÓN DE NÚMERO DE TICKET (BLINDAJE VISUAL)
   const getDisplayNumber = (op) => {
       const directNumber = op.ticketNumber || op.invoiceNumber || op.number;
       if (directNumber && directNumber !== '---') return directNumber;
-
       if (op.afip && op.afip.cbteNumero) {
           const letra = op.afip.cbteLetra || 'FC';
           const pto = String(op.afip.ptoVta || '1').padStart(4, '0');
           const num = String(op.afip.cbteNumero).padStart(8, '0');
           return `${letra}-${pto}-${num}`;
       }
-
       return `ID:${(op.localId || op.id || '????').slice(-6)}`;
   };
 
   // 3. FILTRADO
   const visibleOperations = useMemo(() => {
       return operations.filter(op => {
-          
-          // A. Filtro Sucursal (Si no es Admin global o si Admin eligió una)
           if (activeBranchId && op.branchId !== activeBranchId) return false;
-
-          // B. Filtro Tipo
           if (filterType === 'SALE' && op.type === 'RECEIPT') return false;
           if (filterType === 'RECEIPT' && op.type !== 'RECEIPT') return false;
 
-          // C. Filtro Cajero
           if (filterCashier !== 'ALL') {
               const selectedUser = cashiersList.find(u => u.email === filterCashier);
               if (!selectedUser) return false;
@@ -185,7 +263,16 @@ export const SalesPage = () => {
               return false;
           }
 
-          // D. Búsqueda Texto
+          if (filterPaymentMethod !== 'ALL') {
+              const methodRaw = op.payment?.method || op.paymentMethod || 'cash';
+              const method = String(methodRaw).toLowerCase().trim();
+              if (filterPaymentMethod === 'CASH' && method !== 'cash') return false;
+              if (filterPaymentMethod === 'CARD' && !['card', 'credit', 'debit'].includes(method)) return false;
+              if (filterPaymentMethod === 'TRANSFER' && method !== 'transfer') return false;
+              if (filterPaymentMethod === 'MP' && !['mercadopago', 'mp', 'qr'].includes(method)) return false;
+              if (filterPaymentMethod === 'CURRENT_ACCOUNT' && method !== 'current_account') return false;
+          }
+
           if (searchTerm) {
               const search = searchTerm.toLowerCase();
               const clientName = (op.client?.name || '').toLowerCase();
@@ -193,16 +280,11 @@ export const SalesPage = () => {
               const docNum = (op.afip?.cbteNumero || '').toString();
               const ticketNum = getDisplayNumber(op).toLowerCase();
               const cashierName = resolveCashierName(op).toLowerCase();
-              
-              return clientName.includes(search) || 
-                      totalStr.includes(search) || 
-                      docNum.includes(search) ||
-                      ticketNum.includes(search) ||
-                      cashierName.includes(search);
+              return clientName.includes(search) || totalStr.includes(search) || docNum.includes(search) || ticketNum.includes(search) || cashierName.includes(search);
           }
           return true;
       });
-  }, [operations, filterType, filterCashier, searchTerm, cashiersList, activeBranchId]);
+  }, [operations, filterType, filterCashier, filterPaymentMethod, searchTerm, cashiersList, activeBranchId]);
 
   // 4. LÓGICA DE PAGINACIÓN
   const totalPages = Math.ceil(visibleOperations.length / itemsPerPage);
@@ -211,7 +293,10 @@ export const SalesPage = () => {
       return visibleOperations.slice(startIndex, startIndex + itemsPerPage);
   }, [visibleOperations, currentPage]);
 
-  // Acciones Fiscales
+  // =================================================================
+  // 🚀 ACCIONES (FACTURAR, ANULAR, DEVOLVER)
+  // =================================================================
+
   const handleFacturar = async (op) => {
     if (op.type === 'RECEIPT') return;
     setLoadingMap(prev => ({ ...prev, [op.localId]: true }));
@@ -228,11 +313,24 @@ export const SalesPage = () => {
 
   const handleAnular = async (op) => {
     if (!isAdmin) return;
-    if (!window.confirm("⚠️ ¿Generar NOTA DE CRÉDITO para anular esta venta?")) return;
+    if (!window.confirm("⚠️ ¿Estás seguro de ANULAR esta venta?\nSe repondrá el stock automáticamente.")) return;
+    
     setLoadingMap(prev => ({ ...prev, [op.localId]: true }));
     try {
-      const notaCredito = await billingService.emitirNotaCredito(op);
-      await updateOperationStatus(op, notaCredito, 'VOIDED'); 
+      let notaCreditoData = null;
+      if (op.afip?.status === 'APPROVED') {
+          notaCreditoData = await billingService.emitirNotaCredito(op);
+          toast.success("Nota de Crédito generada en AFIP");
+      }
+      
+      // Devolver stock total
+      if (op.items && Array.isArray(op.items)) {
+          for (const item of op.items) {
+              await productRepository.addStock(item.id, item.quantity, `Anulación Venta #${getDisplayNumber(op)}`, user?.name, op.branchId);
+          }
+      }
+
+      await updateOperationStatus(op, notaCreditoData, 'VOIDED'); 
       alert("✅ Operación Anulada con Éxito");
     } catch (error) {
       console.error(error);
@@ -240,6 +338,69 @@ export const SalesPage = () => {
     } finally {
       setLoadingMap(prev => ({ ...prev, [op.localId]: false }));
     }
+  };
+
+  // 🔥 PROCESAR DEVOLUCIÓN PARCIAL (CON FEEDBACK VISUAL)
+  const handleProcessRefund = async (originalSale, returnMap, refundAmount) => {
+      setIsProcessingRefund(true);
+      const toastId = toast.loading("Procesando devolución...");
+      try {
+          const { getDB } = await import('../../../database/db'); 
+          const db = await getDB();
+
+          // 1. Devolver Stock
+          const itemsToReturn = originalSale.items.filter(i => returnMap[i.id] > 0);
+          for (const item of itemsToReturn) {
+              const qtyToReturn = returnMap[item.id];
+              await productRepository.addStock(item.id, qtyToReturn, `Devolución Parc. Venta #${getDisplayNumber(originalSale)}`, user?.name, originalSale.branchId);
+          }
+
+          // 2. Calcular nuevos totales
+          const newTotal = originalSale.total - refundAmount;
+          const newSubtotal = originalSale.subtotal - refundAmount; 
+          
+          // 3. Actualizar items en la venta
+          const updatedItems = originalSale.items.map(item => {
+              const returnedQty = returnMap[item.id] || 0;
+              if (returnedQty > 0) {
+                  return {
+                      ...item,
+                      quantity: item.quantity - returnedQty,
+                      subtotal: (item.quantity - returnedQty) * item.price,
+                      returnedQty: (item.returnedQty || 0) + returnedQty 
+                  };
+              }
+              return item;
+          }).filter(i => i.quantity > 0); 
+
+          // 4. Actualizar registro en DB
+          const updatedSale = {
+              ...originalSale,
+              items: updatedItems,
+              total: newTotal,
+              subtotal: newSubtotal,
+              refundedAmount: (originalSale.refundedAmount || 0) + refundAmount,
+              notes: `${originalSale.notes || ''} | Devolución: -$${refundAmount} (${new Date().toLocaleTimeString()})`.trim()
+          };
+
+          if (newTotal <= 0) {
+              updatedSale.status = 'REFUNDED';
+              updatedSale.afip = { ...updatedSale.afip, status: 'VOIDED' }; 
+          }
+
+          await db.sales.put(updatedSale);
+          
+          // Actualizar estado local
+          setOperations(prev => prev.map(o => o.localId === originalSale.localId ? updatedSale : o));
+          toast.success(`Devolución de $${refundAmount} procesada`, { id: toastId });
+          setRefundData(null); // Cerrar solo si éxito
+
+      } catch (error) {
+          console.error(error);
+          toast.error("Error al procesar devolución", { id: toastId });
+      } finally {
+          setIsProcessingRefund(false);
+      }
   };
 
   const updateOperationStatus = async (op, afipData, status) => {
@@ -270,9 +431,8 @@ export const SalesPage = () => {
     setOperations(prev => prev.map(o => o.localId === op.localId ? ventaActualizada : o));
   };
 
-  // CÁLCULOS DE TOTALES VISIBLES
   const totals = useMemo(() => {
-      const filtered = visibleOperations.filter(op => op.afip?.status !== 'VOIDED');
+      const filtered = visibleOperations.filter(op => op.afip?.status !== 'VOIDED' && op.status !== 'REFUNDED');
       return {
           gross: filtered.reduce((acc, op) => acc + (parseFloat(op.total) || 0), 0),
           netProfit: filtered.reduce((acc, op) => acc + (parseFloat(op.netProfit) || 0), 0)
@@ -369,6 +529,22 @@ export const SalesPage = () => {
                       <option value="RECEIPT">Cobros</option>
                   </select>
 
+                  <div className="relative min-w-[120px]">
+                      <CreditCard size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-sys-400 pointer-events-none"/>
+                      <select 
+                        className="w-full bg-white border border-sys-200 text-sys-700 text-xs font-bold rounded-lg pl-8 pr-3 py-2 outline-none focus:border-brand appearance-none"
+                        value={filterPaymentMethod}
+                        onChange={e => setFilterPaymentMethod(e.target.value)}
+                      >
+                          <option value="ALL">Todos los Pagos</option>
+                          <option value="CASH">Efectivo</option>
+                          <option value="CARD">Tarjetas</option>
+                          <option value="TRANSFER">Transferencia</option>
+                          <option value="MP">MercadoPago</option>
+                          <option value="CURRENT_ACCOUNT">Cta. Corriente</option>
+                      </select>
+                  </div>
+
                   <div className="relative flex-1 xl:w-64">
                       <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-sys-400"/>
                       <input type="text" placeholder="Buscar ticket, cliente..." className="w-full pl-9 pr-3 py-2 text-sm bg-white border border-sys-200 rounded-lg outline-none focus:border-brand transition-all" value={searchTerm} onChange={e => setSearchTerm(e.target.value)}/>
@@ -409,6 +585,7 @@ export const SalesPage = () => {
                     const isReceipt = op.type === 'RECEIPT';
                     const isFacturado = op.afip?.status === 'APPROVED';
                     const isAnulado = op.afip?.status === 'VOIDED'; 
+                    const isRefunded = op.status === 'REFUNDED';
                     const isLoading = loadingMap[op.localId];
                     const paymentMethod = op.payment?.method || op.paymentMethod || 'cash';
                     
@@ -419,7 +596,7 @@ export const SalesPage = () => {
                     const displayTicketNumber = getDisplayNumber(op);
 
                     return (
-                      <tr key={op.localId} className={cn("transition-colors group", isAnulado ? "bg-red-50/30 opacity-60" : "hover:bg-sys-50/40")}>
+                      <tr key={op.localId} className={cn("transition-colors group", (isAnulado || isRefunded) ? "bg-red-50/30 opacity-60" : "hover:bg-sys-50/40")}>
                         <td className="p-4 text-sys-600 font-mono text-xs whitespace-nowrap">
                           <div className="font-bold text-sys-800">{new Date(op.date).toLocaleDateString()} {new Date(op.date).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</div>
                           <div className="text-[11px] font-bold text-brand mt-0.5">{displayTicketNumber}</div>
@@ -451,10 +628,10 @@ export const SalesPage = () => {
                         </td>
                         <td className="p-4 text-right">
                           <div className="flex flex-col items-end">
-                              <span className={cn("font-bold whitespace-nowrap text-sm", isAnulado ? "text-red-400 line-through decoration-red-400" : "text-sys-900")}>
+                              <span className={cn("font-bold whitespace-nowrap text-sm", (isAnulado || isRefunded) ? "text-red-400 line-through decoration-red-400" : "text-sys-900")}>
                                 $ {(parseFloat(op.total) || 0).toLocaleString('es-AR', {minimumFractionDigits: 2})}
                               </span>
-                              {isAdmin && !isReceipt && !isAnulado && (
+                              {isAdmin && !isReceipt && !isAnulado && !isRefunded && (
                                   <span className={cn("text-[9px] font-bold flex items-center gap-1", isProfitable ? "text-emerald-600" : "text-red-500")}>
                                       <TrendingUp size={8}/> 
                                       ${profit.toLocaleString('es-AR', {minimumFractionDigits: 0, maximumFractionDigits: 0})}
@@ -465,15 +642,15 @@ export const SalesPage = () => {
                         <td className="p-4 text-center">
                           <span className={cn("px-2 py-0.5 rounded text-[10px] font-bold uppercase border inline-block min-w-[60px]", 
                             paymentMethod === 'cash' ? "bg-green-50 text-green-700 border-green-100" :
-                            paymentMethod === 'mercadopago' ? "bg-blue-50 text-blue-700 border-blue-100" :
-                            paymentMethod === 'clover' ? "bg-emerald-50 text-emerald-700 border-emerald-100" :
+                            (paymentMethod === 'mercadopago' || paymentMethod === 'mp' || paymentMethod === 'qr') ? "bg-blue-50 text-blue-700 border-blue-100" :
+                            (paymentMethod === 'clover' || paymentMethod === 'card' || paymentMethod === 'debit' || paymentMethod === 'credit') ? "bg-emerald-50 text-emerald-700 border-emerald-100" :
                             "bg-purple-50 text-purple-700 border-purple-100")}>
-                            {paymentMethod === 'mercadopago' ? 'MP QR' : paymentMethod.toUpperCase()}
+                            {(paymentMethod === 'mercadopago' || paymentMethod === 'mp') ? 'MP QR' : paymentMethod.toUpperCase()}
                           </span>
                         </td>
                         <td className="p-4 text-center">
                           {isReceipt ? (<span className="text-[10px] text-sys-300">-</span>) 
-                          : isAnulado ? (<span className="text-[10px] font-bold text-red-500 bg-red-50 px-2 py-0.5 rounded border border-red-100">ANULADO</span>) 
+                          : (isAnulado || isRefunded) ? (<span className="text-[10px] font-bold text-red-500 bg-red-50 px-2 py-0.5 rounded border border-red-100">ANULADO</span>) 
                           : isFacturado ? (
                             <div className="inline-flex items-center gap-1 text-green-600 bg-green-50 px-2 py-0.5 rounded border border-green-100 cursor-help" title={`CAE: ${op.afip.cae}`}>
                               <CheckCircle size={10} />
@@ -483,16 +660,25 @@ export const SalesPage = () => {
                         </td>
                         <td className="p-4 text-right whitespace-nowrap">
                           <div className="flex justify-end gap-1">
-                            {!isFacturado && !isAnulado && !isReceipt && (
+                            {!isFacturado && !isAnulado && !isReceipt && !isRefunded && (
                               <Button variant="secondary" onClick={() => handleFacturar(op)} disabled={isLoading} className="h-7 text-[10px] px-2 bg-brand/10 text-brand hover:bg-brand hover:text-white border-none shadow-none">
                                 {isLoading ? <RefreshCw size={10} className="animate-spin" /> : "Facturar"}
                               </Button>
                             )}
-                            {isFacturado && !isAnulado && isAdmin && (
-                              <Button variant="ghost" onClick={() => handleAnular(op)} disabled={isLoading} className="h-7 w-7 p-0 text-red-400 hover:text-red-600 hover:bg-red-50">
-                                {isLoading ? <RefreshCw size={10} className="animate-spin" /> : <RotateCcw size={12} />}
-                              </Button>
+                            
+                            {!isAnulado && !isReceipt && !isRefunded && (
+                                <>
+                                    {isAdmin && (
+                                        <Button variant="ghost" onClick={() => handleAnular(op)} disabled={isLoading} className="h-7 w-7 p-0 text-red-400 hover:text-red-600 hover:bg-red-50" title="Anular Totalmente">
+                                            {isLoading ? <RefreshCw size={10} className="animate-spin" /> : <RotateCcw size={12} />}
+                                        </Button>
+                                    )}
+                                    <Button variant="ghost" onClick={() => setRefundData({ isOpen: true, sale: op })} disabled={isLoading} className="h-7 w-7 p-0 text-orange-400 hover:text-orange-600 hover:bg-orange-50" title="Gestionar Devolución (Editar)">
+                                        <PackageMinus size={14} />
+                                    </Button>
+                                </>
                             )}
+
                             <Button variant="ghost" onClick={() => setSelectedOpForTicket(op)} className="h-7 w-7 p-0 text-sys-400 hover:text-sys-900 hover:bg-sys-100">
                               <Printer size={14} />
                             </Button>
@@ -506,7 +692,6 @@ export const SalesPage = () => {
           </table>
         </div>
 
-        {/* 🔥 FOOTER DE PAGINACIÓN */}
         {visibleOperations.length > itemsPerPage && (
             <div className="p-4 border-t border-sys-100 bg-sys-50/50 flex items-center justify-between">
                 <span className="text-xs text-sys-500 font-medium">
@@ -559,6 +744,16 @@ export const SalesPage = () => {
           receipt={selectedOpForTicket?.type === 'RECEIPT' ? selectedOpForTicket : null}
           onClose={() => setSelectedOpForTicket(null)}
       />
+
+      {refundData && (
+          <RefundModal 
+              isOpen={refundData.isOpen}
+              sale={refundData.sale}
+              isProcessing={isProcessingRefund} 
+              onClose={() => setRefundData(null)}
+              onConfirm={handleProcessRefund}
+          />
+      )}
     </div>
   );
 };

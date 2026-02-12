@@ -20,6 +20,44 @@ const NEW_TAB_TEMPLATE = {
     paymentMethod: 'cash'
 };
 
+// 🔥 HELPER: PARSER DE CÓDIGOS DE BALANZA (KRETZ / SYSTEL / ETC)
+// Soporta prefijos 20 (Estándar 4 digitos) y 27/02 (Estándar 5 digitos)
+const parseScaleBarcode = (code) => {
+    if (code.length !== 13) return { isScale: false };
+
+    // CASO 1: Prefijo 20 (Estándar habitual: 20 PPPP TTTTTT C)
+    // 4 dígitos PLU, 6 dígitos Precio
+    if (code.startsWith('20')) {
+        try {
+            const rawPlu = code.substring(2, 6);   // Dígitos 3-6
+            const rawPrice = code.substring(6, 12); // Dígitos 7-12
+            
+            return { 
+                isScale: true, 
+                pluCode: parseInt(rawPlu, 10).toString(), 
+                embeddedTotal: parseFloat(rawPrice) / 100 // 2 decimales
+            };
+        } catch (e) { return { isScale: false }; }
+    }
+
+    // CASO 2: Prefijo 27, 28, 02 (Estándar 5 dígitos: PP IIIII PPPPP C)
+    // 5 dígitos PLU, 5 dígitos Precio (Tu caso con el 2707092...)
+    if (code.startsWith('27') || code.startsWith('28') || code.startsWith('02')) {
+        try {
+            const rawPlu = code.substring(2, 7);   // Dígitos 3-7 (ej: 07092)
+            const rawPrice = code.substring(7, 12); // Dígitos 8-12 (ej: 00100)
+            
+            return { 
+                isScale: true, 
+                pluCode: parseInt(rawPlu, 10).toString(), // Quitamos el 0 inicial -> 7092
+                embeddedTotal: parseFloat(rawPrice) / 100 // 2 decimales
+            };
+        } catch (e) { return { isScale: false }; }
+    }
+
+    return { isScale: false };
+};
+
 export const usePosController = () => {
     const { user, activeBranchId } = useAuthStore(); 
     const { activeShift, setActiveShift } = useShiftStore(); 
@@ -262,6 +300,21 @@ export const usePosController = () => {
     // =================================================================
     // 💳 PROCESO DE COBRO BLINDADO (RE-CHECK ENGINE) 🔥
     // =================================================================
+    
+    const _verifyShift = async () => {
+        let currentShift = activeShift;
+        if (!currentShift || currentShift.status !== 'OPEN') {
+            console.log("🔍 [POS] Shift no en RAM o cerrado. Verificando base local...");
+            currentShift = await cashRepository.getCurrentShift();
+            if (currentShift && currentShift.status === 'OPEN') {
+                setActiveShift(currentShift); 
+            } else {
+                throw new Error("⚠️ DEBE ABRIR CAJA ANTES DE VENDER");
+            }
+        }
+        return currentShift;
+    };
+
     const processSale = async (paymentData) => {
         if (activeTab.items.length === 0) return toast.error("Carrito vacío");
         if (!activeBranchId) return toast.error("Sucursal no activa");
@@ -270,29 +323,12 @@ export const usePosController = () => {
         let loadingToast = null;
 
         try {
-            // 🔥 PASO CRÍTICO: RE-CHECK DE TURNO
-            let currentShift = activeShift;
-            
-            if (!currentShift || currentShift.status !== 'OPEN') {
-                console.log("🔍 [POS] Shift no en RAM o cerrado. Verificando base local...");
-                currentShift = await cashRepository.getCurrentShift();
-                
-                if (currentShift && currentShift.status === 'OPEN') {
-                    console.log("✅ [POS] Turno recuperado desde Dexie:", currentShift.id);
-                    setActiveShift(currentShift); 
-                } else {
-                    throw new Error("⚠️ DEBE ABRIR CAJA ANTES DE VENDER");
-                }
-            }
+            const currentShift = await _verifyShift();
 
             const shiftBranch = String(currentShift.branchId).trim();
             const activeBranch = String(activeBranchId).trim();
-
-            if (shiftBranch !== activeBranch) {
-                console.warn(`[POS] Sucursal desincronizada: Turno(${shiftBranch}) vs App(${activeBranch})`);
-                if (user?.role !== 'OWNER') {
-                    throw new Error("⚠️ EL TURNO ABIERTO PERTENECE A OTRA SUCURSAL");
-                }
+            if (shiftBranch !== activeBranch && user?.role !== 'OWNER') {
+                throw new Error("⚠️ EL TURNO ABIERTO PERTENECE A OTRA SUCURSAL");
             }
 
             // 1. Preparación de Pagos
@@ -340,7 +376,8 @@ export const usePosController = () => {
                 operatorId: user.uid,
                 operatorName: user.name,
                 createdAt: new Date().toISOString(),
-                status: 'COMPLETED'
+                status: 'COMPLETED',
+                type: 'SALE' 
             };
 
             let saleResult = null;
@@ -398,18 +435,72 @@ export const usePosController = () => {
         }
     };
 
+    const processInternalSale = async (reason = "Consumo Interno") => {
+        if (activeTab.items.length === 0) return toast.error("Carrito vacío");
+        setIsProcessing(true);
+        
+        try {
+            const currentShift = await _verifyShift();
+
+            const payload = {
+                items: activeTab.items.map(i => ({
+                    id: i.id, 
+                    code: i.code, 
+                    name: i.name, 
+                    price: 0, 
+                    originalPrice: i.price, 
+                    cost: i.cost, 
+                    quantity: i.quantity, 
+                    subtotal: 0
+                })),
+                client: { name: 'CONSUMO INTERNO', fiscalCondition: 'CONSUMIDOR FINAL' },
+                total: 0, 
+                subtotal: 0,
+                discount: 100,
+                payments: [{ method: 'internal', amount: 0, total: 0 }],
+                payment: { method: 'internal', amount: 0 }, 
+                method: 'INTERNAL',
+                branchId: activeBranchId, 
+                shiftId: currentShift.id, 
+                companyId: user.companyId,
+                operatorId: user.uid,
+                operatorName: user.name,
+                createdAt: new Date().toISOString(),
+                status: 'COMPLETED',
+                type: 'INTERNAL', 
+                notes: reason
+            };
+
+            const localNumber = `INT-${Date.now().toString().slice(-6)}`;
+            
+            await salesRepository.createSale({
+                ...payload,
+                afip: { status: 'SKIPPED', cbteLetra: 'I' }, 
+                number: localNumber,
+                ticketNumber: localNumber
+            });
+
+            toast.success("Consumo interno registrado");
+            clearCart();
+            return true;
+
+        } catch (error) {
+            console.error("Error venta interna:", error);
+            toast.error(error.message);
+            return false;
+        } finally {
+            setIsProcessing(false);
+        }
+    };
+
     // =================================================================
-    // 🔎 BUSCADOR & KEYBOARD (CORREGIDO - SIN EFECTO SECUNDARIO)
+    // 🔎 BUSCADOR & KEYBOARD (CON SOPORTE DE BALANZAS MEJORADO)
     // =================================================================
     const searchProduct = async (query) => {
         if (!query) return setSearchResults([]);
         try {
-            // 🔥 CORRECCIÓN: Buscamos exacto pero YA NO AGREGAMOS automáticamente
-            // Solo devolvemos los resultados visuales.
             const exactMatch = await productRepository.findByCode(query);
             if (exactMatch) {
-                // ANTES: addToCart(exactMatch, 1);  <-- ESTO CAUSABA EL DOBLE ADD
-                // AHORA: Solo lo mostramos como resultado único
                 setSearchResults([exactMatch]); 
                 return true;
             }
@@ -425,7 +516,6 @@ export const usePosController = () => {
     };
 
     // 🔥 GLOBAL KEYBOARD LISTENER (Cuando el input NO tiene foco)
-    // Aquí sí debemos agregar explícitamente porque searchProduct ya no lo hace.
     useEffect(() => {
         let buffer = '';
         let lastKeyTime = Date.now();
@@ -438,7 +528,29 @@ export const usePosController = () => {
             
             if (e.key === 'Enter') {
                 if (buffer.length > 2) { 
-                    // INTENTO DE COMPRA DIRECTA (Scanner Global)
+                    
+                    // 1. INTENTO: CÓDIGO DE BALANZA
+                    const scaleInfo = parseScaleBarcode(buffer);
+                    
+                    if (scaleInfo.isScale) {
+                        const product = await productRepository.findByCode(scaleInfo.pluCode);
+                        if (product) {
+                            // Cálculo de cantidad basado en precio
+                            // Qty = TotalEscaneado / PrecioUnitario
+                            const unitPrice = parseFloat(product.price);
+                            if (unitPrice > 0) {
+                                const calculatedQty = scaleInfo.embeddedTotal / unitPrice;
+                                addToCart(product, calculatedQty);
+                                toast.success(`⚖️ Balanza: ${product.name} (${calculatedQty.toFixed(3)}kg)`);
+                            } else {
+                                toast.error("Error: Producto de balanza sin precio unitario");
+                            }
+                            buffer = '';
+                            return;
+                        }
+                    }
+
+                    // 2. INTENTO: CÓDIGO NORMAL
                     const exactProduct = await productRepository.findByCode(buffer);
                     if (exactProduct) {
                         addToCart(exactProduct, 1);
@@ -452,12 +564,12 @@ export const usePosController = () => {
         };
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [activeTabId, addToCart]); // Agregué addToCart a dependencias
+    }, [activeTabId, addToCart]); 
 
     return { 
         tabs, activeTab, activeTabId, totals, searchResults, isProcessing, 
         addTab, removeTab, switchTab, addToCart, removeFromCart, 
         updateItemQuantity, setClient, clearCart, searchProduct, 
-        setSearchResults, processSale 
+        setSearchResults, processSale, processInternalSale 
     };
 };

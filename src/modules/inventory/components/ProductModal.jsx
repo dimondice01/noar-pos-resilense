@@ -192,13 +192,17 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
 
         setFormData({
             ...productToEdit,
+            name: productToEdit.name || '', // Asegurar string para evitar error en controlled input
             code: productToEdit.code || '',
             barcodes: loadedBarcodes,
-            markup: calculatedMarkup || '0',
+            markup: calculatedMarkup || '40',
             category: productToEdit.category || '',
             brand: productToEdit.brand || '',
             supplier: productToEdit.supplier || '',
             minStock: productToEdit.minStock || '5',
+            cost: productToEdit.cost || '',
+            price: productToEdit.price || '',
+            stock: productToEdit.stock || '', // Para visualización si es nuevo
             isWeighable: productToEdit.isWeighable === true,
             
             // MAPEO EXPLÍCITO DE CAMPOS PROMO
@@ -318,10 +322,11 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
             };
         }
 
-        // 3. Limpieza de Stock en Edición
-        if (productToEdit) {
+        // 3. Limpieza de Stock en Edición (Si ya existe, el stock no se toca desde aquí)
+        if (productToEdit && productToEdit.id) {
             delete masterPayload.stock; 
         } else {
+            // Si es nuevo, usamos el stock inicial
             masterPayload.stock = parseFloat(formData.stock || 0);
         }
 
@@ -357,7 +362,7 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
           <div>
               <h3 className="font-bold text-xl text-sys-900 tracking-tight flex items-center gap-2">
                 {productToEdit ? <Edit2 className="text-brand"/> : <Plus className="text-brand"/>}
-                {productToEdit ? 'Editar Maestro' : 'Nuevo Producto'}
+                {productToEdit && productToEdit.id ? 'Editar Maestro' : 'Nuevo Producto'}
               </h3>
               <p className="text-xs text-sys-500 font-medium">Configuración global del catálogo</p>
           </div>
@@ -476,7 +481,7 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
                 </div>
 
                 {/* Stock Edit Protection */}
-                {productToEdit ? (
+                {productToEdit && productToEdit.id ? (
                     <div className="bg-orange-50 border border-orange-100 p-3 rounded-xl text-xs text-orange-700 flex items-center gap-2">
                         <Package size={16}/>
                         <span>Para modificar el stock, utilice la opción <b>"Ajuste"</b> en el listado principal.</span>

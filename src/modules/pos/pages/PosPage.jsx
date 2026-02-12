@@ -21,20 +21,18 @@ import { ClientSelectionModal } from '../components/ClientSelectionModal';
 import { TicketModal } from '../../sales/components/TicketModal';
 import { Button } from '../../../core/ui/Button';
 import { cn } from '../../../core/utils/cn';
+import toast from 'react-hot-toast';
 
 // =================================================================
-// ⚙️ CONFIGURACIÓN GLOBAL DEL POS (LISTA PARA INYECCIÓN)
+// ⚙️ CONFIGURACIÓN GLOBAL DEL POS
 // =================================================================
 const POS_CONFIG = {
-    // true: Permite agregar productos con stock <= 0 sin preguntar.
-    // false: Bloquea la venta si el stock es <= 0.
     ALLOW_OUT_OF_STOCK_SALES: true, 
 };
 
 export const PosPage = () => {
   const { user } = useAuthStore();
   
-  // 🔥 INYECTAMOS EL CEREBRO DEL POS
   const {
       tabs,
       activeTab,
@@ -54,7 +52,7 @@ export const PosPage = () => {
       isProcessing
   } = usePosController();
 
-  // Estados Locales de UI
+  // Estados Locales
   const [isShiftChecking, setIsShiftChecking] = useState(true);
   const [hasOpenShift, setHasOpenShift] = useState(false);
   const [openingAmount, setOpeningAmount] = useState('');
@@ -74,12 +72,10 @@ export const PosPage = () => {
   const searchInputRef = useRef(null);
   const openingInputRef = useRef(null);
   const productsListRef = useRef(null);
-  
-  // 🔥 BLINDAJE DE ESCÁNER (TIMESTAMP)
   const lastScanTime = useRef(0);
 
   // =================================================================
-  // 🛡️ REGLA DE ORO: FOCO PERSISTENTE (Scanner & Teclado)
+  // 🛡️ FOCO PERSISTENTE
   // =================================================================
   const maintainFocus = useCallback(() => {
       const anyModalOpen = isPaymentOpen || isClientSelectorOpen || !!selectedProduct || !!lastSaleTicket;
@@ -105,21 +101,53 @@ export const PosPage = () => {
   }, [isPaymentOpen, isClientSelectorOpen, selectedProduct, lastSaleTicket, maintainFocus]);
 
   // =================================================================
-  // ⚖️ LÓGICA DE BALANZAS INTELIGENTES (Prefijo 20)
+  // ⚖️ LÓGICA DE BALANZAS
   // =================================================================
   const parseScaleBarcode = async (code) => {
-      if (code.startsWith('20') && code.length === 13) {
-          const internalCode = code.substring(2, 7);
-          const weightInGrams = parseFloat(code.substring(7, 12));
-          const finalWeight = weightInGrams / 1000; 
-          
-          const product = await productRepository.getProductByInternalCode(internalCode);
-          if (product) {
-              addToCart(product, finalWeight);
-              setSearchTerm('');
-              return true;
-          }
+      if (code.length !== 13) return false;
+
+      let pluCode = '';
+      let detectedQty = 0; 
+      let isScale = false;
+
+      // CASO A: PREFIJO 20 (PRECIO EMBEBIDO)
+      if (code.startsWith('20')) {
+          isScale = true;
+          pluCode = parseInt(code.substring(2, 6), 10).toString(); 
+          try {
+              const product = await productRepository.findByCode(pluCode);
+              if (product) {
+                  const embeddedPrice = parseFloat(code.substring(6, 12)) / 100; 
+                  const unitPrice = parseFloat(product.price);
+                  if (unitPrice > 0) {
+                      detectedQty = Math.round((embeddedPrice / unitPrice) * 1000) / 1000;
+                      addToCart(product, detectedQty);
+                      toast.success(`⚖️ Balanza: ${product.name} - ${detectedQty}kg`);
+                      setSearchTerm('');
+                      return true;
+                  }
+              }
+          } catch (e) { console.error("Error balanza 20:", e); }
       }
+      
+      // CASO B: PREFIJO 27, 28, 02 (PESO EMBEBIDO)
+      else if (code.startsWith('27') || code.startsWith('28') || code.startsWith('02')) {
+          isScale = true;
+          pluCode = parseInt(code.substring(2, 7), 10).toString();
+          const weightInGrams = parseFloat(code.substring(7, 12)); 
+          detectedQty = Math.round((weightInGrams / 1000) * 1000) / 1000; 
+          
+          try {
+              const product = await productRepository.findByCode(pluCode);
+              if (product) {
+                  addToCart(product, detectedQty);
+                  toast.success(`⚖️ Balanza: ${product.name} - ${detectedQty}kg`);
+                  setSearchTerm('');
+                  return true;
+              }
+          } catch (e) { console.error("Error balanza 27:", e); }
+      }
+
       return false;
   };
 
@@ -164,13 +192,17 @@ export const PosPage = () => {
   };
 
   // =================================================================
-  // 2. MANEJO DE INPUT BÚSQUEDA
+  // 2. MANEJO DE INPUT BÚSQUEDA (CORREGIDO 🔥)
   // =================================================================
   useEffect(() => {
       const timer = setTimeout(async () => {
           if (searchTerm.length >= 2) {
-              const wasScale = await parseScaleBarcode(searchTerm);
-              if (!wasScale) searchProduct(searchTerm);
+              // 🔥 FIX CRÍTICO: 
+              // Quitamos parseScaleBarcode() de aquí. El useEffect SOLO debe buscar visualmente.
+              // La acción de agregar (Venta) debe ser explícita con ENTER.
+              // Esto evita que el scanner agregue el producto mientras escribe y luego el Enter lo agregue de nuevo.
+              
+              searchProduct(searchTerm);
           } else {
               setSearchResults([]);
           }
@@ -178,21 +210,18 @@ export const PosPage = () => {
       return () => clearTimeout(timer);
   }, [searchTerm]);
 
-  // 🔥 LÓGICA DE SELECCIÓN SIN CONFIRMACIONES MOLESTAS
+  // 🔥 LÓGICA DE SELECCIÓN
   const handleSelectProduct = (product) => {
       if (!product || !product.id) return;
 
       const currentStock = parseFloat(product.stock || 0);
 
-      // Si NO se permite vender sin stock y el stock es 0 o menos
       if (!POS_CONFIG.ALLOW_OUT_OF_STOCK_SALES && currentStock <= 0) {
-          // Bloqueo silencioso: limpiamos y devolvemos foco
           setSearchTerm(''); 
           maintainFocus();
           return; 
       }
       
-      // Si pasa la validación (o está permitido), agregamos sin preguntar
       if (product.isWeighable) {
           setSelectedProduct(product);
       } else {
@@ -222,6 +251,11 @@ export const PosPage = () => {
           lastScanTime.current = now;
 
           try {
+              // 1. Prioridad: Revisar si es código de balanza al dar Enter
+              const wasScale = await parseScaleBarcode(searchTerm);
+              if (wasScale) return; // Si era balanza, ya se agregó y limpió.
+
+              // 2. Búsqueda exacta
               const exactMatchInList = searchResults.find(p => 
                   String(p.barcode) === searchTerm || String(p.code) === searchTerm
               );
@@ -241,6 +275,7 @@ export const PosPage = () => {
                   return;
               }
 
+              // 3. Fallback a Búsqueda Directa en Repo
               const directResults = await productRepository.search(searchTerm);
               const exactMatchDb = directResults.find(p => 
                   String(p.barcode) === searchTerm || String(p.code) === searchTerm
@@ -251,6 +286,7 @@ export const PosPage = () => {
               } else if (directResults.length === 1) {
                   handleSelectProduct(directResults[0]);
               } else {
+                  // Opcional: Sonido de error
                   setSearchTerm('');
               }
           } catch (err) {
@@ -466,7 +502,6 @@ export const PosPage = () => {
                               idx === focusedIndex 
                                 ? "bg-brand text-white border-brand shadow-xl scale-[1.02] translate-x-1" 
                                 : "bg-white border-transparent hover:border-brand/30",
-                              // UI: Si no hay stock y NO está permitido vender sin stock, bajar opacidad y mostrar bloqueado
                               parseFloat(product.stock || 0) <= 0 && !POS_CONFIG.ALLOW_OUT_OF_STOCK_SALES && "opacity-60 grayscale-[0.5]"
                           )}
                       >
@@ -485,7 +520,6 @@ export const PosPage = () => {
                               <div className={cn("font-black text-xl tracking-tighter", idx === focusedIndex ? "text-white" : "text-sys-900")}>
                                 ${(Number(product.price) || 0).toLocaleString('es-AR', {minimumFractionDigits: 2})}
                               </div>
-                              {/* BADGE DE STOCK CON LOGICA VISUAL */}
                               <div className={cn(
                                   "text-[9px] font-black uppercase px-2 py-0.5 rounded mt-1.5 inline-block",
                                   idx === focusedIndex 
@@ -505,28 +539,6 @@ export const PosPage = () => {
                           <p>Sin resultados</p>
                       </div>
                   )}
-              </div>
-          </div>
-      </div>
-
-      {/* FOOTER */}
-      <div className="h-10 bg-sys-900 border-t border-white/10 flex items-center px-4 gap-8 text-[11px] font-black text-white shrink-0 select-none uppercase tracking-[0.1em]">
-          <div className="flex items-center gap-2"><Keyboard size={16} className="text-brand"/> <span>ATAJOS:</span></div>
-          <div className="flex items-center gap-6">
-            <div className="flex items-center gap-2"><span className="bg-white/10 px-2 py-0.5 rounded text-brand border border-brand/30 font-mono">F1</span> NUEVA</div>
-            <div className="flex items-center gap-2"><span className="bg-white/10 px-2 py-0.5 rounded text-white font-mono">F2</span> BUSCAR</div>
-            <div className="flex items-center gap-2"><span className="bg-white/10 px-2 py-0.5 rounded text-white font-mono">F3</span> CLIENTE</div>
-            <div className="flex items-center gap-2"><span className="bg-white/10 px-2 py-0.5 rounded text-white font-mono">F12</span> COBRAR</div>
-          </div>
-          <div className="ml-auto flex items-center gap-4">
-              <div className="flex items-center gap-2 opacity-60 hover:opacity-100 transition-opacity">
-                  <Store size={14} className="text-brand"/>
-                  <span className="font-bold">{user?.activeBranchName || "SUCURSAL PRINCIPAL"}</span>
-              </div>
-              <div className="w-px h-4 bg-white/20"></div>
-              <div className="flex items-center gap-2 bg-white/5 px-4 py-1 rounded-full border border-white/10">
-                <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse shadow-[0_0_12px_rgba(16,185,129,0.7)]"></div>
-                <span className="text-white uppercase tracking-widest">{user?.name}</span>
               </div>
           </div>
       </div>

@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef, useMemo } from 'react';
+import React, { useEffect, useState, useRef, useMemo, useCallback } from 'react';
 import { useNavigate, useParams } from 'react-router-dom'; 
 import { 
     Plus, Search, Edit2, Trash2, Package, AlertTriangle, 
@@ -6,7 +6,7 @@ import {
     Printer, ArrowRightLeft, Calendar, ChevronLeft, ChevronRight,
     Upload, RefreshCw, MoreVertical, Cloud, MapPin, 
     Tag, Percent, Megaphone, MoreHorizontal, LayoutGrid, DollarSign,
-    CalendarClock, Info, Scale 
+    CalendarClock, Info, Scale, Save, Pencil
 } from 'lucide-react';
 import toast from 'react-hot-toast'; 
 
@@ -14,7 +14,7 @@ import { productRepository } from '../repositories/productRepository';
 import { masterRepository } from '../repositories/masterRepository';
 import { useAuthStore } from '../../auth/store/useAuthStore'; 
 import { syncService } from '../../sync/services/syncService'; 
-import { scaleService } from '../services/scaleService'; // 🔥 SERVICIO DE BALANZAS
+import { scaleService } from '../services/scaleService'; 
 
 import { ProductModal } from '../components/ProductModal'; 
 import { MastersModal } from '../components/MastersModal';
@@ -53,6 +53,95 @@ const getActivePromo = (product) => {
 
 const getLocalDate = () => {
     return new Date().toLocaleDateString('sv-SE'); 
+};
+
+// =================================================================
+// ⌨️ COMPONENTE CELDA EDITABLE (AUDITORÍA RÁPIDA)
+// =================================================================
+const EditableCell = ({ 
+    value, 
+    id, 
+    field, 
+    productId, 
+    onSave, 
+    type = "text", 
+    prefix = "",
+    disabled = false,
+    nextRowId = null,
+    prevRowId = null,
+    className
+}) => {
+    const [isEditing, setIsEditing] = useState(false);
+    const [localValue, setLocalValue] = useState(value);
+    const inputRef = useRef(null);
+
+    useEffect(() => { setLocalValue(value); }, [value]);
+
+    useEffect(() => {
+        if (isEditing && !disabled && inputRef.current) {
+            inputRef.current.focus();
+            inputRef.current.select();
+        }
+    }, [isEditing, disabled]);
+
+    const handleKeyDown = (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            inputRef.current.blur(); // Dispara onBlur -> Save
+        }
+        // Navegación estilo Excel
+        if (e.key === 'ArrowDown' && nextRowId) {
+            e.preventDefault();
+            const nextEl = document.getElementById(`cell-${nextRowId}-${field}`);
+            if (nextEl && !disabled) nextEl.click();
+        }
+        if (e.key === 'ArrowUp' && prevRowId) {
+            e.preventDefault();
+            const prevEl = document.getElementById(`cell-${prevRowId}-${field}`);
+            if (prevEl && !disabled) prevEl.click();
+        }
+    };
+
+    const handleBlur = () => {
+        setIsEditing(false);
+        // Solo guardar si cambió el valor y no está deshabilitado
+        if (!disabled && localValue != value) {
+            onSave(productId, field, localValue);
+        }
+    };
+
+    if (disabled || !isEditing) {
+        return (
+            <div 
+                id={`cell-${productId}-${field}`}
+                onClick={() => !disabled && setIsEditing(true)}
+                className={cn(
+                    "p-2 rounded transition-colors text-right border border-transparent",
+                    !disabled && "cursor-pointer hover:bg-sys-100 hover:border-sys-200",
+                    disabled && "cursor-default text-sys-500",
+                    className
+                )}
+            >
+                <span className="font-mono text-xs font-bold">
+                    {prefix}{type === 'number' ? (field === 'stock' ? formatStock(localValue) : formatMoney(localValue)) : localValue}
+                </span>
+            </div>
+        );
+    }
+
+    return (
+        <div className="p-1">
+            <input
+                ref={inputRef}
+                type={type}
+                className="w-full h-8 text-xs font-bold border-2 border-brand rounded px-1 outline-none text-right bg-white shadow-lg"
+                value={localValue}
+                onChange={(e) => setLocalValue(e.target.value)}
+                onBlur={handleBlur}
+                onKeyDown={handleKeyDown}
+            />
+        </div>
+    );
 };
 
 // =================================================================
@@ -302,7 +391,7 @@ const BulkUpdateModal = ({ isOpen, onClose, onConfirm, allProducts, masters, man
                                         <span className="text-xs font-mono font-black text-brand">${newPrice}</span>
                                     </div>
                                 </div>
-                             )
+                            )
                         })
                     )}
                 </div>
@@ -358,6 +447,7 @@ export const InventoryPage = () => {
     // Selection & View State
     const [selectedIds, setSelectedIds] = useState(new Set());
     const [currentPage, setCurrentPage] = useState(1);
+    const [isEditMode, setIsEditMode] = useState(false); // 🔥 PROTECCIÓN DE EDICIÓN
     const ITEMS_PER_PAGE = 25;
 
     // Modals
@@ -365,10 +455,63 @@ export const InventoryPage = () => {
     const [isMastersModalOpen, setIsMastersModalOpen] = useState(false);
     const [isImportModalOpen, setIsImportModalOpen] = useState(false); 
     const [isBulkUpdateOpen, setIsBulkUpdateOpen] = useState(false);
-    const [isScaleModalOpen, setIsScaleModalOpen] = useState(false); // 🔥 Modal Balanza
+    const [isScaleModalOpen, setIsScaleModalOpen] = useState(false);
     
     const [editingProduct, setEditingProduct] = useState(null);
     const [stockEntryProduct, setStockEntryProduct] = useState(null);
+
+    // 🔥 REFERENCE TRICK: Mantiene los productos frescos dentro del EventListener
+    const productsRef = useRef([]); 
+    useEffect(() => { productsRef.current = products; }, [products]);
+
+    // =================================================================
+    // 🔍 GLOBAL SCANNER LISTENER (Scanner Inteligente) 🔥
+    // =================================================================
+    useEffect(() => {
+        let buffer = '';
+        let lastKeyTime = Date.now();
+
+        const handleGlobalScan = (e) => {
+            // Ignorar si el foco está en un input
+            if (['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName)) return;
+
+            const now = Date.now();
+            // Aumentamos tolerancia para lectores lentos o bluetooth
+            if (now - lastKeyTime > 200) buffer = ''; 
+            lastKeyTime = now;
+
+            if (e.key === 'Enter') {
+                // Buffer mínimo para evitar falsos positivos
+                if (buffer.length > 2) { 
+                    handleScannerMatch(buffer);
+                    buffer = '';
+                }
+            } else if (e.key.length === 1) {
+                buffer += e.key;
+            }
+        };
+
+        window.addEventListener('keydown', handleGlobalScan);
+        return () => window.removeEventListener('keydown', handleGlobalScan);
+    }, []); 
+
+    const handleScannerMatch = (code) => {
+        const currentProducts = productsRef.current; 
+        const product = currentProducts.find(p => p.code === code || (Array.isArray(p.barcode) && p.barcode.includes(code)) || p.barcode === code);
+        
+        if (product) {
+            // ✅ EXISTE: MODO EDICIÓN
+            setEditingProduct(product);
+            setIsProductModalOpen(true);
+            toast.success("Producto encontrado: " + product.name);
+        } else {
+            // 🆕 NO EXISTE: MODO CREACIÓN (PRECARGADO)
+            // Se envía un objeto limpio con solo los códigos para que el Modal lo tome como nuevo
+            setEditingProduct({ code: code, barcode: [code], isNew: true }); 
+            setIsProductModalOpen(true);
+            toast("Nuevo producto detectado", { icon: '✨' });
+        }
+    };
 
     // =================================================================
     // 🔄 DATA LOADING
@@ -438,7 +581,6 @@ export const InventoryPage = () => {
         }
     };
 
-    // 🔥 HANDLER PARA BALANZA (CORREGIDO)
     const handleScaleExport = (brand) => {
         try {
             const weighableProducts = products.filter(p => p.isWeighable);
@@ -448,7 +590,6 @@ export const InventoryPage = () => {
                 return;
             }
 
-            // 🔥 FIX: Llamar a los nombres correctos del servicio
             const fileContent = scaleService.generateScaleFile(weighableProducts, brand);
             scaleService.downloadFile(fileContent, brand);
             
@@ -457,6 +598,38 @@ export const InventoryPage = () => {
         } catch (e) {
             console.error(e);
             toast.error("Error exportando balanza: " + e.message);
+        }
+    };
+
+    // 🔥 HANDLER PARA EDICIÓN INLINE (AUDITORÍA)
+    const handleInlineSave = async (productId, field, newValue) => {
+        try {
+            const product = products.find(p => p.id === productId);
+            if (!product) return;
+
+            let updates = {};
+            let numValue = parseFloat(newValue);
+
+            if (field === 'stock') {
+                await productRepository.addStock(productId, numValue - (product.stock || 0), "Ajuste Auditoría Inline", user?.name || "Auditor", activeBranchId);
+            } else {
+                if (isNaN(numValue)) return;
+                updates[field] = numValue;
+                await productRepository.update(productId, updates);
+            }
+            
+            setProducts(prev => prev.map(p => {
+                if (p.id === productId) {
+                    return { ...p, ...updates, ...(field === 'stock' ? { stock: numValue } : {}) };
+                }
+                return p;
+            }));
+            
+            toast.success(`${field.toUpperCase()} actualizado`, { position: 'bottom-right', duration: 1000 });
+        } catch (e) {
+            console.error(e);
+            toast.error("Error al guardar cambio");
+            loadData(); 
         }
     };
 
@@ -595,13 +768,27 @@ export const InventoryPage = () => {
                     </div>
                     
                     <div className="flex flex-wrap gap-2">
+                        {/* 🔥 BOTÓN PROTEGIDO PARA EL OWNER: ACTIVAR MODO EDICIÓN */}
+                        {isOwner && (
+                            <Button 
+                                variant="secondary" 
+                                onClick={() => setIsEditMode(!isEditMode)} 
+                                className={cn(
+                                    "border transition-all",
+                                    isEditMode ? "bg-brand text-white border-brand shadow-lg" : "bg-white text-sys-500 border-sys-200 hover:border-sys-300"
+                                )}
+                            >
+                                <Pencil size={18} className="mr-2"/> {isEditMode ? 'Terminar Edición' : 'Modo Edición'}
+                            </Button>
+                        )}
+
+                        <div className="w-px h-8 bg-sys-200 mx-2 hidden md:block"></div>
+
                         {isOwner && (
                             <Button variant="ghost" onClick={handleForceSync} className="text-sys-400 hover:text-brand hover:bg-brand/5 border border-transparent hover:border-brand/20">
                                 <RefreshCw size={18} className="mr-2"/> Sync Global
                             </Button>
                         )}
-
-                        <div className="w-px h-8 bg-sys-200 mx-2 hidden md:block"></div>
 
                         {isAdmin && (
                             <Button variant="secondary" className="border-green-200 text-green-700 bg-green-50 hover:bg-green-100" onClick={() => setIsScaleModalOpen(true)}>
@@ -641,10 +828,11 @@ export const InventoryPage = () => {
                         <input 
                             ref={searchInputRef}
                             type="text" 
-                            placeholder="Buscar en todo el catálogo..." 
+                            placeholder="Buscar (ESC para limpiar)..." 
                             className="w-full pl-10 pr-3 py-2.5 bg-white border-2 border-sys-100 rounded-2xl text-sm font-bold outline-none focus:border-brand transition-all"
                             value={inputValue} 
                             onChange={e => setInputValue(e.target.value)} 
+                            onKeyDown={e => e.key === 'Escape' && setInputValue('')}
                         />
                     </div>
                     
@@ -687,11 +875,15 @@ export const InventoryPage = () => {
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-sys-100">
-                            {currentProducts.map(p => {
+                            {currentProducts.map((p, index) => {
                                 const promo = getActivePromo(p);
                                 const isSelected = selectedIds.has(p.id);
                                 const currentStock = p.stock; 
                                 const hasPendingPrice = p.priceActivationDate && p.nextPrice !== undefined && p.nextPrice !== null;
+                                
+                                // IDs para navegación de teclado
+                                const prevRowId = index > 0 ? currentProducts[index - 1].id : null;
+                                const nextRowId = index < currentProducts.length - 1 ? currentProducts[index + 1].id : null;
 
                                 return (
                                     <tr 
@@ -714,43 +906,78 @@ export const InventoryPage = () => {
                                             </div>
                                         </td>
                                         
+                                        {/* STOCK COLUMNS - EDITABLE ONLY FOR ACTIVE BRANCH AND IF EDIT MODE IS ON */}
                                         {branches.map(b => {
-                                            let stockVal = 0;
-                                            if (b.id === activeBranchId && activeBranchId !== 'ALL') {
-                                                stockVal = currentStock;
-                                            } else {
-                                                stockVal = globalStock[p.id]?.[b.id] || 0;
-                                            }
+                                            const isCurrentBranch = b.id === activeBranchId && activeBranchId !== 'ALL';
+                                            let stockVal = isCurrentBranch ? currentStock : (globalStock[p.id]?.[b.id] || 0);
 
                                             return (
-                                                <td key={b.id} className={cn("p-4 text-center border-l border-sys-100", b.id === activeBranchId ? "bg-brand/5" : "")}>
-                                                    <span className={cn("inline-block px-2.5 py-1 rounded-xl text-xs font-black min-w-[50px]", 
-                                                        stockVal < 0 ? "bg-red-600 text-white shadow-lg shadow-red-200" : 
-                                                        stockVal <= (p.minStock || 5) ? "bg-orange-100 text-orange-600 border border-orange-200" : 
-                                                        "bg-sys-50 text-sys-700 border border-sys-200"
-                                                    )}>{formatStock(stockVal)}</span>
+                                                <td key={b.id} className={cn("p-2 text-center border-l border-sys-100", b.id === activeBranchId ? "bg-brand/5" : "")} onClick={e => e.stopPropagation()}>
+                                                    {isCurrentBranch ? (
+                                                        <EditableCell 
+                                                            value={stockVal} 
+                                                            id={p.id} 
+                                                            field="stock" 
+                                                            productId={p.id}
+                                                            onSave={handleInlineSave}
+                                                            type="number"
+                                                            disabled={!isEditMode}
+                                                            nextRowId={nextRowId}
+                                                            prevRowId={prevRowId}
+                                                            className={cn("mx-auto w-20 text-center font-black rounded-lg", 
+                                                                stockVal < 0 ? "text-red-600 bg-red-50" : stockVal <= (p.minStock || 5) ? "text-orange-600 bg-orange-50" : "text-sys-700"
+                                                            )}
+                                                        />
+                                                    ) : (
+                                                        <span className="text-xs text-sys-400 font-bold">{formatStock(stockVal)}</span>
+                                                    )}
                                                 </td>
                                             );
                                         })}
 
-                                        <td className="p-4 text-right border-l border-sys-100 font-mono text-xs font-bold text-sys-500">
-                                            $ {formatMoney(p.cost)}
+                                        {/* COSTO - EDITABLE */}
+                                        <td className="p-2 text-right border-l border-sys-100 font-mono text-xs font-bold text-sys-500" onClick={e => e.stopPropagation()}>
+                                            <EditableCell 
+                                                value={p.cost} 
+                                                id={p.id} 
+                                                field="cost" 
+                                                productId={p.id}
+                                                onSave={handleInlineSave}
+                                                type="number"
+                                                prefix="$ "
+                                                disabled={!isEditMode}
+                                                nextRowId={nextRowId}
+                                                prevRowId={prevRowId}
+                                            />
                                         </td>
-                                        <td className="p-4 text-right">
+
+                                        {/* PRECIO - EDITABLE */}
+                                        <td className="p-2 text-right" onClick={e => e.stopPropagation()}>
                                             <div className="flex flex-col items-end">
-                                                <div className="flex items-center gap-1.5">
+                                                <div className="flex items-center justify-end w-full gap-1.5">
                                                     {hasPendingPrice && (
                                                         <div className="text-orange-500 animate-pulse cursor-help" title={`CAMBIO PROGRAMADO:\nNuevo Precio: $${p.nextPrice}\nFecha: ${p.priceActivationDate}`}>
                                                             <CalendarClock size={16} />
                                                         </div>
                                                     )}
-                                                    <span className={cn("text-base font-black", promo ? "text-purple-600" : "text-sys-900")}>
-                                                        $ {formatMoney(p.price)}
-                                                    </span>
+                                                    <EditableCell 
+                                                        value={p.price} 
+                                                        id={p.id} 
+                                                        field="price" 
+                                                        productId={p.id}
+                                                        onSave={handleInlineSave}
+                                                        type="number"
+                                                        prefix="$ "
+                                                        disabled={!isEditMode}
+                                                        nextRowId={nextRowId}
+                                                        prevRowId={prevRowId}
+                                                        className={cn("text-base font-black w-24", promo ? "text-purple-600" : "text-sys-900")}
+                                                    />
                                                 </div>
-                                                {promo && <span className="text-[8px] font-black bg-purple-600 text-white px-1.5 rounded-full">{promo.name}</span>}
+                                                {promo && <span className="text-[8px] font-black bg-purple-600 text-white px-1.5 rounded-full mt-1">{promo.name}</span>}
                                             </div>
                                         </td>
+
                                         <td className="p-4" onClick={(e) => e.stopPropagation()}>
                                             <div className="flex justify-center gap-1">
                                                 <button onClick={() => setStockEntryProduct(p)} className="p-2 rounded-xl text-green-600 hover:bg-green-50 transition-all border border-transparent hover:border-green-100"><Package size={18}/></button>

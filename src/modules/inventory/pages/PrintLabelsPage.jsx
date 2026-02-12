@@ -2,9 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { 
     Search, Printer, X, Plus, Trash2, 
     Tag, Barcode, ArrowLeft, Download,
-    Palette, Type, Layout, Percent
+    Palette, Type, Layout, Percent, Calendar, Filter, Grid
 } from 'lucide-react';
-// 🔥 Importamos useParams para capturar el slug
 import { useNavigate, useLocation, useParams } from 'react-router-dom';
 import JsBarcode from 'jsbarcode';
 import jsPDF from 'jspdf'; 
@@ -18,20 +17,53 @@ import toast from 'react-hot-toast';
 // IMPORTACIÓN DEL MOTOR DE ETIQUETAS
 import { GondolaLabelEngine } from '../utils/LabelEngine'; 
 
+// 🎨 MAPA DE COLORES PARA ETIQUETAS
+const COLOR_MAP = {
+    red:    { r: 220, g: 38,  b: 38,  hex: '#dc2626', bgClass: 'bg-red-600', textClass: 'text-red-600', borderClass: 'border-red-600' },
+    yellow: { r: 234, g: 179, b: 8,   hex: '#eab308', bgClass: 'bg-yellow-500', textClass: 'text-yellow-600', borderClass: 'border-yellow-500' },
+    green:  { r: 22,  g: 163, b: 74,  hex: '#16a34a', bgClass: 'bg-green-600', textClass: 'text-green-600', borderClass: 'border-green-600' },
+    violet: { r: 124, g: 58,  b: 237, hex: '#7c3aed', bgClass: 'bg-violet-600', textClass: 'text-violet-600', borderClass: 'border-violet-600' },
+    black:  { r: 0,   g: 0,   b: 0,   hex: '#000000', bgClass: 'bg-black', textClass: 'text-black', borderClass: 'border-black' }
+};
+
+// 📐 PRESETS DE GRILLA (A4 = 210mm x 297mm)
+const LAYOUT_PRESETS = {
+    // --- ESTILO MAXI / SHELF TALKER ---
+    // 🔥 CORRECCIÓN: Horizontal (Landscape) W:297 H:210
+    'poster_1': { label: 'A4 Gigante Horizontal (1/Hoja)', type: 'shelf_talker', cols: 1, rows: 1, width: 297, height: 210, headerH: 55, priceSize: 220, orientation: 'l' },
+    'maxi_3':   { label: 'Oferta Maxi (3/Hoja)', type: 'shelf_talker', cols: 1, rows: 3, width: 210, height: 99,  headerH: 25, priceSize: 120, orientation: 'p' },
+    
+    // --- ESTILO GÓNDOLA ---
+    'gondola_big': { label: 'Góndola Grande (14/Hoja)', type: 'gondola', cols: 2, rows: 7, width: 105, height: 42.4, headerH: 9, priceSize: 45, orientation: 'p' },
+    'gondola_std': { label: 'Estándar (21/Hoja)',       type: 'gondola', cols: 3, rows: 7, width: 70,  height: 42.4, headerH: 9, priceSize: 38, orientation: 'p' },
+    'gondola_sm':  { label: 'Compacta (28/Hoja)',       type: 'gondola', cols: 4, rows: 7, width: 52.5, height: 42.4, headerH: 9, priceSize: 28, orientation: 'p' },
+    
+    // --- ESTILO MINI / BARCODE ---
+    'mini_65':     { label: 'Mini Códigos (65/Hoja)',   type: 'barcode', cols: 5, rows: 13, width: 42, height: 22.8, headerH: 0, priceSize: 0, orientation: 'p' }
+};
+
 export const PrintLabelsPage = () => {
     const navigate = useNavigate();
     const { state } = useLocation(); 
-    // 🔥 Capturamos el slug de la empresa
     const { companySlug } = useParams();
     
-    // Estados
+    // Estados de Datos
     const [allProducts, setAllProducts] = useState([]);
-    const [searchTerm, setSearchTerm] = useState('');
     const [printQueue, setPrintQueue] = useState([]); 
-    const [mode, setMode] = useState('gondola'); 
-    const [printStyle, setPrintStyle] = useState('color'); 
-    const [isGenerating, setIsGenerating] = useState(false);
+    
+    // Estados de Filtros
+    const [searchTerm, setSearchTerm] = useState('');
+    const [filterDate, setFilterDate] = useState(''); 
     const [showOnlyPromos, setShowOnlyPromos] = useState(false);
+
+    // Estados de Configuración
+    const [layoutId, setLayoutId] = useState('gondola_std'); // Default
+    const [printStyle, setPrintStyle] = useState('color'); 
+    const [labelColor, setLabelColor] = useState('red'); 
+    const [isGenerating, setIsGenerating] = useState(false);
+
+    // Derivados
+    const currentLayout = LAYOUT_PRESETS[layoutId];
 
     useEffect(() => {
         const load = async () => {
@@ -41,222 +73,235 @@ export const PrintLabelsPage = () => {
         load();
     }, []);
 
-    // 🔥 LOGICA DE AUTO-CARGA DESDE COMPRAS O INVENTARIO
+    // 🔥 LOGICA DE AUTO-CARGA
     useEffect(() => {
         if (state?.autoLoadItems && Array.isArray(state.autoLoadItems)) {
             setPrintQueue(state.autoLoadItems);
             toast.success(`${state.autoLoadItems.length} etiquetas cargadas automáticamente`);
-            
-            // Limpiar el estado de la ruta para que no se recargue al refrescar
             window.history.replaceState({}, document.title);
         }
     }, [state]);
 
-    // Efecto para visualizar códigos en pantalla (Preview HTML)
+    // 🔥 FIX: Efecto para visualizar códigos en pantalla (Preview HTML)
     useEffect(() => {
-        if (mode === 'barcode' && printQueue.length > 0) {
+        if (currentLayout.type === 'barcode' && printQueue.length > 0) {
             setTimeout(() => {
                 printQueue.forEach((item, index) => {
                     try {
                         const uniqueId = `#preview-bc-${item.id}-${index}`;
-                        const codeValue = item.code || item.id.slice(0,8).toUpperCase();
-                        JsBarcode(uniqueId, codeValue, {
-                            format: "CODE128", lineColor: "#000", width: 2, height: 30, displayValue: false, margin: 0
-                        });
-                    } catch (e) {}
+                        const codeValue = item.code || item.barcode || item.id.slice(0,8).toUpperCase();
+                        
+                        const svgElement = document.querySelector(uniqueId);
+                        if (svgElement) {
+                            JsBarcode(uniqueId, codeValue, {
+                                format: "CODE128", 
+                                lineColor: "#000", 
+                                width: 1.5, 
+                                height: 35, 
+                                displayValue: false, 
+                                margin: 0
+                            });
+                        }
+                    } catch (e) {
+                        console.warn("Error generando barcode preview:", e);
+                    }
                 });
             }, 100); 
         }
-    }, [printQueue, mode]);
+    }, [printQueue, layoutId]);
 
+    // 🔍 FILTRADO
     const filteredProducts = allProducts.filter(p => {
         const matchesText = p.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
                             (p.code && p.code.includes(searchTerm));
+        
+        let matchesPromo = true;
         if (showOnlyPromos) {
             const promoInfo = GondolaLabelEngine.calculatePromoDetails(p);
-            return matchesText && promoInfo.isPromo;
+            matchesPromo = promoInfo.isPromo;
         }
-        return matchesText;
-    }).slice(0, 20); 
+
+        let matchesDate = true;
+        if (filterDate) {
+            const productDate = p.updatedAt ? new Date(p.updatedAt).toISOString().split('T')[0] : '';
+            matchesDate = productDate === filterDate;
+        }
+
+        return matchesText && matchesPromo && matchesDate;
+    }).slice(0, 50); 
 
     const addToQueue = async (product) => {
         setPrintQueue(prev => [...prev, product]);
     };
 
+    const addAllFiltered = () => {
+        if (filteredProducts.length > 100) {
+            if(!window.confirm(`¿Agregar ${filteredProducts.length} productos a la cola?`)) return;
+        }
+        setPrintQueue(prev => [...prev, ...filteredProducts]);
+        toast.success(`${filteredProducts.length} productos agregados`);
+    };
+
     const removeFromQueue = (indexToRemove) => setPrintQueue(printQueue.filter((_, idx) => idx !== indexToRemove));
 
     // =========================================================================
-    // 🖨️ GENERADOR PDF: MOTOR INDUSTRIAL
+    // 🖨️ GENERADOR PDF: MOTOR INDUSTRIAL (CON LAYOUTS DINÁMICOS)
     // =========================================================================
     const handleDownloadPDF = () => {
         if (printQueue.length === 0) return;
         setIsGenerating(true);
 
         try {
-            const doc = new jsPDF({ orientation: 'p', unit: 'mm', format: 'a4' });
-            const pageHeight = 297;
+            // 🔥 CORRECCIÓN: Orientación dinámica (Landscape para Gigante, Portrait para resto)
+            const doc = new jsPDF({ 
+                orientation: currentLayout.orientation || 'p', 
+                unit: 'mm', 
+                format: 'a4' 
+            });
             
-            // CONFIGURACIÓN DE GRILLA
-            let cols = 1;
-            let labelHeight = 99; // 297 / 3 = 99 EXACTO
-            let labelWidth = 210;
-            let marginX = 0; 
-            let marginY = 0;
+            // Definimos el límite de página según orientación
+            const pageHeight = currentLayout.orientation === 'l' ? 210 : 297;
+            
+            const { width, height, headerH, priceSize, type, cols } = currentLayout;
 
-            if (mode === 'gondola') { 
-                cols = 3; 
-                labelHeight = 42; 
-                labelWidth = 70; // 210 / 3 = 70
-                marginX = 0; 
-                marginY = 0;
-            }
-            if (mode === 'barcode') { 
-                cols = 4; 
-                labelHeight = 25; 
-                labelWidth = 52.5; 
-            }
-
-            let x = marginX;
-            let y = marginY;
+            let x = 0;
+            let y = 0;
             let colCounter = 0;
+
+            const isBW = printStyle === 'bw';
+            const activeColor = isBW ? COLOR_MAP.black : COLOR_MAP[labelColor];
 
             printQueue.forEach((p, idx) => {
                 // Control de Salto de Página
-                if (y + labelHeight > pageHeight + 0.1) {
+                if (y + height > pageHeight + 0.1) {
                     doc.addPage();
-                    x = marginX; 
-                    y = marginY; 
+                    x = 0; 
+                    y = 0; 
                     colCounter = 0;
                 }
 
                 const promo = GondolaLabelEngine.calculatePromoDetails(p);
                 const isPromo = promo.isPromo;
-                const isBW = printStyle === 'bw';
 
                 // Marco de corte
-                doc.setDrawColor(150); // Gris suave para guía de corte
+                doc.setDrawColor(200); 
                 doc.setLineWidth(0.1); 
-                doc.rect(x, y, labelWidth, labelHeight);
+                doc.rect(x, y, width, height);
 
                 // =========================================================
-                // 🖼️ MODO SHELF TALKER (A4 dividido en 3 - GIGANTE)
+                // 🖼️ MODO SHELF TALKER (MAXI & POSTER)
                 // =========================================================
-                if (mode === 'shelf_talker') {
+                if (type === 'shelf_talker') {
                     
-                    // 1. HEADER (25mm)
+                    // 1. HEADER
                     if (isPromo) {
-                        // ROJO IMPACTO (RGB: 200, 0, 0)
-                        doc.setFillColor(isBW ? 0 : 200, 0, 0); 
-                        doc.rect(x, y, labelWidth, 25, 'F');
+                        doc.setFillColor(activeColor.r, activeColor.g, activeColor.b); 
+                        doc.rect(x, y, width, headerH, 'F');
                         doc.setTextColor(255);
                         doc.setFont("helvetica", "bold");
-                        doc.setFontSize(45);
-                        doc.text(promo.label, x + (labelWidth / 2), y + 18, { align: "center" });
+                        doc.setFontSize(headerH * 0.8); 
+                        doc.text(promo.label, x + (width / 2), y + (headerH * 0.65), { align: "center" });
                     } else {
-                        // NEGRO INDUSTRIAL
-                        doc.setFillColor(0); 
-                        doc.rect(x, y, labelWidth, 25, 'F');
+                        if (isBW) doc.setFillColor(0); else doc.setFillColor(activeColor.r, activeColor.g, activeColor.b);
+                        doc.rect(x, y, width, headerH, 'F');
                         doc.setTextColor(255);
                         doc.setFont("helvetica", "bold");
-                        doc.setFontSize(35);
-                        doc.text("PRECIO DE LISTA", x + (labelWidth / 2), y + 18, { align: "center" });
+                        doc.setFontSize(headerH * 0.7);
+                        doc.text("PRECIO DE LISTA", x + (width / 2), y + (headerH * 0.65), { align: "center" });
                     }
 
-                    // 2. PRECIO (Centrado Perfecto)
+                    // 2. PRECIO
                     doc.setTextColor(0);
                     doc.setFont("helvetica", "bold");
-                    doc.setFontSize(120); 
+                    doc.setFontSize(priceSize); 
                     
                     const priceStr = Math.floor(promo.currentPrice).toLocaleString('es-AR');
                     const priceWidth = doc.getTextWidth(priceStr);
-                    const centerX = x + (labelWidth / 2);
+                    const centerX = x + (width / 2);
+                    const centerY = y + (height * 0.60); 
                     
-                    // Precio Entero
-                    doc.text(priceStr, centerX, y + 70, { align: "center" });
+                    doc.text(priceStr, centerX, centerY, { align: "center" });
                     
-                    // Signo $
-                    doc.setFontSize(40);
-                    doc.text("$", centerX - (priceWidth / 2) - 12, y + 55);
-                    
-                    // Centavos 00
-                    doc.setFontSize(30);
-                    doc.text("00", centerX + (priceWidth / 2) + 2, y + 55);
+                    // Signo $ y Centavos
+                    const smallFontSize = priceSize * 0.35;
+                    doc.setFontSize(smallFontSize);
+                    doc.text("$", centerX - (priceWidth / 2) - (smallFontSize/3), centerY - (smallFontSize/2));
+                    doc.text("00", centerX + (priceWidth / 2) + (smallFontSize/6), centerY - (smallFontSize/2));
 
-                    // 3. PRODUCTO Y FOOTER
-                    doc.setFontSize(22);
-                    const splitName = doc.splitTextToSize(p.name.toUpperCase(), labelWidth - 10);
-                    const nameY = splitName.length > 1 ? y + 82 : y + 85;
-                    doc.text(splitName[0], centerX, nameY, { align: "center" });
+                    // 3. PRODUCTO
+                    const nameSize = Math.max(12, priceSize * 0.18);
+                    doc.setFontSize(nameSize);
+                    const splitName = doc.splitTextToSize(p.name.toUpperCase(), width - 10);
+                    doc.text(splitName[0], centerX, centerY + (nameSize * 1.2), { align: "center" });
                     
+                    // Footer
                     if (isPromo && promo.footer) {
-                        doc.setFontSize(14);
-                        doc.setTextColor(isBW ? 0 : 200, 0, 0); // Texto Rojo
-                        doc.text(promo.footer, centerX, y + 94, { align: "center" });
+                        doc.setFontSize(nameSize * 0.7);
+                        doc.setTextColor(activeColor.r, activeColor.g, activeColor.b); 
+                        doc.text(promo.footer, centerX, y + height - 5, { align: "center" });
                     } else {
                         doc.setFontSize(10);
                         doc.setTextColor(100);
-                        doc.text(`REF: ${p.code || p.id.slice(0,8)}`, centerX, y + 94, { align: "center" });
+                        doc.text(`REF: ${p.code || p.id.slice(0,8)}`, centerX, y + height - 5, { align: "center" });
                     }
                 } 
                 
                 // =========================================================
-                // 🏷️ MODO GÓNDOLA (ETIQUETA PEQUEÑA 70x42mm)
+                // 🏷️ MODO GÓNDOLA (ESTÁNDAR, BIG, COMPACT)
                 // =========================================================
-                else if (mode === 'gondola') {
-                    
-                    // 1. Header (9mm)
+                else if (type === 'gondola') {
+                    // Header
                     if (isPromo) {
-                        doc.setFillColor(isBW ? 0 : 200, 0, 0); // Rojo
-                        doc.rect(x, y, labelWidth, 9, 'F');
+                        doc.setFillColor(activeColor.r, activeColor.g, activeColor.b);
+                        doc.rect(x, y, width, headerH, 'F');
                         doc.setTextColor(255);
                     } else {
-                        doc.setFillColor(0); // Negro
-                        doc.rect(x, y, labelWidth, 9, 'F');
+                        if (isBW) doc.setFillColor(0); else doc.setFillColor(activeColor.r, activeColor.g, activeColor.b);
+                        doc.rect(x, y, width, headerH, 'F');
                         doc.setTextColor(255);
                     }
                     
                     doc.setFont("helvetica", "bold");
-                    doc.setFontSize(isPromo ? 11 : 9);
-                    doc.text(isPromo ? promo.label : "PRECIO CONTADO", x + (labelWidth/2), y + 6.5, { align: "center" });
+                    doc.setFontSize(isPromo ? 10 : 8);
+                    doc.text(isPromo ? promo.label : "PRECIO CONTADO", x + (width/2), y + 6.5, { align: "center" });
 
-                    // 2. Nombre
+                    // Nombre
                     doc.setTextColor(0);
                     doc.setFont("helvetica", "bold");
-                    doc.setFontSize(10);
-                    const splitName = doc.splitTextToSize(p.name.toUpperCase(), labelWidth - 4);
-                    doc.text(splitName.slice(0, 2), x + (labelWidth/2), y + 14, { align: "center" });
+                    const nameFontSize = width < 60 ? 8 : 10;
+                    doc.setFontSize(nameFontSize);
+                    const splitName = doc.splitTextToSize(p.name.toUpperCase(), width - 4);
+                    doc.text(splitName.slice(0, 2), x + (width/2), y + 14, { align: "center" });
 
-                    // 3. Precio
-                    doc.setFontSize(38);
+                    // Precio
+                    doc.setFontSize(priceSize);
                     const priceStr = Math.floor(promo.currentPrice).toLocaleString('es-AR');
                     const priceWidth = doc.getTextWidth(priceStr);
-                    const centerX = x + (labelWidth/2);
+                    const centerX = x + (width/2);
 
                     doc.text(priceStr, centerX, y + 31, { align: "center" });
                     
-                    doc.setFontSize(16);
+                    doc.setFontSize(priceSize * 0.4);
                     doc.text("$", centerX - (priceWidth/2) - 4, y + 26);
-                    
-                    doc.setFontSize(12);
+                    doc.setFontSize(priceSize * 0.3);
                     doc.text("00", centerX + (priceWidth/2) + 1, y + 23);
 
-                    // 4. Footer
+                    // Footer
                     doc.setLineWidth(0.2);
-                    doc.line(x, y + 35, x + labelWidth, y + 35); 
+                    doc.line(x, y + 35, x + width, y + 35); 
 
                     if (isPromo) {
                         doc.setFontSize(8);
-                        doc.setTextColor(isBW ? 0 : 200, 0, 0);
+                        doc.setTextColor(activeColor.r, activeColor.g, activeColor.b);
                         doc.text(promo.footer || "OFERTA", x + 2, y + 39.5);
                         
-                        // Precio anterior
                         doc.setFontSize(7);
                         doc.setTextColor(100);
                         const oldP = `$${Math.round(p.price)}`;
                         const oldW = doc.getTextWidth(oldP);
-                        doc.text(oldP, x + labelWidth - 2, y + 39.5, { align: "right" });
+                        doc.text(oldP, x + width - 2, y + 39.5, { align: "right" });
                         doc.setLineWidth(0.3);
-                        doc.line(x + labelWidth - 2 - oldW, y + 38.5, x + labelWidth - 2, y + 38.5);
+                        doc.line(x + width - 2 - oldW, y + 38.5, x + width - 2, y + 38.5);
                     } else {
                         doc.setFontSize(7);
                         doc.setTextColor(0);
@@ -265,32 +310,62 @@ export const PrintLabelsPage = () => {
                         
                         doc.setFont("helvetica", "normal");
                         doc.setFontSize(6);
-                        doc.text(new Date().toLocaleDateString(), x + labelWidth - 2, y + 39.5, { align: "right" });
+                        doc.text(new Date().toLocaleDateString(), x + width - 2, y + 39.5, { align: "right" });
                     }
-                }
+                } 
                 
-                // MODO BARCODE
-                else if (mode === 'barcode') {
+                // =========================================================
+                // 🔥 FIX: MODO BARCODE (IMAGEN REAL EN PDF)
+                // =========================================================
+                else if (type === 'barcode') {
+                    const centerX = x + (width / 2);
+                    
+                    // 1. Nombre Corto
                     doc.setFont("helvetica", "bold");
+                    doc.setTextColor(0);
                     doc.setFontSize(7);
                     const nameShort = p.name.length > 25 ? p.name.substring(0, 25) + '...' : p.name;
-                    doc.text(nameShort, x + (labelWidth / 2), y + 4, { align: "center" });
+                    doc.text(nameShort, centerX, y + 4, { align: "center" });
+
+                    // 2. Generación de Imagen de Código de Barras
+                    try {
+                        const canvas = document.createElement("canvas");
+                        const codeValue = p.code || p.id.slice(0,8).toUpperCase();
+                        
+                        JsBarcode(canvas, codeValue, {
+                            format: "CODE128",
+                            lineColor: "#000",
+                            width: 2,
+                            height: 40,
+                            displayValue: false,
+                            margin: 0
+                        });
+
+                        const imgData = canvas.toDataURL("image/jpeg", 1.0);
+                        doc.addImage(imgData, 'JPEG', x + 4, y + 6, width - 8, height - 12);
+                    } catch(err) {
+                        doc.setFont("courier", "bold");
+                        doc.setFontSize(10);
+                        doc.text(p.code || "ERROR", centerX, y + 15, { align: "center" });
+                    }
+                    
+                    // 3. Código Texto (Legible)
                     doc.setFont("courier", "bold");
-                    doc.setFontSize(10);
-                    doc.text(p.code || p.id.slice(0,8).toUpperCase(), x + (labelWidth / 2), y + 22, { align: "center" });
+                    doc.setFontSize(8);
+                    doc.text(p.code || p.id.slice(0,8).toUpperCase(), centerX, y + height - 2, { align: "center" });
                 }
 
                 colCounter++;
                 if (colCounter < cols) {
-                    x += labelWidth;
+                    x += width;
                 } else {
-                    x = marginX;
-                    y += labelHeight;
+                    x = 0;
+                    y += height;
                     colCounter = 0;
                 }
             });
 
-            doc.save(`Etiquetas_Nexus_${new Date().toISOString().slice(0,10)}.pdf`);
+            doc.save(`Etiquetas_Nexus_${layoutId}_${new Date().toISOString().slice(0,10)}.pdf`);
 
         } catch (error) {
             console.error(error);
@@ -300,13 +375,10 @@ export const PrintLabelsPage = () => {
         }
     };
 
-    // 🔥 FIX: Navegación de regreso segura
     const handleBack = () => {
-        // Si tenemos slug, volvemos al inventario de la empresa
         if (companySlug) {
             navigate(`/${companySlug}/inventory`);
         } else {
-            // Fallback: intentar ir atrás en el historial
             navigate(-1);
         }
     };
@@ -314,7 +386,8 @@ export const PrintLabelsPage = () => {
     return (
         <div className="h-[calc(100vh-2rem)] flex flex-col gap-4 animate-in fade-in p-4 bg-sys-50">
             
-            <div className="flex justify-between items-center bg-white p-4 rounded-xl shadow-sm border border-sys-200">
+            {/* --- HEADER --- */}
+            <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center bg-white p-4 rounded-xl shadow-sm border border-sys-200 gap-4">
                 <div className="flex items-center gap-4">
                     <Button variant="ghost" onClick={handleBack} className="rounded-full">
                         <ArrowLeft size={20} />
@@ -325,36 +398,97 @@ export const PrintLabelsPage = () => {
                     </div>
                 </div>
 
-                <div className="flex gap-4">
-                    <div className="flex bg-sys-100 p-1 rounded-xl">
-                        <button onClick={() => setPrintStyle('color')} className={cn("px-4 py-2 text-[10px] font-bold rounded-lg flex items-center gap-2 transition-all", printStyle === 'color' ? "bg-white shadow text-brand" : "text-sys-500")}><Palette size={14}/> COLOR</button>
-                        <button onClick={() => setPrintStyle('bw')} className={cn("px-4 py-2 text-[10px] font-bold rounded-lg flex items-center gap-2 transition-all", printStyle === 'bw' ? "bg-sys-900 text-white shadow" : "text-sys-500")}><Type size={14}/> B&N</button>
+                <div className="flex flex-wrap gap-4 items-center">
+                    {/* SELECTOR DE COLORES */}
+                    <div className="flex bg-sys-100 p-1.5 rounded-xl items-center gap-2">
+                        <span className="text-[10px] font-bold text-sys-400 px-2">COLOR:</span>
+                        {Object.keys(COLOR_MAP).map(colorKey => {
+                            const c = COLOR_MAP[colorKey];
+                            return (
+                                <button
+                                    key={colorKey}
+                                    onClick={() => { setLabelColor(colorKey); setPrintStyle('color'); }}
+                                    className={cn(
+                                        "w-6 h-6 rounded-full border-2 transition-all hover:scale-110",
+                                        c.bgClass,
+                                        labelColor === colorKey && printStyle === 'color' ? "ring-2 ring-offset-1 ring-sys-400 border-white scale-110" : "border-transparent opacity-60 hover:opacity-100"
+                                    )}
+                                    title={colorKey.toUpperCase()}
+                                />
+                            );
+                        })}
+                        <div className="w-px h-4 bg-sys-300 mx-1"></div>
+                        <button onClick={() => setPrintStyle('bw')} className={cn("px-3 py-1 text-[10px] font-bold rounded-lg transition-all", printStyle === 'bw' ? "bg-sys-900 text-white shadow" : "text-sys-500 hover:bg-white")}>
+                           B&N
+                        </button>
                     </div>
 
-                    <div className="flex gap-3 bg-sys-100 p-1 rounded-xl">
-                        <button onClick={() => setMode('shelf_talker')} className={cn("px-4 py-2 text-xs font-bold rounded-md flex items-center gap-2 transition-all", mode === 'shelf_talker' ? "bg-white shadow text-brand" : "text-sys-500")}><Layout size={14}/> MAXI (A4/3)</button>
-                        <button onClick={() => setMode('gondola')} className={cn("px-4 py-2 text-xs font-bold rounded-md flex items-center gap-2 transition-all", mode === 'gondola' ? "bg-white shadow text-brand" : "text-sys-500")}><Tag size={14}/> GÓNDOLA</button>
-                        <button onClick={() => setMode('barcode')} className={cn("px-4 py-2 text-xs font-bold rounded-md flex items-center gap-2", mode === 'barcode' ? "bg-white shadow text-sys-900" : "text-sys-500")}><Barcode size={16}/> Mini</button>
+                    {/* SELECTOR DE LAYOUT (NUEVO) */}
+                    <div className="flex bg-sys-100 p-1.5 rounded-xl items-center gap-2 relative">
+                        <Grid size={16} className="text-sys-500 ml-2"/>
+                        <select 
+                            value={layoutId} 
+                            onChange={(e) => setLayoutId(e.target.value)}
+                            className="bg-transparent text-xs font-bold text-sys-800 outline-none cursor-pointer py-1 pr-2 w-48"
+                        >
+                            <optgroup label="Maxi Formato">
+                                <option value="poster_1">Gigante (1/Hoja) - Horizontal</option>
+                                <option value="maxi_3">Oferta (3/Hoja)</option>
+                            </optgroup>
+                            <optgroup label="Góndola Estándar">
+                                <option value="gondola_big">Grande (14/Hoja)</option>
+                                <option value="gondola_std">Estándar (21/Hoja)</option>
+                                <option value="gondola_sm">Compacta (28/Hoja)</option>
+                            </optgroup>
+                            <optgroup label="Miniatura">
+                                <option value="mini_65">Códigos (65/Hoja)</option>
+                            </optgroup>
+                        </select>
                     </div>
                 </div>
             </div>
 
             <div className="flex gap-6 h-full min-h-0">
                 
+                {/* --- SIDEBAR SELECCIÓN --- */}
                 <div className="w-1/3 flex flex-col gap-4">
                     <Card className="p-4 border-sys-200">
-                        <div className="flex gap-2 mb-4">
-                            <div className="relative group flex-1">
-                                <Search className="absolute left-3 top-3 text-sys-400" size={18} />
-                                <input type="text" placeholder="Buscar producto..." className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-sys-50 border-none outline-none focus:ring-2 focus:ring-brand/20 transition-all font-medium" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} />
+                        {/* FILTROS AVANZADOS */}
+                        <div className="flex flex-col gap-3 mb-4">
+                            <div className="flex gap-2">
+                                <div className="relative group flex-1">
+                                    <Search className="absolute left-3 top-2.5 text-sys-400" size={18} />
+                                    <input type="text" placeholder="Buscar producto..." className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-sys-50 border-none outline-none focus:ring-2 focus:ring-brand/20 transition-all font-medium" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} />
+                                </div>
+                                <button 
+                                    onClick={() => setShowOnlyPromos(!showOnlyPromos)} 
+                                    className={cn("p-2.5 rounded-xl border transition-all flex items-center justify-center", showOnlyPromos ? "bg-red-50 border-red-200 text-red-600 shadow-sm" : "bg-white border-sys-200 text-sys-400 hover:text-sys-600")}
+                                    title="Mostrar solo Ofertas"
+                                >
+                                    <Percent size={20} />
+                                </button>
                             </div>
-                            <button 
-                                onClick={() => setShowOnlyPromos(!showOnlyPromos)} 
-                                className={cn("p-2.5 rounded-xl border transition-all flex items-center justify-center", showOnlyPromos ? "bg-red-50 border-red-200 text-red-600 shadow-sm" : "bg-white border-sys-200 text-sys-400 hover:text-sys-600")}
-                                title="Mostrar solo Ofertas"
-                            >
-                                <Percent size={20} />
-                            </button>
+                            
+                            {/* 🔥 DATE FILTER INPUT */}
+                            <div className="flex items-center gap-2 bg-sys-50 p-2 rounded-xl border border-sys-100">
+                                <div className="p-2 bg-white rounded-lg shadow-sm text-sys-500"><Calendar size={16}/></div>
+                                <input 
+                                    type="date" 
+                                    className="bg-transparent border-none text-xs font-bold text-sys-700 w-full outline-none"
+                                    value={filterDate}
+                                    onChange={(e) => setFilterDate(e.target.value)}
+                                />
+                                {filterDate && (
+                                    <button onClick={() => setFilterDate('')} className="text-sys-400 hover:text-red-500"><X size={14}/></button>
+                                )}
+                            </div>
+                        </div>
+
+                        <div className="flex justify-between items-center mb-2 px-1">
+                            <span className="text-[10px] font-bold text-sys-400 uppercase">{filteredProducts.length} Resultados</span>
+                            {filteredProducts.length > 0 && (
+                                <button onClick={addAllFiltered} className="text-[10px] font-black text-brand hover:underline">AGREGAR TODOS</button>
+                            )}
                         </div>
 
                         <div className="space-y-2 max-h-[350px] overflow-y-auto custom-scrollbar pr-2">
@@ -399,63 +533,87 @@ export const PrintLabelsPage = () => {
                     </div>
                 </div>
 
+                {/* --- PREVIEW AREA (DINÁMICO) --- */}
                 <div className="flex-1 bg-sys-200/30 rounded-3xl border border-sys-200 p-8 overflow-y-auto custom-scrollbar flex justify-center">
-                    <div className="bg-white shadow-2xl min-h-[297mm] w-[210mm] origin-top transform scale-90" style={{ padding: '0' }}>
+                    <div 
+                        className={cn(
+                            "bg-white shadow-2xl origin-top transform transition-all duration-300",
+                            currentLayout.orientation === 'l' ? "w-[297mm] h-[210mm] scale-[0.6]" : "min-h-[297mm] w-[210mm] scale-90"
+                        )} 
+                        style={{ padding: '0' }}
+                    >
                         <div className="flex flex-col">
                             {printQueue.length === 0 ? (
-                                <div className="h-[297mm] flex flex-col items-center justify-center text-sys-300 gap-4">
+                                <div className={cn("flex flex-col items-center justify-center text-sys-300 gap-4", currentLayout.orientation === 'l' ? "h-[210mm]" : "h-[297mm]")}>
                                     <Layout size={64} strokeWidth={1} className="opacity-20"/>
                                     <p className="text-2xl font-black opacity-10 uppercase tracking-tighter">Vista Previa Nexus Engine</p>
                                 </div>
                             ) : (
-                                <div style={{ display: 'grid', gridTemplateColumns: `repeat(${mode === 'shelf_talker' ? 1 : mode === 'gondola' ? 3 : 4}, 1fr)` }}>
+                                <div style={{ 
+                                    display: 'grid', 
+                                    gridTemplateColumns: `repeat(${currentLayout.cols}, 1fr)`,
+                                    alignContent: 'start'
+                                }}>
                                     {printQueue.map((p, idx) => {
                                         const promo = GondolaLabelEngine.calculatePromoDetails(p);
                                         const isPromo = promo.isPromo; 
                                         const isBW = printStyle === 'bw';
+                                        const activeColor = isBW ? COLOR_MAP.black : COLOR_MAP[labelColor];
+                                        
+                                        const containerStyle = { height: `${currentLayout.height}mm` };
+                                        const headerStyle = { height: `${currentLayout.headerH}mm` };
 
                                         return (
-                                            <div key={`${p.id}-${idx}`} className={cn(
-                                                "border border-sys-900 flex flex-col relative overflow-hidden",
-                                                mode === 'shelf_talker' ? "h-[99mm]" : mode === 'gondola' ? "h-[42mm]" : "h-[25mm]"
-                                            )}>
-                                                <div className={cn(
-                                                    "flex items-center justify-center",
-                                                    mode === 'shelf_talker' ? "h-[25mm]" : "h-[9mm]",
-                                                    isPromo 
-                                                        ? (isBW ? "bg-black text-white" : "bg-red-600 text-white") 
-                                                        : "bg-black text-white"
-                                                )}>
-                                                    <span className={cn("font-black uppercase", mode === 'shelf_talker' ? "text-5xl" : "text-xs")}>
-                                                        {isPromo ? promo.label : "PRECIO CONTADO"}
-                                                    </span>
-                                                </div>
+                                            <div key={`${p.id}-${idx}`} className="border border-sys-900 flex flex-col relative overflow-hidden" style={containerStyle}>
                                                 
-                                                <div className="flex-1 flex flex-col items-center justify-center p-2">
-                                                    <h3 className={cn("font-bold text-center mb-1 line-clamp-2 leading-tight px-1 uppercase", mode === 'shelf_talker' ? "text-2xl" : "text-[9px]")}>{p.name}</h3>
-                                                    <div className="flex items-baseline gap-1">
-                                                        <span className={cn("font-black", mode === 'shelf_talker' ? "text-8xl" : "text-3xl")}>
-                                                            ${Math.floor(promo.currentPrice).toLocaleString('es-AR')}
-                                                        </span>
-                                                        <span className={cn("font-bold", mode === 'shelf_talker' ? "text-3xl" : "text-xs")}>00</span>
+                                                {currentLayout.type === 'barcode' ? (
+                                                    <div className="flex flex-col items-center justify-center h-full p-1 text-center">
+                                                        <span className="text-[7px] font-bold truncate w-full mb-1">{p.name.slice(0,25)}</span>
+                                                        <svg id={`preview-bc-${p.id}-${idx}`} className="w-full h-8"></svg>
+                                                        <span className="font-mono text-[9px] font-bold mt-1">{p.code}</span>
                                                     </div>
-                                                    {isPromo && promo.type !== 'BUNDLE_DEAL' && (
-                                                        <span className={cn("text-sys-400 line-through font-bold", mode === 'shelf_talker' ? "text-2xl" : "text-[10px]")}>
-                                                            ${p.price.toLocaleString('es-AR')}
-                                                        </span>
-                                                    )}
-                                                </div>
-
-                                                <div className={cn("p-1 bg-white border-t border-black flex flex-col items-center", mode === 'shelf_talker' ? "h-[15mm] justify-center" : "h-auto")}>
-                                                    {isPromo && promo.footer ? (
-                                                        <span className={cn("font-black text-red-600 uppercase", mode === 'shelf_talker' ? "text-lg" : "text-[8px]")}>{promo.footer}</span>
-                                                    ) : (
-                                                        <div className="w-full flex justify-between px-2 mt-1">
-                                                            <span className={cn("font-mono font-bold text-sys-500", mode === 'shelf_talker' ? "text-sm" : "text-[7px]")}>{p.code || 'S/C'}</span>
-                                                            <span className={cn("font-bold text-sys-400", mode === 'shelf_talker' ? "text-sm" : "text-[6px]")}>{new Date().toLocaleDateString()}</span>
+                                                ) : (
+                                                    <>
+                                                        {/* HEADER */}
+                                                        <div 
+                                                            className={cn(
+                                                                "flex items-center justify-center",
+                                                                isPromo ? `${activeColor.bgClass} text-white` : (isBW ? "bg-black text-white" : `${activeColor.bgClass} text-white`)
+                                                            )}
+                                                            style={headerStyle}
+                                                        >
+                                                            <span className={cn("font-black uppercase", currentLayout.type === 'shelf_talker' ? "text-4xl" : "text-[8px]")}>
+                                                                {isPromo ? promo.label : "PRECIO CONTADO"}
+                                                            </span>
                                                         </div>
-                                                    )}
-                                                </div>
+                                                        
+                                                        <div className="flex-1 flex flex-col items-center justify-center p-2">
+                                                            <h3 className={cn("font-bold text-center mb-1 line-clamp-2 leading-tight px-1 uppercase", currentLayout.type === 'shelf_talker' ? "text-4xl" : "text-[9px]")}>{p.name}</h3>
+                                                            <div className="flex items-baseline gap-1">
+                                                                <span className={cn("font-black", currentLayout.type === 'shelf_talker' ? "text-[8rem] leading-none" : "text-3xl")}>
+                                                                    ${Math.floor(promo.currentPrice).toLocaleString('es-AR')}
+                                                                </span>
+                                                                <span className={cn("font-bold", currentLayout.type === 'shelf_talker' ? "text-4xl" : "text-xs")}>00</span>
+                                                            </div>
+                                                            {isPromo && promo.type !== 'BUNDLE_DEAL' && (
+                                                                <span className={cn("text-sys-400 line-through font-bold", currentLayout.type === 'shelf_talker' ? "text-2xl" : "text-[10px]")}>
+                                                                    ${p.price.toLocaleString('es-AR')}
+                                                                </span>
+                                                            )}
+                                                        </div>
+
+                                                        <div className={cn("p-1 bg-white border-t border-black flex flex-col items-center", currentLayout.type === 'shelf_talker' ? "h-[15mm] justify-center" : "h-auto")}>
+                                                            {isPromo && promo.footer ? (
+                                                                <span className={cn("font-black uppercase", activeColor.textClass, currentLayout.type === 'shelf_talker' ? "text-xl" : "text-[7px]")}>{promo.footer}</span>
+                                                            ) : (
+                                                                <div className="w-full flex justify-between px-2 mt-1">
+                                                                    <span className={cn("font-mono font-bold text-sys-500", currentLayout.type === 'shelf_talker' ? "text-lg" : "text-[7px]")}>{p.code || 'S/C'}</span>
+                                                                    <span className={cn("font-bold text-sys-400", currentLayout.type === 'shelf_talker' ? "text-sm" : "text-[6px]")}>{new Date().toLocaleDateString()}</span>
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    </>
+                                                )}
                                             </div>
                                         );
                                     })}

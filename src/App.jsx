@@ -17,7 +17,7 @@ import { PaymentRequiredPage } from './modules/auth/pages/PaymentRequiredPage';
 import { ProtectedRoute } from './core/components/ProtectedRoute';
 import { SubscriptionGuard } from './core/guards/SubscriptionGuard'; 
 
-// ✅ LANDING PAGE (Opcional, ahora oculta en root)
+// ✅ LANDING PAGE (Informativa en /info)
 import { LandingPage } from './modules/landing/pages/LandingPage';
 
 // Páginas del Sistema
@@ -82,7 +82,7 @@ function App() {
                 {/* 🔥 CAMBIO CLAVE: La raíz ahora es el LOGIN */}
                 <Route path="/" element={<LoginPage />} />
                 
-                {/* Si quieres mantener la landing accesible, usa otra ruta */}
+                {/* ✅ Landing Page Informativa */}
                 <Route path="/info" element={<LandingPage />} />
 
                 <Route path="/register" element={<RegisterPage />} /> 

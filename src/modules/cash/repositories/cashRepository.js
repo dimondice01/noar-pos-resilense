@@ -107,7 +107,6 @@ export const cashRepository = {
         }
 
         // 1. 🔥 CÁLCULO DE LA VERDAD (Expected Cash)
-        // Obtenemos la auditoría interna del sistema antes de cerrar (desde Dexie)
         const currentAudit = await this.getShiftAuditData(shiftId);
 
         // 2. Datos declarados por el humano (lo que contaron)
@@ -132,10 +131,9 @@ export const cashRepository = {
             expectedDigital: parseFloat(closingData.expectedDigital || 0), // Referencia digital
             difference: difference,   // El veredicto del arqueo
             
-            audited: false, // Requiere revisión de un admin si hay diferencia
+            audited: false, 
             
             // 🔥🔥 SNAPSHOT CONGELADO (Evidence Locker) 🔥🔥
-            // Guardamos la foto exacta de los contadores en este momento
             auditSnapshot: {
                 totalSales: currentAudit.totalSales,
                 salesCount: currentAudit.salesCount,
@@ -168,9 +166,7 @@ export const cashRepository = {
                 id: generateId('mov'),
                 shiftId: shift.id,
                 
-                // 🔥 FIX CRÍTICO: CAMBIO DE TIPO DE MOVIMIENTO
-                // Usamos 'TREASURY' para que los reportes de GASTOS (EXPENSE/WITHDRAWAL) ignoren este movimiento.
-                // Esto representa una transferencia a Tesorería, NO un gasto.
+                // 🔥 FIX: 'TREASURY' para ignorar en reportes de gastos operativos
                 type: 'TREASURY', 
                 
                 method: 'cash',
@@ -210,7 +206,6 @@ export const cashRepository = {
         const shift = await dbLocal.shifts.get(shiftId);
         
         if (!shift) {
-            // Fallback cloud para Owners remotos
             const { user } = useAuthStore.getState();
             if (user?.companyId) {
                 await setDoc(doc(db, `companies/${user.companyId}/shifts`, shiftId), { 
@@ -242,7 +237,6 @@ export const cashRepository = {
         const { user } = useAuthStore.getState();
         if (!user || !user.companyId) return;
 
-        // No usamos await aquí para no bloquear la UI del cajero
         try {
             const { syncStatus, ...cloudData } = data;
             const path = `companies/${user.companyId}/${collectionName}`;
@@ -267,13 +261,11 @@ export const cashRepository = {
         const { user, branchId } = this._getContext();
 
         try {
-            // Búsqueda ultrarrápida en local
             const openShifts = await dbLocal.shifts
                 .where('status').equals('OPEN')
                 .filter(s => s.userId === user.uid)
                 .toArray();
 
-            // Priorizamos la sucursal actual
             const activeInBranch = openShifts.find(s => s.branchId === branchId);
 
             if (!activeInBranch && openShifts.length > 0) return openShifts[0];
@@ -341,7 +333,7 @@ export const cashRepository = {
         return this.addMovement({
             shiftId: shift.id,
             branchId: shift.branchId,
-            type: 'EXPENSE', // Aquí caerán las COMPRAS en efectivo
+            type: 'EXPENSE', 
             method: 'cash', 
             amount: parseFloat(amount),
             description: description,
@@ -376,11 +368,10 @@ export const cashRepository = {
         // 1. Carga Local Inmediata
         let shifts = await dbLocal.shifts.toArray();
 
-        // 2. Hidratación Cloud en background (Solo si es Admin y hay red)
+        // 2. Hidratación Cloud en background
         if ((user.role === 'ADMIN' || user.role === 'OWNER') && navigator.onLine) {
-             // No hacemos await para no bloquear la UI inicial
              this._fetchHistoryFromCloud(dbLocal, user).then(async () => {
-                 // Esto es un "silent update", la próxima vez que carguen verán más datos
+                 // Silent update
              });
         }
 
@@ -442,107 +433,130 @@ export const cashRepository = {
     // ⚖️ BALANCE Y AUDITORÍA (EL CEREBRO DEL CIERRE Z)
     // =========================================
     
-    // Función auxiliar para traer datos faltantes de la nube si el turno es viejo
-    async _ensureAuditDataConsistency(shift, dbLocal) {
-        if (!navigator.onLine) return;
-        try {
-            const { user } = useAuthStore.getState();
-            if (!user.companyId) return;
+    // Función Helper para calcular totales
+    // 🔥 ESTA ES LA CLAVE: Calcula ventas desde 'sales' y movimientos extra desde 'cash_movements'
+    async _calculateShiftState(shift, dbLocal) {
+        if (!shift) return null;
 
-            // Consultamos solo si sospechamos que faltan datos locales (ej: cambio de dispositivo)
-            // Para optimizar, podríamos chequear count() local vs count() cloud, pero es caro.
-            // Asumimos que el "Listener" de MainLayout ya trajo las ventas.
+        // 🔥 CORRECCIÓN DEL ERROR "SchemaError": Usamos filter() en lugar de where()
+        // porque shiftId no está indexado en la tabla 'sales' ni 'cash_movements' en el esquema actual.
+        // Esto es un poco más lento pero evita que la app explote.
+        
+        const sales = await dbLocal.sales
+            .filter(s => s.shiftId === shift.id)
+            .toArray();
+
+        const movements = await dbLocal.cash_movements
+            .filter(m => m.shiftId === shift.id)
+            .toArray();
+
+        // Inicializamos contadores
+        let state = {
+            initialAmount: Number(shift.initialAmount) || 0,
             
-            // Esta función queda como un "Refuerzo" opcional
-        } catch (e) {
-            console.warn("⚠️ Audit sync warning:", e);
-        }
+            // Ventas
+            salesCash: 0,
+            salesDigital: 0,
+            totalSales: 0,
+            salesCount: 0,
+            salesByMethod: { cash: 0, mercadopago: 0, clover: 0, digitalOther: 0, account: 0 },
+            
+            // Movimientos
+            deposits: 0,
+            expenses: 0,
+            withdrawals: 0,
+            
+            // Totales
+            totalCash: 0,    // Efectivo Teórico Actual
+            totalDigital: 0
+        };
+
+        // A. PROCESAR VENTAS (Excluyendo Internas y Anuladas)
+        sales.forEach(sale => {
+            if (sale.type === 'INTERNAL') return; // 🛡️ Ignorar consumo interno
+            if (sale.afip?.status === 'VOIDED' || sale.status === 'CANCELLED' || sale.status === 'REFUNDED') return; // Ignorar anuladas/devueltas
+
+            const amount = parseFloat(sale.total) || 0;
+            state.totalSales += amount;
+            state.salesCount++;
+
+            // Normalización de método de pago
+            const methodRaw = sale.payment?.method || sale.paymentMethod || 'cash';
+            const method = String(methodRaw).toLowerCase().trim();
+
+            if (['cash', 'efectivo'].includes(method)) {
+                state.salesByMethod.cash += amount;
+                state.salesCash += amount;
+            } else if (['mercadopago', 'mp', 'qr'].includes(method)) {
+                state.salesByMethod.mercadopago += amount;
+                state.salesDigital += amount;
+            } else if (['clover', 'card', 'tarjeta', 'credit', 'debit'].includes(method)) {
+                state.salesByMethod.clover += amount;
+                state.salesDigital += amount;
+            } else if (['current_account', 'cuenta_corriente'].includes(method)) {
+                state.salesByMethod.account += amount;
+                // Cta Corriente no suma a caja ni digital
+            } else {
+                state.salesByMethod.digitalOther += amount;
+                state.salesDigital += amount;
+            }
+        });
+
+        // B. PROCESAR MOVIMIENTOS (Solo Cash y No-Ventas)
+        movements.forEach(m => {
+            const amount = Number(m.amount) || 0;
+            const isCash = (m.method || 'cash') === 'cash';
+            
+            // Ignoramos SALE porque ya las sumamos desde la tabla 'sales' (más preciso)
+            if (m.type === 'SALE' || m.type === 'INTERNAL') return; 
+
+            // Ignoramos movimientos de cierre/tesorería para el cálculo de "lo que debería haber"
+            if (m.type === 'TREASURY' || m.subtype === 'CLOSING') return;
+
+            if (m.type === 'DEPOSIT') {
+                if (m.subtype !== 'OPENING') { // Fondo inicial ya está en initialAmount
+                    state.deposits += amount;
+                    if (isCash) state.salesCash += amount; // Lo tratamos como entrada de efectivo
+                }
+            } else if (m.type === 'EXPENSE') {
+                state.expenses += amount;
+            } else if (m.type === 'WITHDRAWAL') {
+                state.withdrawals += amount;
+            } else if (m.type === 'IN') { // Ingreso manual vario
+                if (isCash) state.salesCash += amount;
+            }
+        });
+
+        // C. CÁLCULO FINAL DE CAJA TEÓRICA
+        // Caja Teórica = Inicial + VentasEfvo + Depositos - Gastos - Retiros
+        state.totalCash = state.initialAmount + state.salesByMethod.cash + state.deposits - state.expenses - state.withdrawals;
+        state.totalDigital = state.salesDigital;
+
+        // Redondeo de seguridad
+        const round = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
+        state.totalCash = round(state.totalCash);
+        state.totalSales = round(state.totalSales);
+        
+        return state;
     },
 
     // Obtener Balance Visual (Para UI en vivo)
     async getShiftBalance(shiftId) {
         const dbLocal = await getDB();
         
-        // Aseguramos consistencia de datos antes de calcular
-        // (Podemos comentar esto si queremos full velocidad offline)
-        // const shift = await dbLocal.shifts.get(shiftId);
-        // if (shift) await this._ensureAuditDataConsistency(shift, dbLocal);
-
-        return await dbLocal.transaction('r', [dbLocal.cash_movements, dbLocal.shifts], async () => {
-            const s = await dbLocal.shifts.get(shiftId);
-            if (!s) return { totalCash: 0, movements: [], salesCash: 0, totalDigital: 0 };
-
-            const allMovements = await dbLocal.cash_movements
-                .where('shiftId').equals(shiftId)
-                .toArray();
+        return await dbLocal.transaction('r', [dbLocal.cash_movements, dbLocal.shifts, dbLocal.sales], async () => {
+            const shift = await dbLocal.shifts.get(shiftId);
+            if (!shift) return { totalCash: 0 };
             
-            allMovements.sort((a, b) => new Date(b.date) - new Date(a.date));
-
-            let balance = {
-                initialAmount: Number(s.initialAmount) || 0,
-                salesCash: 0,
-                salesDigital: 0,
-                withdrawals: 0,
-                expenses: 0,
-                deposits: 0,
-                totalCash: 0,       
-                totalDigital: 0,
-                movements: allMovements
-            };
-
-            balance.totalCash = balance.initialAmount;
-
-            for (const m of allMovements) {
-                const amount = Number(m.amount) || 0; 
-                const method = (m.method || 'unknown').toLowerCase(); 
-                
-                const isDigitalKnown = 
-                    method.includes('mercado') || 
-                    method.includes('clover') || 
-                    method.includes('card') || 
-                    method.includes('tarjeta') || 
-                    method === 'point' || 
-                    method === 'qr' || 
-                    method === 'transfer' ||
-                    method === 'manual_card';
-
-                const description = (m.description || '').toLowerCase();
-                const isClosingWithdrawal = m.subtype === 'CLOSING' || description.includes('rendición de cierre') || m.type === 'TREASURY';
-
-                if (m.type === 'SALE' || m.type === 'IN') { 
-                    if (method === 'cash' || method === 'efectivo' || (!isDigitalKnown && method !== 'debt')) { 
-                        balance.salesCash += amount;
-                        balance.totalCash += amount;
-                    } else {
-                        balance.salesDigital += amount;
-                        balance.totalDigital += amount;
-                    }
-                } else if (m.type === 'DEPOSIT') {
-                    if (m.subtype !== 'OPENING') { 
-                        balance.totalCash += amount;
-                        balance.deposits += amount;
-                    }
-                } else if (m.type === 'WITHDRAWAL') {
-                    if (!isClosingWithdrawal) {
-                        balance.totalCash -= amount;
-                        balance.withdrawals += amount;
-                    }
-                } else if (m.type === 'EXPENSE') {
-                    if (method === 'cash' || method === 'efectivo') {
-                        balance.totalCash -= amount;
-                    }
-                    balance.expenses += amount;
-                }
-            }
+            // Usamos el motor de cálculo unificado
+            const state = await this._calculateShiftState(shift, dbLocal);
             
-            const round2 = (num) => Math.round((num + Number.EPSILON) * 100) / 100;
+            // Corrección: Usar filter también aquí
+            const movements = await dbLocal.cash_movements.filter(m => m.shiftId === shiftId).reverse().toArray();
             
             return {
-                ...balance,
-                totalCash: round2(balance.totalCash), // Efectivo Teórico en Caja
-                salesCash: round2(balance.salesCash),
-                salesDigital: round2(balance.salesDigital),
-                expenses: round2(balance.expenses)
+                ...state,
+                movements: movements
             };
         });
     },
@@ -567,118 +581,36 @@ export const cashRepository = {
             };
         }
 
-        // 2. Si está abierto o re-calculando, procesamos datos locales
+        // 2. Si está abierto, calculamos
         return await dbLocal.transaction('r', [dbLocal.cash_movements, dbLocal.shifts, dbLocal.sales], async () => {
-            const freshShift = await dbLocal.shifts.get(shiftId);
-            const openedAt = new Date(freshShift.openedAt).toISOString();
-            const closedAt = freshShift.closedAt ? new Date(freshShift.closedAt).toISOString() : new Date().toISOString();
-
-            // Usamos ventas locales para auditoría (más rápido y consistente)
-            const shiftSales = await dbLocal.sales
-                .where('date').between(openedAt, closedAt, true, true)
-                .filter(s => {
-                    const isValidStatus = s.status !== 'CANCELLED';
-                    if (s.shiftId && s.shiftId === shiftId) return isValidStatus;
-                    const isSameUser = s.userId === freshShift.userId;
-                    return isValidStatus && isSameUser;
-                })
-                .toArray();
-
-            const allMovements = await dbLocal.cash_movements
-                .where('shiftId').equals(shiftId)
-                .toArray();
-
-            let audit = {
-                shiftId: freshShift.id,
-                shiftName: freshShift.userName || freshShift.userId,
-                status: freshShift.status,
-                startTime: freshShift.openedAt,
-                closeTime: freshShift.closedAt || new Date().toISOString(),
-                initialAmount: Number(freshShift.initialAmount) || 0, 
+            const state = await this._calculateShiftState(shift, dbLocal);
+            
+            return {
+                shiftId: shift.id,
+                shiftName: shift.userName || shift.userId,
+                status: shift.status,
+                startTime: shift.openedAt,
+                closeTime: new Date().toISOString(),
+                initialAmount: state.initialAmount,
                 
-                totalSales: 0,
-                salesCount: shiftSales.length,
-                salesByMethod: { cash: 0, mercadopago: 0, clover: 0, digitalOther: 0 },
+                totalSales: state.totalSales,
+                salesCount: state.salesCount,
+                salesByMethod: state.salesByMethod,
                 
-                cashIn: 0,
-                cashOut: 0,
-                totalExpenses: 0,
-                totalWithdrawals: 0,
+                cashIn: state.deposits, // Entradas extras
+                cashOut: state.expenses + state.withdrawals, // Salidas
                 
-                expectedCash: Number(freshShift.initialAmount) || 0,
-                totalDigital: 0,
+                totalExpenses: state.expenses,
+                totalWithdrawals: state.withdrawals,
+                totalDigital: state.totalDigital,
                 
-                leftInCash: Number(freshShift.leftInCash) || 0,
-                declaredCash: Number(freshShift.finalCash) || 0,
-                withdrawn: Number(freshShift.withdrawn) || 0
+                expectedCash: state.totalCash, // EL NÚMERO MÁGICO
+                
+                // Valores de cierre (si existieran, o 0)
+                leftInCash: Number(shift.leftInCash) || 0,
+                declaredCash: Number(shift.finalCash) || 0,
+                withdrawn: Number(shift.withdrawn) || 0
             };
-
-            const round2 = (num) => Math.round((num + Number.EPSILON) * 100) / 100;
-
-            for (const sale of shiftSales) {
-                const total = parseFloat(sale.totalSale || sale.total) || 0;
-                audit.totalSales += total;
-                const methodRaw = sale.payment?.method || 'unknown';
-                const method = methodRaw.toLowerCase();
-                
-                if (method === 'cash' || method === 'efectivo') {
-                    audit.salesByMethod.cash += total;
-                } else if (method.includes('mercado') || method === 'mp') {
-                    audit.salesByMethod.mercadopago += total;
-                } else if (method.includes('clover')) {
-                    audit.salesByMethod.clover += total;
-                } else {
-                    audit.salesByMethod.digitalOther += total;
-                }
-            }
-            
-            audit.totalDigital = audit.salesByMethod.mercadopago + audit.salesByMethod.clover + audit.salesByMethod.digitalOther;
-
-            for (const m of allMovements) {
-                const amount = Number(m.amount) || 0;
-                const method = (m.method || 'unknown').toLowerCase();
-                const isCash = method === 'cash' || method === 'efectivo';
-                const description = (m.description || '').toLowerCase();
-                
-                // 🔥 BLINDAJE DE CIERRE: Ignoramos también el tipo TREASURY
-                const isClosingWithdrawal = m.subtype === 'CLOSING' || description.includes('rendición de cierre') || m.type === 'TREASURY';
-
-                if (isCash) {
-                    if (m.type === 'SALE' || m.type === 'IN') {
-                        audit.expectedCash += amount;
-                    }
-                    if (m.type === 'DEPOSIT') {
-                        if (m.subtype !== 'OPENING') {
-                            audit.expectedCash += amount;
-                            audit.cashIn += amount; 
-                        }
-                    }
-                    if (m.type === 'WITHDRAWAL') {
-                        if (!isClosingWithdrawal) {
-                            audit.expectedCash -= amount;
-                            audit.totalWithdrawals += amount;
-                            audit.cashOut += amount; 
-                        }
-                    }
-                    if (m.type === 'EXPENSE') {
-                        audit.expectedCash -= amount;
-                        audit.totalExpenses += amount;
-                        audit.cashOut += amount; 
-                    }
-                }
-            }
-
-            audit.expectedCash = round2(audit.expectedCash);
-            audit.totalSales = round2(audit.totalSales);
-            audit.totalDigital = round2(audit.totalDigital);
-            
-            if (freshShift.status === 'OPEN') {
-                audit.declaredCash = audit.expectedCash;
-            }
-            
-            audit.deviation = round2(audit.declaredCash - audit.expectedCash);
-            
-            return audit;
         });
     }
 };

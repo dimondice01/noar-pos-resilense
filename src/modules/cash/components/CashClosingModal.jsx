@@ -1,14 +1,17 @@
 import React, { useState, useEffect } from 'react';
-import { X, Lock, DollarSign, Calculator, AlertTriangle, ArrowRight, Wallet, CheckCircle } from 'lucide-react';
+import { X, Lock, DollarSign, Calculator, AlertTriangle, ArrowRight, Wallet, Printer } from 'lucide-react';
 import { Button } from '../../../core/ui/Button';
 import { cn } from '../../../core/utils/cn';
 
 // Helper de Moneda
 const formatMoney = (val) => `$ ${Number(val).toLocaleString('es-AR', { minimumFractionDigits: 2 })}`;
 
-export const CashClosingModal = ({ isOpen, onClose, onConfirm, systemTotals }) => {
+// Helper de Fecha
+const formatDate = () => new Date().toLocaleString('es-AR');
+
+export const CashClosingModal = ({ isOpen, onClose, onConfirm, systemTotals, userName, branchName, shiftId }) => {
     // ESTADOS
-    const [step, setStep] = useState(1); // 1: Conteo, 2: Distribución, 3: Confirmación
+    const [step, setStep] = useState(1); // 1: Conteo, 2: Distribución, 3: Ticket Z (Declaración)
     
     // Paso 1: Cuánto hay en total en el cajón (Físico)
     const [declaredCash, setDeclaredCash] = useState(''); 
@@ -30,40 +33,45 @@ export const CashClosingModal = ({ isOpen, onClose, onConfirm, systemTotals }) =
     // CÁLCULOS EN TIEMPO REAL
     const valDeclared = declaredCash === '' ? 0 : parseFloat(declaredCash);
     const valLeft = leftInCash === '' ? 0 : parseFloat(leftInCash);
-    
-    // Retiro = Total que tengo - Lo que dejo
-    // Validamos que no sea negativo (no puedes dejar más de lo que tienes)
     const totalWithdrawal = Math.max(0, valDeclared - valLeft);
     
+    // CÁLCULO DE DIFERENCIA (AUDITORÍA INTERNA - NO SE MUESTRA EN TICKET CAJERO)
+    const expectedCash = systemTotals?.totalCash || 0; 
+    const difference = valDeclared - expectedCash; 
+
     const handleSubmit = () => {
-        // 🔥 ALINEACIÓN DE DATOS CON EL REPOSITORIO
         onConfirm({
-            declaredCash: valDeclared,  // Lo que contaste
-            leftInCash: valLeft,        // Lo que dejas
-            // Pasamos los esperados para referencia rápida, aunque el repo recalcula para seguridad
-            expectedCash: systemTotals?.totalCash || 0, 
-            expectedDigital: systemTotals?.totalDigital || 0
+            declaredCash: valDeclared,  
+            leftInCash: valLeft,        
+            expectedCash: expectedCash, 
+            expectedDigital: systemTotals?.totalDigital || 0,
+            withdrawal: totalWithdrawal,
+            difference: difference
         });
     };
 
+    const handlePrint = () => {
+        window.print(); 
+    };
+
     return (
-        <div className="fixed inset-0 z-[90] flex items-center justify-center bg-sys-900/80 backdrop-blur-sm p-4 animate-in fade-in zoom-in-95">
-            <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden flex flex-col max-h-[90vh]">
+        <div className="fixed inset-0 z-[90] flex items-center justify-center bg-sys-900/80 backdrop-blur-sm p-4 animate-in fade-in zoom-in-95 print:p-0 print:bg-white print:static">
+            <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden flex flex-col max-h-[90vh] print:shadow-none print:max-w-none print:h-auto print:rounded-none">
                 
-                {/* Header */}
-                <div className="bg-sys-50 p-6 border-b border-sys-100 flex justify-between items-center shrink-0">
+                {/* Header (No imprimible) */}
+                <div className="bg-sys-50 p-6 border-b border-sys-100 flex justify-between items-center shrink-0 print:hidden">
                    <div>
                       <h3 className="text-xl font-bold text-sys-900 flex items-center gap-2">
-                         <Lock className="text-brand" size={24} /> Cierre de Turno (Z)
+                         <Lock className="text-brand" size={24} /> Cierre de Turno
                       </h3>
                       <p className="text-xs text-sys-500 mt-1 font-medium">
-                          {step === 1 ? 'Paso 1: Arqueo Físico' : step === 2 ? 'Paso 2: Distribución' : 'Confirmación Final'}
+                          {step === 1 ? 'Paso 1: Arqueo Físico' : step === 2 ? 'Paso 2: Distribución' : 'Comprobante de Cierre'}
                       </p>
                    </div>
                    <button onClick={onClose} className="p-2 hover:bg-sys-200 rounded-full text-sys-400 transition-colors"><X/></button>
                 </div>
 
-                <div className="p-8 overflow-y-auto">
+                <div className="p-8 overflow-y-auto print:p-0 print:overflow-visible">
                     
                     {/* ================================================= */}
                     {/* PASO 1: CONTEO TOTAL DE EFECTIVO                  */}
@@ -146,50 +154,73 @@ export const CashClosingModal = ({ isOpen, onClose, onConfirm, systemTotals }) =
                         <div className="grid grid-cols-2 gap-3 pt-2">
                            <Button variant="ghost" onClick={() => setStep(1)} className="h-12 font-bold text-sys-500">Atrás</Button>
                            <Button onClick={() => setStep(3)} className="shadow-lg h-12 bg-sys-900 hover:bg-black text-white" disabled={valLeft > valDeclared}>
-                              Revisar Cierre
+                              Generar Comprobante
                            </Button>
                         </div>
                       </div>
                     )}
 
                     {/* ================================================= */}
-                    {/* PASO 3: CONFIRMACIÓN FINAL                        */}
+                    {/* PASO 3: COMPROBANTE DE DECLARACIÓN (LIMPIO)       */}
                     {/* ================================================= */}
                     {step === 3 && (
-                      <div className="text-center space-y-6 animate-in zoom-in-95 duration-300">
-                        <div className="w-20 h-20 bg-red-50 rounded-full flex items-center justify-center mx-auto text-red-600 mb-2 border-4 border-red-100 animate-pulse">
-                           <Lock size={36} />
-                        </div>
+                      <div className="flex flex-col h-full animate-in zoom-in-95 duration-300">
                         
-                        <div>
-                           <h4 className="text-2xl font-black text-sys-900 leading-none mb-4">¿Cerrar Turno?</h4>
-                           
-                           <div className="bg-sys-50 rounded-xl p-4 text-sm space-y-3 border border-sys-200 text-left">
-                               <div className="flex justify-between items-center border-b border-sys-200 pb-2">
-                                   <span className="text-sys-500 font-medium">Total en Caja</span>
-                                   <span className="font-bold text-lg">{formatMoney(valDeclared)}</span>
-                               </div>
-                               <div className="flex justify-between items-center text-emerald-600">
-                                   <span className="font-medium flex items-center gap-1"><Wallet size={14}/> Se deja en Caja</span>
-                                   <span className="font-bold">-{formatMoney(valLeft)}</span>
-                               </div>
-                               <div className="bg-white p-3 rounded-lg border border-sys-200 flex justify-between items-center">
-                                   <span className="text-sys-900 font-black uppercase text-xs tracking-wider">A RETIRAR (SOBRE)</span>
-                                   <span className="text-xl font-black text-sys-900">{formatMoney(totalWithdrawal)}</span>
-                               </div>
-                           </div>
+                        {/* 🎫 TICKET CAJERO (DECLARACIÓN JURADA) */}
+                        <div className="bg-white border border-sys-200 p-6 rounded-none shadow-sm font-mono text-xs text-sys-800 mx-auto w-[300px] print:w-full print:border-none print:shadow-none mb-6">
+                            <div className="text-center border-b border-dashed border-sys-300 pb-4 mb-4">
+                                <h2 className="text-xl font-black uppercase">CIERRE DE TURNO</h2>
+                                <p className="font-bold text-sys-500 mt-1">COMPROBANTE DE DECLARACIÓN</p>
+                            </div>
 
-                           <p className="text-[10px] text-red-500 mt-4 font-bold flex items-center justify-center gap-1 uppercase tracking-wider bg-red-50 py-2 rounded-lg">
-                               <AlertTriangle size={12}/> Esta acción cerrará el turno y es irreversible.
-                           </p>
+                            <div className="space-y-1 mb-4">
+                                <div className="flex justify-between"><span>SUCURSAL:</span><span className="font-bold uppercase">{branchName || 'CENTRAL'}</span></div>
+                                <div className="flex justify-between"><span>CAJERO:</span><span className="font-bold uppercase">{userName || 'SISTEMA'}</span></div>
+                                <div className="flex justify-between"><span>FECHA:</span><span>{formatDate()}</span></div>
+                                <div className="flex justify-between"><span>ID TURNO:</span><span>#{shiftId ? shiftId.slice(0,6) : '????'}</span></div>
+                            </div>
+
+                            {/* SOLO MOSTRAMOS LO DECLARADO FÍSICAMENTE */}
+                            <div className="border-t border-dashed border-sys-300 py-4">
+                                <p className="font-bold mb-2 text-center bg-sys-100 uppercase py-1">DECLARACIÓN DE VALORES</p>
+                                
+                                <div className="flex justify-between text-sm font-bold mb-2">
+                                    <span>TOTAL EN CAJA:</span>
+                                    <span className="text-lg">{formatMoney(valDeclared)}</span>
+                                </div>
+                                
+                                <div className="flex justify-between items-center text-sys-600 mb-2">
+                                    <span>(-) DEJA FONDO:</span>
+                                    <span>{formatMoney(valLeft)}</span>
+                                </div>
+
+                                <div className="flex justify-between font-black border-t-2 border-sys-800 mt-2 pt-2 text-xl">
+                                    <span>A RENDIR (SOBRE):</span>
+                                    <span>{formatMoney(totalWithdrawal)}</span>
+                                </div>
+                            </div>
+                            
+                            <div className="mt-12 text-center text-[10px] space-y-12">
+                                <div className="border-t border-sys-400 w-3/4 mx-auto pt-1">
+                                    <p className="font-bold uppercase">{userName}</p>
+                                    <p>Firma Cajero</p>
+                                </div>
+                                <div className="border-t border-sys-400 w-3/4 mx-auto pt-1">
+                                    <p>Firma Supervisor / Recibe</p>
+                                </div>
+                            </div>
                         </div>
 
-                        <div className="grid grid-cols-2 gap-3">
-                           <Button variant="ghost" onClick={() => setStep(2)} className="h-12 font-bold text-sys-500">Corregir</Button>
-                           <Button variant="danger" onClick={handleSubmit} className="h-12 shadow-xl shadow-red-500/20 bg-red-600 hover:bg-red-700 text-white font-black tracking-wider text-xs">
-                               CONFIRMAR CIERRE Z
+                        {/* ACCIONES (NO IMPRIMIBLE) */}
+                        <div className="grid grid-cols-2 gap-3 print:hidden">
+                           <Button variant="secondary" onClick={handlePrint} className="h-12 font-bold text-sys-600 border border-sys-200">
+                               <Printer size={18} className="mr-2"/> Imprimir
+                           </Button>
+                           <Button variant="danger" onClick={handleSubmit} className="h-12 shadow-xl shadow-red-500/20 bg-red-600 hover:bg-red-700 text-white font-black tracking-wider text-xs uppercase">
+                               Confirmar y Cerrar
                            </Button>
                         </div>
+                        <button onClick={() => setStep(2)} className="mt-4 text-xs text-sys-400 underline text-center print:hidden hover:text-sys-600">Volver a editar montos</button>
                       </div>
                     )}
 
