@@ -2,6 +2,7 @@ import React, { useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { MainLayout } from './layout/MainLayout';
 import { Loader2 } from 'lucide-react'; 
+import { Toaster } from 'react-hot-toast'; // 🔥 AÑADIDO: Importación del Toaster
 
 // ✅ Store de Autenticación
 import { useAuthStore } from './modules/auth/store/useAuthStore'; 
@@ -76,13 +77,40 @@ function App() {
 
     return (
         <BrowserRouter>
+            {/* 🔥 AÑADIDO: Configuración Global de Notificaciones (Toaster) */}
+            <Toaster 
+                position="top-center" 
+                toastOptions={{
+                    duration: 3000,
+                    style: {
+                        background: '#333',
+                        color: '#fff',
+                        fontSize: '14px',
+                        borderRadius: '10px',
+                        fontWeight: '500'
+                    },
+                    success: {
+                        iconTheme: {
+                            primary: '#10b981',
+                            secondary: '#fff',
+                        },
+                    },
+                    error: {
+                        iconTheme: {
+                            primary: '#ef4444',
+                            secondary: '#fff',
+                        },
+                    },
+                }}
+            />
+
             <Routes>
                 {/* === ZONA PÚBLICA === */}
                 
                 {/* 🔥 CAMBIO CLAVE: La raíz ahora es el LOGIN */}
                 <Route path="/" element={<LoginPage />} />
                 
-                {/* ✅ Landing Page Informativa */}
+                {/* Si quieres mantener la landing accesible, usa otra ruta */}
                 <Route path="/info" element={<LandingPage />} />
 
                 <Route path="/register" element={<RegisterPage />} /> 

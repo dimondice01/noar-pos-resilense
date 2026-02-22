@@ -35,13 +35,13 @@ const PAYMENT_LABELS = {
     card: 'TARJETA',
     debit: 'DÉBITO',
     credit: 'CRÉDITO',
-    qr: 'QR / TRANSFERENCIA',
+    qr: 'QR / TRANSF.', // Acortado para 58mm
     other: 'OTRO',
     split: 'COMBINADO'
 };
 
 // =========================================================
-// 2. CONTENIDO DEL TICKET (DISEÑO RETAIL PRO TÉRMICO)
+// 2. CONTENIDO DEL TICKET (DISEÑO RETAIL 58mm)
 // =========================================================
 const TicketContent = forwardRef(({ 
     logoSrc, EMPRESA, data, isFiscal 
@@ -89,101 +89,99 @@ const TicketContent = forwardRef(({
     // 🔥 NORMALIZACIÓN DE PAGOS (Engine Split)
     let paymentDetails = [];
     if (data.payments && Array.isArray(data.payments)) {
-        // Nueva Estructura
         paymentDetails = data.payments;
     } else if (data.payment) {
-        // Estructura Legacy
         paymentDetails = [data.payment];
     } else {
-        // Fallback Extremo
         paymentDetails = [{ method: data.method || 'cash', amount: total }];
     }
 
     return (
         <div ref={ref} className="ticket-print-container">
-            <div className="ticket-body"> 
+            {/* 🔥 px-2 asegura que no se pegue a los bordes de la hoja */}
+            <div className="ticket-body px-2"> 
                 
                 {/* --- HEADER --- */}
-                <div className="flex flex-col items-center mb-3 pb-3 border-b-2 border-black border-dashed">
+                <div className="flex flex-col items-center mb-2 pb-2 border-b-2 border-black border-dashed">
                     {logoSrc && (
                         <img 
                             src={logoSrc} 
                             alt="Logo"
-                            className="mb-2 object-contain grayscale contrast-150"
-                            style={{ maxHeight: '25mm', maxWidth: '70%' }} 
+                            className="mb-1 object-contain grayscale contrast-150"
+                            style={{ maxHeight: '20mm', maxWidth: '80%' }} 
                             onError={(e) => e.target.style.display = 'none'}
                         />
                     )}
                     
-                    <h1 className="text-xl font-black leading-none uppercase text-center mb-1">{EMPRESA.nombre}</h1>
+                    <h1 className="text-lg font-black leading-none uppercase text-center mb-1">{EMPRESA.nombre}</h1>
                     
-                    <div className="text-[10px] font-medium text-center uppercase leading-tight px-2">
+                    <div className="text-[9px] font-bold text-center uppercase leading-tight">
                         <p>{EMPRESA.direccion}</p>
                         <p className="mt-0.5">{EMPRESA.condicionIva}</p>
-                        <p>CUIT: {EMPRESA.cuit} • IIBB: {EMPRESA.iibb || '-'}</p>
-                        <p>INICIO: {EMPRESA.inicioAct || '-'}</p>
+                        <p>CUIT: {EMPRESA.cuit}</p>
+                        {EMPRESA.iibb && <p>IIBB: {EMPRESA.iibb}</p>}
+                        {EMPRESA.inicioAct && <p>INICIO: {EMPRESA.inicioAct}</p>}
                     </div>
                 </div>
 
                 {/* --- INFO COMPROBANTE --- */}
-                <div className="flex justify-between items-center py-2 border-b-2 border-black mb-3">
+                <div className="flex justify-between items-center py-1 border-b-2 border-black mb-2">
                     <div className="flex flex-col">
-                        <span className="text-sm font-black">{tipoComprobante} "{letraComprobante}"</span>
-                        <span className="text-[11px] font-mono mt-0.5 font-bold">{numeroComprobante}</span>
+                        <span className="text-xs font-black leading-none">{tipoComprobante} "{letraComprobante}"</span>
+                        <span className="text-[10px] font-mono mt-0.5 font-bold">{numeroComprobante}</span>
                     </div>
-                    <div className="text-right text-[10px] font-bold leading-tight">
-                        <p>FECHA: {new Date(data.date).toLocaleDateString('es-AR')}</p>
-                        <p>HORA: {new Date(data.date).toLocaleTimeString('es-AR', {hour: '2-digit', minute:'2-digit'})}</p>
+                    <div className="text-right text-[9px] font-bold leading-tight">
+                        <p>{new Date(data.date).toLocaleDateString('es-AR')}</p>
+                        <p>{new Date(data.date).toLocaleTimeString('es-AR', {hour: '2-digit', minute:'2-digit'})}</p>
                     </div>
                 </div>
 
                 {/* --- CLIENTE --- */}
-                <div className="mb-3 text-[10px] font-medium uppercase leading-tight border-b border-black border-dashed pb-2">
-                    <div className="flex mb-0.5"><span className="w-12 font-bold">CLIENTE:</span> <span className="truncate flex-1 font-bold">{client.name}</span></div>
-                    {docValue && <div className="flex mb-0.5"><span className="w-12 font-bold">{docLabel}:</span> <span className="font-mono">{docValue}</span></div>}
-                    <div className="flex mb-0.5"><span className="w-12 font-bold">COND:</span> <span>{condFiscalCliente}</span></div>
-                    {client.address && <div className="flex"><span className="w-12 font-bold">DIR:</span> <span className="truncate flex-1">{client.address}</span></div>}
+                <div className="mb-2 text-[9px] font-bold uppercase leading-tight border-b border-black border-dashed pb-1">
+                    <div className="flex mb-0.5"><span className="w-10">CLI:</span> <span className="truncate flex-1">{client.name}</span></div>
+                    {docValue && <div className="flex mb-0.5"><span className="w-10">{docLabel}:</span> <span className="font-mono">{docValue}</span></div>}
+                    <div className="flex mb-0.5"><span className="w-10">IVA:</span> <span className="truncate flex-1">{condFiscalCliente}</span></div>
+                    {client.address && <div className="flex"><span className="w-10">DIR:</span> <span className="truncate flex-1">{client.address}</span></div>}
                 </div>
 
                 {/* --- TABLA ITEMS --- */}
-                <div className="mb-3">
-                    <div className="flex border-b-2 border-black py-1 mb-2 text-[10px] font-black bg-gray-100 print:bg-transparent">
-                        <div className="w-[12%] text-center">CNT</div>
-                        <div className="w-[63%] pl-1">DESCRIPCIÓN</div>
-                        <div className="w-[25%] text-right">TOTAL</div>
+                <div className="mb-2">
+                    <div className="flex border-b-2 border-black py-0.5 mb-1 text-[9px] font-black bg-gray-100 print:bg-transparent">
+                        <div className="w-[15%] text-left">CANT</div>
+                        <div className="w-[55%] pl-1">DETALLE</div>
+                        <div className="w-[30%] text-right">TOTAL</div>
                     </div>
                     
                     {items.map((item, idx) => {
                         const hasPromo = item.appliedPromo || (item.originalPrice && item.originalPrice > item.price);
                         
                         return (
-                            <div key={idx} className="mb-2 border-b border-dotted border-gray-400 pb-1 last:border-0 last:pb-0">
+                            <div key={idx} className="mb-1.5 border-b border-dotted border-gray-400 pb-1 last:border-0 last:pb-0">
                                 {/* Línea Principal */}
-                                <div className="flex items-start text-[11px] font-bold">
-                                    <div className="w-[12%] text-center font-mono">
+                                <div className="flex items-start text-[10px] font-bold leading-none">
+                                    <div className="w-[15%] text-left font-mono">
                                         {item.isWeighable ? parseFloat(item.quantity).toFixed(3) : Math.round(item.quantity)}
                                     </div>
-                                    <div className="w-[63%] uppercase leading-tight pl-1 pr-1">
+                                    <div className="w-[55%] uppercase pl-1 pr-1 break-words">
                                         {item.name}
                                     </div>
-                                    <div className="w-[25%] text-right font-mono text-black">
+                                    <div className="w-[30%] text-right font-mono text-black">
                                         {formatCurrency(item.subtotal)}
                                     </div>
                                 </div>
 
                                 {/* Línea de Detalle / Promo */}
                                 {hasPromo ? (
-                                    <div className="flex items-center text-[9px] mt-0.5 ml-[12%] text-black">
-                                        <span className="font-bold mr-1">»</span>
-                                        <span className="italic uppercase mr-2 font-bold">{item.promoLabel || "OFERTA"}</span>
+                                    <div className="flex items-center text-[8px] mt-0.5 pl-[15%] text-black font-bold">
+                                        <span className="italic uppercase mr-1">{item.promoLabel || "OFERTA"}</span>
                                         {item.originalPrice > 0 && (
-                                            <span className="line-through decoration-1 mr-1 text-[8px]">
-                                                ({formatCurrency(item.originalPrice)} un.)
+                                            <span className="line-through decoration-1 text-[7px]">
+                                                ({formatCurrency(item.originalPrice)})
                                             </span>
                                         )}
                                     </div>
                                 ) : (
-                                    <div className="text-[9px] text-right font-mono mt-0.5 mr-1 text-gray-500 print:text-black">
+                                    <div className="text-[8px] text-right font-mono mt-0.5 text-gray-500 print:text-black">
                                         Unit: {formatCurrency(item.price)}
                                     </div>
                                 )}
@@ -193,44 +191,44 @@ const TicketContent = forwardRef(({
                 </div>
 
                 {/* --- TOTALES --- */}
-                <div className="mt-2 border-t-2 border-black pt-3">
+                <div className="mt-1 border-t-2 border-black pt-2">
                     {/* Desglose compacto */}
-                    <div className="text-[10px] font-medium mb-2 space-y-1">
+                    <div className="text-[9px] font-bold mb-1 space-y-0.5">
                          <div className="flex justify-between">
-                            <span className="font-bold">SUBTOTAL</span>
+                            <span>SUBTOTAL</span>
                             <span className="font-mono">{formatCurrency(subtotal)}</span>
                         </div>
                         {discount > 0 && (
-                            <div className="flex justify-between font-bold">
+                            <div className="flex justify-between">
                                 <span>DESCUENTO</span>
                                 <span className="font-mono">-{formatCurrency(discount)}</span>
                             </div>
                         )}
                         {surcharge > 0 && (
                             <div className="flex justify-between">
-                                <span>RECARGO FINANCIERO</span>
+                                <span>RECARGO FIN.</span>
                                 <span className="font-mono">{formatCurrency(surcharge)}</span>
                             </div>
                         )}
                     </div>
 
                     {/* TOTAL FINAL GRANDE */}
-                    <div className="flex justify-between items-center border-y-2 border-black py-2 mt-2">
-                        <span className="text-xl font-black tracking-widest pl-1">TOTAL</span>
-                        <span className="text-3xl font-black font-mono tracking-tight leading-none pr-1">
+                    <div className="flex justify-between items-center border-y-2 border-black py-1 mt-1">
+                        <span className="text-base font-black tracking-widest">TOTAL</span>
+                        <span className="text-xl font-black font-mono tracking-tight leading-none">
                             ${formatCurrency(total)}
                         </span>
                     </div>
                 </div>
                 
-                {/* --- FORMA DE PAGO (SPLIT SUPPORT) --- */}
-                <div className="mt-3 mb-4 text-[10px]">
-                    <p className="font-black border-b border-black border-dashed mb-1 pb-1">FORMA DE PAGO</p>
+                {/* --- FORMA DE PAGO --- */}
+                <div className="mt-2 mb-3 text-[9px]">
+                    <p className="font-black border-b border-black border-dashed mb-0.5 pb-0.5">PAGO</p>
                     {paymentDetails.map((p, i) => (
-                        <div key={i} className="flex justify-between items-center font-medium py-0.5">
-                            <span className="uppercase font-bold">
+                        <div key={i} className="flex justify-between items-center font-bold py-0.5">
+                            <span className="uppercase">
                                 {PAYMENT_LABELS[p.method] || p.method}
-                                {p.surcharge > 0 && <span className="text-[8px] ml-1 font-normal">(Rec. {formatCurrency(p.surcharge)})</span>}
+                                {p.surcharge > 0 && <span className="text-[7px] ml-1 font-normal">(+{formatCurrency(p.surcharge)})</span>}
                             </span>
                             <span className="font-mono">{formatCurrency(p.total || p.amount)}</span>
                         </div>
@@ -239,27 +237,27 @@ const TicketContent = forwardRef(({
 
                 {/* --- FOOTER FISCAL --- */}
                 {isFiscal && cae && (
-                    <div className="mt-2 text-center border-t border-black border-dashed pt-3">
-                        <div className="flex justify-center mb-2">
-                            {qrData && <QRCode value={qrData} size={110} level="M" />}
+                    <div className="mt-2 text-center border-t border-black border-dashed pt-2">
+                        <div className="flex justify-center mb-1">
+                            {qrData && <QRCode value={qrData} size={90} level="M" />}
                         </div>
-                        <div className="w-full flex justify-between text-[10px] font-mono font-bold px-2">
+                        <div className="w-full flex flex-col text-[9px] font-mono font-bold mt-1">
                             <span>CAE: {cae}</span>
                             <span>VTO: {formatAfipDate(vto)}</span>
                         </div>
-                        <div className="text-[9px] font-black uppercase mt-1 italic">Comprobante Autorizado</div>
+                        <div className="text-[8px] font-black uppercase mt-1 italic">Comprobante Autorizado</div>
                     </div>
                 )}
 
                 {!isFiscal && (
-                      <div className="mt-4 text-center">
-                        <p className="text-[9px] font-bold uppercase border-2 border-black p-1 inline-block">Documento no válido como factura</p>
+                      <div className="mt-3 text-center">
+                        <p className="text-[8px] font-bold uppercase border border-black p-1 inline-block">Doc. no válido como factura</p>
                     </div>
                 )}
 
-                <div className="mt-6 text-center pb-8">
-                    <p className="text-[11px] font-black uppercase">*** ¡GRACIAS POR SU COMPRA! ***</p>
-                    <p className="text-[8px] font-mono mt-1">Usuario: {data.userName || 'Cajero'}</p>
+                <div className="mt-4 text-center pb-4">
+                    <p className="text-[10px] font-black uppercase">¡GRACIAS POR SU COMPRA!</p>
+                    <p className="text-[8px] font-mono mt-0.5 font-bold">Cajero: {data.userName || 'Usuario'}</p>
                 </div>
             </div>
         </div>
@@ -267,13 +265,13 @@ const TicketContent = forwardRef(({
 });
 
 // =========================================================
-// 3. MODAL PRINCIPAL (CON KEYBOARD LISTENERS)
+// 3. MODAL PRINCIPAL
 // =========================================================
 export const TicketModal = ({ isOpen, onClose, sale, receipt }) => {
     const data = sale || receipt;
     const { user, activeBranchId } = useAuthStore(); 
     const componentRef = useRef(null);
-    const modalRef = useRef(null); // Ref para el foco
+    const modalRef = useRef(null); 
     const [branchConfig, setBranchConfig] = useState(null);
 
     const handlePrint = useReactToPrint({
@@ -282,11 +280,10 @@ export const TicketModal = ({ isOpen, onClose, sale, receipt }) => {
         onAfterPrint: () => console.log("✅ Impresión finalizada"),
     });
 
-    // 🔥 KEYBOARD LISTENER (ENTER = PRINT, ESC = CLOSE)
+    // 🔥 KEYBOARD LISTENER
     useEffect(() => {
         if (!isOpen) return;
 
-        // Enfocar el modal para capturar teclas inmediatamente
         setTimeout(() => modalRef.current?.focus(), 50);
 
         const handleKeyDown = (e) => {
@@ -303,7 +300,7 @@ export const TicketModal = ({ isOpen, onClose, sale, receipt }) => {
         return () => window.removeEventListener('keydown', handleKeyDown);
     }, [isOpen, handlePrint, onClose]);
 
-    // Cargar Configuración de Sucursal para el Header del Ticket
+    // Cargar Configuración
     useEffect(() => {
         if (isOpen && user?.companyId && activeBranchId) {
             const fetchConfig = async () => {
@@ -321,7 +318,6 @@ export const TicketModal = ({ isOpen, onClose, sale, receipt }) => {
                             setBranchConfig(freshData);
                             localStorage.setItem(cacheKey, JSON.stringify(freshData));
                         } else {
-                            // Fallback a empresa general si no hay config de sucursal
                             const compRef = doc(db, 'companies', user.companyId);
                             const compSnap = await getDoc(compRef);
                             if (compSnap.exists()) setBranchConfig(compSnap.data());
@@ -353,8 +349,8 @@ export const TicketModal = ({ isOpen, onClose, sale, receipt }) => {
     return (
         <div 
             className="fixed inset-0 z-[70] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 outline-none"
-            tabIndex={-1} // Permite recibir foco
-            ref={modalRef} // Referencia para focus()
+            tabIndex={-1} 
+            ref={modalRef} 
         >
             <div className="bg-sys-100 p-6 rounded-3xl shadow-2xl w-full max-w-sm flex flex-col max-h-[95vh] print:hidden animate-in fade-in zoom-in duration-200 border-4 border-transparent focus-within:border-brand/20 transition-colors">
                 <div className="flex justify-between items-center mb-4">
@@ -366,14 +362,17 @@ export const TicketModal = ({ isOpen, onClose, sale, receipt }) => {
                 </div>
                 
                 {/* PREVIEW CONTAINER */}
-                <div className="bg-white p-4 shadow-inner overflow-y-auto border-t-[8px] border-sys-800 rounded-b-lg mb-4" style={{maxHeight: '450px'}}>
-                    <TicketContent 
-                        ref={componentRef}
-                        logoSrc={logoSrc} 
-                        EMPRESA={EMPRESA} 
-                        data={data}
-                        isFiscal={isFiscal}
-                    />
+                <div className="bg-white p-4 shadow-inner overflow-y-auto border-t-[8px] border-sys-800 rounded-b-lg mb-4 flex justify-center" style={{maxHeight: '450px'}}>
+                    {/* El Ticket ahora está centrado dentro del preview para simular la hoja 58mm */}
+                    <div className="shadow-md border border-gray-100 p-2" style={{width: '240px'}}>
+                        <TicketContent 
+                            ref={componentRef}
+                            logoSrc={logoSrc} 
+                            EMPRESA={EMPRESA} 
+                            data={data}
+                            isFiscal={isFiscal}
+                        />
+                    </div>
                 </div>
 
                 <div className="flex flex-col gap-2">
@@ -390,21 +389,25 @@ export const TicketModal = ({ isOpen, onClose, sale, receipt }) => {
                 </div>
             </div>
 
-            {/* ESTILOS DE IMPRESIÓN (MODO RETAIL) */}
+            {/* ESTILOS DE IMPRESIÓN (MODO TÉRMICO 58mm) */}
             <style>{`
-                /* Fuente del sistema, limpia y legible */
                 @import url('https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700;900&display=swap');
 
-                .ticket-print-container { width: 100%; background: white; color: black; }
+                .ticket-print-container { 
+                    width: 100%; 
+                    background: white; 
+                    color: black; 
+                }
                 
                 .ticket-body { 
-                    width: 72mm; /* Ancho estándar térmico 80mm con márgenes */
+                    /* 🔥 48mm es el ancho imprimible seguro para rollos de 58mm */
+                    width: 48mm; 
                     margin: 0 auto; 
                     padding: 0;
                     font-family: 'Roboto', sans-serif; 
                     text-transform: uppercase;
                     line-height: 1.1;
-                    font-size: 11px;
+                    font-size: 10px; /* Reducimos la fuente base */
                 }
 
                 .font-mono { font-family: 'Courier New', monospace !important; letter-spacing: -0.5px; }
@@ -417,14 +420,26 @@ export const TicketModal = ({ isOpen, onClose, sale, receipt }) => {
                 .justify-between { justify-content: space-between; }
                 .text-center { text-align: center; }
                 .text-right { text-align: right; }
+                .text-left { text-align: left; }
                 
-                /* Ocultar en impresión y ajustes finales */
                 @media print {
-                    @page { size: 80mm auto; margin: 0; }
+                    /* 🔥 Tamaño de hoja para 58mm */
+                    @page { size: 58mm auto; margin: 0; }
                     body { margin: 0; padding: 0; background: white !important; }
-                    .ticket-print-container { display: block !important; }
                     
-                    /* Forzar negro puro para impresoras térmicas */
+                    .ticket-print-container { 
+                        display: block !important; 
+                        width: 100% !important;
+                    }
+                    
+                    /* Evitar cortes laterales */
+                    .ticket-body {
+                        width: 100% !important;
+                        padding-left: 2mm !important;
+                        padding-right: 2mm !important;
+                        box-sizing: border-box !important;
+                    }
+                    
                     * { 
                         color: #000 !important; 
                         text-shadow: none !important;
@@ -433,8 +448,8 @@ export const TicketModal = ({ isOpen, onClose, sale, receipt }) => {
                         print-color-adjust: exact;
                     }
                     
-                    /* Asegurar que las imágenes (logo/qr) se impriman */
-                    img { display: block !important; opacity: 1 !important; }
+                    img { display: block !important; opacity: 1 !important; margin-left: auto; margin-right: auto; }
+                    svg { max-width: 100%; height: auto; }
                 }
             `}</style>
         </div>

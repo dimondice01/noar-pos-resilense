@@ -101,51 +101,58 @@ export const PosPage = () => {
   }, [isPaymentOpen, isClientSelectorOpen, selectedProduct, lastSaleTicket, maintainFocus]);
 
   // =================================================================
-  // ⚖️ LÓGICA DE BALANZAS
+  // ⚖️ LÓGICA DE BALANZAS (HÍBRIDA KRETZ/SYSTEL) 🔥
   // =================================================================
   const parseScaleBarcode = async (code) => {
       if (code.length !== 13) return false;
 
-      let pluCode = '';
-      let detectedQty = 0; 
-      let isScale = false;
+      const prefix = code.substring(0, 2);
 
-      // CASO A: PREFIJO 20 (PRECIO EMBEBIDO)
-      if (code.startsWith('20')) {
-          isScale = true;
-          pluCode = parseInt(code.substring(2, 6), 10).toString(); 
+      if (['20', '27', '28', '02'].includes(prefix)) {
           try {
-              const product = await productRepository.findByCode(pluCode);
-              if (product) {
-                  const embeddedPrice = parseFloat(code.substring(6, 12)) / 100; 
-                  const unitPrice = parseFloat(product.price);
-                  if (unitPrice > 0) {
-                      detectedQty = Math.round((embeddedPrice / unitPrice) * 1000) / 1000;
+              // 1. INTENTO PRIMARIO: PLU (5) + PESO (5)
+              // Systel suele mandar 20 PPPPP WWWWW C
+              const rawPlu5 = code.substring(2, 7);
+              const rawValue5 = code.substring(7, 12);
+              
+              const plu5 = parseInt(rawPlu5, 10).toString(); 
+              const value5 = parseFloat(rawValue5);
+
+              // Si el valor parece un peso en gramos (< 50kg)
+              if (value5 > 0 && value5 < 50000) {
+                  const product = await productRepository.findByCode(plu5);
+                  if (product) {
+                      const detectedQty = value5 / 1000; // Gramos a KG
                       addToCart(product, detectedQty);
                       toast.success(`⚖️ Balanza: ${product.name} - ${detectedQty}kg`);
                       setSearchTerm('');
                       return true;
                   }
               }
-          } catch (e) { console.error("Error balanza 20:", e); }
-      }
-      
-      // CASO B: PREFIJO 27, 28, 02 (PESO EMBEBIDO)
-      else if (code.startsWith('27') || code.startsWith('28') || code.startsWith('02')) {
-          isScale = true;
-          pluCode = parseInt(code.substring(2, 7), 10).toString();
-          const weightInGrams = parseFloat(code.substring(7, 12)); 
-          detectedQty = Math.round((weightInGrams / 1000) * 1000) / 1000; 
-          
-          try {
-              const product = await productRepository.findByCode(pluCode);
-              if (product) {
-                  addToCart(product, detectedQty);
-                  toast.success(`⚖️ Balanza: ${product.name} - ${detectedQty}kg`);
-                  setSearchTerm('');
-                  return true;
+
+              // 2. INTENTO SECUNDARIO: PLU (4) + PRECIO (6)
+              // Viejo estándar: 20 PPPP TTTTTT C
+              if (prefix === '20') {
+                  const rawPlu4 = code.substring(2, 6);
+                  const rawPrice6 = code.substring(6, 12);
+                  
+                  const plu4 = parseInt(rawPlu4, 10).toString();
+                  const embeddedPrice = parseFloat(rawPrice6) / 100;
+
+                  const product = await productRepository.findByCode(plu4);
+                  if (product) {
+                      const unitPrice = parseFloat(product.price);
+                      if (unitPrice > 0) {
+                          const detectedQty = Math.round((embeddedPrice / unitPrice) * 1000) / 1000;
+                          addToCart(product, detectedQty);
+                          toast.success(`⚖️ Balanza: ${product.name} - ${detectedQty}kg`);
+                          setSearchTerm('');
+                          return true;
+                      }
+                  }
               }
-          } catch (e) { console.error("Error balanza 27:", e); }
+
+          } catch (e) { console.error("Error procesando balanza:", e); }
       }
 
       return false;
@@ -192,16 +199,11 @@ export const PosPage = () => {
   };
 
   // =================================================================
-  // 2. MANEJO DE INPUT BÚSQUEDA (CORREGIDO 🔥)
+  // 2. MANEJO DE INPUT BÚSQUEDA
   // =================================================================
   useEffect(() => {
       const timer = setTimeout(async () => {
           if (searchTerm.length >= 2) {
-              // 🔥 FIX CRÍTICO: 
-              // Quitamos parseScaleBarcode() de aquí. El useEffect SOLO debe buscar visualmente.
-              // La acción de agregar (Venta) debe ser explícita con ENTER.
-              // Esto evita que el scanner agregue el producto mientras escribe y luego el Enter lo agregue de nuevo.
-              
               searchProduct(searchTerm);
           } else {
               setSearchResults([]);
@@ -286,7 +288,6 @@ export const PosPage = () => {
               } else if (directResults.length === 1) {
                   handleSelectProduct(directResults[0]);
               } else {
-                  // Opcional: Sonido de error
                   setSearchTerm('');
               }
           } catch (err) {

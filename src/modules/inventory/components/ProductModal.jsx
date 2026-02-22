@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { 
     X, Save, ScanLine, Scale, Package, DollarSign, Tag, Truck, 
     AlertTriangle, Award, ChevronDown, Check, Calendar, Plus, 
-    Trash2, Megaphone, Clock, Barcode, Edit2, Percent, Layers, ShoppingBag, MapPin
+    Trash2, Megaphone, Clock, Barcode, Edit2, Percent, Layers, ShoppingBag, MapPin, Loader2
 } from 'lucide-react';
 import { Button } from '../../../core/ui/Button';
 import { Switch } from '../../../core/ui/Switch';
@@ -143,7 +143,7 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
     minStock: '5',
     isWeighable: false,
     
-    // 🔥 PROMO ENGINE 2.0 (CAMPOS PLANOS)
+    // PROMO ENGINE
     promoActive: false,
     promoType: 'PERCENTAGE', 
     promoValue: '',          
@@ -170,11 +170,10 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
     }
   }, [isOpen]);
 
-  // Cargar Datos (Mapping Correcto y Blindado)
+  // Cargar Datos
   useEffect(() => {
     if (isOpen) {
       if (productToEdit) {
-        // Cálculo inverso del margen
         let calculatedMarkup = productToEdit.markup;
         if (!calculatedMarkup && productToEdit.cost && productToEdit.price) {
            const c = parseFloat(productToEdit.cost);
@@ -186,13 +185,12 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
           ? productToEdit.barcode 
           : (productToEdit.barcode ? [productToEdit.barcode] : []);
 
-        // 🛡️ RE-HIDRATACIÓN DEL OBJETO PROMO
         const promo = productToEdit.promo || {};
         const hasPromo = !!productToEdit.promo;
 
         setFormData({
             ...productToEdit,
-            name: productToEdit.name || '', // Asegurar string para evitar error en controlled input
+            name: productToEdit.name || '', 
             code: productToEdit.code || '',
             barcodes: loadedBarcodes,
             markup: calculatedMarkup || '40',
@@ -202,10 +200,9 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
             minStock: productToEdit.minStock || '5',
             cost: productToEdit.cost || '',
             price: productToEdit.price || '',
-            stock: productToEdit.stock || '', // Para visualización si es nuevo
+            stock: productToEdit.stock || '', 
             isWeighable: productToEdit.isWeighable === true,
             
-            // MAPEO EXPLÍCITO DE CAMPOS PROMO
             promoActive: hasPromo,
             promoType: hasPromo ? (promo.type || 'PERCENTAGE') : 'PERCENTAGE',
             promoValue: hasPromo ? String(promo.value || '') : '', 
@@ -215,7 +212,6 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
             promoEndDate: hasPromo ? (promo.endDate || '') : ''
         });
       } else {
-        // Reset para nuevo
         setFormData({ 
             name: '', code: '', barcodes: [], category: '', brand: '',
             cost: '', markup: '40', price: '', taxRate: '21',
@@ -264,38 +260,64 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
       setFormData(prev => ({ ...prev, barcodes: prev.barcodes.filter(b => b !== code) }));
   };
 
-  // 💾 GUARDADO MAESTRO + PROMO LOCAL
+  // 💾 GUARDADO MAESTRO CON FEEDBACK INSTANTÁNEO
   const handleSubmit = async (e) => { 
     if (e) e.preventDefault(); 
     
-    if (!formData.name || !formData.price) {
-      return toast.error("Nombre y Precio son obligatorios");
+    // 🛡️ 1. VALIDACIONES INSTANTÁNEAS
+    if (!formData.name.trim()) {
+        setActiveTab('general');
+        return toast.error("⚠️ El nombre del producto es obligatorio");
+    }
+    if (!formData.price || parseFloat(String(formData.price).replace(',', '.')) <= 0) {
+        setActiveTab('precios');
+        return toast.error("⚠️ Debes ingresar un precio final válido");
     }
     
     if (formData.promoActive) {
-        if (!formData.promoValue) return toast.error("Falta el valor de la promoción");
-        if (!formData.promoEndDate) return toast.error("Falta la fecha de fin de la promoción");
+        if (!formData.promoValue) {
+            setActiveTab('promociones');
+            return toast.error("⚠️ Falta el valor de la promoción");
+        }
+        if (!formData.promoEndDate) {
+            setActiveTab('promociones');
+            return toast.error("⚠️ Falta la fecha de fin de la promoción");
+        }
     }
 
     setIsSaving(true); 
+    const loadingToastId = toast.loading('Guardando producto...');
 
     try {
-        // 1. Construcción Objeto Maestro (Global)
+        // 🔥 FIX CRÍTICO: Mantenemos ...formData para no perder IDs ocultos (branchId, etc)
+        // pero sobreescribimos con formato estricto.
         const masterPayload = {
-            ...formData,
+            ...formData, 
+            name: formData.name.trim(),
+            code: formData.code.trim(),
             barcode: formData.barcodes, 
-            price: parseFloat(formData.price),
-            cost: parseFloat(formData.cost || 0),
-            markup: parseFloat(formData.markup || 0),
-            minStock: parseFloat(formData.minStock || 0),
-            taxRate: parseFloat(formData.taxRate || 21),
+            category: formData.category,
+            brand: formData.brand,
+            supplier: formData.supplier,
+            price: parseFloat(String(formData.price).replace(',', '.')) || 0,
+            cost: parseFloat(String(formData.cost).replace(',', '.')) || 0,
+            markup: parseFloat(String(formData.markup).replace(',', '.')) || 0,
+            minStock: parseFloat(String(formData.minStock).replace(',', '.')) || 0,
+            taxRate: parseFloat(String(formData.taxRate).replace(',', '.')) || 21,
             isWeighable: Boolean(formData.isWeighable),
             user: user?.name || 'Sistema'
         };
-        
-        // Eliminamos campos de promo del maestro para no ensuciarlo
-        // (La promo ahora viaja aparte)
-        delete masterPayload.promo;
+
+        // 🛡️ Forzar Stock Inicial a Numérico Seguro (Evita comas que rompen el parseInt)
+        masterPayload.stock = parseFloat(String(formData.stock).replace(',', '.')) || 0;
+
+        // Si estamos EDITANDO un producto existente, borramos el stock del payload
+        // para evitar sobrescribir el inventario actual.
+        if (productToEdit && productToEdit.id) {
+            delete masterPayload.stock; 
+        }
+
+        // Limpieza profunda de los campos de UI temporales
         delete masterPayload.promoActive;
         delete masterPayload.promoType;
         delete masterPayload.promoValue;
@@ -303,15 +325,16 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
         delete masterPayload.promoPayValue;
         delete masterPayload.promoStartDate;
         delete masterPayload.promoEndDate;
+        delete masterPayload.promo; 
 
-        // 2. Construcción Objeto Promo (Local)
+        // Construcción limpia del objeto Promo
         let promoPayload = null;
         if (formData.promoActive) {
             promoPayload = {
                 type: formData.promoType,
-                value: parseFloat(formData.promoValue) || 0,
-                discountValue: parseFloat(formData.promoDiscount) || 0,
-                payValue: parseFloat(formData.promoPayValue) || 0,
+                value: parseFloat(String(formData.promoValue).replace(',', '.')) || 0,
+                discountValue: parseFloat(String(formData.promoDiscount).replace(',', '.')) || 0,
+                payValue: parseFloat(String(formData.promoPayValue).replace(',', '.')) || 0,
                 startDate: formData.promoStartDate,
                 endDate: formData.promoEndDate,
                 name: 
@@ -322,23 +345,15 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
             };
         }
 
-        // 3. Limpieza de Stock en Edición (Si ya existe, el stock no se toca desde aquí)
-        if (productToEdit && productToEdit.id) {
-            delete masterPayload.stock; 
-        } else {
-            // Si es nuevo, usamos el stock inicial
-            masterPayload.stock = parseFloat(formData.stock || 0);
-        }
-
-        // 🔥 Callback con DOS argumentos: Maestro y Promo Local
+        // 3. ENVÍO A LA BASE DE DATOS
         await onSave(masterPayload, promoPayload);
         
-        toast.success("Producto guardado correctamente");
+        toast.success('¡Producto guardado!', { id: loadingToastId });
         onClose();
 
     } catch (error) {
-        console.error(error);
-        toast.error("Error al guardar: " + error.message);
+        console.error("Error guardando producto:", error);
+        toast.error("Error al guardar: " + (error.message || "Intente nuevamente"), { id: loadingToastId });
     } finally {
         setIsSaving(false);
     }
@@ -366,7 +381,7 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
               </h3>
               <p className="text-xs text-sys-500 font-medium">Configuración global del catálogo</p>
           </div>
-          <button onClick={onClose} className="p-2 bg-sys-50 hover:bg-sys-100 rounded-full text-sys-500 transition-colors">
+          <button onClick={onClose} type="button" className="p-2 bg-sys-50 hover:bg-sys-100 rounded-full text-sys-500 transition-colors" disabled={isSaving}>
             <X size={20} />
           </button>
         </div>
@@ -377,12 +392,15 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
                 {['general', 'precios', 'promociones'].map((tab) => (
                     <button
                         key={tab}
+                        type="button"
                         onClick={() => setActiveTab(tab)}
+                        disabled={isSaving}
                         className={cn(
                             "flex-1 py-2 text-xs font-bold rounded-lg transition-all duration-200 capitalize",
                             activeTab === tab 
                                 ? "bg-white text-sys-900 shadow-sm" 
-                                : "text-sys-500 hover:text-sys-700 hover:bg-sys-200/50"
+                                : "text-sys-500 hover:text-sys-700 hover:bg-sys-200/50",
+                            isSaving && "opacity-50 cursor-not-allowed"
                         )}
                     >
                         {tab === 'promociones' && formData.promoActive ? '🔥 Promociones' : tab}
@@ -391,18 +409,18 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
             </div>
         </div>
 
-        {/* Form Body */}
         <form onSubmit={handleSubmit} className="p-6 overflow-y-auto custom-scrollbar flex-1 bg-white">
           
           {/* --- TAB GENERAL --- */}
           {activeTab === 'general' && (
              <div className="space-y-6 animate-in slide-in-from-right-8 duration-300 fade-in">
                 <PremiumInput 
-                    label="Nombre del Producto"
+                    label="Nombre del Producto *"
                     autoFocus
                     placeholder="Ej: Coca Cola 2.25L Sabor Original"
                     value={formData.name}
                     onChange={e => setFormData({...formData, name: e.target.value.toUpperCase()})}
+                    disabled={isSaving}
                 />
                 
                 <div className="grid grid-cols-2 gap-5">
@@ -412,6 +430,7 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
                         placeholder="Automático si vacío"
                         value={formData.code}
                         onChange={e => setFormData({...formData, code: e.target.value})}
+                        disabled={isSaving}
                     />
                     <PremiumInput 
                         label="Stock Mínimo (Alerta)"
@@ -420,29 +439,30 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
                         placeholder="5"
                         value={formData.minStock}
                         onChange={e => setFormData({...formData, minStock: e.target.value})}
+                        disabled={isSaving}
                     />
                 </div>
 
-                {/* Multi-Barcode Manager */}
                 <div className="bg-sys-50 p-4 rounded-xl border border-sys-200">
                     <label className="text-[10px] font-bold text-sys-500 uppercase block mb-2">Códigos de Barras</label>
                     <div className="flex gap-2 mb-3">
                         <input 
                             type="text" 
-                            className="flex-1 px-3 py-2 rounded-lg border border-sys-200 text-sm outline-none focus:border-brand"
+                            className="flex-1 px-3 py-2 rounded-lg border border-sys-200 text-sm outline-none focus:border-brand disabled:opacity-50"
                             placeholder="Escanear código adicional..."
                             value={tempBarcode}
                             onChange={e => setTempBarcode(e.target.value)}
                             onKeyDown={e => e.key === 'Enter' && (e.preventDefault(), addBarcode())}
+                            disabled={isSaving}
                         />
-                        <button type="button" onClick={addBarcode} className="bg-brand text-white px-3 rounded-lg hover:bg-brand-hover"><Plus size={18}/></button>
+                        <button type="button" onClick={addBarcode} disabled={isSaving} className="bg-brand text-white px-3 rounded-lg hover:bg-brand-hover disabled:opacity-50"><Plus size={18}/></button>
                     </div>
                     <div className="flex flex-wrap gap-2">
                         {formData.barcodes.length === 0 && <span className="text-xs text-sys-400 italic">Sin códigos asignados</span>}
                         {formData.barcodes.map((code, idx) => (
                             <span key={idx} className="bg-white border border-sys-200 px-2 py-1 rounded-md text-xs font-mono flex items-center gap-2">
                                 <Barcode size={12}/> {code}
-                                <button type="button" onClick={() => removeBarcode(code)} className="text-red-400 hover:text-red-600"><X size={12}/></button>
+                                <button type="button" onClick={() => removeBarcode(code)} disabled={isSaving} className="text-red-400 hover:text-red-600 disabled:opacity-50"><X size={12}/></button>
                             </span>
                         ))}
                     </div>
@@ -477,7 +497,7 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
                             </p>
                         </div>
                     </div>
-                    <Switch checked={!!formData.isWeighable} onCheckedChange={(c) => setFormData({...formData, isWeighable: c})} />
+                    <Switch checked={!!formData.isWeighable} onCheckedChange={(c) => setFormData({...formData, isWeighable: c})} disabled={isSaving} />
                 </div>
 
                 {/* Stock Edit Protection */}
@@ -495,6 +515,7 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
                         value={formData.stock}
                         onChange={e => setFormData({...formData, stock: e.target.value})}
                         className="bg-emerald-50 border-emerald-100 focus:border-emerald-400"
+                        disabled={isSaving}
                     />
                 )}
              </div>
@@ -509,6 +530,7 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
                             label="Costo Unitario" type="number" step="0.01" placeholder="0.00"
                             value={formData.cost} onChange={e => handlePriceCalculation('cost', e.target.value)}
                             rightIcon={<span className="text-xs font-bold text-sys-400">$</span>}
+                            disabled={isSaving}
                         />
                     </div>
                     <div className="col-span-1">
@@ -516,14 +538,16 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
                             label="Margen %" type="number" step="0.1" placeholder="30"
                             value={formData.markup} onChange={e => handlePriceCalculation('markup', e.target.value)}
                             rightIcon={<span className="text-xs font-bold text-sys-400">%</span>}
+                            disabled={isSaving}
                         />
                     </div>
                     <div className="col-span-1">
                         <PremiumInput 
-                            label="Precio Final" type="number" step="0.01"
+                            label="Precio Final *" type="number" step="0.01"
                             className="bg-brand/5 border-2 border-brand/20 text-brand-hover text-lg font-bold"
                             value={formData.price} onChange={e => handlePriceCalculation('price', e.target.value)} placeholder="0.00"
                             rightIcon={<span className="text-brand font-bold">$</span>}
+                            disabled={isSaving}
                         />
                     </div>
                 </div>
@@ -553,11 +577,10 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
              </div>
           )}
 
-          {/* --- TAB PROMOCIONES (LOCALIZADO POR SUCURSAL) --- */}
+          {/* --- TAB PROMOCIONES --- */}
           {activeTab === 'promociones' && (
              <div className="space-y-6 animate-in slide-in-from-right-8 duration-300 fade-in">
                 
-                {/* 🔥 AVISO DE SUCURSAL ACTIVA */}
                 <div className="bg-brand/5 border border-brand/20 p-3 rounded-xl flex items-center gap-3">
                     <MapPin className="text-brand" size={20} />
                     <div>
@@ -577,13 +600,12 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
                             <p className="text-[10px] text-purple-600">Configura reglas avanzadas de descuento</p>
                         </div>
                     </div>
-                    <Switch checked={formData.promoActive} onCheckedChange={(c) => setFormData({...formData, promoActive: c})} />
+                    <Switch checked={formData.promoActive} onCheckedChange={(c) => setFormData({...formData, promoActive: c})} disabled={isSaving} />
                 </div>
 
                 {formData.promoActive && (
                     <div className="p-4 border border-purple-100 rounded-xl bg-white shadow-sm space-y-4">
                         
-                        {/* 1. Tipo de Promo */}
                         <PremiumSelect 
                             label="Tipo de Regla"
                             icon={Layers}
@@ -592,16 +614,16 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
                             onChange={(val) => setFormData({...formData, promoType: val})}
                         />
 
-                        {/* 2. Inputs Dinámicos según Tipo */}
                         <div className="grid grid-cols-2 gap-4">
                             {formData.promoType === 'PERCENTAGE' && (
                                 <div className="col-span-2">
                                     <PremiumInput 
-                                        label="Porcentaje de Descuento" type="number"
+                                        label="Porcentaje de Descuento *" type="number"
                                         className="text-purple-700 font-bold"
                                         value={formData.promoValue}
                                         onChange={e => setFormData({...formData, promoValue: e.target.value})}
                                         rightIcon={<span className="text-purple-400 font-bold">% OFF</span>}
+                                        disabled={isSaving}
                                     />
                                 </div>
                             )}
@@ -609,17 +631,19 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
                             {formData.promoType === 'BULK_THRESHOLD' && (
                                 <>
                                     <PremiumInput 
-                                        label="Cantidad Mínima (Unidades)" type="number"
+                                        label="Cantidad Mínima (Unidades) *" type="number"
                                         placeholder="Ej: 6"
                                         value={formData.promoValue}
                                         onChange={e => setFormData({...formData, promoValue: e.target.value})}
+                                        disabled={isSaving}
                                     />
                                     <PremiumInput 
-                                        label="Descuento a aplicar (%)" type="number"
+                                        label="Descuento a aplicar (%) *" type="number"
                                         placeholder="Ej: 10"
                                         value={formData.promoDiscount}
                                         onChange={e => setFormData({...formData, promoDiscount: e.target.value})}
                                         rightIcon={<span className="text-xs text-purple-400">%</span>}
+                                        disabled={isSaving}
                                     />
                                 </>
                             )}
@@ -627,17 +651,19 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
                             {formData.promoType === 'QUANTITY_LIMIT' && (
                                 <>
                                     <PremiumInput 
-                                        label="Límite de Unidades" type="number"
+                                        label="Límite de Unidades *" type="number"
                                         placeholder="Ej: 3"
                                         value={formData.promoValue}
                                         onChange={e => setFormData({...formData, promoValue: e.target.value})}
+                                        disabled={isSaving}
                                     />
                                     <PremiumInput 
-                                        label="Descuento en esas unidades (%)" type="number"
+                                        label="Descuento en esas unidades (%) *" type="number"
                                         placeholder="Ej: 50"
                                         value={formData.promoDiscount}
                                         onChange={e => setFormData({...formData, promoDiscount: e.target.value})}
                                         rightIcon={<span className="text-xs text-purple-400">%</span>}
+                                        disabled={isSaving}
                                     />
                                 </>
                             )}
@@ -645,39 +671,42 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
                             {formData.promoType === 'BUNDLE_DEAL' && (
                                 <>
                                     <PremiumInput 
-                                        label="Lleva (Cantidad)" type="number"
+                                        label="Lleva (Cantidad) *" type="number"
                                         placeholder="Ej: 3"
                                         value={formData.promoValue}
                                         onChange={e => setFormData({...formData, promoValue: e.target.value})}
+                                        disabled={isSaving}
                                     />
                                     <PremiumInput 
-                                        label="Paga (Cantidad)" type="number"
+                                        label="Paga (Cantidad) *" type="number"
                                         placeholder="Ej: 2"
                                         value={formData.promoPayValue}
                                         onChange={e => setFormData({...formData, promoPayValue: e.target.value})}
+                                        disabled={isSaving}
                                     />
                                 </>
                             )}
                         </div>
 
-                        {/* 3. Fechas */}
                         <div className="grid grid-cols-2 gap-4 pt-2 border-t border-dashed border-sys-100">
                             <div>
                                 <label className="text-[10px] font-bold text-sys-500 uppercase block mb-1">Inicio Vigencia</label>
                                 <input 
                                     type="date" 
-                                    className="w-full p-2 border border-sys-200 rounded-lg text-sm bg-sys-50 focus:bg-white focus:border-purple-300 outline-none transition-colors"
+                                    className="w-full p-2 border border-sys-200 rounded-lg text-sm bg-sys-50 focus:bg-white focus:border-purple-300 outline-none transition-colors disabled:opacity-50"
                                     value={formData.promoStartDate}
                                     onChange={e => setFormData({...formData, promoStartDate: e.target.value})}
+                                    disabled={isSaving}
                                 />
                             </div>
                             <div>
-                                <label className="text-[10px] font-bold text-sys-500 uppercase block mb-1">Fin Vigencia</label>
+                                <label className="text-[10px] font-bold text-sys-500 uppercase block mb-1">Fin Vigencia *</label>
                                 <input 
                                     type="date" 
-                                    className="w-full p-2 border border-sys-200 rounded-lg text-sm bg-sys-50 focus:bg-white focus:border-purple-300 outline-none transition-colors"
+                                    className="w-full p-2 border border-sys-200 rounded-lg text-sm bg-sys-50 focus:bg-white focus:border-purple-300 outline-none transition-colors disabled:opacity-50"
                                     value={formData.promoEndDate}
                                     onChange={e => setFormData({...formData, promoEndDate: e.target.value})}
+                                    disabled={isSaving}
                                 />
                             </div>
                         </div>
@@ -685,14 +714,21 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
                 )}
              </div>
           )}
-
+          
+          <button type="submit" className="hidden" />
         </form>
 
-        {/* Footer Actions */}
         <div className="p-5 border-t border-sys-100 bg-sys-50/50 flex justify-end gap-3 backdrop-blur-sm">
-            <Button variant="ghost" onClick={onClose} className="hover:bg-sys-200/50 text-sys-600" disabled={isSaving}>Cancelar</Button>
-            <Button onClick={handleSubmit} className="px-8 shadow-xl shadow-brand/20 active:scale-95 transition-all" disabled={isSaving}>
-                {isSaving ? <span className="animate-pulse">Guardando...</span> : <><Save size={18} className="mr-2" /> Guardar Producto</>}
+            <Button variant="ghost" onClick={onClose} type="button" className="hover:bg-sys-200/50 text-sys-600" disabled={isSaving}>Cancelar</Button>
+            
+            <Button onClick={handleSubmit} type="button" className="px-8 shadow-xl shadow-brand/20 active:scale-95 transition-all" disabled={isSaving}>
+                {isSaving ? (
+                    <span className="flex items-center gap-2">
+                        <Loader2 size={16} className="animate-spin" /> Guardando...
+                    </span>
+                ) : (
+                    <><Save size={18} className="mr-2" /> Guardar Producto</>
+                )}
             </Button>
         </div>
 

@@ -21,37 +21,51 @@ const NEW_TAB_TEMPLATE = {
 };
 
 // 🔥 HELPER: PARSER DE CÓDIGOS DE BALANZA (KRETZ / SYSTEL / ETC)
-// Soporta prefijos 20 (Estándar 4 digitos) y 27/02 (Estándar 5 digitos)
 const parseScaleBarcode = (code) => {
     if (code.length !== 13) return { isScale: false };
 
-    // CASO 1: Prefijo 20 (Estándar habitual: 20 PPPP TTTTTT C)
-    // 4 dígitos PLU, 6 dígitos Precio
-    if (code.startsWith('20')) {
+    // CASO SYSTEL / KRETZ - Formato Híbrido Universal
+    // Tu ejemplo: 20 00755 00355 2
+    // Dígitos:   01 23456 78901 2
+    // Prefijo (2): 20, 27, 28, 02
+    // PLU (5): 00755
+    // Peso/Precio (5): 00355
+    
+    const prefix = code.substring(0, 2);
+    
+    if (['20', '27', '28', '02'].includes(prefix)) {
         try {
-            const rawPlu = code.substring(2, 6);   // Dígitos 3-6
-            const rawPrice = code.substring(6, 12); // Dígitos 7-12
+            // Intentamos siempre primero como PLU 5 dígitos + PESO (5 dígitos)
+            const rawPlu5 = code.substring(2, 7);   // ej: '00755'
+            const rawValue5 = code.substring(7, 12); // ej: '00355'
             
-            return { 
-                isScale: true, 
-                pluCode: parseInt(rawPlu, 10).toString(), 
-                embeddedTotal: parseFloat(rawPrice) / 100 // 2 decimales
-            };
-        } catch (e) { return { isScale: false }; }
-    }
+            const plu5 = parseInt(rawPlu5, 10).toString(); // '755'
+            const value5 = parseFloat(rawValue5); // 355
+            
+            // Asumimos que si el valor es razonable para un peso (ej. menos de 50.000g / 50kg)
+            // es un código de peso. 
+            // Esto cubre perfecto tu caso: 00355 gramos -> 0.355 kg
+            if (value5 > 0 && value5 < 50000) {
+                 return { 
+                    isScale: true, 
+                    type: 'weight',
+                    pluCode: plu5, 
+                    embeddedWeight: value5 / 1000 // Convertimos gramos a KILOS (ej: 0.355)
+                };
+            }
 
-    // CASO 2: Prefijo 27, 28, 02 (Estándar 5 dígitos: PP IIIII PPPPP C)
-    // 5 dígitos PLU, 5 dígitos Precio (Tu caso con el 2707092...)
-    if (code.startsWith('27') || code.startsWith('28') || code.startsWith('02')) {
-        try {
-            const rawPlu = code.substring(2, 7);   // Dígitos 3-7 (ej: 07092)
-            const rawPrice = code.substring(7, 12); // Dígitos 8-12 (ej: 00100)
-            
-            return { 
-                isScale: true, 
-                pluCode: parseInt(rawPlu, 10).toString(), // Quitamos el 0 inicial -> 7092
-                embeddedTotal: parseFloat(rawPrice) / 100 // 2 decimales
-            };
+            // Fallback: Si el valor era muy grande, tal vez era el viejo formato de Precio (PLU 4 dígitos)
+            if (prefix === '20') {
+                const rawPlu4 = code.substring(2, 6);
+                const rawPrice6 = code.substring(6, 12);
+                return { 
+                    isScale: true, 
+                    type: 'price',
+                    pluCode: parseInt(rawPlu4, 10).toString(), 
+                    embeddedTotal: parseFloat(rawPrice6) / 100 
+                };
+            }
+
         } catch (e) { return { isScale: false }; }
     }
 
@@ -68,7 +82,7 @@ export const usePosController = () => {
     const [searchResults, setSearchResults] = useState([]);
 
     // =================================================================
-    // 🧮 MOTOR DE PROMOCIONES COMPLEJAS (ALBA MEGA ENGINE)
+    // 🧮 MOTOR DE PROMOCIONES COMPLEJAS
     // =================================================================
     
     const _calculatePromo = (product, quantity) => {
@@ -171,7 +185,7 @@ export const usePosController = () => {
     const switchTab = (tabId) => setActiveTabId(tabId);
 
     // =================================================================
-    // 🕒 WATCHDOG DE PRECIOS (AUTO-UPDATE) 🔥
+    // 🕒 WATCHDOG DE PRECIOS
     // =================================================================
     useEffect(() => {
         const checkPrices = async () => {
@@ -282,9 +296,6 @@ export const usePosController = () => {
 
     const setClient = (client) => updateActiveTab(tab => ({ ...tab, client }));
 
-    // =================================================================
-    // 🧮 CALCULADORA DE TOTALES
-    // =================================================================
     const totals = useMemo(() => {
         const subtotal = activeTab.items.reduce((acc, item) => acc + item.subtotal, 0);
         const discountAmount = activeTab.discount > 0 ? (subtotal * (activeTab.discount / 100)) : 0;
@@ -298,7 +309,7 @@ export const usePosController = () => {
     }, [activeTab.items, activeTab.discount]);
 
     // =================================================================
-    // 💳 PROCESO DE COBRO BLINDADO (RE-CHECK ENGINE) 🔥
+    // 💳 PROCESO DE COBRO BLINDADO 🔥
     // =================================================================
     
     const _verifyShift = async () => {
@@ -330,6 +341,10 @@ export const usePosController = () => {
             if (shiftBranch !== activeBranch && user?.role !== 'OWNER') {
                 throw new Error("⚠️ EL TURNO ABIERTO PERTENECE A OTRA SUCURSAL");
             }
+
+            // 🛡️ BLINDAJE DE IDENTIFICADORES SAAS
+            const activeCompanyId = user?.companyId || user?.tenantId;
+            if (!activeCompanyId) throw new Error("⚠️ Sesión corrupta: Falta Company ID.");
 
             // 1. Preparación de Pagos
             let finalPayments = [];
@@ -363,18 +378,21 @@ export const usePosController = () => {
                     appliedPromo: i.appliedPromo || false,
                     taxRate: i.taxRate || 21
                 })),
-                client: activeTab.client, 
+                client: activeTab.client || { name: 'Consumidor Final', fiscalCondition: 'CONSUMIDOR_FINAL' }, 
                 total: totalWithInterest, 
                 subtotal: totals.subtotal,
                 discount: totals.discountAmount,
                 payments: finalPayments,
                 payment: finalPayments[0], 
                 method: finalPayments.length > 1 ? 'SPLIT' : finalPayments[0].method,
-                branchId: activeBranchId, 
+                
+                // 🔥 INYECCIÓN OBLIGATORIA
+                branchId: activeBranch, 
                 shiftId: currentShift.id, 
-                companyId: user.companyId,
+                companyId: activeCompanyId,
                 operatorId: user.uid,
                 operatorName: user.name,
+                
                 createdAt: new Date().toISOString(),
                 status: 'COMPLETED',
                 type: 'SALE' 
@@ -386,7 +404,7 @@ export const usePosController = () => {
                 loadingToast = toast.loading("📡 Autorizando con AFIP...");
                 const afipResult = await paymentService.createInvoice({
                     ...basePayload,
-                    invoiceLetter: activeTab.client?.fiscalCondition === 'RESPONSABLE_INSCRIPTO' ? 'A' : 'B'
+                    invoiceLetter: basePayload.client?.fiscalCondition === 'RESPONSABLE_INSCRIPTO' ? 'A' : 'B'
                 });
 
                 const fiscalNumber = `FC-${afipResult.letra}-${String(afipResult.ptoVta).padStart(4,'0')}-${String(afipResult.numero).padStart(8,'0')}`;
@@ -441,34 +459,24 @@ export const usePosController = () => {
         
         try {
             const currentShift = await _verifyShift();
+            const activeCompanyId = user?.companyId || user?.tenantId;
 
             const payload = {
                 items: activeTab.items.map(i => ({
-                    id: i.id, 
-                    code: i.code, 
-                    name: i.name, 
-                    price: 0, 
-                    originalPrice: i.price, 
-                    cost: i.cost, 
-                    quantity: i.quantity, 
-                    subtotal: 0
+                    id: i.id, code: i.code, name: i.name, 
+                    price: 0, originalPrice: i.price, cost: i.cost, 
+                    quantity: i.quantity, subtotal: 0
                 })),
                 client: { name: 'CONSUMO INTERNO', fiscalCondition: 'CONSUMIDOR FINAL' },
-                total: 0, 
-                subtotal: 0,
-                discount: 100,
+                total: 0, subtotal: 0, discount: 100,
                 payments: [{ method: 'internal', amount: 0, total: 0 }],
                 payment: { method: 'internal', amount: 0 }, 
                 method: 'INTERNAL',
                 branchId: activeBranchId, 
                 shiftId: currentShift.id, 
-                companyId: user.companyId,
-                operatorId: user.uid,
-                operatorName: user.name,
-                createdAt: new Date().toISOString(),
-                status: 'COMPLETED',
-                type: 'INTERNAL', 
-                notes: reason
+                companyId: activeCompanyId,
+                operatorId: user.uid, operatorName: user.name,
+                createdAt: new Date().toISOString(), status: 'COMPLETED', type: 'INTERNAL', notes: reason
             };
 
             const localNumber = `INT-${Date.now().toString().slice(-6)}`;
@@ -476,21 +484,16 @@ export const usePosController = () => {
             await salesRepository.createSale({
                 ...payload,
                 afip: { status: 'SKIPPED', cbteLetra: 'I' }, 
-                number: localNumber,
-                ticketNumber: localNumber
+                number: localNumber, ticketNumber: localNumber
             });
 
             toast.success("Consumo interno registrado");
             clearCart();
             return true;
-
         } catch (error) {
-            console.error("Error venta interna:", error);
             toast.error(error.message);
             return false;
-        } finally {
-            setIsProcessing(false);
-        }
+        } finally { setIsProcessing(false); }
     };
 
     // =================================================================
@@ -509,13 +512,10 @@ export const usePosController = () => {
                  setSearchResults(results.slice(0, 10));
                  return false;
             }
-        } catch (err) {
-            console.error("Error buscando producto:", err);
-            return false;
-        }
+        } catch (err) { return false; }
     };
 
-    // 🔥 GLOBAL KEYBOARD LISTENER (Cuando el input NO tiene foco)
+    // 🔥 GLOBAL KEYBOARD LISTENER
     useEffect(() => {
         let buffer = '';
         let lastKeyTime = Date.now();
@@ -535,15 +535,22 @@ export const usePosController = () => {
                     if (scaleInfo.isScale) {
                         const product = await productRepository.findByCode(scaleInfo.pluCode);
                         if (product) {
-                            // Cálculo de cantidad basado en precio
-                            // Qty = TotalEscaneado / PrecioUnitario
-                            const unitPrice = parseFloat(product.price);
-                            if (unitPrice > 0) {
-                                const calculatedQty = scaleInfo.embeddedTotal / unitPrice;
-                                addToCart(product, calculatedQty);
-                                toast.success(`⚖️ Balanza: ${product.name} (${calculatedQty.toFixed(3)}kg)`);
+                            let calculatedQty = 0;
+
+                            if (scaleInfo.type === 'price') {
+                                const unitPrice = parseFloat(product.price);
+                                if (unitPrice > 0) calculatedQty = scaleInfo.embeddedTotal / unitPrice;
                             } else {
-                                toast.error("Error: Producto de balanza sin precio unitario");
+                                calculatedQty = scaleInfo.embeddedWeight;
+                            }
+
+                            if (calculatedQty > 0) {
+                                // Redondeo seguro a 3 decimales
+                                calculatedQty = Math.round(calculatedQty * 1000) / 1000;
+                                addToCart(product, calculatedQty);
+                                toast.success(`⚖️ Balanza: ${product.name} (${calculatedQty}kg)`);
+                            } else {
+                                toast.error("Error: Producto de balanza sin precio/peso válido");
                             }
                             buffer = '';
                             return;

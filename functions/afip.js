@@ -1,6 +1,6 @@
 /**
  * MÓDULO AFIP - NOAR POS (SaaS FINAL PRO - RESPONSABLE INSCRIPTO READY)
- * Versión: 4.0 - IVA Engine & Smart Type Selection
+ * Versión: 4.1 - IVA Engine & Smart Type Selection & Consumidor Final Safe
  */
 
 const admin = require("firebase-admin");
@@ -154,12 +154,23 @@ function determinarComprobante(emisorCondicion, receptorCondicion, esNC) {
 }
 
 async function getUltimoComprobante(clientSoap, auth, tipoCbte, ptoVta, cuit) {
-  const [res] = await clientSoap.FECompUltimoAutorizadoAsync({
-    Auth: { Token: auth.token, Sign: auth.sign, Cuit: cuit },
-    PtoVta: ptoVta, CbteTipo: tipoCbte
-  });
-  if (res.FECompUltimoAutorizadoResult.Errors) throw new Error("Error consultando último comprobante");
-  return res.FECompUltimoAutorizadoResult.CbteNro || 0;
+  try {
+      const [res] = await clientSoap.FECompUltimoAutorizadoAsync({
+        Auth: { Token: auth.token, Sign: auth.sign, Cuit: cuit },
+        PtoVta: ptoVta, CbteTipo: tipoCbte
+      });
+
+      if (res.FECompUltimoAutorizadoResult.Errors) {
+          const errMsg = res.FECompUltimoAutorizadoResult.Errors.Err[0]?.Msg || "Error desconocido";
+          console.error(`❌ AFIP Error en GetUltimoCbte (Tipo: ${tipoCbte}):`, errMsg);
+          throw new Error(errMsg);
+      }
+
+      return res.FECompUltimoAutorizadoResult.CbteNro || 0;
+  } catch (err) {
+      console.error(`❌ AFIP Fatal Error (Tipo: ${tipoCbte}):`, err.message);
+      throw new Error(`Error consultando último comprobante (Tipo ${tipoCbte}). Revisa si el Punto de Venta ${ptoVta} está habilitado para este tipo de factura.`);
+  }
 }
 
 // ==================================================================
@@ -182,21 +193,27 @@ async function emitirFactura(total, cliente = {}, esNotaCredito = false, comprob
   const clientSoap = await soap.createClientAsync(WSFE_URL, SOAP_OPTIONS);
 
   // 2. Datos Cliente y Tipo de Factura
-  const docNro = cliente.docNumber || "0";
+  let docNro = cliente.docNumber || "0";
   const condFiscalCliente = cliente.fiscalCondition || 'CONSUMIDOR_FINAL';
   const condIvaId = CONDICION_IVA[condFiscalCliente] || 5; // 5 = Consumidor Final
   
-  let docTipo = 99; 
+  let docTipo = 99; // 99 = Sin Identificar (Consumidor Final Anónimo)
   if (docNro !== "0") {
       docTipo = docNro.length === 11 ? 80 : 96; // 80=CUIT, 96=DNI
+  }
+
+  // 🔥 REGLA AFIP: Si el total supera el límite, exige DNI para Consumidor Final.
+  // Límite actual aproximado: $344.000. Ponemos una validación de seguridad a $100.000 para atajarlo antes de que AFIP rechace.
+  if (total >= 100000 && docTipo === 99) {
+      throw new Error(`Para facturas mayores a $100.000, AFIP exige identificar al cliente con DNI o CUIT.`);
   }
 
   // 🔥 CEREBRO: Determinar A, B o C
   const CBTE_TIPO = determinarComprobante(config.taxCondition, condFiscalCliente, esNotaCredito);
 
-  // 🛡️ Validación de Factura A
+  // 🛡️ Validación estricta Factura A
   if (CBTE_TIPO === CBTE_TIPOS.FACTURA_A || CBTE_TIPO === CBTE_TIPOS.NC_A) {
-      if (docTipo !== 80) throw new Error("Para emitir Factura A, el cliente debe tener CUIT.");
+      if (docTipo !== 80) throw new Error("Para emitir Factura A, el cliente debe tener un CUIT válido.");
   }
 
   // 3. Numeración
@@ -205,26 +222,18 @@ async function emitirFactura(total, cliente = {}, esNotaCredito = false, comprob
   const fecha = new Date(Date.now() - 10800000).toISOString().slice(0,10).replace(/-/g,"");
 
   // 4. 🧮 CÁLCULOS MATEMÁTICOS (IVA & TOTALES)
-  // El "total" que entra ya incluye el surcharge de la tarjeta. Es el Total Cobrado.
-  
-  let impTotal = parseFloat(total.toFixed(2));
+  // AFIP exige que la suma sea EXACTA: ImpNeto + ImpIVA = ImpTotal
+  let impTotal = Number(parseFloat(total).toFixed(2));
   let impNeto = impTotal;
   let impIVA = 0;
   let arrayIva = null;
 
-  // Si es A o B, hay que desglosar el IVA (Asumimos 21% General)
+  // Si es A o B, hay que desglosar el IVA (Calculamos sobre el 21%)
   if (CBTE_TIPO === CBTE_TIPOS.FACTURA_A || CBTE_TIPO === CBTE_TIPOS.FACTURA_B || CBTE_TIPO === CBTE_TIPOS.NC_A || CBTE_TIPO === CBTE_TIPOS.NC_B) {
-      // Ingeniería Inversa: Neto = Total / 1.21
-      impNeto = parseFloat((impTotal / 1.21).toFixed(2));
-      impIVA = parseFloat((impTotal - impNeto).toFixed(2)); // El resto es IVA
+      // Usar Math.round(num * 100) / 100 es más preciso que toFixed en JS
+      impNeto = Math.round((impTotal / 1.21) * 100) / 100;
+      impIVA = Math.round((impTotal - impNeto) * 100) / 100; 
       
-      // Ajuste por redondeo: Forzamos que la suma de exactamente el total
-      // (AFIP valida: Neto + IVA + Trib = Total)
-      // Si hay diferencia de centavos, ajustamos el IVA
-      if ((impNeto + impIVA) !== impTotal) {
-          impIVA = parseFloat((impTotal - impNeto).toFixed(2));
-      }
-
       arrayIva = {
           AlicIva: [
               {
@@ -236,25 +245,28 @@ async function emitirFactura(total, cliente = {}, esNotaCredito = false, comprob
       };
   }
 
-  // Factura C (Monotributo): Neto = Total, IVA = 0. (Ya seteado por default)
-
   console.log(`📠 Emitiendo Tipo ${CBTE_TIPO} #${proximo} | Total: ${impTotal} | Neto: ${impNeto} | IVA: ${impIVA}`);
 
   const FeDetReq = {
-    Concepto: 1, // Productos
-    DocTipo: docTipo, DocNro: docNro,
-    CbteDesde: proximo, CbteHasta: proximo, CbteFch: fecha,
+    Concepto: 1, // 1 = Productos (Bienes)
+    DocTipo: docTipo, 
+    DocNro: docNro,
+    CbteDesde: proximo, 
+    CbteHasta: proximo, 
+    CbteFch: fecha,
     ImpTotal: impTotal,
     ImpTotConc: 0,
     ImpNeto: impNeto,
-    ImpOpEx: 0, ImpTrib: 0, 
+    ImpOpEx: 0, 
+    ImpTrib: 0, 
     ImpIVA: impIVA, 
-    MonId: "PES", MonCotiz: 1,
-    CondicionIVAReceptorId: condIvaId
+    MonId: "PES", 
+    MonCotiz: 1,
+    CondicionIVAReceptorId: condIvaId // Este campo a veces es ignorado por WSFE, pero lo mandamos por seguridad
   };
 
-  // Inyectar Array de IVA si corresponde (A o B)
-  if (arrayIva) {
+  // Inyectar Array de IVA si corresponde (Facturas A y B)
+  if (arrayIva && impIVA > 0) {
       FeDetReq.Iva = arrayIva;
   }
 
@@ -262,7 +274,7 @@ async function emitirFactura(total, cliente = {}, esNotaCredito = false, comprob
   if (esNotaCredito && comprobanteAsociado) {
     FeDetReq.CbtesAsoc = { 
         CbteAsoc: { 
-            Tipo: comprobanteAsociado.tipo, // Usamos el tipo original
+            Tipo: comprobanteAsociado.tipo, // Ej: 1 para Fac A, 6 para Fac B
             PtoVta: comprobanteAsociado.ptoVta, 
             Nro: comprobanteAsociado.nro 
         }
@@ -271,10 +283,17 @@ async function emitirFactura(total, cliente = {}, esNotaCredito = false, comprob
 
   // 5. Solicitar CAE
   try {
-      const [res] = await clientSoap.FECAESolicitarAsync({
+      const requestPayload = {
         Auth: { Token: auth.token, Sign: auth.sign, Cuit: config.cuit },
-        FeCAEReq: { FeCabReq: { CantReg: 1, PtoVta: config.ptoVta, CbteTipo: CBTE_TIPO }, FeDetReq: { FECAEDetRequest: FeDetReq } }
-      });
+        FeCAEReq: { 
+            FeCabReq: { CantReg: 1, PtoVta: config.ptoVta, CbteTipo: CBTE_TIPO }, 
+            FeDetReq: { FECAEDetRequest: FeDetReq } 
+        }
+      };
+
+      // console.log("📦 Payload enviado a AFIP:", JSON.stringify(requestPayload, null, 2));
+
+      const [res] = await clientSoap.FECAESolicitarAsync(requestPayload);
 
       const resultado = res.FECAESolicitarResult;
       
@@ -286,6 +305,12 @@ async function emitirFactura(total, cliente = {}, esNotaCredito = false, comprob
 
       const detalle = resultado.FeDetResp.FECAEDetResponse[0] || resultado.FeDetResp.FECAEDetResponse;
       
+      if (detalle.Resultado !== "A") {
+          const obs = detalle.Observaciones?.Obs;
+          const msgObs = Array.isArray(obs) ? obs[0].Msg : (obs?.Msg || "Error en el detalle");
+          throw new Error(`AFIP Rechazó (Detalle): ${msgObs}`);
+      }
+
       // QR Data (Formato JSON Base64)
       const qrJson = JSON.stringify({
           ver: 1, fecha: fecha, cuit: parseInt(config.cuit), ptoVta: config.ptoVta, tipoCmp: CBTE_TIPO, nroCmp: proximo,
@@ -300,13 +325,13 @@ async function emitirFactura(total, cliente = {}, esNotaCredito = false, comprob
         numero: proximo, 
         ptoVta: config.ptoVta, 
         tipo: CBTE_TIPO,
-        letra: CBTE_TIPO === 1 ? 'A' : CBTE_TIPO === 6 ? 'B' : 'C', // Helper visual
+        letra: CBTE_TIPO === 1 || CBTE_TIPO === 3 ? 'A' : (CBTE_TIPO === 6 || CBTE_TIPO === 8 ? 'B' : 'C'), // Helper visual
         qr_data: `https://www.afip.gob.ar/fe/qr/?p=${Buffer.from(qrJson).toString('base64')}`
       };
 
   } catch (error) {
-      console.error("❌ Error AFIP:", error);
-      throw new Error(error.message || "Error de comunicación con AFIP");
+      console.error("❌ Error solicitando CAE:", error);
+      throw new Error(error.message || "Error al intentar autorizar el comprobante en AFIP.");
   }
 }
 

@@ -504,27 +504,34 @@ app.post("/check-payment-status", async (req, res) => {
     res.status(500).json({ error: "Error de verificación en el servidor" });
   }
 });
+
 // ==================================================================
-// 📠 ENDPOINT: FACTURACIÓN AFIP (Multitenant & Multisucursal)
+// 📠 ENDPOINT: FACTURACIÓN AFIP (FACTURA A/B/C)
 // ==================================================================
 app.post('/create-invoice', async (req, res) => {
   try {
-    // 1. EXTRAER DATOS DEL REQUEST
-    const { total, client, companyId, branchId } = req.body;
+    // 🛡️ EXTRACCIÓN BLINDADA Y DIRECTA (Evita colisiones con objetos anidados)
+    const companyId = req.body.companyId || req.body.data?.companyId || req.body.operation?.companyId;
+    const branchId = req.body.branchId || req.body.data?.branchId || req.body.operation?.branchId;
+    const total = req.body.total || req.body.data?.total || req.body.operation?.total;
+    const client = req.body.client || req.body.data?.client || req.body.operation?.client;
 
-    logger.info(`📠 AFIP: Solicitud Factura por $${total} | Sucursal: ${branchId}`);
+    logger.info(`📠 AFIP: Solicitud Factura por $${total} | Empresa: ${companyId} | Sucursal: ${branchId}`);
 
-    // 🛡️ VALIDACIÓN DE SEGURIDAD BÁSICA
+    // VALIDACIÓN DE SEGURIDAD BÁSICA
     if (!companyId || !branchId) {
-      throw new Error("Faltan identificadores de Empresa o Sucursal.");
+      throw new Error(`Faltan identificadores. Empresa: ${companyId || 'N/A'}, Sucursal: ${branchId || 'N/A'}`);
     }
 
-    // 🛡️ SANITIZACIÓN DEL CLIENTE (Fix para el error docNumber of null)
-    // Si client es null o undefined, usamos un objeto vacío para que afip.js 
-    // aplique sus valores por defecto (Consumidor Final).
-    const sanitizedClient = client || {};
+    // FIX CLAVE: Blindaje de Cliente "Consumidor Final"
+    const sanitizedClient = client && client.fiscalCondition ? client : {
+        name: "Consumidor Final",
+        docType: "99", // 99 = Sin Identificar
+        docNumber: "0",
+        fiscalCondition: "CONSUMIDOR_FINAL"
+    };
 
-    // 2. BUSCAR CONFIGURACIÓN EN FIRESTORE
+    // BUSCAR CONFIGURACIÓN EN FIRESTORE
     const configPath = `companies/${companyId}/branches/${branchId}/integrations/afip`;
     const configSnap = await db.doc(configPath).get();
 
@@ -534,56 +541,57 @@ app.post('/create-invoice', async (req, res) => {
 
     const afipData = configSnap.data();
 
-    // Validar estado de la configuración
-    if (!afipData.isActive) {
-      throw new Error("La facturación AFIP está desactivada para esta sucursal.");
-    }
-    if (!afipData.cert || !afipData.key || !afipData.cuit) {
-      throw new Error("Credenciales de AFIP incompletas en la base de datos (Cert/Key/Cuit).");
-    }
+    if (!afipData.isActive) throw new Error("La facturación AFIP está desactivada para esta sucursal.");
+    if (!afipData.cert || !afipData.key || !afipData.cuit) throw new Error("Credenciales de AFIP incompletas.");
 
-    // 3. DELEGAR AL MÓDULO ESPECIALIZADO
-    // Pasamos 'afipData' como el objeto de configuración (rawConfig en tu afip.js)
+    // DELEGAR AL MÓDULO ESPECIALIZADO
     const result = await afipModule.emitirFactura(
-        total,             // Monto final
-        sanitizedClient,   // ✅ Cliente sanitizado (nunca null)
-        false,             // esNotaCredito
-        null,              // comprobanteAsociado
-        afipData           // Config con CUIT, Cert y Key
+        total,             
+        sanitizedClient,   
+        false,             
+        null,              
+        afipData           
     );
 
-    // 4. RESPONDER AL FRONTEND
     logger.info(`✅ Factura ${result.letra} ${result.numero} autorizada exitosamente.`);
-    
     res.json(result);
 
   } catch (error) {
-    // Registramos el error completo con el stack trace para debug
     logger.error("❌ Error en Proceso Facturación:", error);
-
-    // Respondemos un error 500 con un mensaje claro
     res.status(500).json({ 
         error: "Error al procesar el comprobante electrónico", 
         details: error.message 
     });
   }
 });
+
 // ==================================================================
 // 🔄 ENDPOINT 6: NOTA DE CRÉDITO (SAAS)
 // ==================================================================
 app.post("/create-credit-note", async (req, res) => {
   try {
-    const { total, client, associatedDocument, companyId } = req.body;
+    // 🛡️ EXTRACCIÓN BLINDADA Y DIRECTA
+    const companyId = req.body.companyId || req.body.data?.companyId || req.body.operation?.companyId;
+    const branchId = req.body.branchId || req.body.data?.branchId || req.body.operation?.branchId;
+    const total = req.body.total || req.body.data?.total || req.body.operation?.total;
+    const client = req.body.client || req.body.data?.client || req.body.operation?.client;
+    const associatedDocument = req.body.associatedDocument || req.body.data?.associatedDocument || req.body.operation?.associatedDocument;
+    
     const amount = Number(Number(total).toFixed(2));
-    const datosCliente = client || { docNumber: "0", fiscalCondition: "CONSUMIDOR_FINAL" };
+    const datosCliente = client && client.fiscalCondition ? client : { docNumber: "0", fiscalCondition: "CONSUMIDOR_FINAL" };
+
+    logger.info(`🔄 AFIP: Solicitud NC por $${amount} | Empresa: ${companyId} | Sucursal: ${branchId}`);
+
+    if (!companyId || !branchId) {
+        throw new Error(`Faltan identificadores para NC. Empresa: ${companyId || 'N/A'}, Sucursal: ${branchId || 'N/A'}`);
+    }
 
     if (!associatedDocument) return res.status(400).json({ error: "Falta documento asociado" });
 
+    // Llama a la función global con el branchId ya asegurado
     const afipConfig = await getCompanyConfig(companyId, 'afip', branchId);
 
-    logger.info(`🔄 AFIP (${companyId}): Solicitud NC por $${amount}`);
-
-    const notaCredito = await afip.emitirFactura(amount, datosCliente, true, associatedDocument, afipConfig);
+    const notaCredito = await afipModule.emitirFactura(amount, datosCliente, true, associatedDocument, afipConfig);
 
     logger.info(`✅ NC Autorizada: CAE ${notaCredito.cae}`);
     res.status(200).json(notaCredito);
@@ -598,12 +606,8 @@ app.post("/create-credit-note", async (req, res) => {
 });
 
 // ==================================================================
-// 🔍 ENDPOINT AUXILIAR: LISTAR CAJAS MP (TOKEN DIRECTO)
-// ==================================================================
-// ==================================================================
 // 🔍 ENDPOINT AUXILIAR: LISTAR CAJAS Y "AUTO-REPARAR" LAS VIEJAS
 // ==================================================================
-//v1
 app.post("/get-mp-stores", async (req, res) => {
   try {
     const { accessToken } = req.body; 
@@ -625,8 +629,6 @@ app.post("/get-mp-stores", async (req, res) => {
     let results = posRes.data.results || [];
     
     // 🔥 AUTO-REPARACIÓN DE CAJAS VIEJAS
-    // Si una caja no tiene 'external_id', le asignamos uno basado en su ID numérico
-    // para que la API de QR pueda usarla sin dar error 404.
     const repairedCajas = await Promise.all(results.map(async (c) => {
         
         let finalExternalId = c.external_id;
@@ -647,10 +649,9 @@ app.post("/get-mp-stores", async (req, res) => {
                     { headers: { "Authorization": `Bearer ${accessToken}` } }
                 );
                 
-                finalExternalId = newExternalId; // Actualizamos para devolver al front
+                finalExternalId = newExternalId; 
             } catch (err) {
                 console.error(`⚠️ No se pudo reparar caja ${c.id}:`, err.message);
-                // Si falla la reparación, devolvemos la original (el front usará el ID numérico como fallback)
             }
         }
 
@@ -871,7 +872,7 @@ app.post("/delete-user", async (req, res) => {
         return res.status(403).json({ error: "No tienes permisos para eliminar usuarios." });
     }
 
-    // 3. Verificar que el usuario a borrar pertenezca a la misma empresa (Aislamiento Multi-Tenant)
+    // 3. Verificar que el usuario a borrar pertenezca a la misma empresa
     const targetUser = await db.collection('users').doc(uid).get();
     if (targetUser.exists && targetUser.data().companyId !== requestor.data().companyId) {
         return res.status(403).json({ error: "No puedes borrar usuarios de otra empresa." });
@@ -904,19 +905,14 @@ app.post("/webhook/mercadopago", async (req, res) => {
     try {
         if (topic === 'payment' && id) {
             logger.info(`🔔 Webhook MP: Pago recibido ID ${id}`);
-            
-            // Nota de Arquitecto:
-            // Por ahora solo logueamos para no romper nada. 
-            // En el futuro, aquí podemos buscar la venta por 'external_reference' 
-            // y aprobarla automáticamente si el frontend se cerró.
         }
-        // MP requiere responder 200 OK rápido o reenvía la notificación
         res.status(200).send("OK");
     } catch (error) {
         logger.error("Webhook Error:", error);
         res.status(500).send("Error");
     }
 });
+
 // Exportamos la función HTTP
-console.log("Versión con Auto-Fix Forzado v3.0");
+console.log("Versión con Auto-Fix Forzado v3.1");
 exports.api = onRequest({ cors: true }, app);

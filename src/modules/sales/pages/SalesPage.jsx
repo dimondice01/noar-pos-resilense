@@ -26,10 +26,10 @@ const toInputDate = (date) => {
 };
 
 // =================================================================
-// 🛍️ MODAL DE DEVOLUCIÓN PARCIAL (CON FEEDBACK DE CARGA)
+// 🛍️ MODAL DE DEVOLUCIÓN PARCIAL
 // =================================================================
 const RefundModal = ({ isOpen, onClose, sale, onConfirm, isProcessing }) => {
-    const [returnMap, setReturnMap] = useState({}); // { itemId: qtyToReturn }
+    const [returnMap, setReturnMap] = useState({}); 
     const [refundTotal, setRefundTotal] = useState(0);
 
     useEffect(() => {
@@ -40,14 +40,13 @@ const RefundModal = ({ isOpen, onClose, sale, onConfirm, isProcessing }) => {
     }, [isOpen, sale]);
 
     const handleQtyChange = (item, change) => {
-        if (isProcessing) return; // Bloquear cambios durante proceso
+        if (isProcessing) return; 
         const currentReturn = returnMap[item.id] || 0;
         const newReturn = Math.max(0, Math.min(item.quantity, currentReturn + change));
         
         const newMap = { ...returnMap, [item.id]: newReturn };
         setReturnMap(newMap);
 
-        // Recalcular total a devolver
         let total = 0;
         sale.items.forEach(i => {
             const qty = newMap[i.id] || 0;
@@ -129,12 +128,10 @@ export const SalesPage = () => {
   const { user, activeBranchId, activeBranchName } = useAuthStore(); 
   const isAdmin = user?.role === 'ADMIN' || user?.role === 'OWNER'; 
 
-  // Estado de Datos
   const [operations, setOperations] = useState([]); 
   const [cashiersList, setCashiersList] = useState([]); 
   const [loading, setLoading] = useState(true);
   
-  // Estado de Filtros
   const [filterPeriod, setFilterPeriod] = useState('today'); 
   const [customStart, setCustomStart] = useState(toInputDate(new Date()));
   const [customEnd, setCustomEnd] = useState(toInputDate(new Date()));
@@ -143,17 +140,14 @@ export const SalesPage = () => {
   const [filterPaymentMethod, setFilterPaymentMethod] = useState('ALL'); 
   const [searchTerm, setSearchTerm] = useState('');
 
-  // Estado de Paginación
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 20; 
 
-  // Estados UI
   const [loadingMap, setLoadingMap] = useState({}); 
   const [selectedOpForTicket, setSelectedOpForTicket] = useState(null); 
   const [refundData, setRefundData] = useState(null); 
-  const [isProcessingRefund, setIsProcessingRefund] = useState(false); // 🔥 ESTADO DE CARGA DEVOLUCIÓN
+  const [isProcessingRefund, setIsProcessingRefund] = useState(false);
 
-  // 1. CARGAR LISTA DE CAJEROS
   useEffect(() => {
       if (user?.companyId && activeBranchId) {
           const fetchCashiers = async () => {
@@ -175,7 +169,6 @@ export const SalesPage = () => {
       }
   }, [user?.companyId, activeBranchId]); 
 
-  // 2. CARGAR OPERACIONES
   const fetchOperations = async () => {
       setLoading(true);
       try {
@@ -219,7 +212,6 @@ export const SalesPage = () => {
 
   useEffect(() => { fetchOperations(); }, [filterPeriod, customStart, customEnd]);
 
-  // 🔥 HELPER: RESOLUCIÓN INTELIGENTE DE NOMBRE CAJERO
   const resolveCashierName = (op) => {
       const idToCheck = op.userId || op.createdBy;
       const matchedUser = cashiersList.find(u => u.uid === idToCheck || u.email === idToCheck);
@@ -245,7 +237,6 @@ export const SalesPage = () => {
       return `ID:${(op.localId || op.id || '????').slice(-6)}`;
   };
 
-  // 3. FILTRADO
   const visibleOperations = useMemo(() => {
       return operations.filter(op => {
           if (activeBranchId && op.branchId !== activeBranchId) return false;
@@ -286,7 +277,6 @@ export const SalesPage = () => {
       });
   }, [operations, filterType, filterCashier, filterPaymentMethod, searchTerm, cashiersList, activeBranchId]);
 
-  // 4. LÓGICA DE PAGINACIÓN
   const totalPages = Math.ceil(visibleOperations.length / itemsPerPage);
   const paginatedOperations = useMemo(() => {
       const startIndex = (currentPage - 1) * itemsPerPage;
@@ -301,11 +291,30 @@ export const SalesPage = () => {
     if (op.type === 'RECEIPT') return;
     setLoadingMap(prev => ({ ...prev, [op.localId]: true }));
     try {
-      const factura = await billingService.emitirFactura(op);
+      // 🛡️ INYECCIÓN AGRESIVA: Desempaquetamos primero y sobreescribimos después
+      const currentBranch = activeBranchId || op.branchId;
+      
+      const safeClient = (op.client && op.client.fiscalCondition) ? op.client : { 
+          name: op.client?.name || 'Consumidor Final', 
+          docType: op.client?.docType || '99', 
+          docNumber: op.client?.docNumber || '0', 
+          fiscalCondition: 'CONSUMIDOR_FINAL' 
+      };
+
+      const salePayload = {
+          ...op,
+          companyId: user?.companyId,
+          branchId: currentBranch, 
+          total: op.total,
+          client: safeClient
+      };
+
+      const factura = await billingService.emitirFactura(salePayload);
       await updateOperationStatus(op, factura, 'APPROVED');
+      toast.success("Factura emitida correctamente en AFIP");
     } catch (error) {
-      console.error(error);
-      alert(`❌ Error AFIP: ${error.message}`);
+      console.error("Error al facturar:", error);
+      toast.error(`Error AFIP: ${error.message}`);
     } finally {
       setLoadingMap(prev => ({ ...prev, [op.localId]: false }));
     }
@@ -318,12 +327,37 @@ export const SalesPage = () => {
     setLoadingMap(prev => ({ ...prev, [op.localId]: true }));
     try {
       let notaCreditoData = null;
+      
       if (op.afip?.status === 'APPROVED') {
-          notaCreditoData = await billingService.emitirNotaCredito(op);
+          const currentBranch = activeBranchId || op.branchId;
+
+          const safeClient = (op.client && op.client.fiscalCondition) ? op.client : { 
+              name: op.client?.name || 'Consumidor Final', 
+              docType: op.client?.docType || '99', 
+              docNumber: op.client?.docNumber || '0', 
+              fiscalCondition: 'CONSUMIDOR_FINAL' 
+          };
+
+          const docTipo = op.afip?.cbteTipo || (op.afip?.cbteLetra === 'A' ? 1 : op.afip?.cbteLetra === 'B' ? 6 : 11);
+
+          // 🛡️ INYECCIÓN DE NC: Forzamos IDs y Construimos el Documento Asociado
+          const ncPayload = {
+              ...op,
+              companyId: user?.companyId,
+              branchId: currentBranch,
+              total: op.total,
+              client: safeClient,
+              associatedDocument: {
+                  tipo: docTipo,
+                  ptoVta: op.afip?.ptoVta || 1,
+                  nro: op.afip?.cbteNumero
+              }
+          };
+          
+          notaCreditoData = await billingService.emitirNotaCredito(ncPayload);
           toast.success("Nota de Crédito generada en AFIP");
       }
       
-      // Devolver stock total
       if (op.items && Array.isArray(op.items)) {
           for (const item of op.items) {
               await productRepository.addStock(item.id, item.quantity, `Anulación Venta #${getDisplayNumber(op)}`, user?.name, op.branchId);
@@ -331,16 +365,15 @@ export const SalesPage = () => {
       }
 
       await updateOperationStatus(op, notaCreditoData, 'VOIDED'); 
-      alert("✅ Operación Anulada con Éxito");
+      toast.success("Operación Anulada con Éxito");
     } catch (error) {
-      console.error(error);
-      alert(`❌ Error al Anular: ${error.message}`);
+      console.error("Error al anular:", error);
+      toast.error(`Error al Anular: ${error.message}`);
     } finally {
       setLoadingMap(prev => ({ ...prev, [op.localId]: false }));
     }
   };
 
-  // 🔥 PROCESAR DEVOLUCIÓN PARCIAL (CON FEEDBACK VISUAL)
   const handleProcessRefund = async (originalSale, returnMap, refundAmount) => {
       setIsProcessingRefund(true);
       const toastId = toast.loading("Procesando devolución...");
@@ -348,18 +381,15 @@ export const SalesPage = () => {
           const { getDB } = await import('../../../database/db'); 
           const db = await getDB();
 
-          // 1. Devolver Stock
           const itemsToReturn = originalSale.items.filter(i => returnMap[i.id] > 0);
           for (const item of itemsToReturn) {
               const qtyToReturn = returnMap[item.id];
               await productRepository.addStock(item.id, qtyToReturn, `Devolución Parc. Venta #${getDisplayNumber(originalSale)}`, user?.name, originalSale.branchId);
           }
 
-          // 2. Calcular nuevos totales
           const newTotal = originalSale.total - refundAmount;
           const newSubtotal = originalSale.subtotal - refundAmount; 
           
-          // 3. Actualizar items en la venta
           const updatedItems = originalSale.items.map(item => {
               const returnedQty = returnMap[item.id] || 0;
               if (returnedQty > 0) {
@@ -373,7 +403,6 @@ export const SalesPage = () => {
               return item;
           }).filter(i => i.quantity > 0); 
 
-          // 4. Actualizar registro en DB
           const updatedSale = {
               ...originalSale,
               items: updatedItems,
@@ -390,10 +419,9 @@ export const SalesPage = () => {
 
           await db.sales.put(updatedSale);
           
-          // Actualizar estado local
           setOperations(prev => prev.map(o => o.localId === originalSale.localId ? updatedSale : o));
           toast.success(`Devolución de $${refundAmount} procesada`, { id: toastId });
-          setRefundData(null); // Cerrar solo si éxito
+          setRefundData(null); 
 
       } catch (error) {
           console.error(error);
@@ -420,9 +448,11 @@ export const SalesPage = () => {
         status: status || 'PENDING',
         cae: afipData?.cae || null,
         cbteNumero: afipData?.numero || null,
-        cbteLetra: afipData?.tipo || null, 
+        cbteLetra: afipData?.letra || null, 
+        cbteTipo: afipData?.tipo || null,
         qr: afipData?.qr_data || null,
-        vtoCAE: afipData?.vto || null
+        vtoCAE: afipData?.vencimiento || afipData?.vto || null,
+        ptoVta: afipData?.ptoVta || null
       },
       syncStatus: 'pending' 
     };

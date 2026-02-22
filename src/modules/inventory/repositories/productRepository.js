@@ -251,9 +251,10 @@ export const productRepository = {
     // ==========================================
     async save(product) {
         const dbLocal = await getDB();
-        const { user } = useAuthStore.getState();
+        const { user, activeBranchId } = useAuthStore.getState();
         if (!user?.companyId) throw new Error("Sesión no válida.");
 
+        const isNewProduct = !product.id;
         const productId = product.id || crypto.randomUUID();
         const timestamp = new Date().toISOString();
         
@@ -295,9 +296,8 @@ export const productRepository = {
             nextCost: product.nextCost !== undefined ? product.nextCost : (existingProduct.nextCost || null),
             priceActivationDate: product.priceActivationDate !== undefined ? product.priceActivationDate : (existingProduct.priceActivationDate || null),
 
-            // ⚠️ PROMOS YA NO SE GUARDAN AQUÍ (Solo en inventory)
-            
-            stock: 0, // El stock vive en 'inventory', aquí es referencial/legacy
+            // 🔥 FIX CRÍTICO: Permitimos que el stock pase si viene explícito
+            stock: product.stock !== undefined ? Number(product.stock) : (existingProduct.stock || 0),
 
             updatedAt: timestamp,
             deleted: false,
@@ -306,6 +306,22 @@ export const productRepository = {
 
         // 💾 Persistencia Local Inmediata
         await dbLocal.products.put(masterProduct);
+
+        // 🔥 FIX CRÍTICO 2: Inyectar Stock Inicial en Inventory
+        // Si es un producto NUEVO y tiene stock, disparamos el addStock a la sucursal actual
+        if (isNewProduct && masterProduct.stock > 0 && activeBranchId && activeBranchId !== 'ALL') {
+            try {
+                await this.addStock(
+                    productId, 
+                    masterProduct.stock, 
+                    'Stock Inicial', 
+                    user.name, 
+                    activeBranchId
+                );
+            } catch (err) {
+                console.error("Fallo al inyectar stock inicial:", err);
+            }
+        }
 
         // ☁️ Persistencia Cloud (Maestro Global)
         if (navigator.onLine) {
