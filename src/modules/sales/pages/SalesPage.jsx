@@ -4,7 +4,7 @@ import {
     ArrowDownLeft, ShoppingBag, XCircle, RotateCcw, Calendar, User,
     ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, 
     TrendingUp, Tag, Percent, DollarSign, Store, CreditCard, Banknote,
-    PackageMinus, Save, X, Loader2
+    PackageMinus, Save, X, Loader2, PlusCircle
 } from 'lucide-react';
 import { billingService } from '../../billing/services/billingService';
 import { Card } from '../../../core/ui/Card';
@@ -132,6 +132,11 @@ export const SalesPage = () => {
   const [cashiersList, setCashiersList] = useState([]); 
   const [loading, setLoading] = useState(true);
   
+  // 🔥 ESTADOS PARA PAGINACIÓN POR TANDAS (PAGINATION STRATEGY)
+  const [displayLimit, setDisplayLimit] = useState(50);
+  const [hasMore, setHasMore] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  
   const [filterPeriod, setFilterPeriod] = useState('today'); 
   const [customStart, setCustomStart] = useState(toInputDate(new Date()));
   const [customEnd, setCustomEnd] = useState(toInputDate(new Date()));
@@ -148,18 +153,21 @@ export const SalesPage = () => {
   const [refundData, setRefundData] = useState(null); 
   const [isProcessingRefund, setIsProcessingRefund] = useState(false);
 
+  // 1. CARGAR LISTA DE CAJEROS (FILTRADO ESTRICTO POR SUCURSAL)
   useEffect(() => {
       if (user?.companyId && activeBranchId) {
           const fetchCashiers = async () => {
               try {
-                  let q = query(
+                  const q = query(
                       collection(firestoreDB, 'users'), 
                       where('companyId', '==', user.companyId)
                   );
                   const snapshot = await getDocs(q);
                   const users = snapshot.docs.map(doc => ({ uid: doc.id, ...doc.data() }));
+                  
+                  // 🔥 BRANCH ISOLATION: Filtrar estrictamente por sucursal activa
                   const branchUsers = users.filter(u => {
-                      if (u.role === 'OWNER' || u.role === 'ADMIN') return true;
+                      if (u.role === 'OWNER') return true; 
                       return String(u.branchId) === String(activeBranchId);
                   });
                   setCashiersList(branchUsers);
@@ -169,8 +177,11 @@ export const SalesPage = () => {
       }
   }, [user?.companyId, activeBranchId]); 
 
-  const fetchOperations = async () => {
-      setLoading(true);
+  // 2. CARGAR OPERACIONES (OPTIMIZADO POR TANDAS)
+  const fetchOperations = async (append = false) => {
+      if (append) setLoadingMore(true);
+      else setLoading(true);
+
       try {
           let start = new Date();
           let end = new Date();
@@ -185,7 +196,7 @@ export const SalesPage = () => {
               end.setHours(23, 59, 59, 999);
           } else if (filterPeriod === 'week') {
               const day = start.getDay() || 7; 
-              if (day !== 1) start.setHours(-24 * (day - 1)); 
+              if (day !== 1) start.setDate(start.getDate() - (day - 1));
               start.setHours(0, 0, 0, 0);
           } else if (filterPeriod === 'month') {
               start.setDate(1);
@@ -195,34 +206,51 @@ export const SalesPage = () => {
               end = new Date(customEnd + 'T23:59:59');
           }
 
-          let rawData = [];
-          if (salesRepository.getOperationsByDateRange) {
-               rawData = await salesRepository.getOperationsByDateRange(start, end);
-          } else {
-               rawData = await salesRepository.getTodaySales();
+          const { getDB } = await import('../../../database/db');
+          const dbLocal = await getDB();
+
+          // 🔥 QUERY OPTIMIZADA CON LÍMITE
+          let rawData = await dbLocal.sales
+              .where('date')
+              .between(start.toISOString(), end.toISOString(), true, true)
+              .reverse() // Las más nuevas primero
+              .limit(displayLimit) // Aplica el límite actual
+              .toArray();
+
+          // Filtro por sucursal a nivel de DB local
+          if (activeBranchId && activeBranchId !== 'ALL') {
+              rawData = rawData.filter(op => String(op.branchId) === String(activeBranchId));
           }
+
           setOperations(rawData || []);
-          setCurrentPage(1); 
+          
+          if (!append) setCurrentPage(1); 
+          
+          // Si trajo la misma cantidad que el límite, probablemente hay más.
+          setHasMore(rawData.length >= displayLimit); 
+
       } catch (error) {
           console.error("Error cargando historial:", error);
+          toast.error("Error al cargar las ventas.");
       } finally {
           setLoading(false);
+          setLoadingMore(false);
       }
   };
 
-  useEffect(() => { fetchOperations(); }, [filterPeriod, customStart, customEnd]);
+  // Escuchar cambios en los filtros o en el límite para recargar
+  useEffect(() => { 
+      fetchOperations(displayLimit > 50); 
+  }, [filterPeriod, customStart, customEnd, activeBranchId, displayLimit]);
 
   const resolveCashierName = (op) => {
-      const idToCheck = op.userId || op.createdBy;
-      const matchedUser = cashiersList.find(u => u.uid === idToCheck || u.email === idToCheck);
+      const idToCheck = op.userId || op.createdBy || op.operatorId;
+      const matchedUser = cashiersList.find(u => u.uid === idToCheck || u.email === idToCheck || u.uid === op.userId);
       if (matchedUser) return matchedUser.name || matchedUser.email.split('@')[0];
-      if (op.sellerName && op.sellerName !== 'Cajero') return op.sellerName;
       if (op.operatorName) return op.operatorName;
-      if (op.userName && op.userName !== 'Vendedor') return op.userName;
-      if (typeof idToCheck === 'string' && idToCheck.includes('@')) {
-          return idToCheck.split('@')[0];
-      }
-      return "Desconocido";
+      if (op.sellerName) return op.sellerName;
+      if (op.userName) return op.userName;
+      return "Cajero";
   };
 
   const getDisplayNumber = (op) => {
@@ -237,33 +265,47 @@ export const SalesPage = () => {
       return `ID:${(op.localId || op.id || '????').slice(-6)}`;
   };
 
+  // 3. FILTRADO LOCAL DE RESULTADOS YA CARGADOS EN MEMORIA
   const visibleOperations = useMemo(() => {
       return operations.filter(op => {
-          if (activeBranchId && op.branchId !== activeBranchId) return false;
+          // Filtro de Sucursal (por seguridad, aunque ya se filtró en DB)
+          if (activeBranchId && String(op.branchId) !== String(activeBranchId)) return false;
+          
+          // Filtro de Tipo
           if (filterType === 'SALE' && op.type === 'RECEIPT') return false;
           if (filterType === 'RECEIPT' && op.type !== 'RECEIPT') return false;
 
+          // Filtro de Cajero
           if (filterCashier !== 'ALL') {
               const selectedUser = cashiersList.find(u => u.email === filterCashier);
               if (!selectedUser) return false;
-              if (op.userId === selectedUser.uid) return true;
-              if (op.createdBy === selectedUser.email) return true;
-              const opName = (op.sellerName || op.userName || '').toLowerCase();
-              const selName = (selectedUser.name || '').toLowerCase();
-              if (opName && selName && opName === selName) return true;
-              return false;
+              const opUserId = op.userId || op.operatorId || op.createdBy;
+              if (opUserId !== selectedUser.uid && op.createdBy !== selectedUser.email) return false;
           }
 
+          // 🔥 PAYMENT LOGIC CLEANUP: Mapeo correcto de todos los métodos posibles
           if (filterPaymentMethod !== 'ALL') {
               const methodRaw = op.payment?.method || op.paymentMethod || 'cash';
               const method = String(methodRaw).toLowerCase().trim();
-              if (filterPaymentMethod === 'CASH' && method !== 'cash') return false;
-              if (filterPaymentMethod === 'CARD' && !['card', 'credit', 'debit'].includes(method)) return false;
-              if (filterPaymentMethod === 'TRANSFER' && method !== 'transfer') return false;
-              if (filterPaymentMethod === 'MP' && !['mercadopago', 'mp', 'qr'].includes(method)) return false;
-              if (filterPaymentMethod === 'CURRENT_ACCOUNT' && method !== 'current_account') return false;
+              
+              if (filterPaymentMethod === 'CASH') {
+                  if (!['cash', 'efectivo'].includes(method)) return false;
+              }
+              if (filterPaymentMethod === 'CARD') {
+                  if (!['card', 'credit', 'debit', 'tarjeta', 'clover'].includes(method)) return false;
+              }
+              if (filterPaymentMethod === 'TRANSFER') {
+                  if (!['transfer', 'transferencia', 'deposito'].includes(method)) return false;
+              }
+              if (filterPaymentMethod === 'MP') {
+                  if (!['mercadopago', 'mp', 'qr', 'point'].includes(method)) return false;
+              }
+              if (filterPaymentMethod === 'CURRENT_ACCOUNT') {
+                  if (!['current_account', 'cta_cte', 'cuenta_corriente'].includes(method)) return false;
+              }
           }
 
+          // Filtro de Búsqueda de Texto
           if (searchTerm) {
               const search = searchTerm.toLowerCase();
               const clientName = (op.client?.name || '').toLowerCase();
@@ -284,15 +326,19 @@ export const SalesPage = () => {
   }, [visibleOperations, currentPage]);
 
   // =================================================================
-  // 🚀 ACCIONES (FACTURAR, ANULAR, DEVOLVER)
+  // 🚀 ACCIONES (FACTURAR, ANULAR, DEVOLVER) - BLINDADAS
   // =================================================================
 
   const handleFacturar = async (op) => {
     if (op.type === 'RECEIPT') return;
     setLoadingMap(prev => ({ ...prev, [op.localId]: true }));
     try {
-      // 🛡️ INYECCIÓN AGRESIVA: Desempaquetamos primero y sobreescribimos después
-      const currentBranch = activeBranchId || op.branchId;
+      const forcedCompanyId = user?.companyId || user?.tenantId;
+      const forcedBranchId = op.branchId || activeBranchId;
+
+      if (!forcedCompanyId || !forcedBranchId) {
+          throw new Error("No se pudo determinar la empresa o sucursal para facturar.");
+      }
       
       const safeClient = (op.client && op.client.fiscalCondition) ? op.client : { 
           name: op.client?.name || 'Consumidor Final', 
@@ -303,15 +349,16 @@ export const SalesPage = () => {
 
       const salePayload = {
           ...op,
-          companyId: user?.companyId,
-          branchId: currentBranch, 
+          companyId: forcedCompanyId,
+          branchId: forcedBranchId, 
           total: op.total,
           client: safeClient
       };
 
       const factura = await billingService.emitirFactura(salePayload);
       await updateOperationStatus(op, factura, 'APPROVED');
-      toast.success("Factura emitida correctamente en AFIP");
+      toast.success("Factura autorizada por AFIP");
+      fetchOperations();
     } catch (error) {
       console.error("Error al facturar:", error);
       toast.error(`Error AFIP: ${error.message}`);
@@ -322,14 +369,19 @@ export const SalesPage = () => {
 
   const handleAnular = async (op) => {
     if (!isAdmin) return;
-    if (!window.confirm("⚠️ ¿Estás seguro de ANULAR esta venta?\nSe repondrá el stock automáticamente.")) return;
+    if (!window.confirm("⚠️ ¿Desea anular esta operación?\nEl stock se repondrá automáticamente.")) return;
     
     setLoadingMap(prev => ({ ...prev, [op.localId]: true }));
     try {
       let notaCreditoData = null;
       
       if (op.afip?.status === 'APPROVED') {
-          const currentBranch = activeBranchId || op.branchId;
+          const forcedCompanyId = user?.companyId || user?.tenantId;
+          const forcedBranchId = op.branchId || activeBranchId;
+
+          if (!forcedCompanyId || !forcedBranchId) {
+              throw new Error("No se pudo determinar la empresa o sucursal para la Nota de Crédito.");
+          }
 
           const safeClient = (op.client && op.client.fiscalCondition) ? op.client : { 
               name: op.client?.name || 'Consumidor Final', 
@@ -340,11 +392,10 @@ export const SalesPage = () => {
 
           const docTipo = op.afip?.cbteTipo || (op.afip?.cbteLetra === 'A' ? 1 : op.afip?.cbteLetra === 'B' ? 6 : 11);
 
-          // 🛡️ INYECCIÓN DE NC: Forzamos IDs y Construimos el Documento Asociado
           const ncPayload = {
               ...op,
-              companyId: user?.companyId,
-              branchId: currentBranch,
+              companyId: forcedCompanyId,
+              branchId: forcedBranchId,
               total: op.total,
               client: safeClient,
               associatedDocument: {
@@ -360,7 +411,7 @@ export const SalesPage = () => {
       
       if (op.items && Array.isArray(op.items)) {
           for (const item of op.items) {
-              await productRepository.addStock(item.id, item.quantity, `Anulación Venta #${getDisplayNumber(op)}`, user?.name, op.branchId);
+              await productRepository.addStock(item.id, item.quantity, `Anulación Venta #${getDisplayNumber(op)}`, user?.name, op.branchId || activeBranchId);
           }
       }
 
@@ -381,10 +432,12 @@ export const SalesPage = () => {
           const { getDB } = await import('../../../database/db'); 
           const db = await getDB();
 
+          const branchToReturn = originalSale.branchId || activeBranchId;
+
           const itemsToReturn = originalSale.items.filter(i => returnMap[i.id] > 0);
           for (const item of itemsToReturn) {
               const qtyToReturn = returnMap[item.id];
-              await productRepository.addStock(item.id, qtyToReturn, `Devolución Parc. Venta #${getDisplayNumber(originalSale)}`, user?.name, originalSale.branchId);
+              await productRepository.addStock(item.id, qtyToReturn, `Devolución Parc. Venta #${getDisplayNumber(originalSale)}`, user?.name, branchToReturn);
           }
 
           const newTotal = originalSale.total - refundAmount;
@@ -445,14 +498,15 @@ export const SalesPage = () => {
       ticketNumber: newNumber, 
       invoiceNumber: newNumber,
       afip: {
+        ...op.afip, 
         status: status || 'PENDING',
-        cae: afipData?.cae || null,
-        cbteNumero: afipData?.numero || null,
-        cbteLetra: afipData?.letra || null, 
-        cbteTipo: afipData?.tipo || null,
-        qr: afipData?.qr_data || null,
-        vtoCAE: afipData?.vencimiento || afipData?.vto || null,
-        ptoVta: afipData?.ptoVta || null
+        cae: afipData?.cae || op.afip?.cae || null,
+        cbteNumero: afipData?.numero || op.afip?.cbteNumero || null,
+        cbteLetra: afipData?.letra || op.afip?.cbteLetra || null, 
+        cbteTipo: afipData?.tipo || op.afip?.cbteTipo || null,
+        qr: afipData?.qr_data || op.afip?.qr || null,
+        vtoCAE: afipData?.vencimiento || afipData?.vto || op.afip?.vtoCAE || null,
+        ptoVta: afipData?.ptoVta || op.afip?.ptoVta || null
       },
       syncStatus: 'pending' 
     };
@@ -489,7 +543,7 @@ export const SalesPage = () => {
             </div>
             
             <div className="flex items-center gap-3">
-                <Button variant="outline" onClick={fetchOperations} className="h-10 w-10 p-0 rounded-xl border-sys-200 text-sys-500 hover:text-brand hover:bg-sys-50" title="Recargar listado">
+                <Button variant="outline" onClick={() => fetchOperations()} className="h-10 w-10 p-0 rounded-xl border-sys-200 text-sys-500 hover:text-brand hover:bg-sys-50">
                     <RefreshCw size={18} className={loading ? "animate-spin" : ""}/>
                 </Button>
                 
@@ -516,11 +570,11 @@ export const SalesPage = () => {
           </div>
 
           {/* BARRA DE HERRAMIENTAS */}
-          <Card className="p-2 flex flex-col xl:flex-row gap-3 items-center bg-sys-50 border-sys-200">
+          <Card className="p-2 flex flex-col xl:flex-row gap-3 items-center bg-sys-50 border-sys-200 shadow-inner">
               
               <div className="flex bg-white rounded-lg border border-sys-200 p-1 shadow-sm w-full xl:w-auto overflow-x-auto no-scrollbar">
                   {[{ id: 'today', label: 'Hoy' }, { id: 'yesterday', label: 'Ayer' }, { id: 'week', label: 'Semana' }, { id: 'month', label: 'Mes' }, { id: 'custom', label: 'Custom', icon: Calendar }].map(p => (
-                      <button key={p.id} onClick={() => setFilterPeriod(p.id)} className={cn("px-3 py-1.5 rounded-md text-xs font-bold transition-all whitespace-nowrap flex items-center gap-1", filterPeriod === p.id ? "bg-sys-900 text-white shadow-md" : "text-sys-500 hover:bg-sys-50 hover:text-sys-900")}>
+                      <button key={p.id} onClick={() => { setDisplayLimit(50); setFilterPeriod(p.id); }} className={cn("px-3 py-1.5 rounded-md text-xs font-bold transition-all whitespace-nowrap flex items-center gap-1", filterPeriod === p.id ? "bg-sys-900 text-white shadow-md" : "text-sys-500 hover:bg-sys-50 hover:text-sys-900")}>
                           {p.icon && <p.icon size={12}/>} {p.label}
                       </button>
                   ))}
@@ -528,9 +582,9 @@ export const SalesPage = () => {
 
               {filterPeriod === 'custom' && (
                   <div className="flex items-center gap-2 bg-white px-2 py-1 rounded-lg border border-sys-200">
-                      <input type="date" value={customStart} onChange={e => setCustomStart(e.target.value)} className="text-xs border-none outline-none font-medium text-sys-700"/>
+                      <input type="date" value={customStart} onChange={e => { setDisplayLimit(50); setCustomStart(e.target.value); }} className="text-xs border-none outline-none font-medium text-sys-700"/>
                       <span className="text-sys-300">-</span>
-                      <input type="date" value={customEnd} onChange={e => setCustomEnd(e.target.value)} className="text-xs border-none outline-none font-medium text-sys-700"/>
+                      <input type="date" value={customEnd} onChange={e => { setDisplayLimit(50); setCustomEnd(e.target.value); }} className="text-xs border-none outline-none font-medium text-sys-700"/>
                   </div>
               )}
 
@@ -584,7 +638,7 @@ export const SalesPage = () => {
       </div>
 
       {/* TABLA DE RESULTADOS PAGINADA */}
-      <Card className="p-0 overflow-hidden shadow-soft border-0 min-h-[400px] flex flex-col">
+      <Card className="p-0 overflow-hidden shadow-soft border-0 flex flex-col min-h-[400px]">
         <div className="overflow-x-auto flex-1">
           <table className="w-full text-left border-collapse">
             <thead>
@@ -599,7 +653,7 @@ export const SalesPage = () => {
               </tr>
             </thead>
             <tbody className="divide-y divide-sys-100 bg-white">
-              {loading ? (
+              {loading && operations.length === 0 ? (
                   <tr><td colSpan="7" className="p-10 text-center"><RefreshCw className="animate-spin mx-auto text-sys-300"/></td></tr>
               ) : paginatedOperations.length === 0 ? (
                 <tr>
@@ -614,8 +668,10 @@ export const SalesPage = () => {
                 paginatedOperations.map((op) => {
                     const isReceipt = op.type === 'RECEIPT';
                     const isFacturado = op.afip?.status === 'APPROVED';
+                    // 🔥 SE CORRIGIERON LAS CONSTANTES PARA EVITAR EL CRASH DEL RENDER
                     const isAnulado = op.afip?.status === 'VOIDED'; 
-                    const isRefunded = op.status === 'REFUNDED';
+                    const isRefunded = op.status === 'REFUNDED' || op.status === 'PARTIAL_REFUND';
+                    
                     const isLoading = loadingMap[op.localId];
                     const paymentMethod = op.payment?.method || op.paymentMethod || 'cash';
                     
@@ -671,20 +727,20 @@ export const SalesPage = () => {
                         </td>
                         <td className="p-4 text-center">
                           <span className={cn("px-2 py-0.5 rounded text-[10px] font-bold uppercase border inline-block min-w-[60px]", 
-                            paymentMethod === 'cash' ? "bg-green-50 text-green-700 border-green-100" :
-                            (paymentMethod === 'mercadopago' || paymentMethod === 'mp' || paymentMethod === 'qr') ? "bg-blue-50 text-blue-700 border-blue-100" :
-                            (paymentMethod === 'clover' || paymentMethod === 'card' || paymentMethod === 'debit' || paymentMethod === 'credit') ? "bg-emerald-50 text-emerald-700 border-emerald-100" :
+                            ['cash', 'efectivo'].includes(paymentMethod) ? "bg-green-50 text-green-700 border-green-100" :
+                            ['mercadopago', 'mp', 'qr', 'point'].includes(paymentMethod) ? "bg-blue-50 text-blue-700 border-blue-100" :
+                            ['clover', 'card', 'debit', 'credit', 'tarjeta'].includes(paymentMethod) ? "bg-emerald-50 text-emerald-700 border-emerald-100" :
                             "bg-purple-50 text-purple-700 border-purple-100")}>
-                            {(paymentMethod === 'mercadopago' || paymentMethod === 'mp') ? 'MP QR' : paymentMethod.toUpperCase()}
+                            {['mercadopago', 'mp'].includes(paymentMethod) ? 'MP QR' : paymentMethod.toUpperCase()}
                           </span>
                         </td>
                         <td className="p-4 text-center">
                           {isReceipt ? (<span className="text-[10px] text-sys-300">-</span>) 
                           : (isAnulado || isRefunded) ? (<span className="text-[10px] font-bold text-red-500 bg-red-50 px-2 py-0.5 rounded border border-red-100">ANULADO</span>) 
                           : isFacturado ? (
-                            <div className="inline-flex items-center gap-1 text-green-600 bg-green-50 px-2 py-0.5 rounded border border-green-100 cursor-help" title={`CAE: ${op.afip.cae}`}>
+                            <div className="inline-flex items-center gap-1 text-green-600 bg-green-50 px-2 py-0.5 rounded border border-green-100 cursor-help" title={`CAE: ${op.afip?.cae}`}>
                               <CheckCircle size={10} />
-                              <span className="text-[10px] font-bold">FC "{op.afip.cbteLetra}"</span>
+                              <span className="text-[10px] font-bold">FC "{op.afip?.cbteLetra}"</span>
                             </div>
                           ) : (<span className="text-[10px] text-sys-400 italic">Pendiente</span>)}
                         </td>
@@ -722,47 +778,31 @@ export const SalesPage = () => {
           </table>
         </div>
 
-        {visibleOperations.length > itemsPerPage && (
-            <div className="p-4 border-t border-sys-100 bg-sys-50/50 flex items-center justify-between">
-                <span className="text-xs text-sys-500 font-medium">
-                    Mostrando {((currentPage - 1) * itemsPerPage) + 1} - {Math.min(currentPage * itemsPerPage, visibleOperations.length)} de {visibleOperations.length}
-                </span>
-                <div className="flex items-center gap-1">
-                    <Button 
-                        variant="ghost" 
-                        disabled={currentPage === 1}
-                        onClick={() => setCurrentPage(1)}
-                        className="h-8 w-8 p-0"
-                    >
-                        <ChevronsLeft size={16}/>
-                    </Button>
-                    <Button 
-                        variant="ghost" 
-                        disabled={currentPage === 1}
-                        onClick={() => setCurrentPage(prev => prev - 1)}
-                        className="h-8 w-8 p-0"
-                    >
-                        <ChevronLeft size={16}/>
-                    </Button>
-                    <span className="text-xs font-bold text-sys-700 px-3">
-                        Página {currentPage} de {totalPages}
+        {/* CONTROLES DE PAGINACIÓN Y CARGA MÁS */}
+        {visibleOperations.length > 0 && (
+            <div className="p-4 border-t border-sys-100 bg-sys-50/50 flex flex-col md:flex-row items-center justify-between gap-4">
+                <div className="flex items-center gap-4">
+                    <span className="text-[10px] font-black text-sys-500 uppercase tracking-widest">
+                        Mostrando {((currentPage - 1) * itemsPerPage) + 1} - {Math.min(currentPage * itemsPerPage, visibleOperations.length)} de {visibleOperations.length} registros cargados
                     </span>
-                    <Button 
-                        variant="ghost" 
-                        disabled={currentPage === totalPages}
-                        onClick={() => setCurrentPage(prev => prev + 1)}
-                        className="h-8 w-8 p-0"
-                    >
-                        <ChevronRight size={16}/>
-                    </Button>
-                    <Button 
-                        variant="ghost" 
-                        disabled={currentPage === totalPages}
-                        onClick={() => setCurrentPage(totalPages)}
-                        className="h-8 w-8 p-0"
-                    >
-                        <ChevronsRight size={16}/>
-                    </Button>
+                    {hasMore && (
+                        <button 
+                            onClick={() => setDisplayLimit(prev => prev + 50)} 
+                            disabled={loadingMore}
+                            className="flex items-center gap-1.5 text-[10px] font-black text-brand hover:text-brand-dark uppercase transition-colors disabled:opacity-50"
+                        >
+                            {loadingMore ? <Loader2 size={14} className="animate-spin"/> : <PlusCircle size={14}/>} 
+                            Cargar más ventas
+                        </button>
+                    )}
+                </div>
+                
+                <div className="flex items-center gap-1">
+                    <Button variant="ghost" disabled={currentPage === 1} onClick={() => setCurrentPage(1)} className="h-8 w-8 p-0"><ChevronsLeft size={16}/></Button>
+                    <Button variant="ghost" disabled={currentPage === 1} onClick={() => setCurrentPage(prev => prev - 1)} className="h-8 w-8 p-0"><ChevronLeft size={16}/></Button>
+                    <span className="text-xs font-bold text-sys-700 px-3">Página {currentPage} de {totalPages || 1}</span>
+                    <Button variant="ghost" disabled={currentPage === totalPages || totalPages === 0} onClick={() => setCurrentPage(prev => prev + 1)} className="h-8 w-8 p-0"><ChevronRight size={16}/></Button>
+                    <Button variant="ghost" disabled={currentPage === totalPages || totalPages === 0} onClick={() => setCurrentPage(totalPages)} className="h-8 w-8 p-0"><ChevronsRight size={16}/></Button>
                 </div>
             </div>
         )}

@@ -248,7 +248,7 @@ const ScaleExportModal = ({ isOpen, onClose, onExport }) => {
 };
 
 // =================================================================
-// 3. BULK UPDATE MODAL
+// 3. BULK UPDATE MODAL (Evolucionado para inputs manuales)
 // =================================================================
 const BulkUpdateModal = ({ isOpen, onClose, onConfirm, allProducts, masters, manualSelectionIds }) => {
     if (!isOpen) return null;
@@ -262,31 +262,85 @@ const BulkUpdateModal = ({ isOpen, onClose, onConfirm, allProducts, masters, man
     const [activationDate, setActivationDate] = useState('');
     const [isScheduled, setIsScheduled] = useState(false);
 
+    // DICCIONARIO DE PRECIOS INDIVIDUALES (DRAFTS)
+    const [draftValues, setDraftValues] = useState({});
+
+    // Carga inicial de la lista
     useEffect(() => {
         let list = [];
         if (activeTab === 'manual') list = allProducts.filter(p => manualSelectionIds.has(p.id));
         else if (activeTab === 'brand' && targetId) list = allProducts.filter(p => p.brand === targetId);
         else if (activeTab === 'category' && targetId) list = allProducts.filter(p => p.category === targetId);
+        
         setTargetList(list);
+
+        // Inicializamos los inputs manuales con los precios actuales
+        setDraftValues(prev => {
+            const next = { ...prev };
+            list.forEach(p => {
+                if (!next[p.id]) {
+                    next[p.id] = { cost: p.cost || 0, price: p.price || 0 };
+                }
+            });
+            return next;
+        });
     }, [activeTab, targetId, manualSelectionIds, allProducts]);
+
+    // Función "Macro" para auto-llenar los inputs cuando escriben un porcentaje
+    const handleCostPctChange = (val) => {
+        const pct = parseFloat(val) || 0;
+        setCostPct(pct);
+        setDraftValues(prev => {
+            const next = { ...prev };
+            targetList.forEach(p => {
+                const c = (p.cost || 0) * (1 + pct / 100);
+                next[p.id] = { ...next[p.id], cost: parseFloat(c.toFixed(2)) };
+            });
+            return next;
+        });
+    };
+
+    const handlePricePctChange = (val) => {
+        const pct = parseFloat(val) || 0;
+        setPricePct(pct);
+        setDraftValues(prev => {
+            const next = { ...prev };
+            targetList.forEach(p => {
+                const calculatedPrice = (p.price || 0) * (1 + pct / 100);
+                const pr = pct === 0 ? p.price : Math.ceil(calculatedPrice / 10) * 10;
+                next[p.id] = { ...next[p.id], price: pr };
+            });
+            return next;
+        });
+    };
+
+    // Función para manejar el cambio manual individual en la tabla
+    const handleManualChange = (id, field, val) => {
+        setDraftValues(prev => ({
+            ...prev,
+            [id]: { ...prev[id], [field]: val } // Guardamos en string por si tipean un punto, se procesa al confirmar
+        }));
+    };
 
     const todayStr = getLocalDate();
 
     return (
       <div className="fixed inset-0 z-[80] flex items-center justify-center bg-sys-900/60 backdrop-blur-sm p-4 animate-in fade-in zoom-in-95">
-        <div className="bg-white rounded-3xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]">
+        <div className="bg-white rounded-3xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh]">
           
           {/* HEADER */}
           <div className="p-5 border-b border-sys-100 bg-sys-50 flex justify-between items-center shrink-0">
              <div>
-                <h3 className="font-black text-xl text-sys-900 flex items-center gap-2"><ArrowUpRight className="text-brand" /> Actualización Masiva</h3>
-                <p className="text-[10px] text-sys-500 font-bold uppercase tracking-wider">Afectará a {targetList.length} productos</p>
+                <h3 className="font-black text-xl text-sys-900 flex items-center gap-2"><ArrowUpRight className="text-brand" /> Actualización de Precios</h3>
+                <p className="text-[10px] text-sys-500 font-bold uppercase tracking-wider">Ajuste manual o por porcentaje para {targetList.length} productos</p>
              </div>
              <button onClick={onClose} className="p-2 hover:bg-sys-200 rounded-full transition-colors"><X size={20} className="text-sys-400" /></button>
           </div>
 
           {/* BODY */}
-          <div className="flex-1 overflow-y-auto p-6 space-y-6 custom-scrollbar">
+          <div className="flex-1 overflow-y-auto p-6 space-y-6 custom-scrollbar bg-white">
+             
+             {/* PESTAÑAS DE FILTRO */}
              <div className="flex bg-sys-100 p-1.5 rounded-2xl shrink-0">
                 {['manual', 'brand', 'category'].map(t => (
                     <button 
@@ -315,23 +369,25 @@ const BulkUpdateModal = ({ isOpen, onClose, onConfirm, allProducts, masters, man
                 )}
              </div>
 
-             <div className="grid grid-cols-2 gap-4 shrink-0">
+             {/* BLOQUE HERRAMIENTAS MACRO (%) */}
+             <div className="grid grid-cols-2 gap-4 shrink-0 bg-brand/5 p-4 rounded-2xl border border-brand/10">
                 <div className="space-y-1.5">
-                    <label className="text-[10px] font-black text-sys-400 uppercase ml-1">Subir Costo %</label>
+                    <label className="text-[10px] font-black text-sys-600 uppercase ml-1">Auto-completar Costo (+%)</label>
                     <div className="relative">
-                        <Percent className="absolute left-3 top-3 text-sys-300" size={16}/>
-                        <input type="number" className="w-full p-3 pl-9 border-2 border-sys-100 rounded-2xl font-bold outline-none focus:border-sys-400 transition-all" value={costPct} onChange={e => setCostPct(parseFloat(e.target.value) || 0)} />
+                        <Percent className="absolute left-3 top-3 text-sys-400" size={16}/>
+                        <input type="number" className="w-full p-3 pl-9 border-2 border-sys-200 rounded-2xl font-bold outline-none focus:border-sys-400 transition-all bg-white" placeholder="Ej: 10" value={costPct || ''} onChange={e => handleCostPctChange(e.target.value)} />
                     </div>
                 </div>
                 <div className="space-y-1.5">
-                    <label className="text-[10px] font-black text-brand uppercase ml-1">Subir Precio %</label>
+                    <label className="text-[10px] font-black text-brand uppercase ml-1">Auto-completar Precio (+%)</label>
                     <div className="relative">
                         <Percent className="absolute left-3 top-3 text-brand/40" size={16}/>
-                        <input type="number" className="w-full p-3 pl-9 border-2 border-brand/10 bg-brand/5 rounded-2xl font-black text-brand outline-none focus:border-brand transition-all" value={pricePct} onChange={e => setPricePct(parseFloat(e.target.value) || 0)} />
+                        <input type="number" className="w-full p-3 pl-9 border-2 border-brand/20 bg-white rounded-2xl font-black text-brand outline-none focus:border-brand transition-all shadow-sm" placeholder="Ej: 15" value={pricePct || ''} onChange={e => handlePricePctChange(e.target.value)} />
                     </div>
                 </div>
              </div>
 
+             {/* BLOQUE PROGRAMACIÓN FECHA */}
              <div className={cn("p-4 rounded-2xl border-2 transition-all cursor-pointer select-none shrink-0", isScheduled ? "bg-orange-50 border-orange-300 ring-2 ring-orange-100" : "bg-white border-sys-200 hover:bg-sys-50")} onClick={() => setIsScheduled(!isScheduled)}>
                 <div className="flex items-center gap-3">
                     <div className={cn("w-6 h-6 rounded-md flex items-center justify-center border-2 transition-colors shrink-0", isScheduled ? "bg-orange-500 border-orange-500 text-white" : "bg-white border-sys-300 text-transparent")}>
@@ -370,25 +426,46 @@ const BulkUpdateModal = ({ isOpen, onClose, onConfirm, allProducts, masters, man
                 )}
              </div>
 
-             <div className="border border-sys-200 rounded-xl bg-sys-50 overflow-hidden shrink-0">
-                <div className="bg-sys-100 p-2 text-xs font-bold text-sys-500 uppercase border-b border-sys-200 flex justify-between">
-                    <span>Muestra (Primeros 50)</span><span>Proyección</span>
+             {/* TABLA DE EDICIÓN MANUAL */}
+             <div className="border-2 border-sys-200 rounded-2xl overflow-hidden shrink-0">
+                <div className="bg-sys-100 p-3 text-[10px] font-black text-sys-500 uppercase flex justify-between items-center border-b border-sys-200 shadow-sm">
+                    <span className="flex-1">Listado de Productos ({targetList.length})</span>
+                    <div className="flex items-center gap-2 text-right">
+                        <span className="w-[80px]">N. Costo</span>
+                        <span className="w-[90px] text-brand">N. Precio</span>
+                    </div>
                 </div>
-                <div className="max-h-40 overflow-y-auto divide-y divide-sys-200 custom-scrollbar">
+                <div className="max-h-60 overflow-y-auto divide-y divide-sys-100 custom-scrollbar bg-white">
                     {targetList.length === 0 ? (
-                        <div className="p-6 text-center text-sys-400 text-xs">Sin selección</div>
+                        <div className="p-8 text-center text-sys-400 text-xs font-bold uppercase">Sin productos seleccionados</div>
                     ) : (
-                        targetList.slice(0, 50).map(p => {
-                             const calculatedPrice = p.price * (1 + pricePct / 100);
-                             const newPrice = Math.ceil(calculatedPrice / 10) * 10;
+                        targetList.map(p => {
+                             const draft = draftValues[p.id] || { cost: p.cost, price: p.price };
                              return (
-                                <div key={p.id} className="p-3 flex justify-between items-center bg-white hover:bg-sys-50">
-                                    <div className="truncate flex-1 pr-2">
-                                        <p className="text-xs font-bold text-sys-800 truncate">{p.name}</p>
+                                <div key={p.id} className="p-3 flex items-center justify-between hover:bg-sys-50 gap-4 transition-colors">
+                                    <div className="truncate flex-1 min-w-[120px]">
+                                        <p className="text-xs font-bold text-sys-900 truncate leading-tight uppercase">{p.name}</p>
+                                        <p className="text-[9px] font-mono text-sys-400 mt-1">Act: ${p.cost || 0} / ${p.price || 0}</p>
                                     </div>
-                                    <div className="text-right">
-                                        <span className="text-[10px] line-through text-sys-400 mr-2">${p.price}</span>
-                                        <span className="text-xs font-mono font-black text-brand">${newPrice}</span>
+                                    <div className="flex items-center gap-2 shrink-0">
+                                        <div className="relative w-[80px]">
+                                            <span className="absolute left-2 top-1/2 -translate-y-1/2 text-sys-400 text-xs font-bold">$</span>
+                                            <input 
+                                                type="number" 
+                                                className="w-full p-2 pl-5 text-xs font-bold border-2 border-sys-200 rounded-xl outline-none focus:border-sys-400 text-right bg-white" 
+                                                value={draft.cost} 
+                                                onChange={e => handleManualChange(p.id, 'cost', e.target.value)} 
+                                            />
+                                        </div>
+                                        <div className="relative w-[90px]">
+                                            <span className="absolute left-2 top-1/2 -translate-y-1/2 text-brand text-xs font-bold">$</span>
+                                            <input 
+                                                type="number" 
+                                                className="w-full p-2 pl-5 text-xs font-black text-brand border-2 border-brand/20 bg-brand/5 rounded-xl outline-none focus:border-brand text-right shadow-sm" 
+                                                value={draft.price} 
+                                                onChange={e => handleManualChange(p.id, 'price', e.target.value)} 
+                                            />
+                                        </div>
                                     </div>
                                 </div>
                             )
@@ -400,17 +477,17 @@ const BulkUpdateModal = ({ isOpen, onClose, onConfirm, allProducts, masters, man
           </div>
 
           {/* FOOTER */}
-          <div className="p-6 bg-sys-50 border-t border-sys-100 flex gap-3 shrink-0">
-            <Button variant="ghost" onClick={onClose} className="flex-1 rounded-2xl h-12 font-bold">Cancelar</Button>
+          <div className="p-6 bg-sys-50 border-t border-sys-200 flex gap-3 shrink-0">
+            <Button variant="ghost" onClick={onClose} className="flex-1 rounded-2xl h-12 font-bold bg-white border border-sys-200 hover:bg-sys-100 text-sys-600">Cancelar</Button>
             <Button 
-                onClick={() => onConfirm(targetList, costPct, pricePct, isScheduled ? activationDate : null)} 
+                onClick={() => onConfirm(targetList, draftValues, isScheduled ? activationDate : null)} 
                 className={cn(
                     "flex-1 shadow-xl rounded-2xl h-12 font-black transition-all",
                     isScheduled ? "bg-orange-600 hover:bg-orange-700 shadow-orange-200 text-white" : "bg-brand hover:bg-brand-dark shadow-brand/20 text-white"
                 )} 
-                disabled={targetList.length === 0 || (costPct === 0 && pricePct === 0) || (isScheduled && !activationDate)}
+                disabled={targetList.length === 0 || (isScheduled && !activationDate)}
             >
-                {isScheduled && activationDate > todayStr ? 'CONFIRMAR PROGRAMACIÓN' : 'APLICAR AHORA'}
+                {isScheduled && activationDate > todayStr ? 'PROGRAMAR CAMBIOS' : 'GUARDAR AHORA'}
             </Button>
           </div>
         </div>
@@ -681,7 +758,7 @@ export const InventoryPage = () => {
     };
 
     // =================================================================
-    // 🚀 HANDLERS
+    // 🚀 HANDLERS MASIVOS (REDISEÑADO)
     // =================================================================
 
     const handleSaveProduct = async (masterPayload, promoPayload) => {
@@ -700,37 +777,43 @@ export const InventoryPage = () => {
         } catch (e) { console.error(e); }
     };
 
-    const executeBulkUpdate = async (targetProducts, costPct, pricePct, activationDate = null) => {
+    // NUEVO MOTOR: Recibe el listado de productos procesado y el mapa de Drafts con los valores finales manuales.
+    const executeBulkUpdate = async (targetProducts, draftValues, activationDate = null) => {
         if (targetProducts.length === 0) return alert("No hay productos seleccionados.");
         const todayStr = getLocalDate(); 
         const isFutureScheduled = activationDate && activationDate > todayStr;
         const confirmMsg = isFutureScheduled
-            ? `⚠️ ¿Programar aumento para el ${activationDate}?\nAfectará a ${targetProducts.length} productos.`
-            : `⚠️ ¿Aplicar aumento INMEDIATO?\nAfectará a ${targetProducts.length} productos.`;
+            ? `⚠️ ¿Programar ajuste para el ${activationDate}?\nAfectará a ${targetProducts.length} productos.`
+            : `⚠️ ¿Aplicar ajuste INMEDIATO?\nAfectará a ${targetProducts.length} productos.`;
 
         if (!window.confirm(confirmMsg)) return;
 
         setLoading(true);
         try {
             for (const p of targetProducts) {
-                const newCost = p.cost * (1 + costPct / 100);
-                const calculatedPrice = p.price * (1 + pricePct / 100);
-                const roundedPrice = Math.ceil(calculatedPrice / 10) * 10; 
+                const draft = draftValues[p.id];
+                if (!draft) continue;
+
+                // Forzamos a Número para evitar guardar strings
+                const newCost = Number(draft.cost) || 0;
+                const newPrice = Number(draft.price) || 0;
+                
                 const productUpdate = { ...p };
 
                 if (isFutureScheduled) {
-                    productUpdate.nextPrice = roundedPrice;
+                    productUpdate.nextPrice = newPrice;
                     productUpdate.nextCost = newCost;
                     productUpdate.priceActivationDate = activationDate;
                     productUpdate.syncStatus = 'pending';
                 } else {
                     productUpdate.cost = newCost;
-                    productUpdate.price = roundedPrice;
+                    productUpdate.price = newPrice;
                     productUpdate.nextPrice = null;
                     productUpdate.nextCost = null;
                     productUpdate.priceActivationDate = null;
                     productUpdate.syncStatus = 'pending';
                 }
+                
                 await productRepository.save(productUpdate);
             }
             toast.success(isFutureScheduled ? "Precios programados con éxito" : "Precios actualizados inmediatamente");
@@ -811,7 +894,7 @@ export const InventoryPage = () => {
                         
                         {selectedIds.size > 0 && (
                             <Button variant="secondary" className="border-orange-200 text-orange-700 bg-orange-50 hover:bg-orange-100 animate-in zoom-in" onClick={() => setIsBulkUpdateOpen(true)}>
-                                <ArrowUpRight size={18} className="mr-2"/> Aumento Masivo
+                                <ArrowUpRight size={18} className="mr-2"/> Actualización Múltiple
                             </Button>
                         )}
                         

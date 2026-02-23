@@ -1,27 +1,29 @@
 // ✅ URL DE PRODUCCIÓN (salvadorpos1)
 const API_URL = import.meta.env.VITE_API_URL; 
 
-// 👇 1. IMPORTANTE: Necesitamos el Store para saber qué empresa está facturando
+// 👇 1. IMPORTANTE: Necesitamos el Store para saber qué empresa y sucursal están facturando
 import { useAuthStore } from '../../auth/store/useAuthStore'; 
 
 export const billingService = {
   /**
-   * Solicita Factura C (Venta)
+   * Solicita Factura (Venta)
    * @param {object} sale - Objeto de venta completo
    */
   async emitirFactura(sale) {
     try {
-      // 👇 2. OBTENER ID DE EMPRESA
-      const { user } = useAuthStore.getState();
+      // 👇 2. OBTENER ID DE EMPRESA Y SUCURSAL
+      const { user, activeBranchId } = useAuthStore.getState();
+      
       if (!user || !user.companyId) {
           throw new Error("Error: No se identificó la empresa para facturar.");
       }
 
+      // 🔥 FIX CRÍTICO: Inyectar branchId al payload
       const payload = {
-        companyId: user.companyId, // 🔑 LA CLAVE DEL ÉXITO
+        companyId: sale.companyId || user.companyId, 
+        branchId: sale.branchId || activeBranchId, // 🔑 AHORA SÍ VIAJA LA SUCURSAL
         total: sale.total,
-        // Enviamos el objeto 'client' completo o un consumidor final por defecto
-        client: sale.client || { docNumber: "0", name: "Consumidor Final" } 
+        client: sale.client || { docNumber: "0", name: "Consumidor Final", fiscalCondition: "CONSUMIDOR_FINAL" } 
       };
 
       const response = await fetch(`${API_URL}/create-invoice`, {
@@ -35,7 +37,7 @@ export const billingService = {
         throw new Error(errorData.details || errorData.error || "Error al facturar");
       }
 
-      return await response.json(); // Retorna { cae, vto, numero, qr_data, tipo: "C" }
+      return await response.json();
 
     } catch (error) {
       console.error("Billing Service Error (Factura):", error);
@@ -44,13 +46,13 @@ export const billingService = {
   },
 
   /**
-   * Solicita Nota de Crédito C (Anulación)
+   * Solicita Nota de Crédito (Anulación)
    * @param {object} sale - Objeto de venta a anular
    */
   async emitirNotaCredito(sale) {
     try {
-      // 👇 3. OBTENER ID DE EMPRESA TAMBIÉN AQUÍ
-      const { user } = useAuthStore.getState();
+      const { user, activeBranchId } = useAuthStore.getState();
+      
       if (!user || !user.companyId) {
           throw new Error("Error: No se identificó la empresa para anular.");
       }
@@ -60,15 +62,17 @@ export const billingService = {
         throw new Error("No se puede anular una venta que no tiene factura aprobada.");
       }
 
+      // 🔥 FIX CRÍTICO: Inyectar branchId y respetar el documento asociado
       const payload = {
-        companyId: user.companyId, // 🔑 CLAVE SaaS
+        companyId: sale.companyId || user.companyId, 
+        branchId: sale.branchId || activeBranchId, // 🔑 AHORA SÍ VIAJA LA SUCURSAL
         total: sale.total,
-        client: sale.client || { docNumber: "0" },
+        client: sale.client || { docNumber: "0", fiscalCondition: "CONSUMIDOR_FINAL" },
         
-        // Datos de la factura original para vincular
-        associatedDocument: {
-            tipo: sale.afip.cbteLetra === 'A' ? 1 : 11, // 11 es Factura C
-            ptoVta: sale.afip.ptoVta || 5, // Usamos el mismo pto de venta que la original
+        // Datos de la factura original para vincular (Respetamos el que armó SalesPage o calculamos)
+        associatedDocument: sale.associatedDocument || {
+            tipo: sale.afip.cbteTipo || (sale.afip.cbteLetra === 'A' ? 1 : sale.afip.cbteLetra === 'B' ? 6 : 11),
+            ptoVta: sale.afip.ptoVta || 1, 
             nro: sale.afip.cbteNumero 
         }
       };
@@ -84,7 +88,7 @@ export const billingService = {
         throw new Error(errorData.details || errorData.error || "Error al generar Nota de Crédito");
       }
 
-      return await response.json(); // Retorna { cae, vto, numero, tipo: "NC" ... }
+      return await response.json();
 
     } catch (error) {
       console.error("Billing Service Error (Nota Crédito):", error);

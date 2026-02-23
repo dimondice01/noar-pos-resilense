@@ -13,13 +13,13 @@ export const CompanySettingsPage = () => {
     
     // Estado inicial completo para evitar uncontrolled inputs
     const [branchData, setBranchData] = useState({ 
-        name: '',           // Nombre de Fantasía (Kiosco Pepe - Centro)
+        name: '',           // Nombre de Fantasía
         logoUrl: null,      // Logo específico de la sucursal
-        razonSocial: '',    // Razón Social (puede ser la misma para todas)
-        cuit: '',           // CUIT (el mismo para todas)
-        iibb: '',           // IIBB (puede variar por jurisdicción)
+        razonSocial: '',    // Razón Social
+        cuit: '',           // CUIT 
+        iibb: '',           // IIBB
         inicioAct: '',      // Inicio Actividades
-        address: '',        // Dirección (específica de la sucursal)
+        address: '',        // Dirección 
         taxCondition: 'CONSUMIDOR FINAL'
     });
     
@@ -51,20 +51,22 @@ export const CompanySettingsPage = () => {
                     setBranchData(prev => ({
                         ...prev,
                         ...data,
-                        // Fallbacks inteligentes para datos fiscales que suelen repetirse
-                        cuit: data.cuit || companyData.cuit || '',
+                        name: data.name || activeBranchName,
                         razonSocial: data.razonSocial || companyData.razonSocial || '',
+                        cuit: data.cuit || companyData.cuit || '',
                         taxCondition: data.taxCondition || companyData.taxCondition || 'CONSUMIDOR FINAL',
                         iibb: data.iibb || companyData.iibb || '',
-                        inicioAct: data.inicioAct || companyData.inicioAct || ''
+                        inicioAct: data.inicioAct || companyData.inicioAct || '',
+                        address: data.address || ''
                     }));
                 } else {
-                    // Si la sucursal no tiene config (nueva), pre-cargamos con datos de empresa + nombre sucursal
+                    // Si la sucursal no tiene config, pre-cargamos con datos de empresa
                     setBranchData(prev => ({ 
                         ...prev, 
                         ...companyData, 
-                        name: activeBranchName, // Nombre por defecto: el nombre de la sucursal en el sistema
-                        address: '' // Dirección vacía para obligar a cargarla
+                        name: activeBranchName, 
+                        razonSocial: companyData.razonSocial || '',
+                        address: '' 
                     }));
                 }
             } catch (error) {
@@ -79,7 +81,7 @@ export const CompanySettingsPage = () => {
     }, [user?.companyId, activeBranchId, activeBranchName]);
 
     // =================================================================
-    // 2. GUARDAR CONFIGURACIÓN (En el documento de la Sucursal)
+    // 2. GUARDAR CONFIGURACIÓN 
     // =================================================================
     const handleSave = async (e) => {
         e.preventDefault();
@@ -88,17 +90,16 @@ export const CompanySettingsPage = () => {
         try {
             let newLogoUrl = branchData.logoUrl;
 
-            // A. Subir Logo (Ruta aislada por sucursal)
+            // A. Subir Logo 
             if (file) {
                 const storageRef = ref(storage, `logos/${user.companyId}/${activeBranchId}/logo_${Date.now()}`);
                 await uploadBytes(storageRef, file);
                 newLogoUrl = await getDownloadURL(storageRef);
             }
 
-            // B. Guardar en Firestore: companies -> branches -> [ID]
+            // B. Guardar en Firestore (merge: true no borra certificados AFIP)
             const branchRef = doc(db, 'companies', user.companyId, 'branches', activeBranchId);
             
-            // 🔥 Usamos merge: true para NO borrar la config de AFIP (certificados) que vive en el mismo doc
             const payload = {
                 ...branchData,
                 logoUrl: newLogoUrl,
@@ -109,8 +110,9 @@ export const CompanySettingsPage = () => {
 
             // C. Actualizar estado local
             setBranchData(prev => ({ ...prev, logoUrl: newLogoUrl }));
+            setFile(null); // Limpiamos el archivo subido
             
-            // D. Actualizar Cache Local (Para que el TicketModal lo vea YA)
+            // D. Actualizar Cache Local (PARA QUE TICKET MODAL LO VEA INSTANTÁNEAMENTE)
             const cacheKey = `SALVADOR_BRANCH_CONFIG_${activeBranchId}`;
             localStorage.setItem(cacheKey, JSON.stringify(payload));
 
@@ -131,7 +133,6 @@ export const CompanySettingsPage = () => {
     return (
         <div className="p-6 max-w-4xl mx-auto pb-20 animate-in fade-in duration-500">
             
-            {/* ENCABEZADO DE CONTEXTO */}
             <div className="mb-6 flex items-center justify-between">
                 <div>
                     <h1 className="text-2xl font-bold text-white flex items-center gap-2">
@@ -161,7 +162,7 @@ export const CompanySettingsPage = () => {
                                 {file ? (
                                     <img src={URL.createObjectURL(file)} className="w-full h-full object-cover" alt="Preview" />
                                 ) : branchData.logoUrl ? (
-                                    <img src={branchData.logoUrl} className="w-full h-full object-contain p-2" alt="Logo" />
+                                    <img src={branchData.logoUrl} className="w-full h-full object-contain p-2 bg-white" alt="Logo" />
                                 ) : (
                                     <Camera size={40} className="text-slate-600 group-hover:text-blue-500 transition-colors" />
                                 )}
@@ -192,7 +193,7 @@ export const CompanySettingsPage = () => {
                                     onChange={(e) => setBranchData({...branchData, name: e.target.value})}
                                 />
                                 <p className="text-xs text-slate-500 mt-2 flex gap-1 items-center">
-                                    <Info size={12}/> Este nombre aparecerá en el encabezado del ticket.
+                                    <Info size={12}/> Este nombre aparecerá en el encabezado principal del ticket.
                                 </p>
                             </div>
                         </div>

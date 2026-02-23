@@ -61,8 +61,8 @@ export const syncService = {
           taxRate: parseFloat(data.taxRate) || 21,
           
           // Programación de Precios
-          nextPrice: data.nextPrice ? parseFloat(data.nextPrice) : null,
-          nextCost: data.nextCost ? parseFloat(data.nextCost) : null,
+          nextPrice: data.nextPrice !== undefined && data.nextPrice !== null ? parseFloat(data.nextPrice) : null,
+          nextCost: data.nextCost !== undefined && data.nextCost !== null ? parseFloat(data.nextCost) : null,
           priceActivationDate: data.priceActivationDate || null,
 
           categoryId: data.categoryId || 'uncategorized',
@@ -208,6 +208,51 @@ export const syncService = {
   },
 
   // =================================================================
+  // ⚡ MOTOR DE ACTUALIZACIÓN DE PRECIOS PROGRAMADOS (ROBOT)
+  // =================================================================
+  async processScheduledPriceChanges() {
+    try {
+        const localDb = await getDB();
+        // Genera la fecha de hoy en formato YYYY-MM-DD ajustada a la zona horaria local
+        const todayStr = new Date().toLocaleDateString('sv-SE'); 
+
+        // Busca todos los productos que tengan una fecha programada que sea HOY o ANTERIOR a hoy
+        const expiredProducts = await localDb.products
+            .filter(p => p.priceActivationDate && p.priceActivationDate <= todayStr)
+            .toArray();
+
+        if (expiredProducts.length === 0) return;
+
+        console.log(`🚀 [SCHEDULER] Aplicando ${expiredProducts.length} cambios de precio programados...`);
+
+        const updates = expiredProducts.map(p => ({
+            key: p.id,
+            changes: {
+                price: p.nextPrice !== null ? p.nextPrice : p.price,
+                cost: p.nextCost !== null ? p.nextCost : p.cost,
+                nextPrice: null,
+                nextCost: null,
+                priceActivationDate: null,
+                updatedAt: new Date().toISOString(),
+                syncStatus: 'pending' // 🔥 Obliga al sistema a subir el nuevo precio a Firebase
+            }
+        }));
+
+        await localDb.products.bulkUpdate(updates);
+        
+        // Disparamos la subida silenciosa para que la nube se entere inmediatamente
+        const companyId = this._getCompanyId();
+        if (companyId) {
+            this.syncPendingProducts(companyId, this._getActiveBranchId());
+        }
+        
+        console.log("✅ [SCHEDULER] Precios actualizados exitosamente.");
+    } catch (e) {
+        console.error("❌ Error en el motor de precios programados:", e);
+    }
+  },
+
+  // =================================================================
   // ⬇️ BAJADA DE DATOS (CLOUD -> LOCAL) - DELTA SYNC ENGINE
   // =================================================================
 
@@ -242,30 +287,29 @@ export const syncService = {
     try {
         const snapshot = await getDocs(q);
         
-        if (snapshot.empty) {
-            console.log("✅ [SYNC] Productos actualizados.");
-            // Si es la primera vez y no vino nada, marcamos como sync para no reintentar innecesariamente
-            if (isDbEmpty) localStorage.setItem(SYNC_KEYS.PRODUCTS, new Date().toISOString());
-            console.timeEnd("⏱️ Sync Productos");
-            return;
-        }
+        if (!snapshot.empty) {
+            const allDocs = snapshot.docs.map(doc => ({ id: doc.id, data: doc.data() }));
 
-        const allDocs = snapshot.docs.map(doc => ({ id: doc.id, data: doc.data() }));
+            const toDelete = allDocs.filter(d => d.data.deleted === true).map(d => d.id);
+            const toUpsert = allDocs.filter(d => d.data.deleted !== true).map(d => this._sanitizeCloudProduct(d.data, d.id));
 
-        const toDelete = allDocs.filter(d => d.data.deleted === true).map(d => d.id);
-        const toUpsert = allDocs.filter(d => d.data.deleted !== true).map(d => this._sanitizeCloudProduct(d.data, d.id));
+            if (toDelete.length > 0) {
+                await localDb.products.bulkDelete(toDelete);
+            }
 
-        if (toDelete.length > 0) {
-            await localDb.products.bulkDelete(toDelete);
-        }
-
-        if (toUpsert.length > 0) {
-            await localDb.products.bulkPut(toUpsert);
-            console.log(`📥 [SYNC] Actualizados ${toUpsert.length} productos.`);
+            if (toUpsert.length > 0) {
+                await localDb.products.bulkPut(toUpsert);
+                console.log(`📥 [SYNC] Actualizados ${toUpsert.length} productos.`);
+            }
+        } else if (isDbEmpty) {
+            console.log("✅ [SYNC] Productos actualizados (Vacío).");
         }
 
         // Guardamos el timestamp ACTUAL para la próxima vez
         localStorage.setItem(SYNC_KEYS.PRODUCTS, new Date().toISOString());
+
+        // 🔥 CRÍTICO: Una vez que tenemos la base de datos fresca, ejecutamos el robot de precios
+        await this.processScheduledPriceChanges();
 
     } catch (error) {
         if (error.code === 'failed-precondition') {
@@ -278,6 +322,8 @@ export const syncService = {
              
              await localDb.products.bulkPut(toUpsert);
              localStorage.setItem(SYNC_KEYS.PRODUCTS, new Date().toISOString());
+             
+             await this.processScheduledPriceChanges();
         } else {
              console.error("❌ Error en Sync Productos:", error);
         }
@@ -369,8 +415,8 @@ export const syncService = {
       if (!user?.companyId) return;
 
       // 1. Productos (Siempre, todos necesitan el catálogo)
-      // No usamos await para que la UI cargue, pero syncProducts es rápido
-      this.syncProducts(user.companyId);
+      // Ya incluye el chequeo de precios programados
+      await this.syncProducts(user.companyId);
 
       // 2. Lógica por Rol
       if (user.role === 'OWNER') {
@@ -386,12 +432,12 @@ export const syncService = {
           }
 
           if (branches.length > 0) {
-              this.syncAllInventoryForOwner(user.companyId, branches);
+              await this.syncAllInventoryForOwner(user.companyId, branches);
           }
 
       } else if (activeBranchId && activeBranchId !== 'ALL') {
           // Cajero/Admin solo necesita su sucursal activa
-          this.syncInitialInventory(user.companyId, activeBranchId);
+          await this.syncInitialInventory(user.companyId, activeBranchId);
       }
   },
 
