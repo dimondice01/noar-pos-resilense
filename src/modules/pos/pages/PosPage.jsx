@@ -3,7 +3,7 @@ import {
     Search, Trash2, ShoppingCart, PackageOpen, 
     Keyboard, User, DollarSign, ChevronRight, Plus, 
     Lock, Wallet, ArrowRight, Loader2, X, Store,
-    Tag 
+    Tag, Percent
 } from 'lucide-react';
 
 // Controlador Maestro (Cerebro)
@@ -19,6 +19,7 @@ import { QuantityModal } from '../components/QuantityModal';
 import { PaymentModal } from '../components/PaymentModal';
 import { ClientSelectionModal } from '../components/ClientSelectionModal'; 
 import { TicketModal } from '../../sales/components/TicketModal';
+import { CashOperationsModal } from '../components/CashOperationsModal'; // 🔥 NUEVO: Modal de caja
 import { Button } from '../../../core/ui/Button';
 import { cn } from '../../../core/utils/cn';
 import toast from 'react-hot-toast';
@@ -30,15 +31,98 @@ const POS_CONFIG = {
     ALLOW_OUT_OF_STOCK_SALES: true, 
 };
 
+// =================================================================
+// 🧩 MODAL: ARTÍCULO MANUAL (VARIOS)
+// =================================================================
+const MiscItemModal = ({ isOpen, onClose, onConfirm }) => {
+    const [name, setName] = useState('');
+    const [price, setPrice] = useState('');
+    const nameInputRef = useRef(null);
+
+    useEffect(() => {
+        if (isOpen) {
+            setName('');
+            setPrice('');
+            // Usamos un pequeño delay para asegurar que el modal ya se renderizó antes de hacer focus
+            setTimeout(() => nameInputRef.current?.focus(), 50);
+        }
+    }, [isOpen]);
+
+    const handleSubmit = (e) => {
+        e.preventDefault();
+        const finalPrice = parseFloat(price);
+        if (!name.trim() || isNaN(finalPrice) || finalPrice <= 0) {
+            toast.error("Ingrese un nombre y un precio válido.");
+            return;
+        }
+        
+        const manualProduct = {
+            id: `manual_${Date.now()}`,
+            code: 'MANUAL',
+            name: name.trim().toUpperCase(),
+            price: finalPrice,
+            cost: 0, // Utilidad del 100% o nula dependiendo del cálculo
+            isWeighable: false,
+            stock: 999, // Stock infinito
+            taxRate: 21
+        };
+
+        onConfirm(manualProduct, 1);
+    };
+
+    if (!isOpen) return null;
+
+    return (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-sys-900/60 backdrop-blur-sm p-4 animate-in fade-in zoom-in-95">
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden">
+                <div className="p-4 bg-brand text-white flex justify-between items-center">
+                    <h3 className="font-bold flex items-center gap-2"><Plus size={18}/> Artículo Manual</h3>
+                    <button onClick={onClose} className="hover:bg-white/20 p-1 rounded"><X size={18}/></button>
+                </div>
+                <form onSubmit={handleSubmit} className="p-6 space-y-4">
+                    <div>
+                        <label className="text-xs text-sys-500 uppercase font-bold mb-1 block">Descripción del Artículo</label>
+                        <input 
+                            ref={nameInputRef}
+                            type="text" 
+                            className="w-full text-base font-bold p-3 bg-sys-50 border-2 border-sys-200 rounded-xl focus:border-brand outline-none uppercase"
+                            placeholder="Ej: HUEVOS COLORADOS"
+                            value={name}
+                            onChange={e => setName(e.target.value)}
+                            onKeyDown={e => e.stopPropagation()} // Evita que los atajos globales interfieran
+                        />
+                    </div>
+                    <div>
+                        <label className="text-xs text-sys-500 uppercase font-bold mb-1 block">Precio de Venta ($)</label>
+                        <input 
+                            type="number" 
+                            className="w-full text-2xl font-black p-3 bg-sys-50 border-2 border-brand/20 rounded-xl focus:border-brand outline-none text-right text-brand"
+                            placeholder="0.00"
+                            step="0.01"
+                            value={price}
+                            onChange={e => setPrice(e.target.value)}
+                            onKeyDown={e => e.stopPropagation()} // Evita que los atajos globales interfieran
+                        />
+                    </div>
+                    <Button type="submit" className="w-full py-3 shadow-lg shadow-brand/20 text-base">Agregar a la cuenta</Button>
+                </form>
+            </div>
+        </div>
+    );
+};
+
 export const PosPage = () => {
   const { user } = useAuthStore();
   
+  // 🔥 Extraemos posConfig para enviarlo al PaymentModal
   const {
       tabs,
       activeTab,
       activeTabId,
       totals,
       searchResults,
+      isProcessing,
+      posConfig, // <-- AÑADIDO
       addTab,
       removeTab,
       switchTab,
@@ -49,7 +133,7 @@ export const PosPage = () => {
       searchProduct,
       setSearchResults, 
       processSale,
-      isProcessing
+      applyWholesaleToLastItem
   } = usePosController();
 
   // Estados Locales
@@ -66,6 +150,8 @@ export const PosPage = () => {
   // Modales
   const [isPaymentOpen, setIsPaymentOpen] = useState(false);
   const [isClientSelectorOpen, setIsClientSelectorOpen] = useState(false);
+  const [isMiscItemOpen, setIsMiscItemOpen] = useState(false); 
+  const [isCashOpsOpen, setIsCashOpsOpen] = useState(false); // 🔥 NUEVO: Estado del modal de caja
   const [lastSaleTicket, setLastSaleTicket] = useState(null);
 
   // Refs
@@ -78,13 +164,14 @@ export const PosPage = () => {
   // 🛡️ FOCO PERSISTENTE
   // =================================================================
   const maintainFocus = useCallback(() => {
-      const anyModalOpen = isPaymentOpen || isClientSelectorOpen || !!selectedProduct || !!lastSaleTicket;
+      // 🔥 Agregado isCashOpsOpen a la validación de foco
+      const anyModalOpen = isPaymentOpen || isClientSelectorOpen || isMiscItemOpen || isCashOpsOpen || !!selectedProduct || !!lastSaleTicket;
       if (!anyModalOpen && hasOpenShift) {
           setTimeout(() => {
               searchInputRef.current?.focus();
           }, 50);
       }
-  }, [isPaymentOpen, isClientSelectorOpen, selectedProduct, lastSaleTicket, hasOpenShift]);
+  }, [isPaymentOpen, isClientSelectorOpen, isMiscItemOpen, isCashOpsOpen, selectedProduct, lastSaleTicket, hasOpenShift]);
 
   useEffect(() => {
       const handleGlobalClick = (e) => {
@@ -98,7 +185,7 @@ export const PosPage = () => {
 
   useEffect(() => {
     maintainFocus();
-  }, [isPaymentOpen, isClientSelectorOpen, selectedProduct, lastSaleTicket, maintainFocus]);
+  }, [isPaymentOpen, isClientSelectorOpen, isMiscItemOpen, isCashOpsOpen, selectedProduct, lastSaleTicket, maintainFocus]);
 
   // =================================================================
   // ⚖️ LÓGICA DE BALANZAS (HÍBRIDA KRETZ/SYSTEL) 🔥
@@ -111,18 +198,16 @@ export const PosPage = () => {
       if (['20', '27', '28', '02'].includes(prefix)) {
           try {
               // 1. INTENTO PRIMARIO: PLU (5) + PESO (5)
-              // Systel suele mandar 20 PPPPP WWWWW C
               const rawPlu5 = code.substring(2, 7);
               const rawValue5 = code.substring(7, 12);
               
               const plu5 = parseInt(rawPlu5, 10).toString(); 
               const value5 = parseFloat(rawValue5);
 
-              // Si el valor parece un peso en gramos (< 50kg)
               if (value5 > 0 && value5 < 50000) {
                   const product = await productRepository.findByCode(plu5);
                   if (product) {
-                      const detectedQty = value5 / 1000; // Gramos a KG
+                      const detectedQty = value5 / 1000; 
                       addToCart(product, detectedQty);
                       toast.success(`⚖️ Balanza: ${product.name} - ${detectedQty}kg`);
                       setSearchTerm('');
@@ -131,7 +216,6 @@ export const PosPage = () => {
               }
 
               // 2. INTENTO SECUNDARIO: PLU (4) + PRECIO (6)
-              // Viejo estándar: 20 PPPP TTTTTT C
               if (prefix === '20') {
                   const rawPlu4 = code.substring(2, 6);
                   const rawPrice6 = code.substring(6, 12);
@@ -151,10 +235,8 @@ export const PosPage = () => {
                       }
                   }
               }
-
           } catch (e) { console.error("Error procesando balanza:", e); }
       }
-
       return false;
   };
 
@@ -212,7 +294,6 @@ export const PosPage = () => {
       return () => clearTimeout(timer);
   }, [searchTerm]);
 
-  // 🔥 LÓGICA DE SELECCIÓN
   const handleSelectProduct = (product) => {
       if (!product || !product.id) return;
 
@@ -253,11 +334,9 @@ export const PosPage = () => {
           lastScanTime.current = now;
 
           try {
-              // 1. Prioridad: Revisar si es código de balanza al dar Enter
               const wasScale = await parseScaleBarcode(searchTerm);
-              if (wasScale) return; // Si era balanza, ya se agregó y limpió.
+              if (wasScale) return; 
 
-              // 2. Búsqueda exacta
               const exactMatchInList = searchResults.find(p => 
                   String(p.barcode) === searchTerm || String(p.code) === searchTerm
               );
@@ -277,7 +356,6 @@ export const PosPage = () => {
                   return;
               }
 
-              // 3. Fallback a Búsqueda Directa en Repo
               const directResults = await productRepository.search(searchTerm);
               const exactMatchDb = directResults.find(p => 
                   String(p.barcode) === searchTerm || String(p.code) === searchTerm
@@ -301,12 +379,19 @@ export const PosPage = () => {
   // =================================================================
   useEffect(() => {
       const handleGlobalKeys = (e) => {
+          // No disparar atajos si el usuario está escribiendo en un input dentro de un modal
+          if (document.activeElement.tagName === 'INPUT' && document.activeElement !== searchInputRef.current) return;
+          
           if (!hasOpenShift) return;
+
           switch(e.key) {
               case 'F1': e.preventDefault(); addTab(); break;
               case 'F2': e.preventDefault(); maintainFocus(); break;
               case 'F3': e.preventDefault(); setIsClientSelectorOpen(true); break;
               case 'F4': e.preventDefault(); if(confirm('¿Anular ticket actual?')) clearCart(); break;
+              case 'F6': e.preventDefault(); applyWholesaleToLastItem(); break; 
+              case 'F8': e.preventDefault(); setIsCashOpsOpen(true); break; // 🔥 ATAJO OPERACIONES DE CAJA
+              case 'F9': e.preventDefault(); setIsMiscItemOpen(true); break; 
               case 'F12': e.preventDefault(); if (activeTab.items.length > 0) setIsPaymentOpen(true); break;
               case 'Escape': 
                   e.preventDefault();
@@ -319,7 +404,7 @@ export const PosPage = () => {
       };
       window.addEventListener('keydown', handleGlobalKeys);
       return () => window.removeEventListener('keydown', handleGlobalKeys);
-  }, [hasOpenShift, isPaymentOpen, activeTab.items, maintainFocus, addTab, clearCart]);
+  }, [hasOpenShift, isPaymentOpen, isCashOpsOpen, activeTab.items, maintainFocus, addTab, clearCart, applyWholesaleToLastItem]);
 
   const handleProcessSale = async (paymentData) => {
     const result = await processSale(paymentData);
@@ -400,7 +485,7 @@ export const PosPage = () => {
           </button>
       </div>
 
-      <div className="flex-1 flex overflow-hidden">
+      <div className="flex-1 flex overflow-hidden mb-8">
           
           {/* 👈 IZQUIERDA: DETALLE DE VENTA */}
           <div className="flex-1 flex flex-col bg-white shadow-xl z-10 relative">
@@ -430,23 +515,33 @@ export const PosPage = () => {
                   ) : (
                       <div className="space-y-2">
                           {activeTab.items.map((item) => (
-                              <div key={item.id} className="group flex items-center p-3 bg-white border border-sys-100 rounded-xl shadow-sm hover:shadow-md transition-all animate-in fade-in slide-in-from-left-2">
+                              <div key={item.id} className={cn("group flex items-center p-3 bg-white border rounded-xl shadow-sm hover:shadow-md transition-all animate-in fade-in slide-in-from-left-2", item.appliedWholesale ? "border-brand border-2 bg-brand/5" : "border-sys-100")}>
                                   <div className="w-10 text-center mr-3">
                                       <div className="text-lg font-black text-sys-900">{item.quantity}</div>
                                       <div className="text-[9px] uppercase text-sys-400 font-black">{item.isWeighable ? 'KG' : 'UN'}</div>
                                   </div>
                                   <div className="flex-1 min-w-0">
                                       <div className="text-sm font-black text-sys-800 truncate uppercase tracking-tight">{item.name}</div>
-                                      {item.appliedPromo && (
-                                          <div className="inline-flex items-center gap-1.5 bg-purple-100 text-purple-700 px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wide mt-1 animate-pulse">
-                                              <Tag size={10} className="fill-purple-700"/>
+                                      
+                                      {/* FEEDBACK VISUAL DE PROMOCIONES O DESCUENTOS */}
+                                      {(item.appliedPromo || item.appliedWholesale) && (
+                                          <div className={cn("inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wide mt-1", item.appliedWholesale ? "bg-orange-100 text-orange-700 border border-orange-200" : "bg-purple-100 text-purple-700 animate-pulse")}>
+                                              {item.appliedWholesale ? <Percent size={10}/> : <Tag size={10} className="fill-purple-700"/>}
                                               {item.promoLabel || "OFERTA"}
                                           </div>
                                       )}
+                                      
                                       <div className="text-xs text-sys-400 font-mono mt-0.5 flex items-center gap-2">
-                                          <span className={cn(item.appliedPromo ? "text-purple-700 font-bold" : "")}>
-                                              ${(Number(item.price) || 0).toLocaleString('es-AR', {minimumFractionDigits: 2})} x unid.
-                                          </span>
+                                          {item.originalPrice && item.originalPrice > item.price ? (
+                                              <>
+                                                <span className="line-through opacity-50">${(Number(item.originalPrice)).toLocaleString('es-AR', {minimumFractionDigits: 2})}</span>
+                                                <span className={cn("font-bold", item.appliedWholesale ? "text-orange-600" : "text-purple-700")}>
+                                                    ${(Number(item.price) || 0).toLocaleString('es-AR', {minimumFractionDigits: 2})} x unid.
+                                                </span>
+                                              </>
+                                          ) : (
+                                              <span>${(Number(item.price) || 0).toLocaleString('es-AR', {minimumFractionDigits: 2})} x unid.</span>
+                                          )}
                                       </div>
                                   </div>
                                   <div className="text-right pl-3">
@@ -486,11 +581,26 @@ export const PosPage = () => {
 
           {/* 👉 DERECHA: BUSCADOR */}
           <div className="w-[440px] border-l border-sys-200 bg-white hidden md:flex flex-col z-0">
-              <div className="p-4 border-b border-sys-100 bg-white">
-                  <div className="relative group">
+              <div className="p-4 border-b border-sys-100 bg-white flex gap-2">
+                  <div className="relative group flex-1">
                       <Search className="absolute left-3 top-3.5 text-sys-400 group-focus-within:text-brand transition-colors" size={22} />
-                      <input ref={searchInputRef} type="text" className="w-full pl-11 pr-4 py-3.5 bg-sys-50 border-2 border-transparent rounded-2xl outline-none focus:bg-white focus:border-brand transition-all font-black text-sys-900 uppercase text-lg placeholder:text-sys-300" placeholder="ESCANEÉ O BUSQUE..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} onKeyDown={handleKeyDownInput} autoFocus autoComplete="off" onBlur={maintainFocus} />
+                      <input 
+                          ref={searchInputRef} 
+                          type="text" 
+                          className="w-full pl-11 pr-4 py-3.5 bg-sys-50 border-2 border-transparent rounded-2xl outline-none focus:bg-white focus:border-brand transition-all font-black text-sys-900 uppercase text-lg placeholder:text-sys-300" 
+                          placeholder="ESCANEÉ O BUSQUE..." 
+                          value={searchTerm} 
+                          onChange={(e) => setSearchTerm(e.target.value)} 
+                          onKeyDown={handleKeyDownInput} 
+                          autoFocus 
+                          autoComplete="off" 
+                          onBlur={maintainFocus} 
+                      />
                   </div>
+                  {/* 🔥 BOTÓN PARA ARTÍCULO MANUAL */}
+                  <Button variant="outline" onClick={() => setIsMiscItemOpen(true)} className="h-full aspect-square p-0 rounded-2xl border-2 border-sys-200 text-brand hover:border-brand hover:bg-brand/5 shadow-sm" title="Artículo Libre (F9)">
+                      <Plus size={24} />
+                  </Button>
               </div>
 
               <div ref={productsListRef} className="flex-1 overflow-y-auto p-4 space-y-3 custom-scrollbar bg-sys-50/10">
@@ -544,9 +654,50 @@ export const PosPage = () => {
           </div>
       </div>
 
+      {/* 🚀 BARRA DE ATAJOS INFERIOR */}
+      <div className="fixed bottom-0 left-0 right-0 h-8 bg-sys-900 text-sys-300 flex items-center px-4 z-50 text-[10px] font-mono justify-between select-none overflow-x-auto">
+          <div className="flex gap-4 md:gap-6 shrink-0">
+              <span className="hover:text-white transition-colors cursor-default"><strong className="text-brand">F1:</strong> NVA CUENTA</span>
+              <span className="hover:text-white transition-colors cursor-default"><strong className="text-brand">F2:</strong> FOCO</span>
+              <span className="hover:text-white transition-colors cursor-default"><strong className="text-brand">F3:</strong> CLIENTE</span>
+              <span className="hover:text-white transition-colors cursor-default"><strong className="text-brand">F4:</strong> ANULAR</span>
+              <span className="hover:text-emerald-400 transition-colors cursor-default"><strong className="text-emerald-500">F9:</strong> ART. LIBRE (+)</span>
+              <span className="hover:text-blue-400 transition-colors cursor-default text-blue-200"><strong className="text-blue-500">F8:</strong> CAJA IN/OUT</span>
+              <span className="hover:text-orange-400 transition-colors cursor-default text-orange-200 hidden md:inline"><strong className="text-orange-500">F6:</strong> MAYORISTA (ÚLTIMO ÍTEM)</span>
+          </div>
+          <div className="flex gap-6 shrink-0 ml-4">
+              <span className="hover:text-white transition-colors cursor-default"><strong className="text-brand">ESC:</strong> LIMPIAR / CERRAR</span>
+              <span className="text-white font-bold tracking-widest"><strong className="text-emerald-400">F12:</strong> COBRAR</span>
+          </div>
+      </div>
+
       {/* MODALES */}
+      <MiscItemModal 
+          isOpen={isMiscItemOpen} 
+          onClose={() => { setIsMiscItemOpen(false); maintainFocus(); }} 
+          onConfirm={(product, qty) => { addToCart(product, qty); setIsMiscItemOpen(false); maintainFocus(); }} 
+      />
+      
       <QuantityModal isOpen={!!selectedProduct} product={selectedProduct} onClose={() => { setSelectedProduct(null); maintainFocus(); }} onConfirm={(product, qty) => { addToCart(product, qty); setSelectedProduct(null); maintainFocus(); }} />
-      <PaymentModal isOpen={isPaymentOpen} total={Number(totals?.total) || 0} subtotal={Number(totals?.subtotal) || 0} discount={Number(totals?.discountAmount) || 0} client={activeTab.client} onClose={() => { setIsPaymentOpen(false); maintainFocus(); }} onConfirm={handleProcessSale} isProcessing={isProcessing} />
+      
+      <PaymentModal 
+          isOpen={isPaymentOpen} 
+          total={Number(totals?.total) || 0} 
+          subtotal={Number(totals?.subtotal) || 0} 
+          discount={Number(totals?.discountAmount) || 0} 
+          client={activeTab.client} 
+          posConfig={posConfig} 
+          onClose={() => { setIsPaymentOpen(false); maintainFocus(); }} 
+          onConfirm={handleProcessSale} 
+          isProcessing={isProcessing} 
+      />
+      
+      {/* 🔥 INYECTAMOS EL NUEVO MODAL DE CAJA */}
+      <CashOperationsModal 
+          isOpen={isCashOpsOpen} 
+          onClose={() => { setIsCashOpsOpen(false); maintainFocus(); }} 
+      />
+
       <ClientSelectionModal isOpen={isClientSelectorOpen} onClose={() => { setIsClientSelectorOpen(false); maintainFocus(); }} onSelect={(c) => { setClient(c); setIsClientSelectorOpen(false); maintainFocus(); }} />
       <TicketModal isOpen={!!lastSaleTicket} sale={lastSaleTicket} onClose={() => { setLastSaleTicket(null); maintainFocus(); }} companyConfig={{ nombre: user?.activeBranchName }} />
     </div>

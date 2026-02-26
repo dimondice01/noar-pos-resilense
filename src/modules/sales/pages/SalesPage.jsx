@@ -4,7 +4,7 @@ import {
     ArrowDownLeft, ShoppingBag, XCircle, RotateCcw, Calendar, User,
     ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, 
     TrendingUp, Tag, Percent, DollarSign, Store, CreditCard, Banknote,
-    PackageMinus, Save, X, Loader2, PlusCircle
+    PackageMinus, Save, X, Loader2, PlusCircle, ArrowUpRight
 } from 'lucide-react';
 import { billingService } from '../../billing/services/billingService';
 import { Card } from '../../../core/ui/Card';
@@ -242,6 +242,16 @@ export const SalesPage = () => {
   useEffect(() => { 
       fetchOperations(displayLimit > 50); 
   }, [filterPeriod, customStart, customEnd, activeBranchId, displayLimit]);
+
+  // Polling silencioso para mantener la lista fresca (cada 30s) sin bloquear la UI
+  useEffect(() => {
+      const interval = setInterval(() => {
+          if (!loading && !loadingMore && currentPage === 1) {
+              fetchOperations(false);
+          }
+      }, 30000);
+      return () => clearInterval(interval);
+  }, [loading, loadingMore, currentPage, filterPeriod, activeBranchId]);
 
   const resolveCashierName = (op) => {
       const idToCheck = op.userId || op.createdBy || op.operatorId;
@@ -515,6 +525,7 @@ export const SalesPage = () => {
     setOperations(prev => prev.map(o => o.localId === op.localId ? ventaActualizada : o));
   };
 
+  // 🔥 CALCULO DE TOTALES (INCLUYENDO RECARGOS)
   const totals = useMemo(() => {
       const filtered = visibleOperations.filter(op => op.afip?.status !== 'VOIDED' && op.status !== 'REFUNDED');
       return {
@@ -668,7 +679,6 @@ export const SalesPage = () => {
                 paginatedOperations.map((op) => {
                     const isReceipt = op.type === 'RECEIPT';
                     const isFacturado = op.afip?.status === 'APPROVED';
-                    // 🔥 SE CORRIGIERON LAS CONSTANTES PARA EVITAR EL CRASH DEL RENDER
                     const isAnulado = op.afip?.status === 'VOIDED'; 
                     const isRefunded = op.status === 'REFUNDED' || op.status === 'PARTIAL_REFUND';
                     
@@ -677,6 +687,11 @@ export const SalesPage = () => {
                     
                     const cajeroName = resolveCashierName(op);
                     const hasPromo = !isReceipt && op.items?.some(i => i.appliedPromo || i.promoLabel);
+                    
+                    // 🔥 LECTURA DE SURCHARGE
+                    const surchargeAmount = parseFloat(op.surcharge || 0);
+                    const hasSurcharge = surchargeAmount > 0;
+
                     const profit = parseFloat(op.netProfit || 0);
                     const isProfitable = profit > 0;
                     const displayTicketNumber = getDisplayNumber(op);
@@ -712,19 +727,30 @@ export const SalesPage = () => {
                             </div>
                           </div>
                         </td>
+                        
+                        {/* 🔥 COLUMNA DE MONTO CON INDICADOR DE RECARGO */}
                         <td className="p-4 text-right">
                           <div className="flex flex-col items-end">
                               <span className={cn("font-bold whitespace-nowrap text-sm", (isAnulado || isRefunded) ? "text-red-400 line-through decoration-red-400" : "text-sys-900")}>
                                 $ {(parseFloat(op.total) || 0).toLocaleString('es-AR', {minimumFractionDigits: 2})}
                               </span>
-                              {isAdmin && !isReceipt && !isAnulado && !isRefunded && (
-                                  <span className={cn("text-[9px] font-bold flex items-center gap-1", isProfitable ? "text-emerald-600" : "text-red-500")}>
+                              
+                              {/* BADGE DE RECARGO */}
+                              {hasSurcharge && !isAnulado && !isRefunded && (
+                                  <span className="text-[9px] font-bold text-indigo-600 bg-indigo-50 px-1.5 rounded border border-indigo-100 flex items-center gap-0.5 mt-0.5" title={`Incluye $${surchargeAmount} de recargo`}>
+                                      <ArrowUpRight size={8}/> Recargo
+                                  </span>
+                              )}
+
+                              {isAdmin && !isReceipt && !isAnulado && !isRefunded && !hasSurcharge && (
+                                  <span className={cn("text-[9px] font-bold flex items-center gap-1 mt-0.5", isProfitable ? "text-emerald-600" : "text-red-500")}>
                                       <TrendingUp size={8}/> 
                                       ${profit.toLocaleString('es-AR', {minimumFractionDigits: 0, maximumFractionDigits: 0})}
                                   </span>
                               )}
                           </div>
                         </td>
+
                         <td className="p-4 text-center">
                           <span className={cn("px-2 py-0.5 rounded text-[10px] font-bold uppercase border inline-block min-w-[60px]", 
                             ['cash', 'efectivo'].includes(paymentMethod) ? "bg-green-50 text-green-700 border-green-100" :

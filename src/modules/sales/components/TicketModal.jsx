@@ -50,6 +50,8 @@ const PAYMENT_LABELS = {
     card: 'TARJETA',
     debit: 'DÉBITO',
     credit: 'CRÉDITO',
+    transfer: 'TRANSFERENCIA', // 🔥 Agregado para claridad
+    mercadopago: 'MERCADOPAGO', // 🔥 Agregado para claridad
     qr: 'QR / TRANSF.', 
     other: 'OTRO',
     split: 'COMBINADO'
@@ -100,7 +102,7 @@ const TicketContent = forwardRef(({
     const discount = parseFloat(data.discount || 0);
 
     let paymentDetails = [];
-    if (data.payments && Array.isArray(data.payments)) {
+    if (data.payments && Array.isArray(data.payments) && data.payments.length > 0) {
         paymentDetails = data.payments;
     } else if (data.payment) {
         paymentDetails = [data.payment];
@@ -217,7 +219,7 @@ const TicketContent = forwardRef(({
                         )}
                         {surcharge > 0 && (
                             <div className="flex justify-between">
-                                <span>RECARGO FIN.</span>
+                                <span>RECARGO</span>
                                 <span className="font-mono">{formatCurrency(surcharge)}</span>
                             </div>
                         )}

@@ -20,7 +20,8 @@ import { useAuthStore } from '../../auth/store/useAuthStore';
 const SYNC_KEYS = {
     PRODUCTS: 'last_sync_products_v4', // Versionado para forzar recarga si cambia estructura
     INVENTORY_PREFIX: 'last_sync_inv_br_', // Prefijo para stock por sucursal
-    GLOBAL_CONFIG: 'last_sync_config'
+    GLOBAL_CONFIG: 'last_sync_config',
+    SALES_PREFIX: 'last_sync_sales_br_' // 🔥 NUEVO: Checkpoint de ventas
 };
 
 export const syncService = {
@@ -115,6 +116,7 @@ export const syncService = {
           discount: parseFloat(data.discount) || 0,
           
           status: data.status || 'COMPLETED',
+          type: data.type || 'SALE', // 🔥 Asegurar que el type exista para filtros en UI
           
           items: Array.isArray(rawItems) ? rawItems.map(item => ({
               ...item,
@@ -140,7 +142,8 @@ export const syncService = {
               qr_data: data.afip.qr_data || null
           } : null,
           
-          updatedAt: data.updatedAt || new Date().toISOString(),
+          // 🔥 CRÍTICO PARA EL DELTA SYNC: Garantizar updatedAt
+          updatedAt: data.updatedAt || data.date || new Date().toISOString(),
           syncStatus: 'synced'
       };
   },
@@ -213,10 +216,8 @@ export const syncService = {
   async processScheduledPriceChanges() {
     try {
         const localDb = await getDB();
-        // Genera la fecha de hoy en formato YYYY-MM-DD ajustada a la zona horaria local
         const todayStr = new Date().toLocaleDateString('sv-SE'); 
 
-        // Busca todos los productos que tengan una fecha programada que sea HOY o ANTERIOR a hoy
         const expiredProducts = await localDb.products
             .filter(p => p.priceActivationDate && p.priceActivationDate <= todayStr)
             .toArray();
@@ -234,13 +235,12 @@ export const syncService = {
                 nextCost: null,
                 priceActivationDate: null,
                 updatedAt: new Date().toISOString(),
-                syncStatus: 'pending' // 🔥 Obliga al sistema a subir el nuevo precio a Firebase
+                syncStatus: 'pending' 
             }
         }));
 
         await localDb.products.bulkUpdate(updates);
         
-        // Disparamos la subida silenciosa para que la nube se entere inmediatamente
         const companyId = this._getCompanyId();
         if (companyId) {
             this.syncPendingProducts(companyId, this._getActiveBranchId());
@@ -256,8 +256,31 @@ export const syncService = {
   // ⬇️ BAJADA DE DATOS (CLOUD -> LOCAL) - DELTA SYNC ENGINE
   // =================================================================
 
+  async syncConfig(companyId) {
+      if (!companyId) return;
+      try {
+          const localDb = await getDB();
+          const configRef = collection(db, 'companies', companyId, 'config');
+          const snap = await getDocs(configRef);
+          
+          if (!snap.empty) {
+              const configItems = snap.docs.map(doc => {
+                  const data = doc.data();
+                  const valueToSave = data.value !== undefined ? data.value : data;
+                  return {
+                      key: doc.id,
+                      value: valueToSave,
+                      updatedAt: new Date().toISOString()
+                  };
+              });
+              await localDb.config.bulkPut(configItems);
+          }
+      } catch (error) {
+          console.error("❌ Error sincronizando configuración:", error);
+      }
+  },
+
   // 1. SYNC PRODUCTOS (DELTA)
-  // Baja solo los productos modificados desde la última vez
   async syncProducts(companyId) {
     if (!companyId) return;
     
@@ -268,19 +291,14 @@ export const syncService = {
     const isDbEmpty = productsCount === 0;
 
     const lastSyncStr = localStorage.getItem(SYNC_KEYS.PRODUCTS);
-    const lastSyncDate = lastSyncStr ? new Date(lastSyncStr) : new Date(0); // Epoch si no hay fecha
+    const lastSyncDate = lastSyncStr ? new Date(lastSyncStr) : new Date(0); 
 
     const productsRef = collection(db, 'companies', companyId, 'products');
     let q;
 
     if (!isDbEmpty && lastSyncStr) {
-        console.log(`🔄 [SYNC] Buscando productos modificados desde: ${lastSyncDate.toLocaleString()}`);
-        q = query(
-            productsRef, 
-            where('updatedAt', '>', Timestamp.fromDate(lastSyncDate))
-        );
+        q = query(productsRef, where('updatedAt', '>', Timestamp.fromDate(lastSyncDate)));
     } else {
-        console.log("⬇️ [SYNC] Descarga MAESTRA de productos...");
         q = productsRef; 
     }
 
@@ -299,22 +317,15 @@ export const syncService = {
 
             if (toUpsert.length > 0) {
                 await localDb.products.bulkPut(toUpsert);
-                console.log(`📥 [SYNC] Actualizados ${toUpsert.length} productos.`);
             }
-        } else if (isDbEmpty) {
-            console.log("✅ [SYNC] Productos actualizados (Vacío).");
         }
 
-        // Guardamos el timestamp ACTUAL para la próxima vez
         localStorage.setItem(SYNC_KEYS.PRODUCTS, new Date().toISOString());
-
-        // 🔥 CRÍTICO: Una vez que tenemos la base de datos fresca, ejecutamos el robot de precios
         await this.processScheduledPriceChanges();
 
     } catch (error) {
         if (error.code === 'failed-precondition') {
              console.warn("⚠️ [SYNC] Falta índice compuesto. Ejecutando Full Sync de seguridad...");
-             // Fallback: Descarga simple sin filtro de fecha si falla el índice
              const fullQ = query(productsRef);
              const snap = await getDocs(fullQ);
              const allDocs = snap.docs.map(doc => ({ id: doc.id, data: doc.data() }));
@@ -333,12 +344,8 @@ export const syncService = {
   },
 
   // 2. 🔥 CARGA DE INVENTARIO MULTI-SUCURSAL (PARA OWNERS - DELTA)
-  // Itera sobre todas las sucursales y sincroniza sus stocks en Dexie
   async syncAllInventoryForOwner(companyId, branches) {
       if (!companyId || !branches || branches.length === 0) return;
-      
-      console.log("👁️ [OWNER] Iniciando Sync Global de Inventario (Deltas)...");
-      // Ejecutamos en paralelo para máxima velocidad
       await Promise.all(branches.map(branch => this.syncInitialInventory(companyId, branch.id)));
   },
 
@@ -347,24 +354,17 @@ export const syncService = {
       if (!companyId || !branchId) return;
       
       const localDb = await getDB();
-      
-      // Checkpoint único por sucursal
       const lastSyncKey = SYNC_KEYS.INVENTORY_PREFIX + branchId;
       const lastSyncStr = localStorage.getItem(lastSyncKey);
-      const lastSyncDate = lastSyncStr ? new Date(lastSyncStr) : new Date(0); // Epoch para traer todo si es primera vez
-
-      console.log(`📦 [SYNC] Verificando inventario sucursal ${branchId} desde ${lastSyncDate.toLocaleString()}`);
+      const lastSyncDate = lastSyncStr ? new Date(lastSyncStr) : new Date(0); 
 
       const invRef = collection(db, 'companies', companyId, 'branches', branchId, 'inventory');
-      
-      // Pedimos solo lo que cambió desde la última vez (updatedAt)
       const q = query(invRef, where('updatedAt', '>', Timestamp.fromDate(lastSyncDate)));
       
       try {
           const snapshot = await getDocs(q);
           
           if (snapshot.empty) {
-              // Si no hay cambios, actualizamos el timestamp para no preguntar por fechas muy viejas la proxima
               localStorage.setItem(lastSyncKey, new Date().toISOString());
               return;
           }
@@ -375,7 +375,7 @@ export const syncService = {
                   branchId,
                   productId: doc.id,
                   stock: parseFloat(d.stock) || 0,
-                  promo: d.promo || null, // 🔥 Promos localizadas
+                  promo: d.promo || null, 
                   updatedAt: d.updatedAt ? (d.updatedAt.toDate ? d.updatedAt.toDate().toISOString() : d.updatedAt) : new Date().toISOString(),
                   syncStatus: 'synced'
               };
@@ -383,15 +383,11 @@ export const syncService = {
 
           if (inventoryItems.length > 0) {
               await localDb.inventory.bulkPut(inventoryItems);
-              console.log(`📦 [SYNC] Actualizados ${inventoryItems.length} items en Sucursal ${branchId}`);
           }
           
-          // Actualizamos el checkpoint
           localStorage.setItem(lastSyncKey, new Date().toISOString());
       } catch (e) {
-          // Si falta indice, hacemos fallback a bajada completa (seguridad)
           if (e.code === 'failed-precondition') {
-               console.warn(`⚠️ Falta índice inventario branch ${branchId}. Bajando todo...`);
                const fullSnap = await getDocs(collection(db, 'companies', companyId, 'branches', branchId, 'inventory'));
                const allItems = fullSnap.docs.map(doc => ({
                   branchId,
@@ -403,25 +399,95 @@ export const syncService = {
                }));
                await localDb.inventory.bulkPut(allItems);
                localStorage.setItem(lastSyncKey, new Date().toISOString());
-          } else {
-               console.error(`Error sync inventory branch ${branchId}:`, e);
           }
       }
   },
 
-  // 🔥 MOTOR DE ARRANQUE INTELIGENTE
-  // Este método es llamado por MainLayout o por el botón "Forzar Sync"
+  // 4. 🔥 NUEVO: SYNC INICIAL DE VENTAS (Cerrando el agujero)
+  async syncInitialSales(companyId, branchId, role) {
+      if (!companyId) return;
+      console.time("⏱️ Sync Ventas");
+
+      try {
+          const localDb = await getDB();
+          
+          // El Owner que ve "ALL" usa un checkpoint global, la sucursal usa el suyo
+          const keySuffix = (role === 'OWNER' && (!branchId || branchId === 'ALL')) ? 'GLOBAL' : branchId;
+          const lastSyncKey = SYNC_KEYS.SALES_PREFIX + keySuffix;
+          
+          const lastSyncStr = localStorage.getItem(lastSyncKey);
+          
+          // Si es la primera vez en este navegador, traemos las últimas 150 para no reventar la RAM
+          // Si ya hubo sync, traemos todo lo modificado desde la última vez (sin límite, porque es delta)
+          const salesRef = collection(db, 'companies', companyId, 'sales');
+          let q;
+
+          if (lastSyncStr) {
+              const lastSyncDate = new Date(lastSyncStr);
+              console.log(`🔄 [SYNC VENTAS] Buscando Deltas desde ${lastSyncDate.toLocaleString()}...`);
+              
+              if (role === 'OWNER' && (!branchId || branchId === 'ALL')) {
+                  q = query(salesRef, where('updatedAt', '>', Timestamp.fromDate(lastSyncDate)));
+              } else {
+                  q = query(salesRef, where('branchId', '==', branchId), where('updatedAt', '>', Timestamp.fromDate(lastSyncDate)));
+              }
+          } else {
+              console.log("⬇️ [SYNC VENTAS] Primera Carga (Últimas 150)...");
+              if (role === 'OWNER' && (!branchId || branchId === 'ALL')) {
+                  q = query(salesRef, orderBy('date', 'desc'), limit(150));
+              } else {
+                  q = query(salesRef, where('branchId', '==', branchId), orderBy('date', 'desc'), limit(150));
+              }
+          }
+
+          const snapshot = await getDocs(q);
+          
+          if (!snapshot.empty) {
+              // Filtrar locales que estén 'pending' para no pisarlos con la versión vieja de Firebase
+              const pendingIds = await localDb.sales.where('syncStatus').equals('pending').primaryKeys();
+              const pendingSet = new Set(pendingIds);
+              
+              const salesToPut = [];
+              snapshot.docs.forEach(docSnap => {
+                  if (!pendingSet.has(docSnap.id)) {
+                      salesToPut.push(this._sanitizeCloudSale(docSnap.data(), docSnap.id));
+                  }
+              });
+
+              if (salesToPut.length > 0) {
+                  await localDb.sales.bulkPut(salesToPut);
+                  console.log(`📥 [SYNC VENTAS] ${salesToPut.length} ventas bajadas.`);
+              }
+          }
+          
+          localStorage.setItem(lastSyncKey, new Date().toISOString());
+
+      } catch (error) {
+          if (error.code === 'failed-precondition') {
+               console.warn("⚠️ [SYNC VENTAS] Falta índice. El sistema dependerá del listener en tiempo real.");
+          } else {
+               console.error("❌ Error en Sync Ventas:", error);
+          }
+      } finally {
+          console.timeEnd("⏱️ Sync Ventas");
+      }
+  },
+
+  // 🔥 MOTOR DE ARRANQUE INTELIGENTE (MODIFICADO)
   async syncInitialData(user, activeBranchId) {
       if (!user?.companyId) return;
 
-      // 1. Productos (Siempre, todos necesitan el catálogo)
-      // Ya incluye el chequeo de precios programados
+      // 1. Configuraciones Globales
+      await this.syncConfig(user.companyId);
+
+      // 2. Productos
       await this.syncProducts(user.companyId);
 
-      // 2. Lógica por Rol
+      // 3. Ventas (Cubriendo el agujero)
+      await this.syncInitialSales(user.companyId, activeBranchId, user.role);
+
+      // 4. Inventario por Rol
       if (user.role === 'OWNER') {
-          // El Owner baja los inventarios de TODAS las sucursales para ver stock global
-          // Obtenemos lista de sucursales primero (desde Dexie o Firebase)
           const dbLocal = await getDB();
           let branches = await dbLocal.branches.toArray();
           
@@ -436,23 +502,20 @@ export const syncService = {
           }
 
       } else if (activeBranchId && activeBranchId !== 'ALL') {
-          // Cajero/Admin solo necesita su sucursal activa
           await this.syncInitialInventory(user.companyId, activeBranchId);
       }
   },
 
   // =================================================================
-  // 📡 REAL-TIME LISTENERS (Siguen escuchando por si acaso)
+  // 📡 REAL-TIME LISTENERS
   // =================================================================
 
   async startInventoryListener(companyId, branchId) {
     if (!companyId || !branchId) return;
 
-    // Disparamos la descarga delta antes de escuchar para asegurar base
     await this.syncInitialInventory(companyId, branchId);
 
     const q = collection(db, 'companies', companyId, 'branches', branchId, 'inventory');
-    console.log(`📡 [LISTENER] Escuchando cambios en vivo: ${branchId}`);
     
     return onSnapshot(q, async (snapshot) => {
         if (snapshot.empty) return;
@@ -478,24 +541,19 @@ export const syncService = {
     });
   },
 
-  // =================================================================
-  // 📡 LISTENERS GENERALES
-  // =================================================================
-  
   async startRealTimeListeners(companyIdArg = null) {
     this.stopListeners();
 
     const { user } = useAuthStore.getState();
     const companyId = companyIdArg || this._getCompanyId();
     const activeBranchId = this._getActiveBranchId(); 
-    const role = user?.role || 'SELLER';
 
     if (!companyId) return;
 
     console.log(`📡 [SYNC] Listeners Secundarios Iniciados.`);
     await this.checkTenantIntegrity(companyId);
 
-    // 1. CONFIGURACIÓN
+    // 1. CONFIGURACIÓN (Actualiza el POS y Finanzas en vivo)
     const configQuery = query(collection(db, 'companies', companyId, 'config'));
     this._unsubscribes.push(onSnapshot(configQuery, async (snapshot) => {
         try {
@@ -515,16 +573,20 @@ export const syncService = {
         } catch (e) { console.error("Config Listener Error:", e); }
     }));
 
-    // 2. VENTAS (Solo sucursal activa para cajeros, todas para owner en reportes si quisiera)
-    if (activeBranchId) {
-        try {
-            const salesQuery = query(
-                collection(db, 'companies', companyId, 'sales'), 
-                where('branchId', '==', activeBranchId),
-                orderBy('date', 'desc'), 
-                limit(50)
-            );
+    // 2. VENTAS (Inteligente por Rol)
+    try {
+        let salesQuery;
+        const salesRef = collection(db, 'companies', companyId, 'sales');
 
+        if (user?.role === 'OWNER' && (!activeBranchId || activeBranchId === 'ALL')) {
+            // El Owner escucha todas las ventas de la empresa que se estén haciendo AHORA
+            salesQuery = query(salesRef, orderBy('date', 'desc'), limit(30));
+        } else if (activeBranchId) {
+            // El cajero solo escucha las de su sucursal
+            salesQuery = query(salesRef, where('branchId', '==', activeBranchId), orderBy('date', 'desc'), limit(30));
+        }
+
+        if (salesQuery) {
             this._unsubscribes.push(onSnapshot(salesQuery, async (snapshot) => {
                 const localDb = await getDB();
                 const pendingIds = await localDb.sales.where('syncStatus').equals('pending').primaryKeys();
@@ -539,6 +601,7 @@ export const syncService = {
                         const hasAfipData = cloudData.afip && (cloudData.afip.status === 'APPROVED' || cloudData.afip.cae);
                         const hasFinalNumber = cloudData.number || cloudData.ticketNumber;
 
+                        // Si la creamos nosotros, no la pisamos a menos que traiga datos de AFIP o de Facturación Final
                         if (!isPendingLocally || hasAfipData || hasFinalNumber) {
                             salesToPut.push(this._sanitizeCloudSale(cloudData, change.doc.id));
                         }
@@ -549,12 +612,12 @@ export const syncService = {
                     await localDb.sales.bulkPut(salesToPut);
                 }
             }));
-        } catch (e) { 
-            console.warn("Listener Ventas Error:", e); 
         }
+    } catch (e) { 
+        console.warn("Listener Ventas Error:", e); 
     }
 
-    // 4. MAESTROS GLOBALES
+    // 3. MAESTROS GLOBALES
     const masterCollections = ['categories', 'brands', 'clients', 'suppliers'];
     masterCollections.forEach(collectionName => {
         const q = query(collection(db, 'companies', companyId, collectionName));
@@ -633,7 +696,6 @@ export const syncService = {
         .filter(p => p.syncStatus === 'pending' || p.syncStatus === 'pending_update')
         .toArray();
 
-    // 🔥 TAMBIÉN SUBIMOS PROMOS/STOCK PENDIENTES DEL INVENTARIO LOCAL
     const pendingInventory = await localDb.inventory
         .filter(i => i.syncStatus === 'pending')
         .toArray();
@@ -643,7 +705,6 @@ export const syncService = {
     const batch = writeBatch(db);
     let opCount = 0;
 
-    // 1. Subir Maestros
     if (pendingProducts.length > 0) {
         for (const product of pendingProducts) {
             if (!product.id) continue;
@@ -658,14 +719,13 @@ export const syncService = {
         }
     }
 
-    // 2. Subir Inventario Local (Stock + Promo)
     if (pendingInventory.length > 0) {
         for (const inv of pendingInventory) {
             const stockRef = doc(db, `companies/${companyId}/branches/${inv.branchId}/inventory`, String(inv.productId));
             batch.set(stockRef, {
                 productId: inv.productId,
                 stock: parseFloat(inv.stock) || 0,
-                promo: inv.promo || null, // 🔥 SUBIDA DE PROMO LOCAL
+                promo: inv.promo || null, 
                 updatedAt: serverTimestamp()
             }, { merge: true });
             opCount++;
@@ -675,7 +735,6 @@ export const syncService = {
     if (opCount > 0) {
         await batch.commit();
         
-        // Marcar como synced localmente
         if (pendingProducts.length > 0) {
             await localDb.products.bulkUpdate(
                 pendingProducts.map(p => ({ key: p.id, changes: { syncStatus: 'synced' } }))

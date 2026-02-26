@@ -433,15 +433,9 @@ export const cashRepository = {
     // ⚖️ BALANCE Y AUDITORÍA (EL CEREBRO DEL CIERRE Z)
     // =========================================
     
-    // Función Helper para calcular totales
-    // 🔥 ESTA ES LA CLAVE: Calcula ventas desde 'sales' y movimientos extra desde 'cash_movements'
     async _calculateShiftState(shift, dbLocal) {
         if (!shift) return null;
 
-        // 🔥 CORRECCIÓN DEL ERROR "SchemaError": Usamos filter() en lugar de where()
-        // porque shiftId no está indexado en la tabla 'sales' ni 'cash_movements' en el esquema actual.
-        // Esto es un poco más lento pero evita que la app explote.
-        
         const sales = await dbLocal.sales
             .filter(s => s.shiftId === shift.id)
             .toArray();
@@ -450,7 +444,6 @@ export const cashRepository = {
             .filter(m => m.shiftId === shift.id)
             .toArray();
 
-        // Inicializamos contadores
         let state = {
             initialAmount: Number(shift.initialAmount) || 0,
             
@@ -471,16 +464,15 @@ export const cashRepository = {
             totalDigital: 0
         };
 
-        // A. PROCESAR VENTAS (Excluyendo Internas y Anuladas)
+        // A. PROCESAR VENTAS 
         sales.forEach(sale => {
-            if (sale.type === 'INTERNAL') return; // 🛡️ Ignorar consumo interno
-            if (sale.afip?.status === 'VOIDED' || sale.status === 'CANCELLED' || sale.status === 'REFUNDED') return; // Ignorar anuladas/devueltas
+            if (sale.type === 'INTERNAL') return; 
+            if (sale.afip?.status === 'VOIDED' || sale.status === 'CANCELLED' || sale.status === 'REFUNDED') return; 
 
             const amount = parseFloat(sale.total) || 0;
             state.totalSales += amount;
             state.salesCount++;
 
-            // Normalización de método de pago
             const methodRaw = sale.payment?.method || sale.paymentMethod || 'cash';
             const method = String(methodRaw).toLowerCase().trim();
 
@@ -493,46 +485,42 @@ export const cashRepository = {
             } else if (['clover', 'card', 'tarjeta', 'credit', 'debit'].includes(method)) {
                 state.salesByMethod.clover += amount;
                 state.salesDigital += amount;
-            } else if (['current_account', 'cuenta_corriente'].includes(method)) {
+            } else if (['current_account', 'cuenta_corriente', 'employee_account'].includes(method)) {
+                // 🔥 AHORA LOS CONSUMOS DEL EMPLEADO NO SUMAN CAJA NI DIGITAL (Solo van a Ledger)
                 state.salesByMethod.account += amount;
-                // Cta Corriente no suma a caja ni digital
             } else {
                 state.salesByMethod.digitalOther += amount;
                 state.salesDigital += amount;
             }
         });
 
-        // B. PROCESAR MOVIMIENTOS (Solo Cash y No-Ventas)
+        // B. PROCESAR MOVIMIENTOS 
         movements.forEach(m => {
             const amount = Number(m.amount) || 0;
             const isCash = (m.method || 'cash') === 'cash';
             
-            // Ignoramos SALE porque ya las sumamos desde la tabla 'sales' (más preciso)
             if (m.type === 'SALE' || m.type === 'INTERNAL') return; 
-
-            // Ignoramos movimientos de cierre/tesorería para el cálculo de "lo que debería haber"
             if (m.type === 'TREASURY' || m.subtype === 'CLOSING') return;
 
             if (m.type === 'DEPOSIT') {
-                if (m.subtype !== 'OPENING') { // Fondo inicial ya está en initialAmount
+                if (m.subtype !== 'OPENING') { 
                     state.deposits += amount;
-                    if (isCash) state.salesCash += amount; // Lo tratamos como entrada de efectivo
+                    if (isCash) state.salesCash += amount; 
                 }
             } else if (m.type === 'EXPENSE') {
                 state.expenses += amount;
-            } else if (m.type === 'WITHDRAWAL') {
+            } else if (m.type === 'WITHDRAWAL' || m.type === 'OUT') { // 🔥 Agregado 'OUT' por los Vales manuales
                 state.withdrawals += amount;
-            } else if (m.type === 'IN') { // Ingreso manual vario
+            } else if (m.type === 'IN') { 
                 if (isCash) state.salesCash += amount;
             }
         });
 
         // C. CÁLCULO FINAL DE CAJA TEÓRICA
-        // Caja Teórica = Inicial + VentasEfvo + Depositos - Gastos - Retiros
-        state.totalCash = state.initialAmount + state.salesByMethod.cash + state.deposits - state.expenses - state.withdrawals;
+        // Caja Teórica = Inicial + VentasEfvo + Depositos + IngresosManuales - Gastos - RetirosManuales
+        state.totalCash = state.initialAmount + state.salesCash - state.expenses - state.withdrawals;
         state.totalDigital = state.salesDigital;
 
-        // Redondeo de seguridad
         const round = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
         state.totalCash = round(state.totalCash);
         state.totalSales = round(state.totalSales);
@@ -540,7 +528,7 @@ export const cashRepository = {
         return state;
     },
 
-    // Obtener Balance Visual (Para UI en vivo)
+    // Obtener Balance Visual 
     async getShiftBalance(shiftId) {
         const dbLocal = await getDB();
         
@@ -548,10 +536,7 @@ export const cashRepository = {
             const shift = await dbLocal.shifts.get(shiftId);
             if (!shift) return { totalCash: 0 };
             
-            // Usamos el motor de cálculo unificado
             const state = await this._calculateShiftState(shift, dbLocal);
-            
-            // Corrección: Usar filter también aquí
             const movements = await dbLocal.cash_movements.filter(m => m.shiftId === shiftId).reverse().toArray();
             
             return {
@@ -567,7 +552,6 @@ export const cashRepository = {
         const shift = await dbLocal.shifts.get(shiftId);
         if (!shift) throw new Error("Turno no encontrado");
 
-        // 1. Si ya está cerrado y tiene foto, devolvemos la foto (Inmutable)
         if (shift.status === 'CLOSED' && shift.auditSnapshot) {
             return {
                 shiftId: shift.id,
@@ -581,7 +565,6 @@ export const cashRepository = {
             };
         }
 
-        // 2. Si está abierto, calculamos
         return await dbLocal.transaction('r', [dbLocal.cash_movements, dbLocal.shifts, dbLocal.sales], async () => {
             const state = await this._calculateShiftState(shift, dbLocal);
             
@@ -597,16 +580,15 @@ export const cashRepository = {
                 salesCount: state.salesCount,
                 salesByMethod: state.salesByMethod,
                 
-                cashIn: state.deposits, // Entradas extras
+                cashIn: state.deposits + (state.salesCash - state.salesByMethod.cash), // Entradas extra
                 cashOut: state.expenses + state.withdrawals, // Salidas
                 
                 totalExpenses: state.expenses,
                 totalWithdrawals: state.withdrawals,
                 totalDigital: state.totalDigital,
                 
-                expectedCash: state.totalCash, // EL NÚMERO MÁGICO
+                expectedCash: state.totalCash, // EL NÚMERO MÁGICO DE CAJA
                 
-                // Valores de cierre (si existieran, o 0)
                 leftInCash: Number(shift.leftInCash) || 0,
                 declaredCash: Number(shift.finalCash) || 0,
                 withdrawn: Number(shift.withdrawn) || 0

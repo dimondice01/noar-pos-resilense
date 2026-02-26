@@ -5,7 +5,9 @@ import { useAuthStore } from '../../auth/store/useAuthStore';
 import { useShiftStore } from '../../cash/store/useShiftStore'; 
 import { cashRepository } from '../../cash/repositories/cashRepository'; 
 import { paymentService } from '../../payments/services/paymentService'; 
+import { employeeLedgerRepository } from '../../settings/repositories/employeeLedgerRepository'; // 🔥 NUEVO: Importación del Ledger
 import { toast } from 'react-hot-toast'; 
+import { getDB } from '../../../database/db'; 
 
 // =================================================================
 // 🧠 NEXUS PRO MAX CORE - POS CONTROLLER (LOCAL-FIRST ENGINE)
@@ -25,36 +27,27 @@ const parseScaleBarcode = (code) => {
     if (code.length !== 13) return { isScale: false };
 
     // CASO SYSTEL / KRETZ - Formato Híbrido Universal
-    // Tu ejemplo: 20 00755 00355 2
-    // Dígitos:   01 23456 78901 2
-    // Prefijo (2): 20, 27, 28, 02
-    // PLU (5): 00755
-    // Peso/Precio (5): 00355
-    
     const prefix = code.substring(0, 2);
     
     if (['20', '27', '28', '02'].includes(prefix)) {
         try {
             // Intentamos siempre primero como PLU 5 dígitos + PESO (5 dígitos)
-            const rawPlu5 = code.substring(2, 7);   // ej: '00755'
-            const rawValue5 = code.substring(7, 12); // ej: '00355'
+            const rawPlu5 = code.substring(2, 7);   
+            const rawValue5 = code.substring(7, 12); 
             
-            const plu5 = parseInt(rawPlu5, 10).toString(); // '755'
-            const value5 = parseFloat(rawValue5); // 355
+            const plu5 = parseInt(rawPlu5, 10).toString(); 
+            const value5 = parseFloat(rawValue5); 
             
-            // Asumimos que si el valor es razonable para un peso (ej. menos de 50.000g / 50kg)
-            // es un código de peso. 
-            // Esto cubre perfecto tu caso: 00355 gramos -> 0.355 kg
             if (value5 > 0 && value5 < 50000) {
                  return { 
                     isScale: true, 
                     type: 'weight',
                     pluCode: plu5, 
-                    embeddedWeight: value5 / 1000 // Convertimos gramos a KILOS (ej: 0.355)
+                    embeddedWeight: value5 / 1000 
                 };
             }
 
-            // Fallback: Si el valor era muy grande, tal vez era el viejo formato de Precio (PLU 4 dígitos)
+            // Fallback: Formato de Precio (PLU 4 dígitos)
             if (prefix === '20') {
                 const rawPlu4 = code.substring(2, 6);
                 const rawPrice6 = code.substring(6, 12);
@@ -80,6 +73,45 @@ export const usePosController = () => {
     const [activeTabId, setActiveTabId] = useState(tabs[0].id);
     const [isProcessing, setIsProcessing] = useState(false);
     const [searchResults, setSearchResults] = useState([]);
+
+    // 🔥 ESTADO DE CONFIGURACIÓN DEL POS (Integrando Surcharges)
+    const [posConfig, setPosConfig] = useState({
+        isWholesaleEnabled: false,
+        wholesalePercentage: null,
+        paymentSurcharges: {
+            cash: 0,
+            transfer: 0,
+            mp: 0,
+            card: 0,
+            current_account: 0
+        }
+    });
+
+    // =================================================================
+    // ⚙️ CARGA DE CONFIGURACIÓN DINÁMICA
+    // =================================================================
+    useEffect(() => {
+        const loadPosConfig = async () => {
+            try {
+                const localDb = await getDB();
+                const configDoc = await localDb.config.get('pos_settings');
+                
+                if (configDoc && configDoc.value) {
+                    setPosConfig({
+                        isWholesaleEnabled: configDoc.value.isWholesaleEnabled || false,
+                        wholesalePercentage: configDoc.value.wholesalePercentage || null,
+                        paymentSurcharges: configDoc.value.paymentSurcharges || {
+                            cash: 0, transfer: 0, mp: 0, card: 0, current_account: 0
+                        }
+                    });
+                }
+            } catch (error) {
+                console.error("Error cargando configuración local del POS:", error);
+            }
+        };
+
+        loadPosConfig();
+    }, []);
 
     // =================================================================
     // 🧮 MOTOR DE PROMOCIONES COMPLEJAS
@@ -193,9 +225,12 @@ export const usePosController = () => {
             
             let updatedCount = 0;
             const updatedItems = await Promise.all(activeTab.items.map(async (item) => {
+                // No verificar precios de artículos manuales
+                if (item.code === 'MANUAL') return item;
+                
                 const freshProduct = await productRepository.findByCode(item.code);
                 
-                if (freshProduct && Math.abs(freshProduct.price - item.originalPrice) > 0.01) {
+                if (freshProduct && Math.abs(freshProduct.price - item.originalPrice) > 0.01 && !item.appliedWholesale) {
                     updatedCount++;
                     const newItem = { ...item, ...freshProduct, originalPrice: parseFloat(freshProduct.price) };
                     const promoResult = _calculatePromo(newItem, item.quantity);
@@ -230,18 +265,29 @@ export const usePosController = () => {
         updateActiveTab(tab => {
             const existingIndex = tab.items.findIndex(i => i.id === product.id);
             let newItems = [...tab.items];
+            
             if (existingIndex >= 0) {
                 const currentItem = newItems[existingIndex];
                 const newQty = currentItem.quantity + qty;
-                const promoResult = _calculatePromo(product, newQty);
-                newItems[existingIndex] = {
-                    ...currentItem,
-                    quantity: newQty,
-                    finalPrice: promoResult.finalPrice,
-                    subtotal: promoResult.totalLine,
-                    promoLabel: promoResult.promoLabel,
-                    appliedPromo: promoResult.applied
-                };
+                
+                // Si ya tiene descuento mayorista, se lo mantenemos
+                if (currentItem.appliedWholesale) {
+                     newItems[existingIndex] = {
+                        ...currentItem,
+                        quantity: newQty,
+                        subtotal: currentItem.finalPrice * newQty
+                    };
+                } else {
+                    const promoResult = _calculatePromo(product, newQty);
+                    newItems[existingIndex] = {
+                        ...currentItem,
+                        quantity: newQty,
+                        finalPrice: promoResult.finalPrice,
+                        subtotal: promoResult.totalLine,
+                        promoLabel: promoResult.promoLabel,
+                        appliedPromo: promoResult.applied
+                    };
+                }
             } else {
                 const promoResult = _calculatePromo(product, qty);
                 newItems.push({
@@ -252,7 +298,8 @@ export const usePosController = () => {
                     finalPrice: promoResult.finalPrice,
                     subtotal: promoResult.totalLine,
                     promoLabel: promoResult.promoLabel,
-                    appliedPromo: promoResult.applied
+                    appliedPromo: promoResult.applied,
+                    appliedWholesale: false
                 });
             }
             return { ...tab, items: newItems };
@@ -264,6 +311,13 @@ export const usePosController = () => {
         updateActiveTab(tab => {
             const newItems = tab.items.map(item => {
                 if (item.id === productId) {
+                    if (item.appliedWholesale) {
+                         return { 
+                            ...item, 
+                            quantity: newQty, 
+                            subtotal: item.finalPrice * newQty 
+                        };
+                    }
                     const promoResult = _calculatePromo(item, newQty);
                     return { 
                         ...item, 
@@ -293,6 +347,53 @@ export const usePosController = () => {
             return tab;
         }));
     };
+
+    // 🔥 APLICAR DESCUENTO MAYORISTA (ATAJO F6) CON LECTURA DE CONFIGURACIÓN
+    const applyWholesaleToLastItem = useCallback(() => {
+        if (!activeTab || activeTab.items.length === 0) {
+            toast.error("El carrito está vacío");
+            return;
+        }
+
+        // 🛡️ BARRERA DE SEGURIDAD BASADA EN DB LOCAL
+        if (!posConfig.isWholesaleEnabled || !posConfig.wholesalePercentage) {
+            toast.error("⚠️ Función no habilitada. Configure el % desde el Panel Admin.");
+            return;
+        }
+
+        const newItems = [...activeTab.items];
+        const lastIndex = newItems.length - 1;
+        const lastItem = newItems[lastIndex];
+
+        if (lastItem.appliedWholesale) {
+            toast.error("El último artículo ya tiene descuento");
+            return;
+        }
+
+        if (lastItem.code === 'MANUAL') {
+            toast.error("No aplicable a artículos manuales");
+            return;
+        }
+
+        // Aplicamos la lógica matemática
+        const discountRatio = posConfig.wholesalePercentage / 100;
+        const originalPrice = parseFloat(lastItem.originalPrice || lastItem.price);
+        const newPrice = originalPrice - (originalPrice * discountRatio);
+
+        newItems[lastIndex] = {
+            ...lastItem,
+            finalPrice: newPrice,
+            price: newPrice,
+            subtotal: newPrice * lastItem.quantity,
+            appliedWholesale: true,
+            appliedPromo: false, 
+            promoLabel: `MAYORISTA -${posConfig.wholesalePercentage}%`
+        };
+
+        updateActiveTab(tab => ({ ...tab, items: newItems }));
+        toast.success(`Descuento mayorista aplicado a ${lastItem.name}`);
+        
+    }, [activeTab, posConfig]);
 
     const setClient = (client) => updateActiveTab(tab => ({ ...tab, client }));
 
@@ -327,8 +428,14 @@ export const usePosController = () => {
     };
 
     const processSale = async (paymentData) => {
-        if (activeTab.items.length === 0) return toast.error("Carrito vacío");
-        if (!activeBranchId) return toast.error("Sucursal no activa");
+        if (activeTab.items.length === 0) {
+            toast.error("Carrito vacío");
+            return null;
+        }
+        if (!activeBranchId) {
+            toast.error("Sucursal no activa");
+            return null;
+        }
 
         setIsProcessing(true);
         let loadingToast = null;
@@ -358,7 +465,8 @@ export const usePosController = () => {
                     method: paymentData.method,
                     amount: parseFloat(paymentData.amountPaid),
                     surcharge: parseFloat(paymentData.surcharge || 0),
-                    total: parseFloat(paymentData.totalSale || totals.total)
+                    total: parseFloat(paymentData.totalSale || totals.total),
+                    employeeId: paymentData.employeeId || null // 🔥 Capturamos el empleado si existe
                 }];
                 totalWithInterest = parseFloat(paymentData.totalSale || totals.total);
             }
@@ -376,17 +484,18 @@ export const usePosController = () => {
                     subtotal: i.subtotal,
                     promoLabel: i.promoLabel || '',
                     appliedPromo: i.appliedPromo || false,
+                    appliedWholesale: i.appliedWholesale || false,
                     taxRate: i.taxRate || 21
                 })),
                 client: activeTab.client || { name: 'Consumidor Final', fiscalCondition: 'CONSUMIDOR_FINAL' }, 
                 total: totalWithInterest, 
                 subtotal: totals.subtotal,
                 discount: totals.discountAmount,
+                surcharge: parseFloat(paymentData.surcharge || 0), // Guardar el recargo total de la operacion
                 payments: finalPayments,
                 payment: finalPayments[0], 
                 method: finalPayments.length > 1 ? 'SPLIT' : finalPayments[0].method,
                 
-                // 🔥 INYECCIÓN OBLIGATORIA
                 branchId: activeBranch, 
                 shiftId: currentShift.id, 
                 companyId: activeCompanyId,
@@ -438,6 +547,28 @@ export const usePosController = () => {
                     invoiceNumber: localNumber
                 });
                 toast.success(`Venta registrada`);
+            }
+
+            // 🔥 3. REGISTRO EN EL LEDGER DEL EMPLEADO (SI APLICA)
+            try {
+                for (const p of finalPayments) {
+                    if (p.method === 'employee_account' && p.employeeId) {
+                        await employeeLedgerRepository.addTransaction({
+                            companyId: activeCompanyId,
+                            branchId: activeBranch,
+                            userId: p.employeeId,
+                            type: 'POS_CONSUMPTION',
+                            amount: p.total,
+                            description: `Consumo Caja (Ticket: ${saleResult?.number || 'interno'})`,
+                            refId: saleResult?.id || null,
+                            operatorName: user.name
+                        });
+                        console.log(`[LEDGER] Consumo de $${p.total} registrado a empleado ${p.employeeId}`);
+                    }
+                }
+            } catch (ledgerError) {
+                console.error("No se pudo registrar el consumo en el Ledger del empleado:", ledgerError);
+                toast.error("Venta hecha, pero falló el registro en la cuenta del empleado.");
             }
 
             clearCart();
@@ -515,7 +646,8 @@ export const usePosController = () => {
         } catch (err) { return false; }
     };
 
-    // 🔥 GLOBAL KEYBOARD LISTENER
+    // 🔥 GLOBAL KEYBOARD LISTENER MOVIDO AL PAGE PRINCIPAL
+    // Dejamos este listener solo para la detección rápida de scanner
     useEffect(() => {
         let buffer = '';
         let lastKeyTime = Date.now();
@@ -545,7 +677,6 @@ export const usePosController = () => {
                             }
 
                             if (calculatedQty > 0) {
-                                // Redondeo seguro a 3 decimales
                                 calculatedQty = Math.round(calculatedQty * 1000) / 1000;
                                 addToCart(product, calculatedQty);
                                 toast.success(`⚖️ Balanza: ${product.name} (${calculatedQty}kg)`);
@@ -563,7 +694,7 @@ export const usePosController = () => {
                         addToCart(exactProduct, 1);
                         setSearchResults([]);
                     } else {
-                        searchProduct(buffer); // Fallback visual
+                        searchProduct(buffer); 
                     }
                     buffer = ''; 
                 }
@@ -573,10 +704,12 @@ export const usePosController = () => {
         return () => window.removeEventListener('keydown', handleKeyDown);
     }, [activeTabId, addToCart]); 
 
+    // 🔥 EXPORTAMOS `posConfig` AQUÍ
     return { 
         tabs, activeTab, activeTabId, totals, searchResults, isProcessing, 
+        posConfig,
         addTab, removeTab, switchTab, addToCart, removeFromCart, 
         updateItemQuantity, setClient, clearCart, searchProduct, 
-        setSearchResults, processSale, processInternalSale 
+        setSearchResults, processSale, processInternalSale, applyWholesaleToLastItem 
     };
 };
