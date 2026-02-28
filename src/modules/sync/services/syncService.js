@@ -359,7 +359,16 @@ export const syncService = {
       const lastSyncDate = lastSyncStr ? new Date(lastSyncStr) : new Date(0); 
 
       const invRef = collection(db, 'companies', companyId, 'branches', branchId, 'inventory');
-      const q = query(invRef, where('updatedAt', '>', Timestamp.fromDate(lastSyncDate)));
+      
+      // Check if local inventory is empty for this branch to force a full pull
+      const localInventoryCount = await localDb.inventory.where('branchId').equals(branchId).count();
+
+      let q;
+      if (lastSyncStr && localInventoryCount > 0) {
+         q = query(invRef, where('updatedAt', '>', Timestamp.fromDate(lastSyncDate)));
+      } else {
+         q = invRef;
+      }
       
       try {
           const snapshot = await getDocs(q);
@@ -666,12 +675,15 @@ export const syncService = {
     if (!companyId) return { uploaded: 0, errors: 0 };
 
     try {
-        const [salesRes, prodRes, mastersRes] = await Promise.all([
+        const [salesRes, prodRes, mastersRes, shiftsRes, movsRes] = await Promise.all([
             this.syncPendingSales(companyId, branchId),
             this.syncPendingProducts(companyId, branchId),
-            this.syncPendingMasters(companyId) 
+            this.syncPendingMasters(companyId),
+            // 🔥 AHORA SÍ: Ejecutamos las funciones de Cajas y Vales
+            this.syncPendingShifts(companyId),
+            this.syncPendingCashMovements(companyId) 
         ]);
-        const totalUploaded = (salesRes.synced || 0) + (prodRes.synced || 0) + (mastersRes?.synced || 0);
+        const totalUploaded = (salesRes?.synced || 0) + (prodRes?.synced || 0) + (mastersRes?.synced || 0) + (shiftsRes?.synced || 0) + (movsRes?.synced || 0);
         return { uploaded: totalUploaded, errors: 0 };
     } catch (error) {
         console.error("❌ Error Sync Up:", error);
@@ -821,6 +833,60 @@ export const syncService = {
         totalSynced += batchSales.length;
     }
     return { synced: totalSynced };
+  },
+
+  // 🔥 D. SUBIDA DE TURNOS DE CAJA (SHIFTS) OFFLINE
+  async syncPendingShifts(companyId) {
+      const localDb = await getDB();
+      const pendingShifts = await localDb.shifts.where('syncStatus').equals('pending').toArray();
+      
+      if (pendingShifts.length === 0) return { synced: 0 };
+
+      const batch = writeBatch(db);
+      const colRef = collection(db, 'companies', companyId, 'shifts');
+      const syncedIds = [];
+
+      for (const shift of pendingShifts) {
+          const safeId = shift.firestoreId || shift.localId || shift.id;
+          const docRef = doc(colRef, String(safeId)); 
+          const { localId, syncStatus, ...cleanShift } = shift;
+
+          batch.set(docRef, this._deepSanitize(cleanShift), { merge: true });
+          syncedIds.push(shift.id); 
+      }
+
+      await batch.commit();
+      await localDb.shifts.bulkUpdate(
+           syncedIds.map(id => ({ key: id, changes: { syncStatus: 'synced' } }))
+      );
+      return { synced: syncedIds.length };
+  },
+
+  // 🔥 E. SUBIDA DE MOVIMIENTOS DE CAJA (VALES/ADELANTOS) OFFLINE
+  async syncPendingCashMovements(companyId) {
+      const localDb = await getDB();
+      const pendingMovs = await localDb.cash_movements.where('syncStatus').equals('pending').toArray();
+      
+      if (pendingMovs.length === 0) return { synced: 0 };
+
+      const batch = writeBatch(db);
+      const colRef = collection(db, 'companies', companyId, 'cash_movements');
+      const syncedIds = [];
+
+      for (const mov of pendingMovs) {
+          const safeId = mov.firestoreId || mov.id;
+          const docRef = doc(colRef, String(safeId)); 
+          const { syncStatus, ...cleanMov } = mov;
+
+          batch.set(docRef, this._deepSanitize(cleanMov), { merge: true });
+          syncedIds.push(mov.id);
+      }
+
+      await batch.commit();
+      await localDb.cash_movements.bulkUpdate(
+           syncedIds.map(id => ({ key: id, changes: { syncStatus: 'synced' } }))
+      );
+      return { synced: syncedIds.length };
   },
 
   // =================================================================

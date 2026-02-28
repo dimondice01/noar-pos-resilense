@@ -12,7 +12,7 @@ import { collection, getDocs, query, where, updateDoc, doc, deleteDoc, getDoc, s
 import { db } from '../../../database/firebase';
 import { cn } from '../../../core/utils/cn';
 import { useAuthStore } from '../../auth/store/useAuthStore'; 
-import { employeeLedgerRepository } from '../repositories/employeeLedgerRepository'; // 🔥 IMPORTACIÓN DEL MOTOR CONTABLE
+import { employeeLedgerRepository } from '../repositories/employeeLedgerRepository'; 
 import toast from 'react-hot-toast';
 
 const API_URL = import.meta.env.VITE_API_URL || "https://us-central1-salvadorpos1.cloudfunctions.net/api";
@@ -27,11 +27,14 @@ const LiquidationModal = ({ isOpen, onClose, employee, onLiquidated }) => {
     const [isLiquidating, setIsLiquidating] = useState(false);
 
     useEffect(() => {
-        if (isOpen && employee?.uid && currentUser?.companyId) {
+        // 🔥 FIX: Buscar por uid o id (según cómo venga el objeto)
+        const targetUserId = employee?.uid || employee?.id;
+
+        if (isOpen && targetUserId && currentUser?.companyId) {
             const fetchHistory = async () => {
                 setIsLoading(true);
                 try {
-                    const records = await employeeLedgerRepository.getEmployeeHistory(currentUser.companyId, employee.uid);
+                    const records = await employeeLedgerRepository.getEmployeeHistory(currentUser.companyId, targetUserId);
                     setHistory(records);
                 } catch (e) {
                     console.error("Error cargando historial", e);
@@ -40,11 +43,15 @@ const LiquidationModal = ({ isOpen, onClose, employee, onLiquidated }) => {
                 }
             };
             fetchHistory();
+        } else if (isOpen) {
+            // Si se abre pero no hay datos, quitamos el loading para no dejar la ruedita infinita
+            setIsLoading(false);
         }
     }, [isOpen, employee, currentUser]);
 
     const handleLiquidate = async () => {
-        if (!employee || !employee.ledgerDebt || employee.ledgerDebt <= 0) return;
+        const targetUserId = employee?.uid || employee?.id;
+        if (!employee || !targetUserId || !employee.ledgerDebt || employee.ledgerDebt <= 0) return;
         
         if (!window.confirm(`¿Confirmas la liquidación de $${employee.ledgerDebt.toLocaleString('es-AR')} para ${employee.name}? Esta acción dejará su deuda en 0.`)) return;
 
@@ -54,7 +61,7 @@ const LiquidationModal = ({ isOpen, onClose, employee, onLiquidated }) => {
             await employeeLedgerRepository.addTransaction({
                 companyId: currentUser.companyId,
                 branchId: employee.branchId || 'main',
-                userId: employee.uid,
+                userId: targetUserId,
                 type: 'LIQUIDATION',
                 amount: parseFloat(employee.ledgerDebt),
                 description: `Liquidación de cierre de mes.`,
@@ -117,7 +124,7 @@ const LiquidationModal = ({ isOpen, onClose, employee, onLiquidated }) => {
                     </h4>
                     
                     {isLoading ? (
-                        <div className="py-10 flex justify-center"><Loader2 className="animate-spin text-sys-300" size={30}/></div>
+                        <div className="py-10 flex justify-center"><Loader2 className="animate-spin text-brand" size={30}/></div>
                     ) : history.length === 0 ? (
                         <div className="text-center py-10 text-sys-400 text-sm font-medium opacity-60">Sin movimientos registrados.</div>
                     ) : (

@@ -6,7 +6,7 @@ import {
     Printer, ArrowRightLeft, Calendar, ChevronLeft, ChevronRight,
     Upload, RefreshCw, MoreVertical, Cloud, MapPin, 
     Tag, Percent, Megaphone, MoreHorizontal, LayoutGrid, DollarSign,
-    CalendarClock, Info, Scale, Save, Pencil
+    CalendarClock, Info, Scale, Save, Pencil, Loader2
 } from 'lucide-react';
 import toast from 'react-hot-toast'; 
 
@@ -87,9 +87,8 @@ const EditableCell = ({
     const handleKeyDown = (e) => {
         if (e.key === 'Enter') {
             e.preventDefault();
-            inputRef.current.blur(); // Dispara onBlur -> Save
+            inputRef.current.blur(); 
         }
-        // Navegación estilo Excel
         if (e.key === 'ArrowDown' && nextRowId) {
             e.preventDefault();
             const nextEl = document.getElementById(`cell-${nextRowId}-${field}`);
@@ -104,7 +103,6 @@ const EditableCell = ({
 
     const handleBlur = () => {
         setIsEditing(false);
-        // Solo guardar si cambió el valor y no está deshabilitado
         if (!disabled && localValue != value) {
             onSave(productId, field, localValue);
         }
@@ -286,7 +284,6 @@ const BulkUpdateModal = ({ isOpen, onClose, onConfirm, allProducts, masters, man
         });
     }, [activeTab, targetId, manualSelectionIds, allProducts]);
 
-    // Función "Macro" para auto-llenar los inputs cuando escriben un porcentaje
     const handleCostPctChange = (val) => {
         const pct = parseFloat(val) || 0;
         setCostPct(pct);
@@ -314,11 +311,10 @@ const BulkUpdateModal = ({ isOpen, onClose, onConfirm, allProducts, masters, man
         });
     };
 
-    // Función para manejar el cambio manual individual en la tabla
     const handleManualChange = (id, field, val) => {
         setDraftValues(prev => ({
             ...prev,
-            [id]: { ...prev[id], [field]: val } // Guardamos en string por si tipean un punto, se procesa al confirmar
+            [id]: { ...prev[id], [field]: val } 
         }));
     };
 
@@ -328,7 +324,6 @@ const BulkUpdateModal = ({ isOpen, onClose, onConfirm, allProducts, masters, man
       <div className="fixed inset-0 z-[80] flex items-center justify-center bg-sys-900/60 backdrop-blur-sm p-4 animate-in fade-in zoom-in-95">
         <div className="bg-white rounded-3xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh]">
           
-          {/* HEADER */}
           <div className="p-5 border-b border-sys-100 bg-sys-50 flex justify-between items-center shrink-0">
              <div>
                 <h3 className="font-black text-xl text-sys-900 flex items-center gap-2"><ArrowUpRight className="text-brand" /> Actualización de Precios</h3>
@@ -337,10 +332,8 @@ const BulkUpdateModal = ({ isOpen, onClose, onConfirm, allProducts, masters, man
              <button onClick={onClose} className="p-2 hover:bg-sys-200 rounded-full transition-colors"><X size={20} className="text-sys-400" /></button>
           </div>
 
-          {/* BODY */}
           <div className="flex-1 overflow-y-auto p-6 space-y-6 custom-scrollbar bg-white">
              
-             {/* PESTAÑAS DE FILTRO */}
              <div className="flex bg-sys-100 p-1.5 rounded-2xl shrink-0">
                 {['manual', 'brand', 'category'].map(t => (
                     <button 
@@ -369,7 +362,6 @@ const BulkUpdateModal = ({ isOpen, onClose, onConfirm, allProducts, masters, man
                 )}
              </div>
 
-             {/* BLOQUE HERRAMIENTAS MACRO (%) */}
              <div className="grid grid-cols-2 gap-4 shrink-0 bg-brand/5 p-4 rounded-2xl border border-brand/10">
                 <div className="space-y-1.5">
                     <label className="text-[10px] font-black text-sys-600 uppercase ml-1">Auto-completar Costo (+%)</label>
@@ -387,7 +379,6 @@ const BulkUpdateModal = ({ isOpen, onClose, onConfirm, allProducts, masters, man
                 </div>
              </div>
 
-             {/* BLOQUE PROGRAMACIÓN FECHA */}
              <div className={cn("p-4 rounded-2xl border-2 transition-all cursor-pointer select-none shrink-0", isScheduled ? "bg-orange-50 border-orange-300 ring-2 ring-orange-100" : "bg-white border-sys-200 hover:bg-sys-50")} onClick={() => setIsScheduled(!isScheduled)}>
                 <div className="flex items-center gap-3">
                     <div className={cn("w-6 h-6 rounded-md flex items-center justify-center border-2 transition-colors shrink-0", isScheduled ? "bg-orange-500 border-orange-500 text-white" : "bg-white border-sys-300 text-transparent")}>
@@ -426,7 +417,6 @@ const BulkUpdateModal = ({ isOpen, onClose, onConfirm, allProducts, masters, man
                 )}
              </div>
 
-             {/* TABLA DE EDICIÓN MANUAL */}
              <div className="border-2 border-sys-200 rounded-2xl overflow-hidden shrink-0">
                 <div className="bg-sys-100 p-3 text-[10px] font-black text-sys-500 uppercase flex justify-between items-center border-b border-sys-200 shadow-sm">
                     <span className="flex-1">Listado de Productos ({targetList.length})</span>
@@ -476,7 +466,6 @@ const BulkUpdateModal = ({ isOpen, onClose, onConfirm, allProducts, masters, man
 
           </div>
 
-          {/* FOOTER */}
           <div className="p-6 bg-sys-50 border-t border-sys-200 flex gap-3 shrink-0">
             <Button variant="ghost" onClick={onClose} className="flex-1 rounded-2xl h-12 font-bold bg-white border border-sys-200 hover:bg-sys-100 text-sys-600">Cancelar</Button>
             <Button 
@@ -502,12 +491,16 @@ export const InventoryPage = () => {
     const navigate = useNavigate();
     const { companySlug } = useParams();
     const { user, activeBranchId, activeBranchName } = useAuthStore(); 
-    const isAdmin = user?.role === 'OWNER' || user?.role === 'ADMIN' || user?.role === 'SUPER_ADMIN';
+    
+    // 🔥 CONTROL ESTRICTO DE ROLES
     const isOwner = user?.role === 'OWNER'; 
+    const canViewAllBranches = isOwner || user?.role === 'SUPER_ADMIN';
+    const isAdmin = user?.role === 'ADMIN' || canViewAllBranches; 
 
     // Data States
     const [products, setProducts] = useState([]);
     const [loading, setLoading] = useState(true);
+    const [loadingMessage, setLoadingMessage] = useState('Iniciando...'); 
     const [masters, setMasters] = useState({ categories: [], brands: [], suppliers: [] });
     
     // Matrix Global State
@@ -524,7 +517,7 @@ export const InventoryPage = () => {
     // Selection & View State
     const [selectedIds, setSelectedIds] = useState(new Set());
     const [currentPage, setCurrentPage] = useState(1);
-    const [isEditMode, setIsEditMode] = useState(false); // 🔥 PROTECCIÓN DE EDICIÓN
+    const [isEditMode, setIsEditMode] = useState(false); 
     const ITEMS_PER_PAGE = 25;
 
     // Modals
@@ -537,28 +530,24 @@ export const InventoryPage = () => {
     const [editingProduct, setEditingProduct] = useState(null);
     const [stockEntryProduct, setStockEntryProduct] = useState(null);
 
-    // 🔥 REFERENCE TRICK: Mantiene los productos frescos dentro del EventListener
     const productsRef = useRef([]); 
     useEffect(() => { productsRef.current = products; }, [products]);
 
     // =================================================================
-    // 🔍 GLOBAL SCANNER LISTENER (Scanner Inteligente) 🔥
+    // 🔍 GLOBAL SCANNER LISTENER
     // =================================================================
     useEffect(() => {
         let buffer = '';
         let lastKeyTime = Date.now();
 
         const handleGlobalScan = (e) => {
-            // Ignorar si el foco está en un input
             if (['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName)) return;
 
             const now = Date.now();
-            // Aumentamos tolerancia para lectores lentos o bluetooth
             if (now - lastKeyTime > 200) buffer = ''; 
             lastKeyTime = now;
 
             if (e.key === 'Enter') {
-                // Buffer mínimo para evitar falsos positivos
                 if (buffer.length > 2) { 
                     handleScannerMatch(buffer);
                     buffer = '';
@@ -577,13 +566,10 @@ export const InventoryPage = () => {
         const product = currentProducts.find(p => p.code === code || (Array.isArray(p.barcode) && p.barcode.includes(code)) || p.barcode === code);
         
         if (product) {
-            // ✅ EXISTE: MODO EDICIÓN
             setEditingProduct(product);
             setIsProductModalOpen(true);
             toast.success("Producto encontrado: " + product.name);
         } else {
-            // 🆕 NO EXISTE: MODO CREACIÓN (PRECARGADO)
-            // Se envía un objeto limpio con solo los códigos para que el Modal lo tome como nuevo
             setEditingProduct({ code: code, barcode: [code], isNew: true }); 
             setIsProductModalOpen(true);
             toast("Nuevo producto detectado", { icon: '✨' });
@@ -591,59 +577,92 @@ export const InventoryPage = () => {
     };
 
     // =================================================================
-    // 🔄 DATA LOADING
+    // 🔄 DATA LOADING (CON SILENT MODE) 🔥
     // =================================================================
 
-    const loadData = async () => {
-        setLoading(true);
+    const loadData = async (forceCloud = false, isSilent = false) => {
+        if (!isSilent) setLoading(true);
         try {
-            const [branchProducts, cats, brands, supps] = await Promise.all([
-                productRepository.getAllByBranch(activeBranchId), 
+            const dbLocal = await getDB();
+            
+            // 1. Resolver Sucursales Estrictamente por Rol
+            if (!isSilent) setLoadingMessage('Verificando Sucursales...');
+            let branchesData = [];
+            
+            if (canViewAllBranches && user?.companyId) {
+                branchesData = await dbLocal.branches.toArray();
+                if (branchesData.length === 0 && navigator.onLine) {
+                    const snap = await getDocs(collection(firestoreDB, 'companies', user.companyId, 'branches'));
+                    branchesData = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+                    await dbLocal.branches.bulkPut(branchesData);
+                }
+                setBranches(branchesData.sort((a,b) => (a.id === activeBranchId ? -1 : 1)));
+            } else {
+                branchesData = [{ id: activeBranchId, name: activeBranchName || 'Mi Sucursal' }];
+                setBranches(branchesData);
+            }
+
+            // 2. Garantizar que tenemos los datos localmente
+            const prodCount = await dbLocal.products.count();
+            if (prodCount === 0 || forceCloud) {
+                if (!isSilent) setLoadingMessage('Descargando Catálogo Global...');
+                await syncService.syncProducts(user.companyId);
+            }
+
+            // 🔥 AUTO-CURACIÓN
+            if (canViewAllBranches) {
+                if (!isSilent) setLoadingMessage('Sincronizando Stock global...');
+                await syncService.syncAllInventoryForOwner(user.companyId, branchesData);
+            } else {
+                if (!isSilent) setLoadingMessage('Sincronizando Stock local...');
+                await syncService.syncInitialInventory(user.companyId, activeBranchId);
+            }
+
+            // 3. Leer de Local DB y renderizar
+            if (!isSilent) setLoadingMessage('Construyendo matriz...');
+            
+            const fetchProductsTask = (canViewAllBranches && (!activeBranchId || activeBranchId === 'ALL')) 
+                ? productRepository.getAll() 
+                : productRepository.getAllByBranch(activeBranchId);
+
+            const [allProds, cats, brands, supps] = await Promise.all([
+                fetchProductsTask, 
                 masterRepository.getAll('categories'),
                 masterRepository.getAll('brands'),
                 masterRepository.getAll('suppliers')
             ]);
             
-            setProducts([...branchProducts].sort((a,b) => a.name.localeCompare(b.name)));
+            setProducts([...allProds].sort((a,b) => a.name.localeCompare(b.name)));
             setMasters({ categories: cats || [], brands: brands || [], suppliers: supps || [] });
 
-            if (isAdmin && user?.companyId) {
-                 try {
-                    const dbLocal = await getDB();
-                    let branchesData = await dbLocal.branches.toArray();
-                    
-                    if (branchesData.length === 0 && navigator.onLine) {
-                        const q = collection(firestoreDB, 'companies', user.companyId, 'branches');
-                        const snap = await getDocs(q);
-                        branchesData = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-                        await dbLocal.branches.bulkPut(branchesData);
-                    }
-                    setBranches(branchesData.sort((a,b) => (a.id === activeBranchId ? -1 : 1)));
-                    
-                    if (isOwner) loadGlobalStock(branchesData, branchProducts);
-
-                 } catch (e) { console.error("Error loading branches:", e); }
-            } else {
-                setBranches([{ id: activeBranchId, name: activeBranchName }]);
+            if (canViewAllBranches) {
+                await loadGlobalStock();
             }
-        } catch (error) { console.error(error); } finally { setLoading(false); }
+
+        } catch (error) { 
+            console.error(error); 
+            if (!isSilent) toast.error("Error al cargar inventario");
+        } finally { 
+            if (!isSilent) setLoading(false); 
+        }
     };
 
-    const loadGlobalStock = async (allBranches, allProducts) => {
-        setLoadingStock(true);
+    // 🔥 CARGA HIPER RÁPIDA DE STOCK GLOBAL
+    const loadGlobalStock = async () => {
         try {
             const dbLocal = await getDB();
+            const allInventory = await dbLocal.inventory.toArray();
+            
             const stockMatrix = {};
-            await Promise.all(allBranches.map(async (branch) => {
-                const branchInv = await dbLocal.inventory.where('branchId').equals(branch.id).toArray();
-                branchInv.forEach(item => {
-                    if (!stockMatrix[item.productId]) stockMatrix[item.productId] = {};
-                    stockMatrix[item.productId][branch.id] = parseFloat(item.stock) || 0;
-                });
-            }));
+            allInventory.forEach(item => {
+                if (!stockMatrix[item.productId]) stockMatrix[item.productId] = {};
+                stockMatrix[item.productId][item.branchId] = parseFloat(item.stock) || 0;
+            });
+            
             setGlobalStock(stockMatrix);
-        } catch (e) { console.error("Error loading global stock:", e); }
-        finally { setLoadingStock(false); }
+        } catch (e) { 
+            console.error("Error loading global stock:", e); 
+        }
     };
 
     const handleForceSync = async () => {
@@ -651,7 +670,7 @@ export const InventoryPage = () => {
         const toastId = toast.loading("Sincronizando inventario global...");
         try {
             await syncService.syncInitialData(user, 'ALL'); 
-            await loadData();
+            await loadData(true, false); 
             toast.success("Inventario actualizado de la nube", { id: toastId });
         } catch (e) {
             toast.error("Error al sincronizar", { id: toastId });
@@ -678,7 +697,6 @@ export const InventoryPage = () => {
         }
     };
 
-    // 🔥 HANDLER PARA EDICIÓN INLINE (AUDITORÍA)
     const handleInlineSave = async (productId, field, newValue) => {
         try {
             const product = products.find(p => p.id === productId);
@@ -703,10 +721,14 @@ export const InventoryPage = () => {
             }));
             
             toast.success(`${field.toUpperCase()} actualizado`, { position: 'bottom-right', duration: 1000 });
+            
+            // 🔥 SILENT RELOAD: Actualiza la matriz global en el fondo sin mostrar pantalla de carga
+            loadData(false, true);
+
         } catch (e) {
             console.error(e);
             toast.error("Error al guardar cambio");
-            loadData(); 
+            loadData(false, true); 
         }
     };
 
@@ -758,14 +780,16 @@ export const InventoryPage = () => {
     };
 
     // =================================================================
-    // 🚀 HANDLERS MASIVOS (REDISEÑADO)
+    // 🚀 HANDLERS MASIVOS
     // =================================================================
 
     const handleSaveProduct = async (masterPayload, promoPayload) => {
         const savedProduct = await productRepository.save(masterPayload);
         if (promoPayload) await productRepository.setPromotion(savedProduct.id, promoPayload);
         else if (promoPayload === null && activeBranchId) await productRepository.setPromotion(savedProduct.id, null);
-        await loadData();
+        
+        // 🔥 SILENT RELOAD
+        await loadData(false, true);
         setIsProductModalOpen(false);
     };
 
@@ -773,11 +797,12 @@ export const InventoryPage = () => {
         try {
             const userName = user?.name || user?.email || 'Sistema';
             await productRepository.addStock(productId, qty, reason, userName, activeBranchId);
-            loadData();
+            
+            // 🔥 SILENT RELOAD
+            loadData(false, true);
         } catch (e) { console.error(e); }
     };
 
-    // NUEVO MOTOR: Recibe el listado de productos procesado y el mapa de Drafts con los valores finales manuales.
     const executeBulkUpdate = async (targetProducts, draftValues, activationDate = null) => {
         if (targetProducts.length === 0) return alert("No hay productos seleccionados.");
         const todayStr = getLocalDate(); 
@@ -788,13 +813,12 @@ export const InventoryPage = () => {
 
         if (!window.confirm(confirmMsg)) return;
 
-        setLoading(true);
+        const toastId = toast.loading("Aplicando cambios masivos...");
         try {
             for (const p of targetProducts) {
                 const draft = draftValues[p.id];
                 if (!draft) continue;
 
-                // Forzamos a Número para evitar guardar strings
                 const newCost = Number(draft.cost) || 0;
                 const newPrice = Number(draft.price) || 0;
                 
@@ -816,11 +840,13 @@ export const InventoryPage = () => {
                 
                 await productRepository.save(productUpdate);
             }
-            toast.success(isFutureScheduled ? "Precios programados con éxito" : "Precios actualizados inmediatamente");
+            toast.success(isFutureScheduled ? "Precios programados con éxito" : "Precios actualizados inmediatamente", { id: toastId });
             setSelectedIds(new Set());
             setIsBulkUpdateOpen(false);
-            loadData();
-        } catch (error) { toast.error("Error en proceso masivo"); } finally { setLoading(false); }
+            
+            // 🔥 SILENT RELOAD
+            loadData(false, true);
+        } catch (error) { toast.error("Error en proceso masivo", { id: toastId }); }
     };
 
     const goToLabels = () => navigate(`/${companySlug}/inventory/print-labels`);
@@ -838,7 +864,7 @@ export const InventoryPage = () => {
                         </h1>
                         <div className="flex items-center gap-3 text-[10px] font-bold text-sys-500 uppercase mt-1">
                             <span className="flex items-center gap-1 bg-sys-100 px-2 py-0.5 rounded text-sys-600 border border-sys-200">
-                                <MapPin size={10}/> {activeBranchName}
+                                <MapPin size={10}/> {canViewAllBranches && (!activeBranchId || activeBranchId === 'ALL') ? 'Todas las Sucursales' : activeBranchName || 'Mi Sucursal'}
                             </span>
                             <span className="text-sys-300">|</span>
                             <span>{filteredProducts.length} filtrados</span>
@@ -869,7 +895,7 @@ export const InventoryPage = () => {
 
                         {isOwner && (
                             <Button variant="ghost" onClick={handleForceSync} className="text-sys-400 hover:text-brand hover:bg-brand/5 border border-transparent hover:border-brand/20">
-                                <RefreshCw size={18} className="mr-2"/> Sync Global
+                                <RefreshCw size={18} className={cn("mr-2", loadingStock ? "animate-spin text-brand" : "")}/> Sync Global
                             </Button>
                         )}
 
@@ -938,151 +964,160 @@ export const InventoryPage = () => {
 
                 {/* TABLE */}
                 <div className="flex-1 overflow-auto bg-white relative">
-                    <table className="w-full text-left border-collapse">
-                        <thead className="sticky top-0 bg-sys-50 z-10 shadow-sm">
-                            <tr className="text-[10px] uppercase font-black text-sys-400 tracking-wider border-b border-sys-200">
-                                <th className="p-4 w-12 text-center">
-                                    <button onClick={toggleSelectAll} className="hover:text-brand transition-colors">
-                                        {selectedIds.size >= filteredProducts.length && filteredProducts.length > 0 ? <CheckSquare className="text-brand" size={18} /> : <Square size={18} />}
-                                    </button>
-                                </th>
-                                <th className="p-4 font-bold">Detalle Producto</th>
-                                {branches.map(b => (
-                                    <th key={b.id} className={cn("p-4 text-center border-l border-sys-100", b.id === activeBranchId ? "bg-brand/5 text-brand" : "")}>
-                                        {b.name}
+                    {loading ? (
+                        <div className="absolute inset-0 flex items-center justify-center bg-white/80 backdrop-blur-sm z-50">
+                            <div className="flex flex-col items-center gap-4 text-brand bg-white p-8 rounded-3xl shadow-2xl">
+                                <Loader2 className="animate-spin" size={48} />
+                                <span className="text-sm font-black uppercase tracking-widest text-sys-800">{loadingMessage}</span>
+                            </div>
+                        </div>
+                    ) : (
+                        <table className="w-full text-left border-collapse">
+                            <thead className="sticky top-0 bg-sys-50 z-10 shadow-sm">
+                                <tr className="text-[10px] uppercase font-black text-sys-400 tracking-wider border-b border-sys-200">
+                                    <th className="p-4 w-12 text-center">
+                                        <button onClick={toggleSelectAll} className="hover:text-brand transition-colors">
+                                            {selectedIds.size >= filteredProducts.length && filteredProducts.length > 0 ? <CheckSquare className="text-brand" size={18} /> : <Square size={18} />}
+                                        </button>
                                     </th>
-                                ))}
-                                <th className="p-4 text-right border-l border-sys-100">Costo Neto</th>
-                                <th className="p-4 text-right">Precio Actual</th>
-                                <th className="p-4 text-center w-24">Acciones</th>
-                            </tr>
-                        </thead>
-                        <tbody className="divide-y divide-sys-100">
-                            {currentProducts.map((p, index) => {
-                                const promo = getActivePromo(p);
-                                const isSelected = selectedIds.has(p.id);
-                                const currentStock = p.stock; 
-                                const hasPendingPrice = p.priceActivationDate && p.nextPrice !== undefined && p.nextPrice !== null;
-                                
-                                // IDs para navegación de teclado
-                                const prevRowId = index > 0 ? currentProducts[index - 1].id : null;
-                                const nextRowId = index < currentProducts.length - 1 ? currentProducts[index + 1].id : null;
+                                    <th className="p-4 font-bold">Detalle Producto</th>
+                                    {branches.map(b => (
+                                        <th key={b.id} className={cn("p-4 text-center border-l border-sys-100", b.id === activeBranchId ? "bg-brand/5 text-brand" : "")}>
+                                            {b.name}
+                                        </th>
+                                    ))}
+                                    <th className="p-4 text-right border-l border-sys-100">Costo Neto</th>
+                                    <th className="p-4 text-right">Precio Actual</th>
+                                    <th className="p-4 text-center w-24">Acciones</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-sys-100">
+                                {currentProducts.map((p, index) => {
+                                    const promo = getActivePromo(p);
+                                    const isSelected = selectedIds.has(p.id);
+                                    const currentStock = p.stock; 
+                                    const hasPendingPrice = p.priceActivationDate && p.nextPrice !== undefined && p.nextPrice !== null;
+                                    
+                                    // IDs para navegación de teclado
+                                    const prevRowId = index > 0 ? currentProducts[index - 1].id : null;
+                                    const nextRowId = index < currentProducts.length - 1 ? currentProducts[index + 1].id : null;
 
-                                return (
-                                    <tr 
-                                        key={p.id} 
-                                        onClick={() => { setEditingProduct(p); setIsProductModalOpen(true); }}
-                                        className={cn("cursor-pointer transition-all h-[70px]", isSelected ? "bg-brand/5" : "hover:bg-sys-50")}
-                                    >
-                                        <td className="p-4 text-center" onClick={(e) => e.stopPropagation()}>
-                                            <button onClick={() => toggleSelection(p.id)} className={cn("transition-colors", isSelected ? "text-brand" : "text-sys-300")}>
-                                                {isSelected ? <CheckSquare size={18} /> : <Square size={18} />}
-                                            </button>
-                                        </td>
-                                        <td className="p-4">
-                                            <div className="flex flex-col">
-                                                <span className="text-sm font-black text-sys-900 leading-tight uppercase">{p.name}</span>
-                                                <div className="flex items-center gap-2 mt-1">
-                                                    <span className="text-[10px] font-mono font-bold text-sys-400 bg-sys-100 px-1.5 py-0.5 rounded border border-sys-200">{p.code || 'S/C'}</span>
-                                                    <span className="text-[10px] font-black text-sys-400 uppercase tracking-tighter opacity-60">{p.brand}</span>
+                                    return (
+                                        <tr 
+                                            key={p.id} 
+                                            onClick={() => { setEditingProduct(p); setIsProductModalOpen(true); }}
+                                            className={cn("cursor-pointer transition-all h-[70px]", isSelected ? "bg-brand/5" : "hover:bg-sys-50")}
+                                        >
+                                            <td className="p-4 text-center" onClick={(e) => e.stopPropagation()}>
+                                                <button onClick={() => toggleSelection(p.id)} className={cn("transition-colors", isSelected ? "text-brand" : "text-sys-300")}>
+                                                    {isSelected ? <CheckSquare size={18} /> : <Square size={18} />}
+                                                </button>
+                                            </td>
+                                            <td className="p-4">
+                                                <div className="flex flex-col">
+                                                    <span className="text-sm font-black text-sys-900 leading-tight uppercase">{p.name}</span>
+                                                    <div className="flex items-center gap-2 mt-1">
+                                                        <span className="text-[10px] font-mono font-bold text-sys-400 bg-sys-100 px-1.5 py-0.5 rounded border border-sys-200">{p.code || 'S/C'}</span>
+                                                        <span className="text-[10px] font-black text-sys-400 uppercase tracking-tighter opacity-60">{p.brand}</span>
+                                                    </div>
                                                 </div>
-                                            </div>
-                                        </td>
-                                        
-                                        {/* STOCK COLUMNS - EDITABLE ONLY FOR ACTIVE BRANCH AND IF EDIT MODE IS ON */}
-                                        {branches.map(b => {
-                                            const isCurrentBranch = b.id === activeBranchId && activeBranchId !== 'ALL';
-                                            let stockVal = isCurrentBranch ? currentStock : (globalStock[p.id]?.[b.id] || 0);
+                                            </td>
+                                            
+                                            {/* STOCK COLUMNS - EDITABLE ONLY FOR ACTIVE BRANCH AND IF EDIT MODE IS ON */}
+                                            {branches.map(b => {
+                                                const isCurrentBranch = b.id === activeBranchId && activeBranchId !== 'ALL';
+                                                let stockVal = isCurrentBranch ? currentStock : (globalStock[p.id]?.[b.id] || 0);
 
-                                            return (
-                                                <td key={b.id} className={cn("p-2 text-center border-l border-sys-100", b.id === activeBranchId ? "bg-brand/5" : "")} onClick={e => e.stopPropagation()}>
-                                                    {isCurrentBranch ? (
+                                                return (
+                                                    <td key={b.id} className={cn("p-2 text-center border-l border-sys-100", b.id === activeBranchId ? "bg-brand/5" : "")} onClick={e => e.stopPropagation()}>
+                                                        {isCurrentBranch ? (
+                                                            <EditableCell 
+                                                                value={stockVal} 
+                                                                id={p.id} 
+                                                                field="stock" 
+                                                                productId={p.id}
+                                                                onSave={handleInlineSave}
+                                                                type="number"
+                                                                disabled={!isEditMode}
+                                                                nextRowId={nextRowId}
+                                                                prevRowId={prevRowId}
+                                                                className={cn("mx-auto w-20 text-center font-black rounded-lg", 
+                                                                    stockVal < 0 ? "text-red-600 bg-red-50" : stockVal <= (p.minStock || 5) ? "text-orange-600 bg-orange-50" : "text-sys-700"
+                                                                )}
+                                                            />
+                                                        ) : (
+                                                            <span className="text-xs text-sys-400 font-bold">{formatStock(stockVal)}</span>
+                                                        )}
+                                                    </td>
+                                                );
+                                            })}
+
+                                            {/* COSTO - EDITABLE */}
+                                            <td className="p-2 text-right border-l border-sys-100 font-mono text-xs font-bold text-sys-500" onClick={e => e.stopPropagation()}>
+                                                <EditableCell 
+                                                    value={p.cost} 
+                                                    id={p.id} 
+                                                    field="cost" 
+                                                    productId={p.id}
+                                                    onSave={handleInlineSave}
+                                                    type="number"
+                                                    prefix="$ "
+                                                    disabled={!isEditMode}
+                                                    nextRowId={nextRowId}
+                                                    prevRowId={prevRowId}
+                                                />
+                                            </td>
+
+                                            {/* PRECIO - EDITABLE */}
+                                            <td className="p-2 text-right" onClick={e => e.stopPropagation()}>
+                                                <div className="flex flex-col items-end">
+                                                    <div className="flex items-center justify-end w-full gap-1.5">
+                                                        {hasPendingPrice && (
+                                                            <div className="text-orange-500 animate-pulse cursor-help" title={`CAMBIO PROGRAMADO:\nNuevo Precio: $${p.nextPrice}\nFecha: ${p.priceActivationDate}`}>
+                                                                <CalendarClock size={16} />
+                                                            </div>
+                                                        )}
                                                         <EditableCell 
-                                                            value={stockVal} 
+                                                            value={p.price} 
                                                             id={p.id} 
-                                                            field="stock" 
+                                                            field="price" 
                                                             productId={p.id}
                                                             onSave={handleInlineSave}
                                                             type="number"
+                                                            prefix="$ "
                                                             disabled={!isEditMode}
                                                             nextRowId={nextRowId}
                                                             prevRowId={prevRowId}
-                                                            className={cn("mx-auto w-20 text-center font-black rounded-lg", 
-                                                                stockVal < 0 ? "text-red-600 bg-red-50" : stockVal <= (p.minStock || 5) ? "text-orange-600 bg-orange-50" : "text-sys-700"
-                                                            )}
+                                                            className={cn("text-base font-black w-24", promo ? "text-purple-600" : "text-sys-900")}
                                                         />
-                                                    ) : (
-                                                        <span className="text-xs text-sys-400 font-bold">{formatStock(stockVal)}</span>
-                                                    )}
-                                                </td>
-                                            );
-                                        })}
-
-                                        {/* COSTO - EDITABLE */}
-                                        <td className="p-2 text-right border-l border-sys-100 font-mono text-xs font-bold text-sys-500" onClick={e => e.stopPropagation()}>
-                                            <EditableCell 
-                                                value={p.cost} 
-                                                id={p.id} 
-                                                field="cost" 
-                                                productId={p.id}
-                                                onSave={handleInlineSave}
-                                                type="number"
-                                                prefix="$ "
-                                                disabled={!isEditMode}
-                                                nextRowId={nextRowId}
-                                                prevRowId={prevRowId}
-                                            />
-                                        </td>
-
-                                        {/* PRECIO - EDITABLE */}
-                                        <td className="p-2 text-right" onClick={e => e.stopPropagation()}>
-                                            <div className="flex flex-col items-end">
-                                                <div className="flex items-center justify-end w-full gap-1.5">
-                                                    {hasPendingPrice && (
-                                                        <div className="text-orange-500 animate-pulse cursor-help" title={`CAMBIO PROGRAMADO:\nNuevo Precio: $${p.nextPrice}\nFecha: ${p.priceActivationDate}`}>
-                                                            <CalendarClock size={16} />
-                                                        </div>
-                                                    )}
-                                                    <EditableCell 
-                                                        value={p.price} 
-                                                        id={p.id} 
-                                                        field="price" 
-                                                        productId={p.id}
-                                                        onSave={handleInlineSave}
-                                                        type="number"
-                                                        prefix="$ "
-                                                        disabled={!isEditMode}
-                                                        nextRowId={nextRowId}
-                                                        prevRowId={prevRowId}
-                                                        className={cn("text-base font-black w-24", promo ? "text-purple-600" : "text-sys-900")}
-                                                    />
+                                                    </div>
+                                                    {promo && <span className="text-[8px] font-black bg-purple-600 text-white px-1.5 rounded-full mt-1">{promo.name}</span>}
                                                 </div>
-                                                {promo && <span className="text-[8px] font-black bg-purple-600 text-white px-1.5 rounded-full mt-1">{promo.name}</span>}
-                                            </div>
-                                        </td>
+                                            </td>
 
-                                        <td className="p-4" onClick={(e) => e.stopPropagation()}>
-                                            <div className="flex justify-center gap-1">
-                                                <button onClick={() => setStockEntryProduct(p)} className="p-2 rounded-xl text-green-600 hover:bg-green-50 transition-all border border-transparent hover:border-green-100"><Package size={18}/></button>
-                                                <button onClick={() => { setEditingProduct(p); setIsProductModalOpen(true); }} className="p-2 rounded-xl text-brand hover:bg-brand/5 transition-all"><Edit2 size={18}/></button>
-                                                {isAdmin && <button onClick={() => productRepository.delete(p.id).then(() => loadData())} className="p-2 rounded-xl text-red-300 hover:text-red-600 hover:bg-red-50 transition-all"><Trash2 size={18}/></button>}
-                                            </div>
-                                        </td>
-                                    </tr>
-                                );
-                            })}
-                        </tbody>
-                    </table>
+                                            <td className="p-4" onClick={(e) => e.stopPropagation()}>
+                                                <div className="flex justify-center gap-1">
+                                                    <button onClick={() => setStockEntryProduct(p)} className="p-2 rounded-xl text-green-600 hover:bg-green-50 transition-all border border-transparent hover:border-green-100"><Package size={18}/></button>
+                                                    <button onClick={() => { setEditingProduct(p); setIsProductModalOpen(true); }} className="p-2 rounded-xl text-brand hover:bg-brand/5 transition-all"><Edit2 size={18}/></button>
+                                                    {isAdmin && <button onClick={() => productRepository.delete(p.id).then(() => loadData())} className="p-2 rounded-xl text-red-300 hover:text-red-600 hover:bg-red-50 transition-all"><Trash2 size={18}/></button>}
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    );
+                                })}
+                            </tbody>
+                        </table>
+                    )}
                 </div>
 
                 {/* PAGINATION */}
                 <div className="p-4 bg-white border-t border-sys-200 flex justify-between items-center z-20">
                     <span className="text-xs font-bold text-sys-500 uppercase tracking-widest">
-                        Página {currentPage} de {totalPages} <span className="ml-2 opacity-30">|</span> Total {filteredProducts.length} items
+                        Página {currentPage} de {totalPages || 1} <span className="ml-2 opacity-30">|</span> Total {filteredProducts.length} items
                     </span>
                     <div className="flex gap-2">
                         <button onClick={() => setCurrentPage(p => Math.max(1, p - 1))} disabled={currentPage === 1} className="p-2 rounded-xl border-2 border-sys-100 hover:bg-sys-50 disabled:opacity-30"><ChevronLeft size={20}/></button>
-                        <button onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages} className="p-2 rounded-xl border-2 border-sys-100 hover:bg-sys-50 disabled:opacity-30"><ChevronRight size={20}/></button>
+                        <button onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages || totalPages === 0} className="p-2 rounded-xl border-2 border-sys-100 hover:bg-sys-50 disabled:opacity-30"><ChevronRight size={20}/></button>
                     </div>
                 </div>
             </div>

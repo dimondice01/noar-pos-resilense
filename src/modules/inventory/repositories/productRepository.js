@@ -81,24 +81,26 @@ const triggerCloudUpdate = async (product) => {
 const _injectBranchData = async (products, branchId, dbLocal) => {
     if (!products || products.length === 0) return [];
     
-    const productIds = products.map(p => p.id);
+    // 🔥 OPTIMIZACIÓN EXTREMA: Traemos todo a RAM de un golpe.
+    // Dexie falla con .anyOf() en claves compuestas. Leer el array completo 
+    // y mapearlo en memoria es mucho más rápido y a prueba de errores.
+    const allInventory = await dbLocal.inventory.toArray();
     
     // 1. Caso: Todas las sucursales (Stock Consolidado para Owner)
     if (!branchId || branchId === 'ALL') {
-        // Traemos todo el inventario de estos productos (sin filtrar por branch)
-        const allInventory = await dbLocal.inventory
-            .where('productId')
-            .anyOf(productIds)
-            .toArray();
+        
+        // Diccionario de acceso rápido O(1)
+        const globalStockMap = {};
+        for (const item of allInventory) {
+            if (!globalStockMap[item.productId]) globalStockMap[item.productId] = 0;
+            globalStockMap[item.productId] += parseFloat(item.stock) || 0;
+        }
 
-        // Mapeamos sumando stocks
+        // Mapeamos sumando stocks instantáneamente
         return products.map(p => {
-            const itemInv = allInventory.filter(i => i.productId === p.id);
-            const totalStock = itemInv.reduce((acc, curr) => acc + (parseFloat(curr.stock) || 0), 0);
-            
             return {
                 ...p,
-                stock: totalStock,
+                stock: globalStockMap[p.id] || 0,
                 promo: null, // En vista global no mostramos una promo específica (confuso)
                 isMultiBranch: true
             };
@@ -106,13 +108,13 @@ const _injectBranchData = async (products, branchId, dbLocal) => {
     }
 
     // 2. Caso: Sucursal Específica (Cajero u Owner filtrando)
-    const inventory = await dbLocal.inventory
-        .where('branchId').equals(branchId)
-        .filter(i => productIds.includes(i.productId))
-        .toArray();
-
-    // Map para acceso O(1)
-    const invMap = new Map(inventory.map(i => [i.productId, i]));
+    // Map para acceso O(1) solo con los ítems de esta sucursal
+    const invMap = new Map();
+    for (const item of allInventory) {
+        if (item.branchId === branchId) {
+            invMap.set(item.productId, item);
+        }
+    }
 
     return products.map(p => {
         const branchData = invMap.get(p.id);
@@ -146,8 +148,6 @@ export const productRepository = {
 
     // 🔥 Método blindado con Activación de Precios + PROMOS LOCALES
     async getAllByBranch(branchId) {
-        // Redirigimos a getAll pero inyectando el branchId si se provee, o usando el del store
-        // Para consistencia, mejor usamos la lógica interna de _injectBranchData
         const dbLocal = await getDB();
         let products = await dbLocal.products.filter(p => !p.deleted).toArray();
         
