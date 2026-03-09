@@ -177,7 +177,13 @@ export const salesRepository = {
       
       // Compatibilidad Legacy
       payment: saleData.payment || { method: 'cash' },
-      afip: saleData.afip || { status: 'SKIPPED' }
+
+      // 🔥 BLINDAJE AFIP: Aseguramos explícitamente la persistencia del Neto y el IVA
+      afip: saleData.afip ? {
+          ...saleData.afip,
+          impNeto: saleData.afip.impNeto || 0,
+          impIVA: saleData.afip.impIVA || 0
+      } : { status: 'SKIPPED' }
     };
 
     const movementsToCreate = [];

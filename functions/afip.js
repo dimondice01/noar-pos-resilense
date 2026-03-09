@@ -326,7 +326,9 @@ async function emitirFactura(total, cliente = {}, esNotaCredito = false, comprob
         ptoVta: config.ptoVta, 
         tipo: CBTE_TIPO,
         letra: CBTE_TIPO === 1 || CBTE_TIPO === 3 ? 'A' : (CBTE_TIPO === 6 || CBTE_TIPO === 8 ? 'B' : 'C'), // Helper visual
-        qr_data: `https://www.afip.gob.ar/fe/qr/?p=${Buffer.from(qrJson).toString('base64')}`
+        qr_data: `https://www.afip.gob.ar/fe/qr/?p=${Buffer.from(qrJson).toString('base64')}`,
+        impNeto: impNeto,    // 🔥 NUEVO: Exponemos el Neto Calculado
+        impIVA: impIVA       // 🔥 NUEVO: Exponemos el IVA Calculado
       };
 
   } catch (error) {

@@ -14,8 +14,7 @@ const axios = require("axios");
 const admin = require("firebase-admin");
 
 // Importamos el módulo de AFIP (Debe existir el archivo afip.js en la misma carpeta)
-const Afip = require("./afip");
-const afipModule = require("./afip") 
+const afipModule = require("./afip");
 
 // Inicialización de Firebase Admin
 if (!admin.apps.length) {
@@ -75,6 +74,7 @@ async function getCompanyConfig(companyId, type, branchId = null) {
     
     return data;
 }
+
 // ==================================================================
 // 1. ENDPOINT: OBTENER TERMINALES (MODO DEBUG TOTAL)
 // ==================================================================
@@ -164,6 +164,7 @@ app.post('/get-mp-terminals', async (req, res) => {
         return res.status(500).json({ error: "Error interno" });
     }
 });
+
 // ==================================================================
 // 2. ENDPOINT: CONFIGURAR POINT (CAMBIO DE MODO)
 // ==================================================================
@@ -222,6 +223,7 @@ app.post('/configure-mp-point', async (req, res) => {
         return res.status(500).json({ error: "Error interno del servidor" });
     }
 });
+
 // ==================================================================
 // 🛡️ ENDPOINT: GESTIÓN DE USUARIOS (SaaS AWARE)
 // ==================================================================
@@ -272,7 +274,7 @@ app.post("/create-user", async (req, res) => {
 // ==================================================================
 app.post("/create-clover-order", async (req, res) => {
     try {
-      const { total, companyId, externalId } = req.body; 
+      const { total, companyId, externalId, branchId } = req.body; 
       const amount = Number(Number(total).toFixed(2));
       
       // 1. Obtener Credenciales de la Empresa
@@ -287,7 +289,7 @@ app.post("/create-clover-order", async (req, res) => {
           : "https://sandbox.clover.com";
           
       // 3. Enviar orden a la nube de Clover
-      const url = `https://sandbox.clover.com/v1/merchants/${cloverConfig.merchantId}/payments`;
+      const url = `${baseUrl}/v1/merchants/${cloverConfig.merchantId}/payments`;
       
       const response = await axios.post(url, {
           amount: Math.round(amount * 100), // Clover usa centavos
@@ -397,6 +399,7 @@ app.post("/create-order", async (req, res) => {
     });
   }
 });
+
 // ==================================================================
 // 📟 ENDPOINT 2: MERCADOPAGO POINT (SAAS)
 // ==================================================================
@@ -553,8 +556,15 @@ app.post('/create-invoice', async (req, res) => {
         afipData           
     );
 
-    logger.info(`✅ Factura ${result.letra} ${result.numero} autorizada exitosamente.`);
-    res.json(result);
+    logger.info(`✅ Factura ${result.letra} ${result.numero} autorizada exitosamente. Neto: ${result.impNeto}, IVA: ${result.impIVA}`);
+    
+    // 🔥 FIX DEFINITIVO: Aseguramos que el servidor devuelva los campos calculados explícitamente.
+    // Aunque result ya los traiga, este parseo lo blinda en el JSON response.
+    res.json({
+        ...result,
+        impNeto: result.impNeto || 0,
+        impIVA: result.impIVA || 0
+    });
 
   } catch (error) {
     logger.error("❌ Error en Proceso Facturación:", error);
@@ -594,7 +604,13 @@ app.post("/create-credit-note", async (req, res) => {
     const notaCredito = await afipModule.emitirFactura(amount, datosCliente, true, associatedDocument, afipConfig);
 
     logger.info(`✅ NC Autorizada: CAE ${notaCredito.cae}`);
-    res.status(200).json(notaCredito);
+    
+    // 🔥 FIX DEFINITIVO: Aplicamos el mismo blindaje a las Notas de Crédito
+    res.status(200).json({
+        ...notaCredito,
+        impNeto: notaCredito.impNeto || 0,
+        impIVA: notaCredito.impIVA || 0
+    });
 
   } catch (error) {
     logger.error("❌ Error Nota Crédito:", error.message);

@@ -422,6 +422,22 @@ export const PosPage = () => {
     }
   };
 
+  // 🔥 HELPER DE LIMPIEZA DE DECIMALES
+  const formatQuantity = (qty, isWeighable) => {
+      const num = parseFloat(qty);
+      if (isNaN(num)) return '0';
+      // Redondeamos a 3 decimales para eliminar la basura de JS (ej 0.99999999 -> 1)
+      const cleanNum = Math.round(num * 1000) / 1000;
+      
+      // Si es un número entero o si no es pesable y su valor decimal es nulo (ej 2.000)
+      if (cleanNum % 1 === 0) {
+          return cleanNum.toString();
+      }
+      
+      // Si es fraccionado
+      return cleanNum.toString();
+  };
+
   if (isShiftChecking) return <div className="h-full flex items-center justify-center bg-sys-100"><Loader2 className="animate-spin text-brand" size={40}/></div>;
 
   if (!hasOpenShift) {
@@ -516,8 +532,11 @@ export const PosPage = () => {
                       <div className="space-y-2">
                           {activeTab.items.map((item) => (
                               <div key={item.id} className={cn("group flex items-center p-3 bg-white border rounded-xl shadow-sm hover:shadow-md transition-all animate-in fade-in slide-in-from-left-2", item.appliedWholesale ? "border-brand border-2 bg-brand/5" : "border-sys-100")}>
-                                  <div className="w-10 text-center mr-3">
-                                      <div className="text-lg font-black text-sys-900">{item.quantity}</div>
+                                  <div className="w-12 text-center mr-2">
+                                      {/* 🔥 FIX: Renderizado Limpio de Decimales */}
+                                      <div className="text-lg font-black text-sys-900 tracking-tighter">
+                                          {formatQuantity(item.quantity, item.isWeighable)}
+                                      </div>
                                       <div className="text-[9px] uppercase text-sys-400 font-black">{item.isWeighable ? 'KG' : 'UN'}</div>
                                   </div>
                                   <div className="flex-1 min-w-0">
@@ -534,19 +553,19 @@ export const PosPage = () => {
                                       <div className="text-xs text-sys-400 font-mono mt-0.5 flex items-center gap-2">
                                           {item.originalPrice && item.originalPrice > item.price ? (
                                               <>
-                                                <span className="line-through opacity-50">${(Number(item.originalPrice)).toLocaleString('es-AR', {minimumFractionDigits: 2})}</span>
-                                                <span className={cn("font-bold", item.appliedWholesale ? "text-orange-600" : "text-purple-700")}>
-                                                    ${(Number(item.price) || 0).toLocaleString('es-AR', {minimumFractionDigits: 2})} x unid.
-                                                </span>
+                                                  <span className="line-through opacity-50">${(Number(item.originalPrice)).toLocaleString('es-AR', {minimumFractionDigits: 2})}</span>
+                                                  <span className={cn("font-bold", item.appliedWholesale ? "text-orange-600" : "text-purple-700")}>
+                                                      ${(Number(item.price) || 0).toLocaleString('es-AR', {minimumFractionDigits: 2})} x {item.isWeighable ? 'kg' : 'unid'}.
+                                                  </span>
                                               </>
                                           ) : (
-                                              <span>${(Number(item.price) || 0).toLocaleString('es-AR', {minimumFractionDigits: 2})} x unid.</span>
+                                              <span>${(Number(item.price) || 0).toLocaleString('es-AR', {minimumFractionDigits: 2})} x {item.isWeighable ? 'kg' : 'unid'}.</span>
                                           )}
                                       </div>
                                   </div>
                                   <div className="text-right pl-3">
                                       <div className="text-base font-black text-sys-900 tracking-tight">
-                                        ${(Number(item.subtotal) || 0).toLocaleString('es-AR', {minimumFractionDigits: 2})}
+                                          ${(Number(item.subtotal) || 0).toLocaleString('es-AR', {minimumFractionDigits: 2})}
                                       </div>
                                       <button onClick={() => removeFromCart(item.id)} className="text-[10px] text-red-400 font-bold hover:text-red-600 transition-colors">ELIMINAR</button>
                                   </div>
@@ -636,8 +655,8 @@ export const PosPage = () => {
                                   idx === focusedIndex 
                                     ? "bg-white/20" 
                                     : parseFloat(product.stock || 0) > 0 
-                                        ? "bg-emerald-100 text-emerald-700" 
-                                        : POS_CONFIG.ALLOW_OUT_OF_STOCK_SALES ? "bg-amber-100 text-amber-700" : "bg-rose-100 text-rose-700"
+                                      ? "bg-emerald-100 text-emerald-700" 
+                                      : POS_CONFIG.ALLOW_OUT_OF_STOCK_SALES ? "bg-amber-100 text-amber-700" : "bg-rose-100 text-rose-700"
                               )}>
                                   {parseFloat(product.stock || 0) > 0 ? `${product.stock} DISP.` : POS_CONFIG.ALLOW_OUT_OF_STOCK_SALES ? 'S/ STOCK (VENDE)' : 'SIN STOCK'}
                               </div>

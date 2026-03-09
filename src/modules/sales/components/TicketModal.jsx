@@ -50,8 +50,8 @@ const PAYMENT_LABELS = {
     card: 'TARJETA',
     debit: 'DÉBITO',
     credit: 'CRÉDITO',
-    transfer: 'TRANSFERENCIA', // 🔥 Agregado para claridad
-    mercadopago: 'MERCADOPAGO', // 🔥 Agregado para claridad
+    transfer: 'TRANSFERENCIA', 
+    mercadopago: 'MERCADOPAGO', 
     qr: 'QR / TRANSF.', 
     other: 'OTRO',
     split: 'COMBINADO'
@@ -126,10 +126,7 @@ const TicketContent = forwardRef(({
                         />
                     )}
                     
-                    {/* Nombre Fantasía */}
                     <h1 className="text-lg font-black leading-tight uppercase mb-1">{EMPRESA.nombre}</h1>
-                    
-                    {/* Razón Social */}
                     <p className="text-[9px] font-bold uppercase leading-tight mb-1">{EMPRESA.razonSocial}</p>
 
                     <div className="text-[9px] font-bold uppercase leading-tight">
@@ -137,7 +134,6 @@ const TicketContent = forwardRef(({
                         <p className="mt-0.5">{EMPRESA.condicionIva}</p>
                         <p>CUIT: {EMPRESA.cuit}</p>
                         {EMPRESA.iibb && <p>IIBB: {EMPRESA.iibb}</p>}
-                        {/* Inicio de Actividades (Seguro con formatAfipDate) */}
                         {EMPRESA.inicioAct && <p>INICIO ACT: {formatAfipDate(EMPRESA.inicioAct)}</p>}
                     </div>
                 </div>
@@ -172,11 +168,15 @@ const TicketContent = forwardRef(({
                     {items.map((item, idx) => {
                         const hasPromo = item.appliedPromo || (item.originalPrice && item.originalPrice > item.price);
                         
+                        // 🔥 FIX FIAMBRERÍA: Si es pesable O tiene decimales, mostramos 3 dígitos.
+                        const qty = parseFloat(item.quantity);
+                        const displayQty = (item.isWeighable || qty % 1 !== 0) ? qty.toFixed(3) : Math.round(qty);
+
                         return (
                             <div key={idx} className="mb-1.5 border-b border-dotted border-gray-400 pb-1 last:border-0 last:pb-0">
                                 <div className="flex items-start text-[10px] font-bold leading-none">
                                     <div className="w-[15%] text-left font-mono">
-                                        {item.isWeighable ? parseFloat(item.quantity).toFixed(3) : Math.round(item.quantity)}
+                                        {displayQty}
                                     </div>
                                     <div className="w-[55%] uppercase pl-1 pr-1 break-words">
                                         {item.name}
@@ -221,6 +221,20 @@ const TicketContent = forwardRef(({
                             <div className="flex justify-between">
                                 <span>RECARGO</span>
                                 <span className="font-mono">{formatCurrency(surcharge)}</span>
+                            </div>
+                        )}
+
+                        {/* 🔥 DESGLOSE DE IMPUESTOS */}
+                        {(afip.cbteLetra === 'A' || data.letra === 'A') && parseFloat(afip.impNeto) > 0 && (
+                            <div className="mt-1 pt-1 border-t border-black border-dashed">
+                                <div className="flex justify-between mb-0.5">
+                                    <span>NETO GRAVADO</span>
+                                    <span className="font-mono">{formatCurrency(afip.impNeto)}</span>
+                                </div>
+                                <div className="flex justify-between">
+                                    <span>IVA (21%)</span>
+                                    <span className="font-mono">{formatCurrency(afip.impIVA)}</span>
+                                </div>
                             </div>
                         )}
                     </div>

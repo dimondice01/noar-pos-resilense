@@ -528,7 +528,9 @@ export const usePosController = () => {
                         cbteTipo: afipResult.tipo,
                         cbteLetra: afipResult.letra,
                         qr_data: afipResult.qr_data,
-                        ptoVta: afipResult.ptoVta || 1
+                        ptoVta: afipResult.ptoVta || 1,
+                        impNeto: afipResult.impNeto, // 🔥 NUEVO: Guardado del neto desde AFIP
+                        impIVA: afipResult.impIVA    // 🔥 NUEVO: Guardado del IVA desde AFIP
                     },
                     number: fiscalNumber,
                     ticketNumber: fiscalNumber, 

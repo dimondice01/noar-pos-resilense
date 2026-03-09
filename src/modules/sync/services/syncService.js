@@ -131,6 +131,7 @@ export const syncService = {
           userName: data.userName || 'Vendedor',
           client: data.client || null, 
           
+          // 🔥 BLINDAJE AFIP: Aseguramos la captura del Neto e IVA desde la nube
           afip: data.afip ? {
               status: data.afip.status || 'PENDING',
               cae: data.afip.cae || null,
@@ -139,7 +140,9 @@ export const syncService = {
               cbteNumero: data.afip.cbteNumero || null,
               cbteLetra: data.afip.cbteLetra || null,
               ptoVta: data.afip.ptoVta || null,
-              qr_data: data.afip.qr_data || null
+              qr_data: data.afip.qr_data || null,
+              impNeto: data.afip.impNeto || 0, // 🔥 Añadido para preservar histórico
+              impIVA: data.afip.impIVA || 0    // 🔥 Añadido para preservar histórico
           } : null,
           
           // 🔥 CRÍTICO PARA EL DELTA SYNC: Garantizar updatedAt
@@ -696,8 +699,8 @@ export const syncService = {
       if (!user?.companyId) throw new Error("No hay sesión de empresa activa");
       const configRef = doc(db, `companies/${user.companyId}/config`, key);
       await setDoc(configRef, { key, value, updatedAt: new Date().toISOString() }, { merge: true });
-      const dbLocal = await getDB();
-      await dbLocal.config.put({ key: key, value, updatedAt: new Date().toISOString() });
+      const localDb = await getDB();
+      await localDb.config.put({ key: key, value, updatedAt: new Date().toISOString() });
       return true;
   },
 
