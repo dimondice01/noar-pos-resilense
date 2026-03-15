@@ -15,6 +15,8 @@ export const ImportMapperModal = ({ isOpen, onClose, branchId, onSuccess }) => {
 
     const [mapping, setMapping] = useState({});
     const [headers, setHeaders] = useState([]);
+    // 🔥 NUEVO ESTADO: Controla si redondeamos o no
+    const [roundTo50, setRoundTo50] = useState(false);
 
     // Extraer headers reales del preview cuando cambia
     useEffect(() => {
@@ -37,16 +39,17 @@ export const ImportMapperModal = ({ isOpen, onClose, branchId, onSuccess }) => {
     };
 
     const handleSave = async () => {
-        // Validación: Al menos Nombre y Precio son requeridos por el sistema
+        // Validación: Solo el Precio y Código son los más críticos para un Upsert
         const selectedFields = Object.values(mapping);
-        if (!selectedFields.includes('name')) return alert("⚠️ Error: Falta asignar la columna 'Nombre'.");
+        if (!selectedFields.includes('code')) return alert("⚠️ Error: Falta asignar la columna 'Código de Barras' para identificar los productos.");
         if (!selectedFields.includes('price')) return alert("⚠️ Error: Falta asignar la columna 'Precio'.");
 
         try {
-            const result = await processImport(mapping, branchId);
+            // 🔥 LE PASAMOS LA OPCIÓN AL HOOK
+            const result = await processImport(mapping, branchId, { roundTo50 });
             
             // Mensaje de éxito detallado
-            let msg = `✅ ¡Importación Exitosa!\n\n`;
+            let msg = `✅ ¡Importación / Actualización Exitosa!\n\n`;
             msg += `📦 Productos Procesados: ${result.processed}\n`;
             if (result.categories > 0) msg += `📂 Categorías Creadas: ${result.categories}\n`;
             if (result.brands > 0) msg += `🏷️ Marcas Creadas: ${result.brands}\n`;
@@ -56,7 +59,6 @@ export const ImportMapperModal = ({ isOpen, onClose, branchId, onSuccess }) => {
             
             if (onSuccess) onSuccess();
             onClose();
-            // Resetear estados internos si fuera necesario, o dejar que el desmontaje lo haga
         } catch (e) {
             console.error(e);
             alert("❌ Ocurrió un error durante la importación. Revisa la consola.");
@@ -75,7 +77,7 @@ export const ImportMapperModal = ({ isOpen, onClose, branchId, onSuccess }) => {
                         <h2 className="text-xl font-black text-sys-900 flex items-center gap-2">
                             <Upload className="text-brand" size={24} /> Importador Inteligente
                         </h2>
-                        <p className="text-sm text-sys-500 mt-1">Sube tu Excel/CSV y asigna las columnas correspondientes.</p>
+                        <p className="text-sm text-sys-500 mt-1">Sube tu Excel/CSV y actualiza masivamente tus precios o catálogo.</p>
                     </div>
                     <button onClick={onClose} className="p-2 hover:bg-sys-200 rounded-full transition-colors text-sys-400 hover:text-sys-600">
                         <X size={24}/>
@@ -123,12 +125,27 @@ export const ImportMapperModal = ({ isOpen, onClose, branchId, onSuccess }) => {
                         <div className="flex-1 overflow-auto p-6">
                             
                             {/* Warning Box */}
-                            <div className="bg-blue-50 border border-blue-100 p-4 rounded-xl flex gap-3 text-blue-800 text-sm shadow-sm mb-6">
+                            <div className="bg-blue-50 border border-blue-100 p-4 rounded-xl flex gap-3 text-blue-800 text-sm shadow-sm mb-4">
                                 <AlertTriangle size={20} className="shrink-0 mt-0.5 text-blue-600"/>
                                 <div>
-                                    <strong className="block font-bold mb-1 text-blue-700">Mapeo de Columnas</strong>
-                                    Por favor, selecciona qué representa cada columna de tu archivo. Si el producto ya existe (por código), actualizaremos sus datos. Si la Categoría o Marca no existen, <strong>se crearán automáticamente</strong>.
+                                    <strong className="block font-bold mb-1 text-blue-700">Actualización Inteligente (Upsert)</strong>
+                                    Por favor, mapea la columna <strong>Código</strong> y <strong>Precio</strong>. Si el producto ya existe en tu base, solo sobreescribiremos el precio y respetaremos su nombre/categoría. Si es nuevo, lo crearemos.
                                 </div>
+                            </div>
+
+                            {/* 🔥 OPCIÓN DE REDONDEO A $50 */}
+                            <div className="flex items-center gap-3 mb-6 bg-white p-3 px-4 rounded-xl border border-sys-200 shadow-sm w-fit cursor-pointer hover:bg-sys-50 transition-colors" onClick={() => setRoundTo50(!roundTo50)}>
+                                <input 
+                                    type="checkbox" 
+                                    id="roundTo50Toggle" 
+                                    checked={roundTo50}
+                                    onChange={(e) => setRoundTo50(e.target.checked)}
+                                    className="w-5 h-5 text-brand rounded focus:ring-brand border-gray-300 cursor-pointer"
+                                />
+                                <label htmlFor="roundTo50Toggle" className="text-sm font-bold text-sys-800 cursor-pointer select-none flex flex-col">
+                                    <span>Redondear precios a múltiplos de $50</span>
+                                    <span className="text-[10px] text-sys-500 font-normal">Ejemplo: $1123 ➔ $1100 | $1135 ➔ $1150</span>
+                                </label>
                             </div>
 
                             {/* Mapper Table */}

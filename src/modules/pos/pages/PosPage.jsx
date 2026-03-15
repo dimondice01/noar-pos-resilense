@@ -19,7 +19,7 @@ import { QuantityModal } from '../components/QuantityModal';
 import { PaymentModal } from '../components/PaymentModal';
 import { ClientSelectionModal } from '../components/ClientSelectionModal'; 
 import { TicketModal } from '../../sales/components/TicketModal';
-import { CashOperationsModal } from '../components/CashOperationsModal'; // 🔥 NUEVO: Modal de caja
+import { CashOperationsModal } from '../components/CashOperationsModal';
 import { Button } from '../../../core/ui/Button';
 import { cn } from '../../../core/utils/cn';
 import toast from 'react-hot-toast';
@@ -43,7 +43,6 @@ const MiscItemModal = ({ isOpen, onClose, onConfirm }) => {
         if (isOpen) {
             setName('');
             setPrice('');
-            // Usamos un pequeño delay para asegurar que el modal ya se renderizó antes de hacer focus
             setTimeout(() => nameInputRef.current?.focus(), 50);
         }
     }, [isOpen]);
@@ -61,9 +60,9 @@ const MiscItemModal = ({ isOpen, onClose, onConfirm }) => {
             code: 'MANUAL',
             name: name.trim().toUpperCase(),
             price: finalPrice,
-            cost: 0, // Utilidad del 100% o nula dependiendo del cálculo
+            cost: 0,
             isWeighable: false,
-            stock: 999, // Stock infinito
+            stock: 999, 
             taxRate: 21
         };
 
@@ -89,7 +88,7 @@ const MiscItemModal = ({ isOpen, onClose, onConfirm }) => {
                             placeholder="Ej: HUEVOS COLORADOS"
                             value={name}
                             onChange={e => setName(e.target.value)}
-                            onKeyDown={e => e.stopPropagation()} // Evita que los atajos globales interfieran
+                            onKeyDown={e => e.stopPropagation()} 
                         />
                     </div>
                     <div>
@@ -101,7 +100,7 @@ const MiscItemModal = ({ isOpen, onClose, onConfirm }) => {
                             step="0.01"
                             value={price}
                             onChange={e => setPrice(e.target.value)}
-                            onKeyDown={e => e.stopPropagation()} // Evita que los atajos globales interfieran
+                            onKeyDown={e => e.stopPropagation()} 
                         />
                     </div>
                     <Button type="submit" className="w-full py-3 shadow-lg shadow-brand/20 text-base">Agregar a la cuenta</Button>
@@ -114,7 +113,6 @@ const MiscItemModal = ({ isOpen, onClose, onConfirm }) => {
 export const PosPage = () => {
   const { user } = useAuthStore();
   
-  // 🔥 Extraemos posConfig para enviarlo al PaymentModal
   const {
       tabs,
       activeTab,
@@ -122,7 +120,7 @@ export const PosPage = () => {
       totals,
       searchResults,
       isProcessing,
-      posConfig, // <-- AÑADIDO
+      posConfig, 
       addTab,
       removeTab,
       switchTab,
@@ -151,44 +149,43 @@ export const PosPage = () => {
   const [isPaymentOpen, setIsPaymentOpen] = useState(false);
   const [isClientSelectorOpen, setIsClientSelectorOpen] = useState(false);
   const [isMiscItemOpen, setIsMiscItemOpen] = useState(false); 
-  const [isCashOpsOpen, setIsCashOpsOpen] = useState(false); // 🔥 NUEVO: Estado del modal de caja
+  const [isCashOpsOpen, setIsCashOpsOpen] = useState(false); 
   const [lastSaleTicket, setLastSaleTicket] = useState(null);
 
   // Refs
   const searchInputRef = useRef(null);
   const openingInputRef = useRef(null);
-  const productsListRef = useRef(null);
+  const productsListRef = useRef(null); // 🔥 REPARADO: Declaración agregada
   const lastScanTime = useRef(0);
 
   // =================================================================
-  // 🛡️ FOCO PERSISTENTE
+  // 🛡️ FOCO PERSISTENTE (Solución de Navegación sin bloqueos)
   // =================================================================
-  const maintainFocus = useCallback(() => {
-      // 🔥 Agregado isCashOpsOpen a la validación de foco
+  const refocusInput = useCallback(() => {
       const anyModalOpen = isPaymentOpen || isClientSelectorOpen || isMiscItemOpen || isCashOpsOpen || !!selectedProduct || !!lastSaleTicket;
-      if (!anyModalOpen && hasOpenShift) {
-          setTimeout(() => {
-              searchInputRef.current?.focus();
-          }, 50);
+      if (!anyModalOpen && hasOpenShift && searchInputRef.current) {
+          searchInputRef.current.focus();
       }
   }, [isPaymentOpen, isClientSelectorOpen, isMiscItemOpen, isCashOpsOpen, selectedProduct, lastSaleTicket, hasOpenShift]);
 
-  useEffect(() => {
-      const handleGlobalClick = (e) => {
-          if (e.target.tagName !== 'INPUT' && e.target.tagName !== 'BUTTON' && !e.target.closest('button')) {
-              maintainFocus();
-          }
-      };
-      document.addEventListener('mousedown', handleGlobalClick);
-      return () => document.removeEventListener('mousedown', handleGlobalClick);
-  }, [maintainFocus]);
+  const handlePosClick = (e) => {
+      const isInteractive = e.target.tagName === 'INPUT' || 
+                            e.target.tagName === 'BUTTON' || 
+                            e.target.closest('button') ||
+                            e.target.tagName === 'A' ||
+                            e.target.closest('a');
+                            
+      if (!isInteractive) {
+          refocusInput();
+      }
+  };
 
   useEffect(() => {
-    maintainFocus();
-  }, [isPaymentOpen, isClientSelectorOpen, isMiscItemOpen, isCashOpsOpen, selectedProduct, lastSaleTicket, maintainFocus]);
+      refocusInput();
+  }, [refocusInput, activeTabId]); // Recuperar foco al cambiar de pestaña en el POS
 
   // =================================================================
-  // ⚖️ LÓGICA DE BALANZAS (HÍBRIDA KRETZ/SYSTEL) 🔥
+  // ⚖️ LÓGICA DE BALANZAS
   // =================================================================
   const parseScaleBarcode = async (code) => {
       if (code.length !== 13) return false;
@@ -197,7 +194,6 @@ export const PosPage = () => {
 
       if (['20', '27', '28', '02'].includes(prefix)) {
           try {
-              // 1. INTENTO PRIMARIO: PLU (5) + PESO (5)
               const rawPlu5 = code.substring(2, 7);
               const rawValue5 = code.substring(7, 12);
               
@@ -215,7 +211,6 @@ export const PosPage = () => {
                   }
               }
 
-              // 2. INTENTO SECUNDARIO: PLU (4) + PRECIO (6)
               if (prefix === '20') {
                   const rawPlu4 = code.substring(2, 6);
                   const rawPrice6 = code.substring(6, 12);
@@ -281,18 +276,40 @@ export const PosPage = () => {
   };
 
   // =================================================================
-  // 2. MANEJO DE INPUT BÚSQUEDA
+  // 2. MANEJO DE INPUT BÚSQUEDA (🔥 FIX DEL BUCLE INFINITO Y ESPACIOS)
   // =================================================================
   useEffect(() => {
+      let isSubscribed = true;
+
+      // 1. Permite buscar "Coca Cola " sin que se borre el espacio (NO usamos trim aquí)
+      // 2. Permite buscar códigos de 1 sola letra (ej: "A")
+      if (searchTerm.length === 0) {
+          setSearchResults([]);
+          setFocusedIndex(-1);
+          return;
+      }
+
       const timer = setTimeout(async () => {
-          if (searchTerm.length >= 2) {
-              searchProduct(searchTerm);
-          } else {
-              setSearchResults([]);
+          if (!isSubscribed) return;
+
+          try {
+              await searchProduct(searchTerm);
+              
+              if (isSubscribed) {
+                  setFocusedIndex(-1);
+              }
+          } catch (error) {
+              console.error("Error en búsqueda:", error);
           }
-      }, 150);
-      return () => clearTimeout(timer);
-  }, [searchTerm]);
+      }, 250);
+
+      return () => {
+          isSubscribed = false;
+          clearTimeout(timer);
+      };
+      // 🔥 CRÍTICO: Removidas dependencias inestables para evitar el bucle de renderizado
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchTerm]); 
 
   const handleSelectProduct = (product) => {
       if (!product || !product.id) return;
@@ -301,7 +318,7 @@ export const PosPage = () => {
 
       if (!POS_CONFIG.ALLOW_OUT_OF_STOCK_SALES && currentStock <= 0) {
           setSearchTerm(''); 
-          maintainFocus();
+          refocusInput();
           return; 
       }
       
@@ -311,14 +328,15 @@ export const PosPage = () => {
           addToCart(product, 1);
           setSearchTerm('');
           setSearchResults([]);
-          maintainFocus();
+          refocusInput();
       }
   };
 
   const handleKeyDownInput = async (e) => {
+      const list = searchTerm.length > 0 ? searchResults : defaultProducts;
+
       if (e.key === 'ArrowDown') {
           e.preventDefault();
-          const list = searchTerm.length > 1 ? searchResults : defaultProducts;
           setFocusedIndex(prev => (prev < list.length - 1 ? prev + 1 : prev));
       } else if (e.key === 'ArrowUp') {
           e.preventDefault();
@@ -330,44 +348,52 @@ export const PosPage = () => {
           const now = Date.now();
           if (now - lastScanTime.current < 500) return; 
 
-          if (!searchTerm.trim()) return;
+          // Al dar Enter, hacemos trim() para asegurar match exacto del código
+          const queryValue = searchTerm.trim();
+          if (!queryValue) return;
+          
           lastScanTime.current = now;
 
           try {
-              const wasScale = await parseScaleBarcode(searchTerm);
+              const wasScale = await parseScaleBarcode(queryValue);
               if (wasScale) return; 
 
-              const exactMatchInList = searchResults.find(p => 
-                  String(p.barcode) === searchTerm || String(p.code) === searchTerm
+              // 1. Si el usuario se movió manualmente con flechas
+              if (focusedIndex >= 0 && list[focusedIndex]) {
+                  handleSelectProduct(list[focusedIndex]);
+                  return;
+              }
+
+              // 🔥 FIX BÚSQUEDA PRECISA (G1 / F1): Buscamos coincidencia EXACTA
+              const queryUpper = queryValue.toUpperCase();
+              
+              // Verificamos primero en la lista rápida
+              let exactMatch = list.find(p => 
+                  String(p.barcode || '').toUpperCase() === queryUpper || 
+                  String(p.code || '').toUpperCase() === queryUpper
               );
 
-              if (exactMatchInList) {
-                  handleSelectProduct(exactMatchInList);
+              // Si no está, forzamos búsqueda profunda en la base de datos
+              if (!exactMatch) {
+                  const directResults = await productRepository.search(queryValue);
+                  exactMatch = directResults.find(p => 
+                      String(p.barcode || '').toUpperCase() === queryUpper || 
+                      String(p.code || '').toUpperCase() === queryUpper
+                  );
+              }
+
+              // Si existe el código exacto, lo cobra de una
+              if (exactMatch) {
+                  handleSelectProduct(exactMatch);
+                  return;
+              } 
+              
+              // Si no hay match exacto, pero solo hay 1 en la lista, lo agrega
+              if (list.length === 1) {
+                  handleSelectProduct(list[0]);
                   return;
               }
-
-              if (searchResults.length === 1) {
-                  handleSelectProduct(searchResults[0]);
-                  return;
-              }
-
-              if (focusedIndex >= 0 && searchResults[focusedIndex]) {
-                  handleSelectProduct(searchResults[focusedIndex]);
-                  return;
-              }
-
-              const directResults = await productRepository.search(searchTerm);
-              const exactMatchDb = directResults.find(p => 
-                  String(p.barcode) === searchTerm || String(p.code) === searchTerm
-              );
-
-              if (exactMatchDb) {
-                  handleSelectProduct(exactMatchDb);
-              } else if (directResults.length === 1) {
-                  handleSelectProduct(directResults[0]);
-              } else {
-                  setSearchTerm('');
-              }
+              
           } catch (err) {
               console.error("Error en escaneo:", err);
           }
@@ -375,36 +401,37 @@ export const PosPage = () => {
   };
 
   // =================================================================
-  // ⚡ TECLAS GLOBALES
+  // ⚡ TECLAS GLOBALES (Liberado para Navegación)
   // =================================================================
   useEffect(() => {
       const handleGlobalKeys = (e) => {
-          // No disparar atajos si el usuario está escribiendo en un input dentro de un modal
           if (document.activeElement.tagName === 'INPUT' && document.activeElement !== searchInputRef.current) return;
           
           if (!hasOpenShift) return;
 
           switch(e.key) {
               case 'F1': e.preventDefault(); addTab(); break;
-              case 'F2': e.preventDefault(); maintainFocus(); break;
+              case 'F2': e.preventDefault(); refocusInput(); break;
               case 'F3': e.preventDefault(); setIsClientSelectorOpen(true); break;
               case 'F4': e.preventDefault(); if(confirm('¿Anular ticket actual?')) clearCart(); break;
               case 'F6': e.preventDefault(); applyWholesaleToLastItem(); break; 
-              case 'F8': e.preventDefault(); setIsCashOpsOpen(true); break; // 🔥 ATAJO OPERACIONES DE CAJA
+              case 'F8': e.preventDefault(); setIsCashOpsOpen(true); break; 
               case 'F9': e.preventDefault(); setIsMiscItemOpen(true); break; 
               case 'F12': e.preventDefault(); if (activeTab.items.length > 0) setIsPaymentOpen(true); break;
               case 'Escape': 
                   e.preventDefault();
                   setSearchTerm(''); 
                   setSearchResults([]); 
-                  maintainFocus();
+                  refocusInput();
                   break;
               default: break;
           }
       };
+      
       window.addEventListener('keydown', handleGlobalKeys);
       return () => window.removeEventListener('keydown', handleGlobalKeys);
-  }, [hasOpenShift, isPaymentOpen, isCashOpsOpen, activeTab.items, maintainFocus, addTab, clearCart, applyWholesaleToLastItem]);
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasOpenShift, activeTab.items.length]); // Dependencias minimizadas para no interferir con la navegación
 
   const handleProcessSale = async (paymentData) => {
     const result = await processSale(paymentData);
@@ -418,23 +445,17 @@ export const PosPage = () => {
         setSearchTerm('');
         const activeIndex = tabs.findIndex(t => t.id === activeTabId);
         if (tabs.length > 1 && activeIndex !== 0) removeTab(activeTabId);
-        setTimeout(maintainFocus, 100);
+        setTimeout(refocusInput, 100);
     }
   };
 
-  // 🔥 HELPER DE LIMPIEZA DE DECIMALES
   const formatQuantity = (qty, isWeighable) => {
       const num = parseFloat(qty);
       if (isNaN(num)) return '0';
-      // Redondeamos a 3 decimales para eliminar la basura de JS (ej 0.99999999 -> 1)
       const cleanNum = Math.round(num * 1000) / 1000;
-      
-      // Si es un número entero o si no es pesable y su valor decimal es nulo (ej 2.000)
       if (cleanNum % 1 === 0) {
           return cleanNum.toString();
       }
-      
-      // Si es fraccionado
       return cleanNum.toString();
   };
 
@@ -469,7 +490,7 @@ export const PosPage = () => {
   }
 
   return (
-    <div className="h-[calc(100vh-4rem)] flex flex-col bg-sys-50 relative overflow-hidden">
+    <div onClick={handlePosClick} className="h-[calc(100vh-4rem)] flex flex-col bg-sys-50 relative overflow-hidden">
       
       {/* 🟢 BARRA SUPERIOR: PESTAÑAS */}
       <div className="h-12 bg-white border-b border-sys-200 flex items-end px-2 gap-1 overflow-x-auto no-scrollbar shrink-0 z-20 shadow-sm">
@@ -503,7 +524,6 @@ export const PosPage = () => {
 
       <div className="flex-1 flex overflow-hidden mb-8">
           
-          {/* 👈 IZQUIERDA: DETALLE DE VENTA */}
           <div className="flex-1 flex flex-col bg-white shadow-xl z-10 relative">
               <div className="p-3 border-b border-sys-100 flex items-center justify-between bg-white shrink-0">
                   <div className="flex items-center gap-3 w-full">
@@ -533,7 +553,6 @@ export const PosPage = () => {
                           {activeTab.items.map((item) => (
                               <div key={item.id} className={cn("group flex items-center p-3 bg-white border rounded-xl shadow-sm hover:shadow-md transition-all animate-in fade-in slide-in-from-left-2", item.appliedWholesale ? "border-brand border-2 bg-brand/5" : "border-sys-100")}>
                                   <div className="w-12 text-center mr-2">
-                                      {/* 🔥 FIX: Renderizado Limpio de Decimales */}
                                       <div className="text-lg font-black text-sys-900 tracking-tighter">
                                           {formatQuantity(item.quantity, item.isWeighable)}
                                       </div>
@@ -542,7 +561,6 @@ export const PosPage = () => {
                                   <div className="flex-1 min-w-0">
                                       <div className="text-sm font-black text-sys-800 truncate uppercase tracking-tight">{item.name}</div>
                                       
-                                      {/* FEEDBACK VISUAL DE PROMOCIONES O DESCUENTOS */}
                                       {(item.appliedPromo || item.appliedWholesale) && (
                                           <div className={cn("inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wide mt-1", item.appliedWholesale ? "bg-orange-100 text-orange-700 border border-orange-200" : "bg-purple-100 text-purple-700 animate-pulse")}>
                                               {item.appliedWholesale ? <Percent size={10}/> : <Tag size={10} className="fill-purple-700"/>}
@@ -598,7 +616,6 @@ export const PosPage = () => {
               </div>
           </div>
 
-          {/* 👉 DERECHA: BUSCADOR */}
           <div className="w-[440px] border-l border-sys-200 bg-white hidden md:flex flex-col z-0">
               <div className="p-4 border-b border-sys-100 bg-white flex gap-2">
                   <div className="relative group flex-1">
@@ -613,17 +630,15 @@ export const PosPage = () => {
                           onKeyDown={handleKeyDownInput} 
                           autoFocus 
                           autoComplete="off" 
-                          onBlur={maintainFocus} 
                       />
                   </div>
-                  {/* 🔥 BOTÓN PARA ARTÍCULO MANUAL */}
                   <Button variant="outline" onClick={() => setIsMiscItemOpen(true)} className="h-full aspect-square p-0 rounded-2xl border-2 border-sys-200 text-brand hover:border-brand hover:bg-brand/5 shadow-sm" title="Artículo Libre (F9)">
                       <Plus size={24} />
                   </Button>
               </div>
 
               <div ref={productsListRef} className="flex-1 overflow-y-auto p-4 space-y-3 custom-scrollbar bg-sys-50/10">
-                  {(searchTerm.length > 1 ? searchResults : defaultProducts).map((product, idx) => (
+                  {(searchTerm.length > 0 ? searchResults : defaultProducts).map((product, idx) => (
                       <div 
                           key={product.id}
                           onClick={() => handleSelectProduct(product)}
@@ -663,7 +678,7 @@ export const PosPage = () => {
                           </div>
                       </div>
                   ))}
-                  {searchTerm.length > 1 && searchResults.length === 0 && (
+                  {searchTerm.length > 0 && searchResults.length === 0 && (
                       <div className="text-center py-20 text-sys-400 uppercase font-black text-xs opacity-30">
                           <PackageOpen size={60} className="mx-auto mb-4" strokeWidth={1} />
                           <p>Sin resultados</p>
@@ -673,7 +688,6 @@ export const PosPage = () => {
           </div>
       </div>
 
-      {/* 🚀 BARRA DE ATAJOS INFERIOR */}
       <div className="fixed bottom-0 left-0 right-0 h-8 bg-sys-900 text-sys-300 flex items-center px-4 z-50 text-[10px] font-mono justify-between select-none overflow-x-auto">
           <div className="flex gap-4 md:gap-6 shrink-0">
               <span className="hover:text-white transition-colors cursor-default"><strong className="text-brand">F1:</strong> NVA CUENTA</span>
@@ -690,14 +704,13 @@ export const PosPage = () => {
           </div>
       </div>
 
-      {/* MODALES */}
       <MiscItemModal 
           isOpen={isMiscItemOpen} 
-          onClose={() => { setIsMiscItemOpen(false); maintainFocus(); }} 
-          onConfirm={(product, qty) => { addToCart(product, qty); setIsMiscItemOpen(false); maintainFocus(); }} 
+          onClose={() => { setIsMiscItemOpen(false); refocusInput(); }} 
+          onConfirm={(product, qty) => { addToCart(product, qty); setIsMiscItemOpen(false); refocusInput(); }} 
       />
       
-      <QuantityModal isOpen={!!selectedProduct} product={selectedProduct} onClose={() => { setSelectedProduct(null); maintainFocus(); }} onConfirm={(product, qty) => { addToCart(product, qty); setSelectedProduct(null); maintainFocus(); }} />
+      <QuantityModal isOpen={!!selectedProduct} product={selectedProduct} onClose={() => { setSelectedProduct(null); refocusInput(); }} onConfirm={(product, qty) => { addToCart(product, qty); setSelectedProduct(null); refocusInput(); }} />
       
       <PaymentModal 
           isOpen={isPaymentOpen} 
@@ -706,19 +719,18 @@ export const PosPage = () => {
           discount={Number(totals?.discountAmount) || 0} 
           client={activeTab.client} 
           posConfig={posConfig} 
-          onClose={() => { setIsPaymentOpen(false); maintainFocus(); }} 
+          onClose={() => { setIsPaymentOpen(false); refocusInput(); }} 
           onConfirm={handleProcessSale} 
           isProcessing={isProcessing} 
       />
       
-      {/* 🔥 INYECTAMOS EL NUEVO MODAL DE CAJA */}
       <CashOperationsModal 
           isOpen={isCashOpsOpen} 
-          onClose={() => { setIsCashOpsOpen(false); maintainFocus(); }} 
+          onClose={() => { setIsCashOpsOpen(false); refocusInput(); }} 
       />
 
-      <ClientSelectionModal isOpen={isClientSelectorOpen} onClose={() => { setIsClientSelectorOpen(false); maintainFocus(); }} onSelect={(c) => { setClient(c); setIsClientSelectorOpen(false); maintainFocus(); }} />
-      <TicketModal isOpen={!!lastSaleTicket} sale={lastSaleTicket} onClose={() => { setLastSaleTicket(null); maintainFocus(); }} companyConfig={{ nombre: user?.activeBranchName }} />
+      <ClientSelectionModal isOpen={isClientSelectorOpen} onClose={() => { setIsClientSelectorOpen(false); refocusInput(); }} onSelect={(c) => { setClient(c); setIsClientSelectorOpen(false); refocusInput(); }} />
+      <TicketModal isOpen={!!lastSaleTicket} sale={lastSaleTicket} onClose={() => { setLastSaleTicket(null); refocusInput(); }} companyConfig={{ nombre: user?.activeBranchName }} />
     </div>
   );
 };

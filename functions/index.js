@@ -166,61 +166,64 @@ app.post('/get-mp-terminals', async (req, res) => {
 });
 
 // ==================================================================
-// 2. ENDPOINT: CONFIGURAR POINT (CAMBIO DE MODO)
+// ⚙️ ENDPOINT: CONFIGURAR POINT (MODO PDV / STANDALONE)
 // ==================================================================
-app.post('/configure-mp-point', async (req, res) => {
+app.post('/change-point-mode', async (req, res) => { // 👈 Cambiado el nombre para matchear el front
     try {
-        // Normalizamos nombres de variables para aceptar lo que manda el frontend
-        const { accessToken, deviceId, terminalId, mode } = req.body;
+        const { accessToken, deviceId, mode } = req.body;
         
-        // Aceptamos deviceId O terminalId (para robustez)
-        let targetId = deviceId || terminalId;
-
-        if (!accessToken || !targetId) {
-            return res.status(400).json({ error: "Faltan datos (Token o ID)" });
+        if (!accessToken || !deviceId) {
+            return res.status(400).json({ error: "Faltan credenciales o ID de dispositivo" });
         }
 
-        // 🔥 LIMPIEZA DE ID: Aseguramos formato correcto si viene sucio
-        targetId = targetId.trim();
+        // 1. Normalización estricta del ID
+        let targetId = deviceId.trim();
+        
+        // Si el ID no tiene el doble guion bajo, es un ID corto (S/N). 
+        // Mercado Pago para los Smart POS (Newland) requiere el prefijo del modelo.
         if (!targetId.includes('__')) {
-            console.log(`⚠️ ID corto recibido: ${targetId}. Agregando prefijo N950...`);
             targetId = `NEWLAND_N950__${targetId}`;
         }
 
-        // 🔥 VALOR EXACTO: La API solo acepta "PDV" o "STANDALONE"
+        // 2. Validación de modo
+        // La API de MP espera exactamente "PDV" o "STANDALONE"
         const targetMode = (mode === 'PDV' || mode === 'POINT') ? "PDV" : "STANDALONE";
 
-        console.log(`⚙️ Configurando Point: ${targetId} -> ${targetMode}`);
+        console.log(`🚀 Cambiando modo de Point ${targetId} a ${targetMode}...`);
 
-        // 🔥 ENDPOINT CORRECTO: Usamos la API de Integración de Dispositivos (PATCH)
-        const response = await fetch(`https://api.mercadopago.com/point/integration-api/devices/${targetId}`, {
+        // 3. Llamada a la API de Mercado Pago
+        // Nota: Usamos PATCH según la documentación de Integration API de Point
+        const mpResponse = await fetch(`https://api.mercadopago.com/point/integration-api/devices/${targetId}`, {
             method: 'PATCH',
             headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${accessToken}`
+                'Authorization': `Bearer ${accessToken}`,
+                'Content-Type': 'application/json'
             },
             body: JSON.stringify({
                 operating_mode: targetMode
             })
         });
 
-        const data = await response.json();
+        const data = await mpResponse.json();
 
-        if (!response.ok) {
-            console.error("Error MP Setup:", JSON.stringify(data));
-            return res.status(400).json({ 
-                error: "Fallo al configurar en Mercado Pago", 
-                details: data,
-                sent_id: targetId
+        if (!mpResponse.ok) {
+            console.error("❌ Error de MP:", data);
+            return res.status(mpResponse.status).json({ 
+                error: "Mercado Pago rechazó el cambio de modo", 
+                details: data 
             });
         }
 
-        console.log("✅ Point Configurado Exitosamente:", data);
-        return res.json({ success: true, data });
+        console.log(`✅ Éxito: Terminal ${targetId} ahora en modo ${targetMode}`);
+        return res.json({ 
+            success: true, 
+            message: `Terminal configurada en modo ${targetMode}`,
+            device: data 
+        });
 
     } catch (error) {
-        console.error("Server Error:", error);
-        return res.status(500).json({ error: "Error interno del servidor" });
+        console.error("🔥 Error crítico en change-point-mode:", error);
+        return res.status(500).json({ error: "Error interno procesando la terminal" });
     }
 });
 

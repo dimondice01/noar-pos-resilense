@@ -3,7 +3,8 @@ import {
     CreditCard, Save, HelpCircle, CheckCircle2, 
     AlertCircle, ExternalLink, Eye, EyeOff, Plug, FileText, ScrollText, Download, Key,
     Search, X, Loader2, Info, Link as LinkIcon, Terminal, Smartphone, MonitorSmartphone,
-    HardDrive, Users, Building2, ShieldCheck, Keyboard, Scale, Calendar, MapPin
+    HardDrive, Users, Building2, ShieldCheck, Keyboard, Scale, Calendar, MapPin,
+    Wifi
 } from 'lucide-react';
 import { doc, getDoc, setDoc, collection, getDocs, query, where } from 'firebase/firestore';
 import { db } from '../../../database/firebase';
@@ -198,6 +199,7 @@ export const IntegrationsPage = () => {
     const [status, setStatus] = useState('idle'); 
     const [tutorialOpen, setTutorialOpen] = useState(null);
     const [generatingCsr, setGeneratingCsr] = useState(false);
+    const [changingPointMode, setChangingPointMode] = useState(null); // Estado de carga para el cambio a PDV
 
     const [companyUsers, setCompanyUsers] = useState([]);
     const [posList, setPosList] = useState([]);      
@@ -231,10 +233,6 @@ export const IntegrationsPage = () => {
             const allUsers = usersSnap.docs.map(d => ({ uid: d.id, ...d.data() }));
 
             // 2. 🔥 FILTRAR USUARIOS POR SUCURSAL ACTIVA
-            // Mostramos solo:
-            // a) Usuarios asignados explícitamente a esta sucursal (branchId === activeBranchId)
-            // b) Dueños (role === 'owner') - para que no se queden fuera de la config
-            // c) Admins globales (role === 'admin')
             const branchUsers = allUsers.filter(u => 
                 u.branchId === activeBranchId || 
                 u.role === 'owner' || 
@@ -263,7 +261,6 @@ export const IntegrationsPage = () => {
                 setAfipConfig(prev => ({
                     ...prev,
                     ...data,
-                    // Asegurar valores por defecto si no existen
                     taxCondition: data.taxCondition || 'MONOTRIBUTO',
                     iibb: data.iibb || '',
                     inicioAct: data.inicioAct || ''
@@ -312,71 +309,108 @@ export const IntegrationsPage = () => {
         setAssignments(prev => ({ ...prev, [uid]: { ...prev[uid], [field]: value } }));
     };
 
-    // Reemplaza esta función dentro de IntegrationsPage.jsx
-
-const handleGenerateCSR = async () => {
-    if (!afipConfig.cuit || !afipConfig.razonSocial) return alert("⚠️ CUIT y Razón Social requeridos.");
-    setGeneratingCsr(true);
-    try {
-        // 1. Generar par de llaves RSA
-        const keypair = await new Promise((resolve, reject) => {
-            forge.pki.rsa.generateKeyPair({ bits: 2048, workers: 2 }, (err, k) => err ? reject(err) : resolve(k));
-        });
-
-        const privateKeyPem = forge.pki.privateKeyToPem(keypair.privateKey);
+    // 🔥 NUEVA FUNCIÓN: Cambiar modo de operación de la Terminal Point (A PDV)
+    const handleSetPointToPDV = async (pointId) => {
+        if (!mpConfig.accessToken) return alert("⚠️ Guarde el Access Token antes de continuar.");
+        if (!pointId) return alert("⚠️ Seleccione una terminal válida.");
         
-        // 2. Crear el pedido de certificación (CSR)
-        const csr = forge.pki.createCertificationRequest();
-        csr.publicKey = keypair.publicKey;
-        csr.setSubject([
-            { name: 'commonName', value: afipConfig.razonSocial }, 
-            { name: 'serialNumber', value: `CUIT ${afipConfig.cuit}` }, 
-            { name: 'countryName', value: 'AR' }, 
-            { name: 'organizationName', value: 'SALVADOR POS' }
-        ]);
-        csr.sign(keypair.privateKey);
-        const csrPem = forge.pki.certificationRequestToPem(csr);
-
-        // 🔥 PASO CRÍTICO: Guardar la KEY inmediatamente en Firestore para no perderla
-        const branchRef = `companies/${user.companyId}/branches/${activeBranchId}/integrations/afip`;
-        await setDoc(doc(db, branchRef), { 
-            ...afipConfig, 
-            key: privateKeyPem,
-            updatedAt: new Date().toISOString() 
-        }, { merge: true });
-
-        // Actualizar estado local
-        setAfipConfig(prev => ({ ...prev, key: privateKeyPem }));
+        const confirmChange = window.confirm(
+            "¿Desea cambiar esta terminal a MODO PUNTO DE VENTA (PDV)?\n\n" +
+            "Esto hará que la terminal quede bloqueada esperando comandos de cobro desde este sistema. " +
+            "Ya no podrá marcar montos manualmente en la pantalla del dispositivo."
+        );
         
-        // 3. Descargar el archivo .csr para el usuario
-        const blob = new Blob([csrPem], { type: "text/plain;charset=utf-8" });
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = `afip_branch_${activeBranchId}.csr`;
-        link.click();
+        if (!confirmChange) return;
 
-        alert("✅ Llave privada generada y guardada. Ahora sube el archivo .csr a AFIP para obtener tu certificado.");
-        
-    } catch (e) { 
-        console.error(e);
-        alert("Error al generar los archivos de seguridad."); 
-    } finally { 
-        setGeneratingCsr(false); 
-    }
-};
+        setChangingPointMode(pointId);
+        try {
+            const res = await fetch(`${API_URL}/change-point-mode`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ 
+                    accessToken: mpConfig.accessToken, 
+                    deviceId: pointId,
+                    mode: 'PDV' // Forzamos a Punto de Venta
+                })
+            });
+
+            if (!res.ok) {
+                const errData = await res.json();
+                throw new Error(errData.error || "No se pudo cambiar el modo de la terminal.");
+            }
+
+            alert("✅ Terminal configurada en MODO PDV correctamente.\n\nLa pantalla del dispositivo Newland ahora debería mostrar un mensaje indicando que está vinculada a su sistema.");
+
+        } catch (error) {
+            console.error("Error cambiando modo Point:", error);
+            alert(`❌ Ocurrió un error: ${error.message}`);
+        } finally {
+            setChangingPointMode(null);
+        }
+    };
+
+    const handleGenerateCSR = async () => {
+        if (!afipConfig.cuit || !afipConfig.razonSocial) return alert("⚠️ CUIT y Razón Social requeridos.");
+        setGeneratingCsr(true);
+        try {
+            // 1. Generar par de llaves RSA
+            const keypair = await new Promise((resolve, reject) => {
+                forge.pki.rsa.generateKeyPair({ bits: 2048, workers: 2 }, (err, k) => err ? reject(err) : resolve(k));
+            });
+
+            const privateKeyPem = forge.pki.privateKeyToPem(keypair.privateKey);
+            
+            // 2. Crear el pedido de certificación (CSR)
+            const csr = forge.pki.createCertificationRequest();
+            csr.publicKey = keypair.publicKey;
+            csr.setSubject([
+                { name: 'commonName', value: afipConfig.razonSocial }, 
+                { name: 'serialNumber', value: `CUIT ${afipConfig.cuit}` }, 
+                { name: 'countryName', value: 'AR' }, 
+                { name: 'organizationName', value: 'SALVADOR POS' }
+            ]);
+            csr.sign(keypair.privateKey);
+            const csrPem = forge.pki.certificationRequestToPem(csr);
+
+            // 🔥 PASO CRÍTICO: Guardar la KEY inmediatamente en Firestore para no perderla
+            const branchRef = `companies/${user.companyId}/branches/${activeBranchId}/integrations/afip`;
+            await setDoc(doc(db, branchRef), { 
+                ...afipConfig, 
+                key: privateKeyPem,
+                updatedAt: new Date().toISOString() 
+            }, { merge: true });
+
+            // Actualizar estado local
+            setAfipConfig(prev => ({ ...prev, key: privateKeyPem }));
+            
+            // 3. Descargar el archivo .csr para el usuario
+            const blob = new Blob([csrPem], { type: "text/plain;charset=utf-8" });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `afip_branch_${activeBranchId}.csr`;
+            link.click();
+
+            alert("✅ Llave privada generada y guardada. Ahora sube el archivo .csr a AFIP para obtener tu certificado.");
+            
+        } catch (e) { 
+            console.error(e);
+            alert("Error al generar los archivos de seguridad."); 
+        } finally { 
+            setGeneratingCsr(false); 
+        }
+    };
+
     const handleSaveAll = async (e) => {
         if (e) e.preventDefault();
         
         // 🔒 VALIDACIONES DE SEGURIDAD (BLINDAJE)
         if (afipConfig.isActive) {
-            // 1. CUIT Numérico y de 11 dígitos
             const cleanCuit = afipConfig.cuit.replace(/[^0-9]/g, '');
             if (cleanCuit.length !== 11) {
                 alert("⚠️ Error: El CUIT debe contener exactamente 11 números.");
                 return;
             }
-            // 2. Punto de Venta válido
             if (!afipConfig.ptoVta || parseInt(afipConfig.ptoVta) < 1) {
                 alert("⚠️ Error: El Punto de Venta debe ser mayor a 0.");
                 return;
@@ -474,7 +508,7 @@ const handleGenerateCSR = async () => {
                     </Card>
                 </div>
 
-                {/* 👤 MAPEO DE HARDWARE */}
+                {/* 👤 MAPEO DE HARDWARE CON BOTÓN MODO PDV */}
                 <Card className="border-2 border-sys-900 shadow-2xl rounded-[2.5rem] overflow-hidden p-0 bg-white">
                     <div className="bg-sys-900 p-6 text-white flex items-center justify-between">
                         <div className="flex items-center gap-4">
@@ -486,14 +520,58 @@ const handleGenerateCSR = async () => {
                         <table className="w-full text-left border-separate border-spacing-y-3">
                             <thead><tr className="text-[10px] font-black text-sys-400 uppercase tracking-[0.2em]"><th className="px-6 py-2">Usuario / Cajero</th><th className="px-6 py-2">Caja QR (MP)</th><th className="px-6 py-2">Point Smart (MP)</th><th className="px-6 py-2 text-center">Estado</th></tr></thead>
                             <tbody>
-                                {companyUsers.map(userItem => (
-                                    <tr key={userItem.uid} className="group">
-                                        <td className="px-6 py-4 bg-sys-50 rounded-l-2xl border-y border-l border-sys-200"><div className="flex items-center gap-4"><div className="w-10 h-10 bg-white rounded-full flex items-center justify-center border-2 border-sys-900 font-black text-sm text-sys-900 shadow-sm">{userItem.name?.charAt(0)}</div><div><p className="text-sm font-black text-sys-900 uppercase tracking-tighter leading-none">{userItem.name}</p><p className="text-[10px] font-bold text-sys-400 uppercase tracking-widest mt-1">{userItem.role}</p></div></div></td>
-                                        <td className="px-6 py-4 bg-sys-50 border-y border-sys-200"><select className="w-full bg-white border-2 border-sys-200 rounded-xl px-4 py-2 text-[11px] font-black uppercase focus:border-[#009EE3] outline-none shadow-sm cursor-pointer" value={assignments[userItem.uid]?.qrId || ''} onChange={(e) => updateAssignment(userItem.uid, 'qrId', e.target.value)}><option value="">-- NO ASIGNADA --</option>{posList.map(pos => <option key={pos.id} value={pos.external_id}>{pos.name}</option>)}</select></td>
-                                        <td className="px-6 py-4 bg-sys-50 border-y border-sys-200"><select className="w-full bg-white border-2 border-sys-200 rounded-xl px-4 py-2 text-[11px] font-black uppercase focus:border-[#009EE3] outline-none shadow-sm cursor-pointer" value={assignments[userItem.uid]?.pointId || ''} onChange={(e) => updateAssignment(userItem.uid, 'pointId', e.target.value)}><option value="">-- NO ASIGNADO --</option>{pointList.map(p => <option key={p.id} value={p.id}>{p.name} ({p.id.slice(-4)})</option>)}</select></td>
-                                        <td className="px-6 py-4 bg-sys-50 rounded-r-2xl border-y border-r border-sys-200 text-center">{(assignments[userItem.uid]?.qrId || assignments[userItem.uid]?.pointId) ? <span className="w-10 h-10 bg-emerald-500 text-white rounded-xl flex items-center justify-center mx-auto shadow-lg animate-in zoom-in"><CheckCircle2 size={20}/></span> : <span className="w-10 h-10 bg-sys-200 text-sys-400 rounded-xl flex items-center justify-center mx-auto opacity-30"><Smartphone size={20}/></span>}</td>
-                                    </tr>
-                                ))}
+                                {companyUsers.map(userItem => {
+                                    const assignedPointId = assignments[userItem.uid]?.pointId;
+                                    const hasHardware = assignments[userItem.uid]?.qrId || assignedPointId;
+                                    
+                                    return (
+                                        <tr key={userItem.uid} className="group">
+                                            <td className="px-6 py-4 bg-sys-50 rounded-l-2xl border-y border-l border-sys-200">
+                                                <div className="flex items-center gap-4">
+                                                    <div className="w-10 h-10 bg-white rounded-full flex items-center justify-center border-2 border-sys-900 font-black text-sm text-sys-900 shadow-sm">{userItem.name?.charAt(0)}</div>
+                                                    <div>
+                                                        <p className="text-sm font-black text-sys-900 uppercase tracking-tighter leading-none">{userItem.name}</p>
+                                                        <p className="text-[10px] font-bold text-sys-400 uppercase tracking-widest mt-1">{userItem.role}</p>
+                                                    </div>
+                                                </div>
+                                            </td>
+                                            <td className="px-6 py-4 bg-sys-50 border-y border-sys-200">
+                                                <select className="w-full bg-white border-2 border-sys-200 rounded-xl px-4 py-2 text-[11px] font-black uppercase focus:border-[#009EE3] outline-none shadow-sm cursor-pointer" value={assignments[userItem.uid]?.qrId || ''} onChange={(e) => updateAssignment(userItem.uid, 'qrId', e.target.value)}>
+                                                    <option value="">-- NO ASIGNADA --</option>
+                                                    {posList.map(pos => <option key={pos.id} value={pos.external_id}>{pos.name}</option>)}
+                                                </select>
+                                            </td>
+                                            <td className="px-6 py-4 bg-sys-50 border-y border-sys-200 relative">
+                                                <div className="flex flex-col gap-2">
+                                                    <select className="w-full bg-white border-2 border-sys-200 rounded-xl px-4 py-2 text-[11px] font-black uppercase focus:border-[#009EE3] outline-none shadow-sm cursor-pointer" value={assignedPointId || ''} onChange={(e) => updateAssignment(userItem.uid, 'pointId', e.target.value)}>
+                                                        <option value="">-- NO ASIGNADO --</option>
+                                                        {pointList.map(p => <option key={p.id} value={p.id}>{p.name} ({p.id.slice(-4)})</option>)}
+                                                    </select>
+                                                    
+                                                    {/* 🔥 BOTÓN PARA ACTIVAR MODO PDV SI HAY TERMINAL ASIGNADA */}
+                                                    {assignedPointId && (
+                                                        <Button 
+                                                            type="button"
+                                                            onClick={() => handleSetPointToPDV(assignedPointId)}
+                                                            disabled={changingPointMode === assignedPointId}
+                                                            className="w-full h-8 text-[9px] bg-blue-100 text-blue-700 hover:bg-blue-600 hover:text-white border border-blue-200 rounded-lg shadow-sm"
+                                                        >
+                                                            {changingPointMode === assignedPointId ? <Loader2 size={12} className="animate-spin" /> : <Wifi size={12} className="mr-1"/>}
+                                                            ACTUALIZAR A MODO PDV
+                                                        </Button>
+                                                    )}
+                                                </div>
+                                            </td>
+                                            <td className="px-6 py-4 bg-sys-50 rounded-r-2xl border-y border-r border-sys-200 text-center">
+                                                {hasHardware ? (
+                                                    <span className="w-10 h-10 bg-emerald-500 text-white rounded-xl flex items-center justify-center mx-auto shadow-lg animate-in zoom-in"><CheckCircle2 size={20}/></span>
+                                                ) : (
+                                                    <span className="w-10 h-10 bg-sys-200 text-sys-400 rounded-xl flex items-center justify-center mx-auto opacity-30"><Smartphone size={20}/></span>
+                                                )}
+                                            </td>
+                                        </tr>
+                                    );
+                                })}
                             </tbody>
                         </table>
                     </div>

@@ -704,7 +704,7 @@ export const syncService = {
       return true;
   },
 
-  // A. SUBIDA DE PRODUCTOS (Y PROMOS LOCALES)
+  // A. SUBIDA DE PRODUCTOS (Y PROMOS LOCALES) - 🔥 AHORA CON CHUNKING + SLEEP
   async syncPendingProducts(companyId, branchId) {
     const localDb = await getDB();
     const pendingProducts = await localDb.products
@@ -717,57 +717,73 @@ export const syncService = {
 
     if (pendingProducts.length === 0 && pendingInventory.length === 0) return { synced: 0 };
 
-    const batch = writeBatch(db);
-    let opCount = 0;
+    let totalSynced = 0;
 
+    // 🔥 1. Subida fraccionada de Productos
     if (pendingProducts.length > 0) {
-        for (const product of pendingProducts) {
-            if (!product.id) continue;
-            const docRef = doc(collection(db, 'companies', companyId, 'products'), String(product.id));
-            const { syncStatus, stock, promo, ...masterData } = product; 
+        const productChunks = this.chunkArray(pendingProducts, 100); // Lotes de 100 para evitar error 500 de Firestore
+        for (const chunk of productChunks) {
+            const batch = writeBatch(db);
+            const syncedIds = [];
+            
+            for (const product of chunk) {
+                if (!product.id) continue;
+                const docRef = doc(collection(db, 'companies', companyId, 'products'), String(product.id));
+                const { syncStatus, stock, promo, ...masterData } = product; 
 
-            batch.set(docRef, {
-                 ...this._deepSanitize(masterData),
-                 lastUpdated: serverTimestamp()
-            }, { merge: true }); 
-            opCount++;
+                batch.set(docRef, {
+                     ...this._deepSanitize(masterData),
+                     lastUpdated: serverTimestamp()
+                }, { merge: true }); 
+                syncedIds.push(product.id);
+            }
+
+            if (syncedIds.length > 0) {
+                await batch.commit();
+                await localDb.products.bulkUpdate(
+                    syncedIds.map(id => ({ key: id, changes: { syncStatus: 'synced' } }))
+                );
+                totalSynced += syncedIds.length;
+                await this._sleep(150); // 🟢 Respiro vital para el navegador
+            }
         }
     }
 
+    // 🔥 2. Subida fraccionada de Inventario
     if (pendingInventory.length > 0) {
-        for (const inv of pendingInventory) {
-            const stockRef = doc(db, `companies/${companyId}/branches/${inv.branchId}/inventory`, String(inv.productId));
-            batch.set(stockRef, {
-                productId: inv.productId,
-                stock: parseFloat(inv.stock) || 0,
-                promo: inv.promo || null, 
-                updatedAt: serverTimestamp()
-            }, { merge: true });
-            opCount++;
-        }
-    }
+        const invChunks = this.chunkArray(pendingInventory, 100);
+        for (const chunk of invChunks) {
+            const batch = writeBatch(db);
+            const syncedKeys = [];
+            
+            for (const inv of chunk) {
+                const stockRef = doc(db, `companies/${companyId}/branches/${inv.branchId}/inventory`, String(inv.productId));
+                batch.set(stockRef, {
+                    productId: inv.productId,
+                    stock: parseFloat(inv.stock) || 0,
+                    promo: inv.promo || null, 
+                    updatedAt: serverTimestamp()
+                }, { merge: true });
+                syncedKeys.push([inv.branchId, inv.productId]);
+            }
 
-    if (opCount > 0) {
-        await batch.commit();
-        
-        if (pendingProducts.length > 0) {
-            await localDb.products.bulkUpdate(
-                pendingProducts.map(p => ({ key: p.id, changes: { syncStatus: 'synced' } }))
-            );
-        }
-        if (pendingInventory.length > 0) {
-             await localDb.transaction('rw', localDb.inventory, async () => {
-                for (const inv of pendingInventory) {
-                    await localDb.inventory.update([inv.branchId, inv.productId], { syncStatus: 'synced' });
-                }
-             });
+            if (syncedKeys.length > 0) {
+                await batch.commit();
+                await localDb.transaction('rw', localDb.inventory, async () => {
+                    for (const key of syncedKeys) {
+                        await localDb.inventory.update(key, { syncStatus: 'synced' });
+                    }
+                });
+                totalSynced += syncedKeys.length;
+                await this._sleep(150); // 🟢 Respiro vital
+            }
         }
     }
     
-    return { synced: opCount };
+    return { synced: totalSynced };
   },
 
-  // B. SUBIDA DE MAESTROS
+  // B. SUBIDA DE MAESTROS - 🔥 CON CHUNKING + SLEEP
   async syncPendingMasters(companyId) {
       const localDb = await getDB();
       const masterCollections = ['categories', 'brands', 'suppliers', 'clients'];
@@ -778,35 +794,40 @@ export const syncService = {
               const pendingItems = await localDb.table(collectionName).where('syncStatus').equals('pending').toArray();
               if (pendingItems.length === 0) continue;
 
-              const batch = writeBatch(db);
+              const chunks = this.chunkArray(pendingItems, 100);
               const colRef = collection(db, 'companies', companyId, collectionName);
-              const syncedIds = [];
 
-              for (const item of pendingItems) {
-                  const docRef = doc(colRef, String(item.id));
-                  const { syncStatus, ...cleanItem } = item;
-                  batch.set(docRef, this._deepSanitize(cleanItem), { merge: true });
-                  syncedIds.push(item.id);
+              for (const chunk of chunks) {
+                  const batch = writeBatch(db);
+                  const syncedIds = [];
+
+                  for (const item of chunk) {
+                      const docRef = doc(colRef, String(item.id));
+                      const { syncStatus, ...cleanItem } = item;
+                      batch.set(docRef, this._deepSanitize(cleanItem), { merge: true });
+                      syncedIds.push(item.id);
+                  }
+
+                  await batch.commit();
+                  await localDb.table(collectionName).bulkUpdate(
+                      syncedIds.map(id => ({ key: id, changes: { syncStatus: 'synced' } }))
+                  );
+                  totalSynced += syncedIds.length;
+                  await this._sleep(100); // 🟢 Respiro
               }
-
-              await batch.commit();
-              await localDb.table(collectionName).bulkUpdate(
-                  syncedIds.map(id => ({ key: id, changes: { syncStatus: 'synced' } }))
-              );
-              totalSynced += syncedIds.length;
           } catch(e) { console.warn(`Error syncing masters (${collectionName}):`, e); }
       }
       return { synced: totalSynced };
   },
 
-  // C. SUBIDA DE VENTAS
+  // C. SUBIDA DE VENTAS - 🔥 CON SLEEP INYECTADO
   async syncPendingSales(companyId, branchId) {
     const localDb = await getDB();
     const pendingSales = await localDb.sales.where('syncStatus').equals('pending').toArray();
     
     if (pendingSales.length === 0) return { synced: 0 };
 
-    const chunks = this.chunkArray(pendingSales, 200); 
+    const chunks = this.chunkArray(pendingSales, 100); // Bajamos a 100 por seguridad
     let totalSynced = 0;
 
     for (const batchSales of chunks) {
@@ -834,67 +855,87 @@ export const syncService = {
              syncedIds.map(id => ({ key: id, changes: { syncStatus: 'synced' } }))
         );
         totalSynced += batchSales.length;
+        await this._sleep(150); // 🟢 Respiro
     }
     return { synced: totalSynced };
   },
 
-  // 🔥 D. SUBIDA DE TURNOS DE CAJA (SHIFTS) OFFLINE
+  // 🔥 D. SUBIDA DE TURNOS DE CAJA (SHIFTS) OFFLINE - CON CHUNKING
   async syncPendingShifts(companyId) {
       const localDb = await getDB();
       const pendingShifts = await localDb.shifts.where('syncStatus').equals('pending').toArray();
       
       if (pendingShifts.length === 0) return { synced: 0 };
 
-      const batch = writeBatch(db);
+      const chunks = this.chunkArray(pendingShifts, 100);
+      let totalSynced = 0;
       const colRef = collection(db, 'companies', companyId, 'shifts');
-      const syncedIds = [];
 
-      for (const shift of pendingShifts) {
-          const safeId = shift.firestoreId || shift.localId || shift.id;
-          const docRef = doc(colRef, String(safeId)); 
-          const { localId, syncStatus, ...cleanShift } = shift;
+      for (const chunk of chunks) {
+          const batch = writeBatch(db);
+          const syncedIds = [];
 
-          batch.set(docRef, this._deepSanitize(cleanShift), { merge: true });
-          syncedIds.push(shift.id); 
+          for (const shift of chunk) {
+              const safeId = shift.firestoreId || shift.localId || shift.id;
+              const docRef = doc(colRef, String(safeId)); 
+              const { localId, syncStatus, ...cleanShift } = shift;
+
+              batch.set(docRef, this._deepSanitize(cleanShift), { merge: true });
+              syncedIds.push(shift.id); 
+          }
+
+          await batch.commit();
+          await localDb.shifts.bulkUpdate(
+               syncedIds.map(id => ({ key: id, changes: { syncStatus: 'synced' } }))
+          );
+          totalSynced += syncedIds.length;
+          await this._sleep(100); // 🟢 Respiro
       }
-
-      await batch.commit();
-      await localDb.shifts.bulkUpdate(
-           syncedIds.map(id => ({ key: id, changes: { syncStatus: 'synced' } }))
-      );
-      return { synced: syncedIds.length };
+      return { synced: totalSynced };
   },
 
-  // 🔥 E. SUBIDA DE MOVIMIENTOS DE CAJA (VALES/ADELANTOS) OFFLINE
+  // 🔥 E. SUBIDA DE MOVIMIENTOS DE CAJA (VALES/ADELANTOS) OFFLINE - CON CHUNKING
   async syncPendingCashMovements(companyId) {
       const localDb = await getDB();
       const pendingMovs = await localDb.cash_movements.where('syncStatus').equals('pending').toArray();
       
       if (pendingMovs.length === 0) return { synced: 0 };
 
-      const batch = writeBatch(db);
+      const chunks = this.chunkArray(pendingMovs, 100);
+      let totalSynced = 0;
       const colRef = collection(db, 'companies', companyId, 'cash_movements');
-      const syncedIds = [];
 
-      for (const mov of pendingMovs) {
-          const safeId = mov.firestoreId || mov.id;
-          const docRef = doc(colRef, String(safeId)); 
-          const { syncStatus, ...cleanMov } = mov;
+      for (const chunk of chunks) {
+          const batch = writeBatch(db);
+          const syncedIds = [];
 
-          batch.set(docRef, this._deepSanitize(cleanMov), { merge: true });
-          syncedIds.push(mov.id);
+          for (const mov of chunk) {
+              const safeId = mov.firestoreId || mov.id;
+              const docRef = doc(colRef, String(safeId)); 
+              const { syncStatus, ...cleanMov } = mov;
+
+              batch.set(docRef, this._deepSanitize(cleanMov), { merge: true });
+              syncedIds.push(mov.id);
+          }
+
+          await batch.commit();
+          await localDb.cash_movements.bulkUpdate(
+               syncedIds.map(id => ({ key: id, changes: { syncStatus: 'synced' } }))
+          );
+          totalSynced += syncedIds.length;
+          await this._sleep(100); // 🟢 Respiro
       }
-
-      await batch.commit();
-      await localDb.cash_movements.bulkUpdate(
-           syncedIds.map(id => ({ key: id, changes: { syncStatus: 'synced' } }))
-      );
-      return { synced: syncedIds.length };
+      return { synced: totalSynced };
   },
 
   // =================================================================
   // ⚙️ HELPERS
   // =================================================================
+
+  // 🔥 NUEVO HELPER: El secreto para destrabar el navegador
+  _sleep(ms) {
+      return new Promise(resolve => setTimeout(resolve, ms));
+  },
 
   _getCompanyId() {
     const { user } = useAuthStore.getState();

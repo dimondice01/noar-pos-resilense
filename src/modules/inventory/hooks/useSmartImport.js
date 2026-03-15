@@ -11,7 +11,7 @@ import { useAuthStore } from '../../auth/store/useAuthStore';
 export const AVAILABLE_FIELDS = [
     { key: 'ignore', label: '(Ignorar Columna)', type: 'none' },
     { key: 'code', label: 'Código de Barras / PLU (Balanzas)', type: 'text', required: true },
-    { key: 'name', label: 'Nombre / Descripción', type: 'text', required: true },
+    { key: 'name', label: 'Nombre / Descripción (Opcional si es actualización)', type: 'text' },
     { key: 'cost', label: 'Costo', type: 'money' },
     { key: 'price', label: 'Precio Final', type: 'money', required: true },
     { key: 'stock', label: 'Stock Inicial (Solo esta Sucursal)', type: 'number' },
@@ -75,12 +75,11 @@ export const useSmartImport = () => {
     };
 
     // =================================================================
-    // 🚀 PROCESADOR PRINCIPAL
+    // 🚀 PROCESADOR PRINCIPAL (LOCAL-FIRST OPTIMIZED + SMART UPSERT)
     // =================================================================
-    const processImport = async (columnMapping, branchId) => {
+    // Agregamos options = { roundTo50: false } para controlar el redondeo opcional
+    const processImport = async (columnMapping, branchId, options = { roundTo50: false }) => {
         if (!file || !user?.companyId) return;
-        
-        // 🔥 VALIDACIÓN OBLIGATORIA
         if (!branchId) throw new Error("Falta el ID de la sucursal destino.");
 
         setIsProcessing(true);
@@ -95,9 +94,8 @@ export const useSmartImport = () => {
                 complete: async (results) => {
                     try {
                         const rows = results.data;
-                        setProgress({ current: 0, total: rows.length, stage: 'Analizando Datos...' });
+                        setProgress({ current: 0, total: rows.length, stage: 'Preparando Lotes...' });
 
-                        // 1. CARGA DE MAESTROS
                         const existingCats = await localDB.categories.toArray();
                         const existingBrands = await localDB.brands.toArray();
                         const catMap = new Map(existingCats.map(c => [c.name.toUpperCase(), c.id]));
@@ -109,9 +107,8 @@ export const useSmartImport = () => {
                         const newCategories = [];
                         const newBrands = [];
                         const productsToUpsert = [];
-                        const stockUpdates = [];
+                        const inventoryToUpsert = [];
 
-                        // 3. BUCLE DE PROCESAMIENTO
                         for (let i = 0; i < rows.length; i++) {
                             const row = rows[i];
                             const rawData = {}; 
@@ -121,141 +118,167 @@ export const useSmartImport = () => {
                                 if (fieldKey !== 'ignore') rawData[fieldKey] = row[colIndex];
                             });
 
-                            if (!rawData.name || !rawData.price) continue; 
-
-                            // --- CATEGORÍAS ---
-                            let categoryId = 'general';
-                            let categoryName = 'GENERAL'; 
-
-                            if (rawData.category) {
-                                const rawCatName = String(rawData.category).trim().toUpperCase();
-                                if (rawCatName) {
-                                    categoryName = rawCatName;
-                                    if (catMap.has(rawCatName)) {
-                                        categoryId = catMap.get(rawCatName);
-                                    } else {
-                                        const newId = `cat_${crypto.randomUUID().split('-')[0]}`;
-                                        catMap.set(rawCatName, newId);
-                                        newCategories.push({ id: newId, name: rawCatName, syncStatus: 'pending' });
-                                        categoryId = newId;
-                                    }
-                                }
-                            }
-
-                            // --- MARCAS ---
-                            let brandId = null;
-                            let brandName = null;
-
-                            if (rawData.brand) {
-                                const rawBrandName = String(rawData.brand).trim().toUpperCase();
-                                if (rawBrandName) {
-                                    brandName = rawBrandName;
-                                    if (brandMap.has(rawBrandName)) {
-                                        brandId = brandMap.get(rawBrandName);
-                                    } else {
-                                        const newId = `brand_${crypto.randomUUID().split('-')[0]}`;
-                                        brandMap.set(rawBrandName, newId);
-                                        newBrands.push({ id: newId, name: rawBrandName, syncStatus: 'pending' });
-                                        brandId = newId;
-                                    }
-                                }
-                            }
-
-                            // --- PRODUCTO ---
+                            // --- BÚSQUEDA DEL PRODUCTO EXISTENTE ---
                             const code = rawData.code ? String(rawData.code).trim() : `GEN-${Date.now()}-${i}`;
-                            const { unit, isWeighable } = normalizeUnit(rawData.unit);
-                            
                             const existingProduct = productCodeMap.get(code.toUpperCase());
-                            const productId = existingProduct ? existingProduct.id : crypto.randomUUID();
-                            const stockQty = normalizeMoney(rawData.stock);
 
-                            // 🔥 Sanitize: Aseguramos que ningún campo sea undefined
+                            // Validación Inteligente: 
+                            // Si es un producto nuevo, SÍ O SÍ necesita un Nombre.
+                            // Si ya existe, con tener el Precio nos basta para actualizarlo.
+                            if (!existingProduct && !rawData.name) continue; 
+                            if (rawData.price === undefined) continue;
+
+                            // --- PROCESAMIENTO DE PRECIO & REDONDEO ---
+                            let finalPrice = normalizeMoney(rawData.price);
+                            if (options?.roundTo50 && finalPrice > 0) {
+                                // Redondeo matemático estricto a múltiplos de 50
+                                let rounded = Math.round(finalPrice / 50) * 50;
+                                finalPrice = rounded === 0 ? 50 : rounded; // Prevenir que un precio muy bajo quede en $0
+                            }
+
+                            // --- CATEGORÍAS (Respeta existente si no se mapeó) ---
+                            let categoryId = existingProduct?.categoryId || 'general';
+                            let categoryName = existingProduct?.category || 'GENERAL'; 
+                            
+                            if (rawData.category && String(rawData.category).trim() !== '') {
+                                const rawCatName = String(rawData.category).trim().toUpperCase();
+                                categoryName = rawCatName;
+                                if (catMap.has(rawCatName)) {
+                                    categoryId = catMap.get(rawCatName);
+                                } else {
+                                    const newId = `cat_${crypto.randomUUID().split('-')[0]}`;
+                                    catMap.set(rawCatName, newId);
+                                    newCategories.push({ id: newId, name: rawCatName, syncStatus: 'pending' });
+                                    categoryId = newId;
+                                }
+                            }
+
+                            // --- MARCAS (Respeta existente si no se mapeó) ---
+                            let brandId = existingProduct?.brandId || null;
+                            let brandName = existingProduct?.brand || null;
+
+                            if (rawData.brand && String(rawData.brand).trim() !== '') {
+                                const rawBrandName = String(rawData.brand).trim().toUpperCase();
+                                brandName = rawBrandName;
+                                if (brandMap.has(rawBrandName)) {
+                                    brandId = brandMap.get(rawBrandName);
+                                } else {
+                                    const newId = `brand_${crypto.randomUUID().split('-')[0]}`;
+                                    brandMap.set(rawBrandName, newId);
+                                    newBrands.push({ id: newId, name: rawBrandName, syncStatus: 'pending' });
+                                    brandId = newId;
+                                }
+                            }
+
+                            // --- UNIDADES ---
+                            let unit = existingProduct?.unit || 'UN';
+                            let isWeighable = existingProduct ? existingProduct.isWeighable : false;
+                            
+                            if (rawData.unit) {
+                                const unitData = normalizeUnit(rawData.unit);
+                                unit = unitData.unit;
+                                isWeighable = unitData.isWeighable;
+                            }
+
+                            // --- ENSAMBLAJE FINAL DEL PRODUCTO (MERGE) ---
+                            const productId = existingProduct ? existingProduct.id : crypto.randomUUID();
+                            const stockQty = rawData.stock !== undefined ? normalizeMoney(rawData.stock) : 0;
+
                             const product = {
                                 id: productId,
-                                code: code || '',
-                                name: String(rawData.name).trim().toUpperCase() || 'SIN NOMBRE',
-                                price: normalizeMoney(rawData.price),
-                                cost: normalizeMoney(rawData.cost),
-                                taxRate: normalizeTax(rawData.tax),
+                                code: code,
+                                // Si no mandaron nombre nuevo, mantenemos el que ya tenía
+                                name: rawData.name ? String(rawData.name).trim().toUpperCase() : (existingProduct?.name || 'SIN NOMBRE'),
+                                price: finalPrice,
+                                // Si no mandaron costo nuevo, mantenemos el existente
+                                cost: rawData.cost !== undefined ? normalizeMoney(rawData.cost) : (existingProduct?.cost || 0),
+                                taxRate: rawData.tax !== undefined ? normalizeTax(rawData.tax) : (existingProduct?.taxRate || 21),
                                 category: categoryName,
                                 categoryId: categoryId,
                                 brand: brandName,
                                 brandId: brandId,
                                 unit: unit,
                                 isWeighable: isWeighable,
-                                stock: 0, // 🔥 SIEMPRE 0 EN GLOBAL
-                                active: true,
+                                stock: existingProduct ? existingProduct.stock : 0, 
+                                active: existingProduct ? existingProduct.active : true,
                                 syncStatus: 'pending',
                                 updatedAt: new Date().toISOString()
                             };
 
                             productsToUpsert.push(product);
 
-                            if (stockQty > 0) {
-                                stockUpdates.push({
+                            // Si mapearon la columna de stock, la actualizamos
+                            if (rawData.stock !== undefined) {
+                                inventoryToUpsert.push({
+                                    branchId: branchId,
                                     productId: productId,
-                                    qty: stockQty,
-                                    name: product.name,
-                                    targetBranchId: branchId // 🔥 Aseguramos el destino
+                                    stock: stockQty,
+                                    updatedAt: new Date().toISOString(),
+                                    syncStatus: 'pending'
                                 });
                             }
 
-                            if (i % 50 === 0) setProgress(p => ({ ...p, current: i }));
+                            if (i % 100 === 0) setProgress(p => ({ ...p, current: i }));
                         }
 
-                        // 4. GUARDADO LOCAL (Dexie)
-                        setProgress({ current: rows.length, total: rows.length, stage: 'Guardando Catálogo...' });
+                        // =================================================================
+                        // 💾 GUARDADO LOCAL MASIVO (BLINDADO)
+                        // =================================================================
+                        setProgress({ current: rows.length, total: rows.length, stage: 'Guardando en Base Local...' });
 
-                        await localDB.transaction('rw', [localDB.products, localDB.categories, localDB.brands], async () => {
+                        await localDB.transaction('rw', [
+                            localDB.products, 
+                            localDB.categories, 
+                            localDB.brands, 
+                            localDB.inventory
+                        ], async () => {
                             if (newCategories.length) await localDB.categories.bulkPut(newCategories);
                             if (newBrands.length) await localDB.brands.bulkPut(newBrands);
                             if (productsToUpsert.length) await localDB.products.bulkPut(productsToUpsert);
+                            if (inventoryToUpsert.length) await localDB.inventory.bulkPut(inventoryToUpsert);
                         });
 
-                        // 5. SINCRONIZACIÓN NUBE (Firestore Batch)
-                        if (stockUpdates.length > 0) {
-                            setProgress({ current: rows.length, total: rows.length, stage: 'Sincronizando Stock...' });
+                        // =================================================================
+                        // ☁️ SYNC NUBE (NON-BLOCKING)
+                        // Enviamos en lotes de 100 para no saturar el stream RPC de Firestore
+                        // =================================================================
+                        if (navigator.onLine) {
+                            setProgress({ current: rows.length, total: rows.length, stage: 'Sincronizando con la Nube...' });
                             
-                            // Guardado local de inventario
-                            await localDB.inventory.bulkPut(stockUpdates.map(s => ({
-                                branchId: s.targetBranchId,
-                                productId: s.productId,
-                                stock: s.qty,
-                                updatedAt: new Date().toISOString()
-                            })));
-
-                            // 🔥 FIX IMPORTANTE: Reducimos el lote a 200 items
-                            // 200 items * 2 operaciones (Update + Log) = 400 operaciones (Seguro bajo 500)
-                            const chunkSize = 200; 
-                            
-                            for (let i = 0; i < stockUpdates.length; i += chunkSize) {
-                                const chunk = stockUpdates.slice(i, i + chunkSize);
-                                const batch = writeBatch(firestoreDB);
-                                const companyRef = doc(firestoreDB, 'companies', user.companyId);
-
-                                chunk.forEach(item => {
-                                    // Op 1: Actualizar Stock
-                                    const invRef = doc(collection(companyRef, 'branches', item.targetBranchId, 'inventory'), item.productId);
-                                    batch.set(invRef, {
-                                        stock: item.qty,
-                                        updatedAt: serverTimestamp()
-                                    }, { merge: true });
-
-                                    // Op 2: Registrar Movimiento
-                                    const movRef = doc(collection(companyRef, 'stock_movements'));
-                                    batch.set(movRef, {
-                                        productId: item.productId || 'unknown',
-                                        productName: item.name || 'Desconocido',
-                                        branchId: item.targetBranchId,
-                                        type: 'IN',
-                                        reason: 'Importación Masiva',
-                                        quantity: item.qty,
-                                        date: serverTimestamp(),
-                                        userId: user.uid || 'system'
+                            const chunkSize = 100;
+                            for (let j = 0; j < productsToUpsert.length; j += chunkSize) {
+                                try {
+                                    const chunk = productsToUpsert.slice(j, j + chunkSize);
+                                    const batch = writeBatch(firestoreDB);
+                                    
+                                    chunk.forEach(p => {
+                                        const pRef = doc(firestoreDB, `companies/${user.companyId}/products`, p.id);
+                                        const { syncStatus, ...dataToCloud } = p;
+                                        batch.set(pRef, { ...dataToCloud, lastUpdated: serverTimestamp() }, { merge: true });
+                                        
+                                        // También sincronizamos el stock en el mismo batch
+                                        const inv = inventoryToUpsert.find(invItem => invItem.productId === p.id);
+                                        if (inv) {
+                                            const stockRef = doc(firestoreDB, `companies/${user.companyId}/branches/${branchId}/inventory`, p.id);
+                                            batch.set(stockRef, { 
+                                                productId: p.id, 
+                                                stock: inv.stock, 
+                                                updatedAt: serverTimestamp() 
+                                            }, { merge: true });
+                                        }
                                     });
-                                });
 
-                                await batch.commit(); // 🔥 Si esto falla, ahora sí saltará al catch
+                                    await batch.commit();
+                                    
+                                    // Marcamos como sincronizado localmente tras éxito del batch
+                                    const syncedIds = chunk.map(p => p.id);
+                                    await localDB.products.bulkUpdate(syncedIds.map(id => ({ key: id, changes: { syncStatus: 'synced' }})));
+                                    
+                                } catch (batchErr) {
+                                    console.warn("⚠️ Batch falló, el syncService reintentará luego:", batchErr);
+                                    break; 
+                                }
+                                setProgress(p => ({ ...p, current: Math.min(j + chunkSize, rows.length) }));
                             }
                         }
 
@@ -263,12 +286,12 @@ export const useSmartImport = () => {
                             processed: productsToUpsert.length, 
                             categories: newCategories.length, 
                             brands: newBrands.length,
-                            stockMovements: stockUpdates.length
+                            inventory: inventoryToUpsert.length
                         });
 
                     } catch (error) {
-                        console.error("Error Importación:", error);
-                        reject(error); // 🔥 Esto asegura que la UI muestre el error rojo
+                        console.error("Error Crítico de Importación:", error);
+                        reject(error);
                     } finally {
                         setIsProcessing(false);
                     }

@@ -3,7 +3,7 @@ import {
     X, Banknote, QrCode, Loader2, CheckCircle2, 
     AlertCircle, Wallet, ArrowRight, CreditCard, Landmark, 
     ShieldCheck, Calculator, ChevronLeft, Layers, Info, Trash2, Plus, Split,
-    Tag, User, FileText
+    Tag, User, FileText, Send
 } from 'lucide-react';
 import { doc, getDoc, collection, query, where, getDocs } from 'firebase/firestore';
 import { db } from '../../../database/firebase';
@@ -49,12 +49,12 @@ export const PaymentModal = ({
     const [selectedRate, setSelectedRate] = useState(null);   
     const [loadingPlans, setLoadingPlans] = useState(false);
 
-    // Estado Pagos Digitales
-    const [digitalState, setDigitalState] = useState('idle'); 
+    // Estado Pagos Digitales (Mercado Pago Point / QR)
+    const [digitalState, setDigitalState] = useState('idle'); // idle, creating, waiting, approved, error
     const [paymentReference, setPaymentReference] = useState(null);
     const [errorMessage, setErrorMessage] = useState(null);
 
-    // 🔥 NUEVO: Estado para Cuenta de Personal (Ledger)
+    // Cuenta de Personal (Ledger)
     const [employees, setEmployees] = useState([]);
     const [selectedEmployeeId, setSelectedEmployeeId] = useState('');
     
@@ -102,14 +102,12 @@ export const PaymentModal = ({
     // Lógica de Pago Parcial
     const isPartialPayment = debtValue > 0;
 
-    // Validaciones
+    // Validaciones Generales
     const isClientRegistered = client && client.id; 
-    
-    // 🔥 FIX: Validamos que si el método es 'employee_account', haya un empleado seleccionado
     const isEmployeePaymentInvalid = method === 'employee_account' && !selectedEmployeeId;
     const hasError = (!isSplitMode && isPartialPayment && !isClientRegistered) || isEmployeePaymentInvalid; 
     
-    const canConfirmSimple = !hasError && payValue >= 0 && amountToPay !== '' && !isProcessing;
+    const canConfirmSimple = !hasError && payValue > 0 && amountToPay !== '' && !isProcessing;
 
     const isRI = client?.fiscalCondition === 'RESPONSABLE_INSCRIPTO';
     
@@ -137,7 +135,7 @@ export const PaymentModal = ({
             
             fetchHardwareAssignments();
             fetchFinancialPlans();
-            fetchEmployees(); // 🔥 Cargar Empleados
+            fetchEmployees();
 
             if (pollingRef.current) clearInterval(pollingRef.current);
             
@@ -198,23 +196,16 @@ export const PaymentModal = ({
         } catch (error) { setPaymentMethods([]); } finally { setLoadingPlans(false); }
     };
 
-    // 🔥 NUEVO: FETCH EMPLEADOS DE LA SUCURSAL
     const fetchEmployees = async () => {
         if (!user?.companyId || !activeBranchId) return;
         try {
-            const q = query(
-                collection(db, 'users'),
-                where('companyId', '==', user.companyId)
-            );
+            const q = query(collection(db, 'users'), where('companyId', '==', user.companyId));
             const snap = await getDocs(q);
             const branchEmployees = snap.docs
                 .map(doc => ({ uid: doc.id, ...doc.data() }))
                 .filter(u => String(u.branchId) === String(activeBranchId));
-            
             setEmployees(branchEmployees);
-        } catch (error) {
-            console.error("Error cargando empleados:", error);
-        }
+        } catch (error) { console.error("Error cargando empleados:", error); }
     };
 
     const handleAfipChange = (checked) => {
@@ -232,7 +223,6 @@ export const PaymentModal = ({
     const handleAddSplitPayment = () => {
         const amount = parseFloat(amountToPay);
         if (isNaN(amount) || amount <= 0) return;
-        
         if (amount > remainingBase + 1) return alert("El monto excede el saldo restante.");
 
         const splitInterestRate = selectedRate ? selectedRate.interest : (posConfig?.paymentSurcharges?.[method] || 0);
@@ -269,7 +259,6 @@ export const PaymentModal = ({
 
     const handleFinalizeSplit = () => {
         if (!isFullyPaid) return;
-        
         const totalSaleReal = payments.reduce((acc, p) => acc + p.total, 0);
         const totalSurcharge = payments.reduce((acc, p) => acc + (p.surcharge || 0), 0);
 
@@ -288,8 +277,6 @@ export const PaymentModal = ({
     };
 
     const handleManualConfirm = () => {
-        if (!canConfirmSimple || isProcessing) return;
-
         let finalReference = method === 'transfer' ? reference : null;
         if (selectedRate && selectedBrand) {
             finalReference = `${selectedBrand.brand} ${selectedRate.qty} ctes (${selectedRate.interest}%)`;
@@ -306,7 +293,7 @@ export const PaymentModal = ({
         onConfirm({
             method: finalMethod,
             reference: finalReference,
-            employeeId: method === 'employee_account' ? selectedEmployeeId : null, // 🔥 Pasamos el ID del empleado
+            employeeId: method === 'employee_account' ? selectedEmployeeId : null,
             branchId: activeBranchId, 
             totalSale: effectiveTotal,
             amountPaid: payValue - changeValue, 
@@ -314,63 +301,103 @@ export const PaymentModal = ({
             baseAmount: total,
             surcharge: surchargeAmountUI, 
             discount: discount || 0,
-            withAfip: method === 'employee_account' ? false : withAfip // 🔥 Opcional: No facturamos consumos internos a AFIP
+            withAfip: method === 'employee_account' ? false : withAfip 
         });
     };
 
+    // 🔥 LA MAGIA DEL PDV OCURRE AQUÍ: Enviar intención a la Terminal Point
+    const triggerPointTransaction = async () => {
+        setDigitalState('creating');
+        setErrorMessage(null);
+        try {
+            const targetDeviceId = assignedHardware.pointId;
+            if (!targetDeviceId) throw new Error("Falta configurar la Terminal Point en esta caja.");
+
+            // Disparamos la API de Mercado Pago
+            const res = await paymentService.initTransaction('point', parseFloat(amountToPay), targetDeviceId, {
+                companyId: user.companyId,
+                branchId: activeBranchId
+            });
+            
+            setPaymentReference(res.reference); // Referencia generada (ej: el UUID)
+            setDigitalState('waiting'); // Cambiamos el estado para que inicie el Polling (escucha del resultado)
+            
+        } catch (error) {
+            setDigitalState('error');
+            setErrorMessage(error.message || "Error de conexión con Mercado Pago.");
+        }
+    };
+
+    const triggerQrTransaction = async () => {
+        setDigitalState('creating');
+        setErrorMessage(null);
+        try {
+            const targetDeviceId = assignedHardware.qrId;
+            if (!targetDeviceId) throw new Error("Falta configurar la Caja QR.");
+
+            const res = await paymentService.initTransaction('mercadopago', parseFloat(amountToPay), targetDeviceId, {
+                companyId: user.companyId,
+                branchId: activeBranchId
+            });
+            
+            setPaymentReference(res.reference);
+            setDigitalState('waiting');
+            
+        } catch (error) {
+            setDigitalState('error');
+            setErrorMessage(error.message || "Error de conexión con QR.");
+        }
+    };
+
+    // EL BOTÓN PRINCIPAL
     const handleMainAction = () => {
+        if (isProcessing) return;
+
         if (isSplitMode) {
             if (!isFullyPaid) handleAddSplitPayment();
             else handleFinalizeSplit();
         } else {
-            handleManualConfirm();
+            // SI ES POINT Y AÚN NO SE ENVIÓ LA ORDEN
+            if (method === 'point' && digitalState === 'idle') {
+                triggerPointTransaction();
+            // SI ES QR Y AÚN NO SE ENVIÓ
+            } else if (method === 'mercadopago' && digitalState === 'idle') {
+                triggerQrTransaction();
+            } else {
+                // Pagos manuales (Efectivo, Tarjeta Manual, etc.)
+                handleManualConfirm();
+            }
         }
     };
 
-    useEffect(() => {
-        if (isOpen && (method === 'mercadopago' || method === 'point')) {
-            const startTransaction = async () => {
-                setDigitalState('creating');
-                setErrorMessage(null);
-                try {
-                    const targetDeviceId = method === 'point' ? assignedHardware.pointId : assignedHardware.qrId;
-                    if (!targetDeviceId) throw new Error(`Falta configurar ${method === 'point' ? 'Terminal Point' : 'Caja QR'}.`);
-
-                    const res = await paymentService.initTransaction(method, parseFloat(amountToPay), targetDeviceId, {
-                        companyId: user.companyId,
-                        branchId: activeBranchId
-                    });
-                    
-                    setPaymentReference(res.reference);
-                    setDigitalState('waiting'); 
-                } catch (error) {
-                    setDigitalState('error');
-                    setErrorMessage(error.message || "Error de conexión");
-                }
-            };
-            startTransaction();
-        } 
-    }, [method, isOpen, assignedHardware, user.companyId, activeBranchId, amountToPay]);
-
+    // POLLING (Escucha activa del resultado de Mercado Pago)
     useEffect(() => {
         if (digitalState === 'waiting' && paymentReference && (method === 'mercadopago' || method === 'point')) {
             const checkPayment = async () => {
                 try {
                     const res = await paymentService.checkStatus(paymentReference, method);
+                    
                     if (res.status === 'approved') {
                         setDigitalState('approved');
                         clearInterval(pollingRef.current);
+                        
+                        // Si se aprueba, cerramos la venta automáticamente luego de 1 segundo (UX)
                         setTimeout(() => {
                             if (isSplitMode) handleAddSplitPayment();
                             else handleManualConfirm();
                         }, 1000);
+
                     } else if (['rejected', 'canceled'].includes(res.status)) {
                         setDigitalState('error');
-                        setErrorMessage("Pago rechazado o cancelado");
+                        setErrorMessage("El pago fue rechazado o cancelado en la terminal.");
                         clearInterval(pollingRef.current);
                     }
-                } catch (e) { console.error("Polling error:", e); }
+                } catch (e) { 
+                    console.error("Polling error:", e); 
+                }
             };
+
+            // Preguntamos el estado cada 3 segundos
             pollingRef.current = setInterval(checkPayment, 3000);
             return () => clearInterval(pollingRef.current);
         }
@@ -379,23 +406,102 @@ export const PaymentModal = ({
     const handleCloseAttempt = () => {
         if (isProcessing) return;
         if (digitalState === 'waiting' || digitalState === 'creating') {
-            if (window.confirm("⚠️ ¿CANCELAR PAGO EN PROCESO?")) {
+            if (window.confirm("⚠️ ¿CANCELAR PAGO EN PROCESO?\nEsto interrumpirá la conexión con la terminal.")) {
                 if (pollingRef.current) clearInterval(pollingRef.current);
                 setDigitalState('idle'); 
                 setMethod('cash'); 
             }
-        } else onClose();
+        } else {
+            onClose();
+        }
     };
 
     const handleKeyDown = (e) => {
         if (e.key === 'Enter') {
             e.preventDefault();
-            handleMainAction();
+            // Solo procesamos el Enter si el botón de Confirmar estaría habilitado
+            if ((canConfirmSimple || isSplitMode) && digitalState === 'idle') {
+                handleMainAction();
+            }
         }
         if (e.key === 'Escape' && !isProcessing) handleCloseAttempt(); 
     };
 
     if (!isOpen) return null;
+
+    // 🔥 RENDERIZADO DEL BOTÓN PRINCIPAL
+    const renderActionButton = () => {
+        if (isProcessing) {
+            return (
+                <Button disabled className="w-full py-6 text-xl font-black shadow-none bg-sys-200 text-sys-500 cursor-not-allowed">
+                    <div className="flex items-center justify-center gap-3 animate-pulse">
+                        <Loader2 className="animate-spin" size={24} /><span>Procesando...</span>
+                    </div>
+                </Button>
+            );
+        }
+
+        if (isSplitMode && !isFullyPaid) {
+            return (
+                <Button onClick={handleMainAction} className="w-full py-6 text-xl font-black uppercase shadow-xl bg-sys-800 hover:bg-sys-900 text-white rounded-2xl flex items-center justify-center gap-2">
+                    <Plus size={24}/> AGREGAR PAGO
+                </Button>
+            );
+        }
+
+        if (method === 'point' && digitalState === 'idle') {
+            return (
+                <Button onClick={handleMainAction} className="w-full py-6 text-xl font-black uppercase shadow-xl bg-blue-600 hover:bg-blue-700 text-white rounded-2xl flex items-center justify-center gap-2 transition-all active:scale-[0.98]">
+                    <Send size={24}/> ENVIAR A TERMINAL POINT
+                </Button>
+            );
+        }
+
+        if (method === 'mercadopago' && digitalState === 'idle') {
+            return (
+                <Button onClick={handleMainAction} className="w-full py-6 text-xl font-black uppercase shadow-xl bg-blue-500 hover:bg-blue-600 text-white rounded-2xl flex items-center justify-center gap-2 transition-all active:scale-[0.98]">
+                    <QrCode size={24}/> GENERAR CÓDIGO QR
+                </Button>
+            );
+        }
+
+        // Estado bloqueado por espera de terminal
+        if (digitalState === 'waiting' || digitalState === 'creating') {
+            return (
+                <Button disabled className="w-full py-6 text-xl font-black uppercase shadow-none bg-blue-100 text-blue-500 cursor-wait">
+                    <div className="flex items-center justify-center gap-2">
+                        <Loader2 className="animate-spin" size={24} /> ESPERANDO APROBACIÓN...
+                    </div>
+                </Button>
+            );
+        }
+
+        // Estado de error en la terminal
+        if (digitalState === 'error') {
+            return (
+                <Button onClick={() => setDigitalState('idle')} className="w-full py-6 text-xl font-black uppercase shadow-none bg-red-100 hover:bg-red-200 text-red-600">
+                    REINTENTAR / CAMBIAR MEDIO
+                </Button>
+            );
+        }
+
+        // Botón por defecto para Efectivo, Transf. Manual, etc.
+        const disabledState = !canConfirmSimple && !isSplitMode;
+        return (
+            <Button 
+                onClick={handleMainAction} 
+                disabled={disabledState}
+                className={cn("w-full py-6 text-xl font-black uppercase shadow-xl transition-all duration-300 relative overflow-hidden", 
+                    disabledState ? "bg-sys-200 text-sys-400 cursor-not-allowed shadow-none" : "bg-brand hover:bg-brand-dark hover:scale-[1.01] shadow-brand/30 active:scale-[0.98]"
+                )}
+            >
+                <div className="flex items-center justify-center gap-2">
+                    <span>{isSplitMode ? "FINALIZAR VENTA" : (isPartialPayment ? "Confirmar Pago Parcial" : "Confirmar Cobro")}</span>
+                    <ArrowRight size={24} />
+                </div>
+            </Button>
+        );
+    };
 
     return (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-sys-900/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
@@ -489,11 +595,11 @@ export const PaymentModal = ({
                             <div className={cn("p-4 rounded-xl border-2 transition-all duration-300", 
                                 isPartialPayment ? "bg-orange-50 border-orange-200" : 
                                 changeValue > 0 ? "bg-green-50 border-green-200" : "bg-white border-sys-200",
-                                (currentInterestRate > 0 || method === 'employee_account') && "opacity-90 grayscale-[0.5]"
+                                (currentInterestRate > 0 || method === 'employee_account' || digitalState === 'waiting') && "opacity-90 grayscale-[0.5]"
                             )}>
                                 <p className={cn("text-[10px] uppercase font-bold mb-1 flex justify-between", isPartialPayment ? "text-orange-700" : "text-sys-500")}>
                                     <span>Monto que entrega</span>
-                                    {(currentInterestRate > 0 || method === 'employee_account') && <span className="text-[9px] bg-sys-200 px-1 rounded text-sys-600">AUTO</span>}
+                                    {(currentInterestRate > 0 || method === 'employee_account' || method === 'point') && <span className="text-[9px] bg-sys-200 px-1 rounded text-sys-600">AUTO</span>}
                                 </p>
                                 <div className="flex items-center relative">
                                     <span className="text-lg font-bold text-sys-400 mr-1">$</span>
@@ -502,12 +608,12 @@ export const PaymentModal = ({
                                         type="number" 
                                         className={cn(
                                             "w-full bg-transparent text-2xl font-black outline-none text-sys-900 placeholder-sys-300 transition-colors",
-                                            (currentInterestRate > 0 || method === 'employee_account') && "cursor-not-allowed text-sys-600"
+                                            (currentInterestRate > 0 || method === 'employee_account' || method === 'point') && "cursor-not-allowed text-sys-600"
                                         )}
                                         value={amountToPay} 
                                         onChange={e => currentInterestRate === 0 && setAmountToPay(e.target.value)}
                                         onKeyDown={handleKeyDown}
-                                        readOnly={currentInterestRate > 0 || method === 'employee_account' || isProcessing}
+                                        readOnly={currentInterestRate > 0 || method === 'employee_account' || isProcessing || method === 'point'}
                                         disabled={isProcessing}
                                         placeholder={Math.round(total).toString()}
                                     />
@@ -518,7 +624,7 @@ export const PaymentModal = ({
                         )}
                         
                         <div className="mt-2 text-center">
-                            <p className="text-[9px] text-sys-300 font-mono">REF: {reference || '---'}</p>
+                            <p className="text-[9px] text-sys-300 font-mono">REF: {reference || paymentReference || '---'}</p>
                         </div>
                     </div>
                 </div>
@@ -535,7 +641,6 @@ export const PaymentModal = ({
                         </button>
                     </div>
 
-                    {/* 🔥 GRILLA ACTUALIZADA A 6 COLUMNAS PARA INCLUIR "PERSONAL" */}
                     <div className="grid grid-cols-3 sm:grid-cols-6 gap-2 mb-6">
                         {[
                             {id:'cash', icon: Banknote, label:'Efectivo', color:'brand'},
@@ -543,7 +648,7 @@ export const PaymentModal = ({
                             {id:'mercadopago', icon: QrCode, label:'QR MP', color:'blue-500'},
                             {id:'point', icon: CreditCard, label:'Point', color:'blue-600'},
                             {id:'manual_card', icon: Calculator, label:'Tarjeta', color:'indigo-600'},
-                            {id:'employee_account', icon: User, label:'Personal', color:'orange-500'} // 🔥 NUEVO BOTÓN
+                            {id:'employee_account', icon: User, label:'Personal', color:'orange-500'}
                         ].map(opt => (
                             <button 
                                 key={opt.id}
@@ -551,6 +656,7 @@ export const PaymentModal = ({
                                     setMethod(opt.id);
                                     if (opt.id !== 'manual_card') { setSelectedBrand(null); setSelectedRate(null); }
                                     if (opt.id !== 'employee_account') setSelectedEmployeeId('');
+                                    setDigitalState('idle'); // Reseteamos si cambia de método
                                 }} 
                                 disabled={digitalState === 'creating' || digitalState === 'waiting' || digitalState === 'approved' || isProcessing || (isSplitMode && isFullyPaid)} 
                                 className={cn(
@@ -574,7 +680,6 @@ export const PaymentModal = ({
                     {/* ÁREA DINÁMICA DE CONTENIDO */}
                     <div className="flex-1 bg-sys-50 rounded-2xl border-2 border-dashed border-sys-200 p-4 flex flex-col items-center justify-center overflow-hidden relative">
                         
-                        {/* 🔥 NUEVA SECCIÓN: CUENTA DE EMPLEADO */}
                         {method === 'employee_account' && (
                             <div className="w-full max-w-sm space-y-4 animate-in fade-in zoom-in-95">
                                 <div className="text-center mb-4">
@@ -686,26 +791,41 @@ export const PaymentModal = ({
                         {method === 'transfer' && (
                             <div className="w-full max-w-xs space-y-3 animate-in fade-in">
                                 <div className="bg-purple-600 text-white p-4 rounded-xl text-center"><p className="font-black text-lg tracking-wide">{ACCOUNT_DATA.alias}</p></div>
-                                <input type="text" className="w-full p-3 rounded-xl border-2 border-sys-200 text-center font-bold" placeholder="Nro de Operación" value={reference} onChange={e => setReference(e.target.value)} />
+                                <input type="text" className="w-full p-3 rounded-xl border-2 border-sys-200 text-center font-bold" placeholder="Nro de Operación (Opcional)" value={reference} onChange={e => setReference(e.target.value)} />
                             </div>
                         )}
                         
                         {(method === 'mercadopago' || method === 'point' || method === 'clover') && (
-                            <div className="flex flex-col items-center gap-3 animate-in fade-in">
-                                {digitalState === 'error' ? (
+                            <div className="flex flex-col items-center gap-3 animate-in fade-in text-center">
+                                {digitalState === 'idle' && (
+                                    <>
+                                        <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center text-blue-600 mb-2">
+                                            {method === 'point' ? <CreditCard size={32}/> : <QrCode size={32}/>}
+                                        </div>
+                                        <p className="font-bold text-sys-800">
+                                            {method === 'point' ? "Pago con Tarjeta / Smart POS" : "Cobro QR Dinámico"}
+                                        </p>
+                                        <p className="text-xs text-sys-500 max-w-[250px]">
+                                            Presione el botón enviar para despertar la terminal vinculada a esta sucursal.
+                                        </p>
+                                    </>
+                                )}
+
+                                {digitalState === 'error' && (
                                     <div className="flex flex-col items-center text-center animate-in zoom-in">
                                         <AlertCircle size={48} className="text-red-500 mb-2"/>
                                         <p className="font-bold text-red-600 mb-1">Error de Operación</p>
                                         <p className="text-xs text-sys-500 max-w-[250px]">{errorMessage}</p>
-                                        <Button variant="ghost" size="sm" onClick={() => { setMethod('cash'); setDigitalState('idle'); }} className="mt-4 text-sys-400 hover:text-sys-700">
-                                            Cancelar / Volver
-                                        </Button>
                                     </div>
-                                ) : (
+                                )}
+
+                                {(digitalState === 'creating' || digitalState === 'waiting' || digitalState === 'approved') && (
                                     <>
-                                        {digitalState === 'waiting' ? <div className="w-16 h-16 rounded-full border-4 border-brand border-t-transparent animate-spin"/> : digitalState === 'approved' ? <div className="w-16 h-16 rounded-full bg-green-500 text-white flex items-center justify-center animate-in zoom-in"><CheckCircle2 size={32}/></div> : <Loader2 className="animate-spin text-sys-300" />}
-                                        {(digitalState === 'creating' || digitalState === 'waiting') && method === 'mercadopago' && <p className="text-xs font-bold text-sys-500 mt-2">Escanee el QR en el visor</p>}
-                                        {(digitalState === 'creating' || digitalState === 'waiting') && method === 'point' && <p className="text-xs font-bold text-sys-500 mt-2">Acerque tarjeta al lector</p>}
+                                        {digitalState === 'waiting' ? <div className="w-16 h-16 rounded-full border-4 border-blue-500 border-t-transparent animate-spin"/> : digitalState === 'approved' ? <div className="w-16 h-16 rounded-full bg-green-500 text-white flex items-center justify-center animate-in zoom-in"><CheckCircle2 size={32}/></div> : <Loader2 className="animate-spin text-sys-300" />}
+                                        
+                                        {digitalState === 'waiting' && method === 'mercadopago' && <p className="text-xs font-bold text-sys-500 mt-2">Escanee el QR en el visor de Mercado Pago</p>}
+                                        {digitalState === 'waiting' && method === 'point' && <p className="text-xs font-bold text-sys-500 mt-2">Pase la tarjeta por la terminal Point...</p>}
+                                        {digitalState === 'approved' && <p className="text-sm font-black text-green-600 mt-2 uppercase">¡PAGO APROBADO!</p>}
                                     </>
                                 )}
                             </div>
@@ -713,49 +833,23 @@ export const PaymentModal = ({
                     </div>
 
                     <div className="mt-6 pt-4 border-t border-sys-100">
-                        {isSplitMode && !isFullyPaid ? (
-                            <Button 
-                                onClick={handleMainAction} 
-                                className="w-full py-6 text-xl font-black uppercase shadow-xl bg-sys-800 hover:bg-sys-900 text-white rounded-2xl flex items-center justify-center gap-2"
-                            >
-                                <Plus size={24}/> AGREGAR PAGO
-                            </Button>
-                        ) : (
-                            <>
-                                {/* Ocultar Switch AFIP si el método es Cuenta Empleado (Por defecto los consumos no se facturan fiscalmente) */}
-                                {!disableAfip && method !== 'employee_account' && (
-                                    <div className={cn("flex items-center justify-between mb-4 p-3 rounded-xl border transition-all", isRI ? "bg-indigo-50 border-indigo-200" : "bg-sys-50 border-sys-100")}>
-                                            <div className="flex items-center gap-2">
-                                                <ShieldCheck className={cn(withAfip ? "text-brand" : "text-sys-300")} size={20}/>
-                                                <div>
-                                                    <span className="text-xs font-bold text-sys-700 uppercase block">Facturación Electrónica</span>
-                                                    <span className="text-[9px] text-sys-400 block flex items-center gap-1">
-                                                        {isRI ? <span className="text-indigo-600 font-bold flex items-center gap-1"><Info size={10}/> CLIENTE RI: FACTURA A</span> : withAfip ? "Se emitirá ticket fiscal (CAE)" : "Solo ticket interno"}
-                                                    </span>
-                                                </div>
-                                            </div>
-                                            <Switch checked={withAfip} onCheckedChange={handleAfipChange} disabled={isRI || isProcessing} />
+                        {/* Ocultar Switch AFIP si el método es Cuenta Empleado (Por defecto los consumos no se facturan fiscalmente) */}
+                        {!disableAfip && method !== 'employee_account' && !isSplitMode && (
+                            <div className={cn("flex items-center justify-between mb-4 p-3 rounded-xl border transition-all", isRI ? "bg-indigo-50 border-indigo-200" : "bg-sys-50 border-sys-100")}>
+                                <div className="flex items-center gap-2">
+                                    <ShieldCheck className={cn(withAfip ? "text-brand" : "text-sys-300")} size={20}/>
+                                    <div>
+                                        <span className="text-xs font-bold text-sys-700 uppercase block">Facturación Electrónica</span>
+                                        <span className="text-[9px] text-sys-400 block flex items-center gap-1">
+                                            {isRI ? <span className="text-indigo-600 font-bold flex items-center gap-1"><Info size={10}/> CLIENTE RI: FACTURA A</span> : withAfip ? "Se emitirá ticket fiscal (CAE)" : "Solo ticket interno"}
+                                        </span>
                                     </div>
-                                )}
-                                
-                                <Button 
-                                    onClick={handleMainAction} 
-                                    disabled={(!canConfirmSimple && !isSplitMode) || isProcessing}
-                                    className={cn("w-full py-6 text-xl font-black uppercase shadow-xl transition-all duration-300 relative overflow-hidden", 
-                                        ((!canConfirmSimple && !isSplitMode) || isProcessing) ? "bg-sys-200 text-sys-400 cursor-not-allowed shadow-none" : "bg-brand hover:bg-brand-dark hover:scale-[1.01] shadow-brand/30 active:scale-[0.98]"
-                                    )}
-                                >
-                                    {isProcessing ? (
-                                        <div className="flex items-center justify-center gap-3 animate-pulse"><Loader2 className="animate-spin" size={24} /><span>Procesando...</span></div>
-                                    ) : (
-                                        <div className="flex items-center justify-center gap-2">
-                                            <span>{isSplitMode ? "FINALIZAR VENTA" : (isPartialPayment ? "Confirmar Pago Parcial" : "Confirmar Cobro")}</span>
-                                            <ArrowRight size={24} />
-                                        </div>
-                                    )}
-                                </Button>
-                            </>
+                                </div>
+                                <Switch checked={withAfip} onCheckedChange={handleAfipChange} disabled={isRI || isProcessing || digitalState === 'waiting'} />
+                            </div>
                         )}
+                        
+                        {renderActionButton()}
                     </div>
                 </div>
             </div>
