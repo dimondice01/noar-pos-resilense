@@ -2,16 +2,27 @@ import React, { useState, useEffect, useRef } from 'react';
 import { 
     X, Banknote, QrCode, Loader2, CheckCircle2, 
     AlertCircle, Wallet, ArrowRight, CreditCard, Landmark, 
-    ShieldCheck, Calculator, ChevronLeft, Layers, Info, Trash2, Plus, Split,
-    Tag, User, FileText, Send, FileArchive
+    ShieldCheck, Calculator, ChevronLeft, Layers, Info, Trash2, Plus, 
+    Split, Tag, User, FileText, Send, FileArchive, Users
 } from 'lucide-react';
-import { doc, getDoc, collection, query, where, getDocs } from 'firebase/firestore';
+
+// 🔥 IMPORTANTE: Aquí están las funciones que faltaban
+import { 
+    doc, 
+    getDoc, 
+    collection, 
+    query, 
+    where, 
+    getDocs 
+} from 'firebase/firestore';
+
 import { db } from '../../../database/firebase';
 import { Button } from '../../../core/ui/Button';
 import { Switch } from '../../../core/ui/Switch';
 import { cn } from '../../../core/utils/cn';
 import { paymentService } from '../../payments/services/paymentService';
 import { useAuthStore } from '../../auth/store/useAuthStore'; 
+import toast from 'react-hot-toast';
 
 const API_URL = import.meta.env.VITE_API_URL || "https://us-central1-salvadorpos1.cloudfunctions.net/api";
 
@@ -26,7 +37,7 @@ export const PaymentModal = ({
     disableAfip = false, 
     isProcessing = false,
     posConfig,
-    processBudget // 🔥 Recibimos la nueva función de presupuestos
+    processBudget // 🔥 Función de presupuestos
 }) => {
     
     // ==========================================
@@ -106,11 +117,13 @@ export const PaymentModal = ({
     const isClientRegistered = client && client.id; 
     const isEmployeePaymentInvalid = method === 'employee_account' && !selectedEmployeeId;
     
-    // 🔥 FIX PRESUPUESTOS: Si el método es 'budget', saltamos las validaciones restrictivas de pago
+    // 🔥 FIX PRESUPUESTOS Y CUENTA CORRIENTE
     const isBudgetMode = method === 'budget';
-    const hasError = !isBudgetMode && ((!isSplitMode && isPartialPayment && !isClientRegistered) || isEmployeePaymentInvalid); 
+    const isAccountMode = method === 'account'; // 🔥 MODO FIADO
+
+    const hasError = !isBudgetMode && !isAccountMode && ((!isSplitMode && isPartialPayment && !isClientRegistered) || isEmployeePaymentInvalid); 
     
-    const canConfirmSimple = isBudgetMode || (!hasError && payValue > 0 && amountToPay !== '' && !isProcessing);
+    const canConfirmSimple = isBudgetMode || isAccountMode || (!hasError && payValue > 0 && amountToPay !== '' && !isProcessing);
 
     const isRI = client?.fiscalCondition === 'RESPONSABLE_INSCRIPTO';
     
@@ -143,7 +156,7 @@ export const PaymentModal = ({
             if (pollingRef.current) clearInterval(pollingRef.current);
             
             setTimeout(() => {
-                if (cashInputRef.current && !isBudgetMode) {
+                if (cashInputRef.current && !isBudgetMode && !isAccountMode) {
                     cashInputRef.current.focus();
                     cashInputRef.current.select();
                 }
@@ -154,22 +167,22 @@ export const PaymentModal = ({
     }, [isOpen, total, isRI, disableAfip]);
 
     useEffect(() => {
-        if (!isSplitMode && !isBudgetMode) {
+        if (!isSplitMode && !isBudgetMode && !isAccountMode) {
             if (currentInterestRate > 0) {
                 setAmountToPay(effectiveTotal.toFixed(2));
             } else {
                 setAmountToPay(Math.round(total).toString());
             }
-        } else if (isBudgetMode) {
+        } else if (isBudgetMode || isAccountMode) {
              setAmountToPay(Math.round(total).toString());
         }
-    }, [currentInterestRate, effectiveTotal, isSplitMode, total, isBudgetMode]);
+    }, [currentInterestRate, effectiveTotal, isSplitMode, total, isBudgetMode, isAccountMode]);
 
     useEffect(() => {
-        if (isSplitMode && !selectedRate && !isFullyPaid && !isBudgetMode) {
+        if (isSplitMode && !selectedRate && !isFullyPaid && !isBudgetMode && !isAccountMode) {
             setAmountToPay(remainingBase.toFixed(2));
         }
-    }, [remainingBase, isSplitMode, selectedRate, isFullyPaid, isBudgetMode]);
+    }, [remainingBase, isSplitMode, selectedRate, isFullyPaid, isBudgetMode, isAccountMode]);
 
     // ==========================================
     // 4. DATA FETCHING
@@ -236,6 +249,7 @@ export const PaymentModal = ({
         let paymentMethodName = method;
         if (['manual_card', 'point', 'clover'].includes(method)) paymentMethodName = 'card';
         if (method === 'employee_account') paymentMethodName = 'employee_account';
+        if (method === 'account') paymentMethodName = 'account';
 
         const paymentObj = {
             id: Date.now(),
@@ -296,6 +310,8 @@ export const PaymentModal = ({
             finalReference = "Tarjeta (Manual sin plan)";
         } else if (method === 'employee_account') {
             finalReference = `A cuenta: ${employees.find(e => e.uid === selectedEmployeeId)?.name}`;
+        } else if (method === 'account') {
+            finalReference = `Fiado en Cta. Corriente`; // 🔥 Referencia para el recibo
         }
 
         let finalMethod = method;
@@ -308,12 +324,13 @@ export const PaymentModal = ({
             employeeId: method === 'employee_account' ? selectedEmployeeId : null,
             branchId: activeBranchId, 
             totalSale: effectiveTotal,
-            amountPaid: payValue - changeValue, 
-            amountDebt: debtValue, 
+            // 🔥 Si es a Cta. Corriente, no entró efectivo, todo es deuda
+            amountPaid: method === 'account' ? 0 : (payValue - changeValue), 
+            amountDebt: method === 'account' ? effectiveTotal : debtValue, 
             baseAmount: total,
             surcharge: surchargeAmountUI, 
             discount: discount || 0,
-            withAfip: method === 'employee_account' ? false : withAfip 
+            withAfip: method === 'employee_account' || method === 'account' ? false : withAfip 
         });
     };
 
@@ -459,6 +476,15 @@ export const PaymentModal = ({
             );
         }
 
+        // 🔥 BOTÓN ESPECÍFICO PARA FIADO (CUENTA CORRIENTE)
+        if (isAccountMode) {
+            return (
+                <Button onClick={handleMainAction} className="w-full py-6 text-xl font-black uppercase shadow-xl bg-sys-800 hover:bg-black text-white rounded-2xl flex items-center justify-center gap-2 transition-all active:scale-[0.98]">
+                    <Users size={24}/> ENVIAR A CTA. CORRIENTE
+                </Button>
+            );
+        }
+
         if (method === 'point' && digitalState === 'idle') {
             return (
                 <Button onClick={handleMainAction} className="w-full py-6 text-xl font-black uppercase shadow-xl bg-blue-600 hover:bg-blue-700 text-white rounded-2xl flex items-center justify-center gap-2 transition-all active:scale-[0.98]">
@@ -512,7 +538,7 @@ export const PaymentModal = ({
 
     return (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-sys-900/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-            <div className="bg-white rounded-3xl shadow-2xl w-full max-w-5xl overflow-hidden flex flex-col md:flex-row min-h-[600px] md:h-[650px]">
+            <div className="bg-white rounded-3xl shadow-2xl w-full max-w-6xl overflow-hidden flex flex-col md:flex-row min-h-[600px] md:h-[650px]">
                 
                 {/* 🟢 IZQUIERDA: RESUMEN FINANCIERO */}
                 <div className="w-full md:w-1/3 bg-sys-50 p-6 flex flex-col justify-between border-r border-sys-200 relative">
@@ -525,12 +551,12 @@ export const PaymentModal = ({
                             </span>
                             <Switch checked={isSplitMode} onCheckedChange={(val) => {
                                 setIsSplitMode(val);
-                                if (val && isBudgetMode) setMethod('cash'); // No se puede combinar presupuestos
-                            }} size="sm" disabled={isBudgetMode} />
+                                if (val && (isBudgetMode || isAccountMode)) setMethod('cash'); // No se puede combinar presupuestos ni fiado simple
+                            }} size="sm" disabled={isBudgetMode || isAccountMode} />
                         </div>
 
-                        <div className={cn("bg-white p-4 rounded-xl border shadow-sm relative overflow-hidden transition-all duration-300", isBudgetMode ? "border-sys-400 bg-sys-100" : "border-sys-200")}>
-                            {currentInterestRate > 0 && !isBudgetMode && (
+                        <div className={cn("bg-white p-4 rounded-xl border shadow-sm relative overflow-hidden transition-all duration-300", isBudgetMode ? "border-sys-400 bg-sys-100" : isAccountMode ? "border-red-400 bg-red-50" : "border-sys-200")}>
+                            {currentInterestRate > 0 && !isBudgetMode && !isAccountMode && (
                                 <div className="absolute top-0 right-0 bg-indigo-600 text-white text-[9px] font-bold px-2 py-0.5 rounded-bl-lg">
                                     CON RECARGO
                                 </div>
@@ -538,6 +564,11 @@ export const PaymentModal = ({
                             {isBudgetMode && (
                                 <div className="absolute top-0 right-0 bg-sys-600 text-white text-[9px] font-bold px-2 py-0.5 rounded-bl-lg">
                                     MODO PRESUPUESTO
+                                </div>
+                            )}
+                            {isAccountMode && (
+                                <div className="absolute top-0 right-0 bg-red-600 text-white text-[9px] font-bold px-2 py-0.5 rounded-bl-lg">
+                                    DEUDA CTA. CTE.
                                 </div>
                             )}
                             
@@ -557,17 +588,17 @@ export const PaymentModal = ({
                             )}
 
                             <div className="flex justify-between items-end mb-1">
-                                <p className="text-xs text-sys-500 uppercase font-bold">{disableAfip || isBudgetMode ? "Monto Final" : "Total Final"}</p>
+                                <p className="text-xs text-sys-500 uppercase font-bold">{disableAfip || isBudgetMode || isAccountMode ? "Monto Final" : "Total Final"}</p>
                                 {discount > 0 && <span className="text-[10px] text-sys-400 line-through decoration-red-400">${subtotal.toLocaleString('es-AR')}</span>}
                             </div>
                             
-                            <p className="text-3xl font-black text-sys-900 tracking-tight">
+                            <p className={cn("text-3xl font-black tracking-tight", isAccountMode ? "text-red-700" : "text-sys-900")}>
                                 $ {isSplitMode ? remainingBase.toLocaleString('es-AR', {minimumFractionDigits: 0, maximumFractionDigits: 2}) : effectiveTotal.toLocaleString('es-AR', {minimumFractionDigits: 0, maximumFractionDigits: 2})}
                             </p>
                             
                             {isSplitMode && <p className="text-[10px] text-sys-400 font-bold mt-1">RESTANTE A PAGAR</p>}
 
-                            {!isSplitMode && currentInterestRate > 0 && !isBudgetMode && (
+                            {!isSplitMode && currentInterestRate > 0 && !isBudgetMode && !isAccountMode && (
                                 <div className="mt-2 pt-2 border-t border-dashed border-sys-200 flex justify-between text-xs animate-in slide-in-from-left-2">
                                     <span className="text-sys-500">Base: ${total.toLocaleString('es-AR')}</span>
                                     <span className="text-indigo-600 font-bold">
@@ -583,7 +614,7 @@ export const PaymentModal = ({
                                 {payments.map(p => (
                                     <div key={p.id} className="bg-white p-2 rounded border flex justify-between items-center text-xs shadow-sm animate-in slide-in-from-left-2">
                                         <div>
-                                            <span className="font-bold uppercase block text-sys-700">{p.method === 'manual_card' ? 'Tarjeta' : p.method === 'employee_account' ? 'Cta. Empleado' : p.method}</span>
+                                            <span className="font-bold uppercase block text-sys-700">{p.method === 'manual_card' ? 'Tarjeta' : p.method === 'employee_account' ? 'Cta. Empleado' : p.method === 'account' ? 'Fiado (Cta Cte)' : p.method}</span>
                                             {p.surcharge > 0 && <span className="text-[9px] text-indigo-600">+ Rec. ${p.surcharge.toLocaleString()}</span>}
                                         </div>
                                         <div className="flex items-center gap-2">
@@ -608,14 +639,14 @@ export const PaymentModal = ({
                             </div>
                         ) : (
                             <div className={cn("p-4 rounded-xl border-2 transition-all duration-300", 
-                                isBudgetMode ? "bg-sys-100 border-sys-300 opacity-50 pointer-events-none" :
+                                isBudgetMode || isAccountMode ? "bg-sys-100 border-sys-300 opacity-50 pointer-events-none" :
                                 isPartialPayment ? "bg-orange-50 border-orange-200" : 
                                 changeValue > 0 ? "bg-green-50 border-green-200" : "bg-white border-sys-200",
-                                (currentInterestRate > 0 || method === 'employee_account' || digitalState === 'waiting') && !isBudgetMode && "opacity-90 grayscale-[0.5]"
+                                (currentInterestRate > 0 || method === 'employee_account' || digitalState === 'waiting') && !isBudgetMode && !isAccountMode && "opacity-90 grayscale-[0.5]"
                             )}>
                                 <p className={cn("text-[10px] uppercase font-bold mb-1 flex justify-between", isPartialPayment ? "text-orange-700" : "text-sys-500")}>
                                     <span>Monto que entrega</span>
-                                    {(currentInterestRate > 0 || method === 'employee_account' || method === 'point') && !isBudgetMode && <span className="text-[9px] bg-sys-200 px-1 rounded text-sys-600">AUTO</span>}
+                                    {(currentInterestRate > 0 || method === 'employee_account' || method === 'point') && !isBudgetMode && !isAccountMode && <span className="text-[9px] bg-sys-200 px-1 rounded text-sys-600">AUTO</span>}
                                 </p>
                                 <div className="flex items-center relative">
                                     <span className="text-lg font-bold text-sys-400 mr-1">$</span>
@@ -624,18 +655,18 @@ export const PaymentModal = ({
                                         type="number" 
                                         className={cn(
                                             "w-full bg-transparent text-2xl font-black outline-none text-sys-900 placeholder-sys-300 transition-colors",
-                                            (currentInterestRate > 0 || method === 'employee_account' || method === 'point' || isBudgetMode) && "cursor-not-allowed text-sys-600"
+                                            (currentInterestRate > 0 || method === 'employee_account' || method === 'point' || isBudgetMode || isAccountMode) && "cursor-not-allowed text-sys-600"
                                         )}
                                         value={amountToPay} 
-                                        onChange={e => currentInterestRate === 0 && !isBudgetMode && setAmountToPay(e.target.value)}
+                                        onChange={e => currentInterestRate === 0 && !isBudgetMode && !isAccountMode && setAmountToPay(e.target.value)}
                                         onKeyDown={handleKeyDown}
-                                        readOnly={currentInterestRate > 0 || method === 'employee_account' || isProcessing || method === 'point' || isBudgetMode}
-                                        disabled={isProcessing || isBudgetMode}
+                                        readOnly={currentInterestRate > 0 || method === 'employee_account' || isProcessing || method === 'point' || isBudgetMode || isAccountMode}
+                                        disabled={isProcessing || isBudgetMode || isAccountMode}
                                         placeholder={Math.round(total).toString()}
                                     />
                                 </div>
-                                {changeValue > 0 && !isBudgetMode && <p className="text-right text-xs font-bold text-green-600 mt-1">Vuelto: $ {changeValue.toLocaleString('es-AR')}</p>}
-                                {debtValue > 0 && !isBudgetMode && <p className="text-right text-xs font-bold text-orange-600 mt-1">Deuda Cta Cte: $ {debtValue.toLocaleString('es-AR')}</p>}
+                                {changeValue > 0 && !isBudgetMode && !isAccountMode && <p className="text-right text-xs font-bold text-green-600 mt-1">Vuelto: $ {changeValue.toLocaleString('es-AR')}</p>}
+                                {debtValue > 0 && !isBudgetMode && !isAccountMode && <p className="text-right text-xs font-bold text-orange-600 mt-1">Falta: $ {debtValue.toLocaleString('es-AR')}</p>}
                             </div>
                         )}
                         
@@ -657,7 +688,7 @@ export const PaymentModal = ({
                         </button>
                     </div>
 
-                    <div className="grid grid-cols-3 sm:grid-cols-7 gap-2 mb-6">
+                    <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-8 gap-2 mb-6">
                         {[
                             {id:'cash', icon: Banknote, label:'Efectivo', color:'brand'},
                             {id:'transfer', icon: Landmark, label:'Transf.', color:'purple-600'},
@@ -665,18 +696,32 @@ export const PaymentModal = ({
                             {id:'point', icon: CreditCard, label:'Point', color:'blue-600'},
                             {id:'manual_card', icon: Calculator, label:'Tarjeta', color:'indigo-600'},
                             {id:'employee_account', icon: User, label:'Personal', color:'orange-500'},
-                            {id:'budget', icon: FileArchive, label:'Presup.', color:'sys-600'} // 🔥 Botón de Presupuesto
+                            {id:'account', icon: Users, label:'Cta. Cte.', color:'red-500'}, // 🔥 NUEVO BOTÓN: FIADO
+                            {id:'budget', icon: FileArchive, label:'Presup.', color:'sys-600'} 
                         ].map(opt => (
                             <button 
                                 key={opt.id}
                                 onClick={() => {
+                                    // 🔥 PROTECCIÓN: No podés fiar si no tenés un cliente asignado al ticket
+                                    if (opt.id === 'account' && !isClientRegistered) {
+                                        toast.error("Debe asignar un Cliente (F3) antes de enviarlo a Cta Cte.");
+                                        return;
+                                    }
+
                                     setMethod(opt.id);
-                                    if (opt.id === 'budget') setIsSplitMode(false); // Presupuesto no se divide
+                                    if (opt.id === 'budget' || opt.id === 'account') setIsSplitMode(false); // Presupuesto y Fiado total no se dividen
                                     if (opt.id !== 'manual_card') { setSelectedBrand(null); setSelectedRate(null); }
                                     if (opt.id !== 'employee_account') setSelectedEmployeeId('');
                                     setDigitalState('idle'); 
                                 }} 
-                                disabled={digitalState === 'creating' || digitalState === 'waiting' || digitalState === 'approved' || isProcessing || (isSplitMode && (isFullyPaid || opt.id === 'budget'))} 
+                                disabled={
+                                    digitalState === 'creating' || 
+                                    digitalState === 'waiting' || 
+                                    digitalState === 'approved' || 
+                                    isProcessing || 
+                                    (isSplitMode && (isFullyPaid || opt.id === 'budget' || opt.id === 'account')) ||
+                                    (opt.id === 'account' && !isClientRegistered) // 🔥 Se deshabilita visualmente si no hay cliente
+                                } 
                                 className={cn(
                                     "flex flex-col items-center justify-center p-2 rounded-xl border-2 transition-all duration-200 h-24 relative overflow-hidden active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed group", 
                                     method === opt.id ? `bg-sys-50 border-${opt.color} shadow-md` : "bg-white border-sys-100 hover:border-sys-300 text-sys-500"
@@ -686,7 +731,7 @@ export const PaymentModal = ({
                                 <span className={cn("font-semibold text-[10px] leading-tight text-center", method === opt.id ? "text-sys-900" : "")}>{opt.label}</span>
                                 {method === opt.id && <div className={`absolute top-2 right-2 w-2 h-2 rounded-full bg-${opt.color}`}></div>}
                                 
-                                {posConfig?.paymentSurcharges?.[opt.id] > 0 && !['manual_card', 'employee_account', 'budget'].includes(opt.id) && (
+                                {posConfig?.paymentSurcharges?.[opt.id] > 0 && !['manual_card', 'employee_account', 'budget', 'account'].includes(opt.id) && (
                                     <div className="absolute bottom-0 left-0 right-0 bg-orange-100 text-orange-700 text-[8px] font-black text-center py-0.5">
                                         +{posConfig.paymentSurcharges[opt.id]}%
                                     </div>
@@ -706,6 +751,19 @@ export const PaymentModal = ({
                                 <h4 className="font-black text-xl text-sys-900 uppercase">Modo Presupuesto</h4>
                                 <p className="text-sm text-sys-500 mt-2 max-w-[280px] mx-auto">
                                     Se generará un ticket informativo con los precios actuales. <strong>No descuenta stock ni ingresa dinero a la caja.</strong>
+                                </p>
+                            </div>
+                        )}
+
+                        {isAccountMode && (
+                            <div className="text-center animate-in fade-in zoom-in-95">
+                                <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-3 text-red-600">
+                                    <Users size={32}/>
+                                </div>
+                                <h4 className="font-black text-xl text-sys-900 uppercase tracking-tight">Cuenta Corriente</h4>
+                                <p className="text-sm font-bold text-red-600 mt-1 uppercase">{client?.name}</p>
+                                <p className="text-xs text-sys-500 mt-2 max-w-[300px] mx-auto">
+                                    El total de <strong>$ {effectiveTotal.toLocaleString('es-AR')}</strong> se sumará a la deuda actual del cliente. No se registrará ingreso en la caja física.
                                 </p>
                             </div>
                         )}
@@ -825,7 +883,7 @@ export const PaymentModal = ({
                             </div>
                         )}
                         
-                        {(method === 'mercadopago' || method === 'point' || method === 'clover') && (
+                        {(method === 'mercadopago' || method === 'point') && (
                             <div className="flex flex-col items-center gap-3 animate-in fade-in text-center">
                                 {digitalState === 'idle' && (
                                     <>
@@ -863,7 +921,7 @@ export const PaymentModal = ({
                     </div>
 
                     <div className="mt-6 pt-4 border-t border-sys-100">
-                        {!disableAfip && method !== 'employee_account' && !isSplitMode && !isBudgetMode && (
+                        {!disableAfip && method !== 'employee_account' && !isSplitMode && !isBudgetMode && !isAccountMode && (
                             <div className={cn("flex items-center justify-between mb-4 p-3 rounded-xl border transition-all", isRI ? "bg-indigo-50 border-indigo-200" : "bg-sys-50 border-sys-100")}>
                                 <div className="flex items-center gap-2">
                                     <ShieldCheck className={cn(withAfip ? "text-brand" : "text-sys-300")} size={20}/>
