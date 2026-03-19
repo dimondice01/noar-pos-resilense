@@ -3,7 +3,7 @@ import {
     X, Banknote, QrCode, Loader2, CheckCircle2, 
     AlertCircle, Wallet, ArrowRight, CreditCard, Landmark, 
     ShieldCheck, Calculator, ChevronLeft, Layers, Info, Trash2, Plus, Split,
-    Tag, User, FileText, Send
+    Tag, User, FileText, Send, FileArchive
 } from 'lucide-react';
 import { doc, getDoc, collection, query, where, getDocs } from 'firebase/firestore';
 import { db } from '../../../database/firebase';
@@ -25,7 +25,8 @@ export const PaymentModal = ({
     onConfirm, 
     disableAfip = false, 
     isProcessing = false,
-    posConfig 
+    posConfig,
+    processBudget // 🔥 Recibimos la nueva función de presupuestos
 }) => {
     
     // ==========================================
@@ -83,7 +84,6 @@ export const PaymentModal = ({
         : methodSurchargePercentage;
     
     const effectiveTotal = total * (1 + (currentInterestRate / 100));
-    
     const surchargeAmountUI = effectiveTotal - total;
 
     // -- Lógica Split --
@@ -105,9 +105,12 @@ export const PaymentModal = ({
     // Validaciones Generales
     const isClientRegistered = client && client.id; 
     const isEmployeePaymentInvalid = method === 'employee_account' && !selectedEmployeeId;
-    const hasError = (!isSplitMode && isPartialPayment && !isClientRegistered) || isEmployeePaymentInvalid; 
     
-    const canConfirmSimple = !hasError && payValue > 0 && amountToPay !== '' && !isProcessing;
+    // 🔥 FIX PRESUPUESTOS: Si el método es 'budget', saltamos las validaciones restrictivas de pago
+    const isBudgetMode = method === 'budget';
+    const hasError = !isBudgetMode && ((!isSplitMode && isPartialPayment && !isClientRegistered) || isEmployeePaymentInvalid); 
+    
+    const canConfirmSimple = isBudgetMode || (!hasError && payValue > 0 && amountToPay !== '' && !isProcessing);
 
     const isRI = client?.fiscalCondition === 'RESPONSABLE_INSCRIPTO';
     
@@ -140,7 +143,7 @@ export const PaymentModal = ({
             if (pollingRef.current) clearInterval(pollingRef.current);
             
             setTimeout(() => {
-                if (cashInputRef.current) {
+                if (cashInputRef.current && !isBudgetMode) {
                     cashInputRef.current.focus();
                     cashInputRef.current.select();
                 }
@@ -151,20 +154,22 @@ export const PaymentModal = ({
     }, [isOpen, total, isRI, disableAfip]);
 
     useEffect(() => {
-        if (!isSplitMode) {
+        if (!isSplitMode && !isBudgetMode) {
             if (currentInterestRate > 0) {
                 setAmountToPay(effectiveTotal.toFixed(2));
             } else {
                 setAmountToPay(Math.round(total).toString());
             }
+        } else if (isBudgetMode) {
+             setAmountToPay(Math.round(total).toString());
         }
-    }, [currentInterestRate, effectiveTotal, isSplitMode, total]);
+    }, [currentInterestRate, effectiveTotal, isSplitMode, total, isBudgetMode]);
 
     useEffect(() => {
-        if (isSplitMode && !selectedRate && !isFullyPaid) {
+        if (isSplitMode && !selectedRate && !isFullyPaid && !isBudgetMode) {
             setAmountToPay(remainingBase.toFixed(2));
         }
-    }, [remainingBase, isSplitMode, selectedRate, isFullyPaid]);
+    }, [remainingBase, isSplitMode, selectedRate, isFullyPaid, isBudgetMode]);
 
     // ==========================================
     // 4. DATA FETCHING
@@ -276,7 +281,14 @@ export const PaymentModal = ({
         });
     };
 
-    const handleManualConfirm = () => {
+    const handleManualConfirm = async () => {
+        // 🔥 LÓGICA DE PRESUPUESTOS
+        if (isBudgetMode) {
+            const success = await processBudget();
+            if (success) onClose();
+            return;
+        }
+
         let finalReference = method === 'transfer' ? reference : null;
         if (selectedRate && selectedBrand) {
             finalReference = `${selectedBrand.brand} ${selectedRate.qty} ctes (${selectedRate.interest}%)`;
@@ -305,7 +317,6 @@ export const PaymentModal = ({
         });
     };
 
-    // 🔥 LA MAGIA DEL PDV OCURRE AQUÍ: Enviar intención a la Terminal Point
     const triggerPointTransaction = async () => {
         setDigitalState('creating');
         setErrorMessage(null);
@@ -313,14 +324,13 @@ export const PaymentModal = ({
             const targetDeviceId = assignedHardware.pointId;
             if (!targetDeviceId) throw new Error("Falta configurar la Terminal Point en esta caja.");
 
-            // Disparamos la API de Mercado Pago
             const res = await paymentService.initTransaction('point', parseFloat(amountToPay), targetDeviceId, {
                 companyId: user.companyId,
                 branchId: activeBranchId
             });
             
-            setPaymentReference(res.reference); // Referencia generada (ej: el UUID)
-            setDigitalState('waiting'); // Cambiamos el estado para que inicie el Polling (escucha del resultado)
+            setPaymentReference(res.reference); 
+            setDigitalState('waiting'); 
             
         } catch (error) {
             setDigitalState('error');
@@ -349,7 +359,6 @@ export const PaymentModal = ({
         }
     };
 
-    // EL BOTÓN PRINCIPAL
     const handleMainAction = () => {
         if (isProcessing) return;
 
@@ -357,20 +366,16 @@ export const PaymentModal = ({
             if (!isFullyPaid) handleAddSplitPayment();
             else handleFinalizeSplit();
         } else {
-            // SI ES POINT Y AÚN NO SE ENVIÓ LA ORDEN
             if (method === 'point' && digitalState === 'idle') {
                 triggerPointTransaction();
-            // SI ES QR Y AÚN NO SE ENVIÓ
             } else if (method === 'mercadopago' && digitalState === 'idle') {
                 triggerQrTransaction();
             } else {
-                // Pagos manuales (Efectivo, Tarjeta Manual, etc.)
                 handleManualConfirm();
             }
         }
     };
 
-    // POLLING (Escucha activa del resultado de Mercado Pago)
     useEffect(() => {
         if (digitalState === 'waiting' && paymentReference && (method === 'mercadopago' || method === 'point')) {
             const checkPayment = async () => {
@@ -381,7 +386,6 @@ export const PaymentModal = ({
                         setDigitalState('approved');
                         clearInterval(pollingRef.current);
                         
-                        // Si se aprueba, cerramos la venta automáticamente luego de 1 segundo (UX)
                         setTimeout(() => {
                             if (isSplitMode) handleAddSplitPayment();
                             else handleManualConfirm();
@@ -397,7 +401,6 @@ export const PaymentModal = ({
                 }
             };
 
-            // Preguntamos el estado cada 3 segundos
             pollingRef.current = setInterval(checkPayment, 3000);
             return () => clearInterval(pollingRef.current);
         }
@@ -419,7 +422,6 @@ export const PaymentModal = ({
     const handleKeyDown = (e) => {
         if (e.key === 'Enter') {
             e.preventDefault();
-            // Solo procesamos el Enter si el botón de Confirmar estaría habilitado
             if ((canConfirmSimple || isSplitMode) && digitalState === 'idle') {
                 handleMainAction();
             }
@@ -429,7 +431,6 @@ export const PaymentModal = ({
 
     if (!isOpen) return null;
 
-    // 🔥 RENDERIZADO DEL BOTÓN PRINCIPAL
     const renderActionButton = () => {
         if (isProcessing) {
             return (
@@ -445,6 +446,15 @@ export const PaymentModal = ({
             return (
                 <Button onClick={handleMainAction} className="w-full py-6 text-xl font-black uppercase shadow-xl bg-sys-800 hover:bg-sys-900 text-white rounded-2xl flex items-center justify-center gap-2">
                     <Plus size={24}/> AGREGAR PAGO
+                </Button>
+            );
+        }
+
+        // 🔥 BOTÓN ESPECÍFICO PARA PRESUPUESTOS
+        if (isBudgetMode) {
+            return (
+                <Button onClick={handleMainAction} className="w-full py-6 text-xl font-black uppercase shadow-xl bg-sys-800 hover:bg-black text-white rounded-2xl flex items-center justify-center gap-2 transition-all active:scale-[0.98]">
+                    <FileArchive size={24}/> GENERAR PRESUPUESTO
                 </Button>
             );
         }
@@ -465,7 +475,6 @@ export const PaymentModal = ({
             );
         }
 
-        // Estado bloqueado por espera de terminal
         if (digitalState === 'waiting' || digitalState === 'creating') {
             return (
                 <Button disabled className="w-full py-6 text-xl font-black uppercase shadow-none bg-blue-100 text-blue-500 cursor-wait">
@@ -476,7 +485,6 @@ export const PaymentModal = ({
             );
         }
 
-        // Estado de error en la terminal
         if (digitalState === 'error') {
             return (
                 <Button onClick={() => setDigitalState('idle')} className="w-full py-6 text-xl font-black uppercase shadow-none bg-red-100 hover:bg-red-200 text-red-600">
@@ -485,7 +493,6 @@ export const PaymentModal = ({
             );
         }
 
-        // Botón por defecto para Efectivo, Transf. Manual, etc.
         const disabledState = !canConfirmSimple && !isSplitMode;
         return (
             <Button 
@@ -516,13 +523,21 @@ export const PaymentModal = ({
                                 <Split size={14} className={isSplitMode ? "text-brand" : "text-sys-300"}/> 
                                 Pago Combinado
                             </span>
-                            <Switch checked={isSplitMode} onCheckedChange={setIsSplitMode} size="sm" />
+                            <Switch checked={isSplitMode} onCheckedChange={(val) => {
+                                setIsSplitMode(val);
+                                if (val && isBudgetMode) setMethod('cash'); // No se puede combinar presupuestos
+                            }} size="sm" disabled={isBudgetMode} />
                         </div>
 
-                        <div className="bg-white p-4 rounded-xl border border-sys-200 shadow-sm relative overflow-hidden transition-all duration-300">
-                            {currentInterestRate > 0 && (
+                        <div className={cn("bg-white p-4 rounded-xl border shadow-sm relative overflow-hidden transition-all duration-300", isBudgetMode ? "border-sys-400 bg-sys-100" : "border-sys-200")}>
+                            {currentInterestRate > 0 && !isBudgetMode && (
                                 <div className="absolute top-0 right-0 bg-indigo-600 text-white text-[9px] font-bold px-2 py-0.5 rounded-bl-lg">
                                     CON RECARGO
+                                </div>
+                            )}
+                            {isBudgetMode && (
+                                <div className="absolute top-0 right-0 bg-sys-600 text-white text-[9px] font-bold px-2 py-0.5 rounded-bl-lg">
+                                    MODO PRESUPUESTO
                                 </div>
                             )}
                             
@@ -542,7 +557,7 @@ export const PaymentModal = ({
                             )}
 
                             <div className="flex justify-between items-end mb-1">
-                                <p className="text-xs text-sys-500 uppercase font-bold">{disableAfip ? "Monto a Saldar" : "Total Final"}</p>
+                                <p className="text-xs text-sys-500 uppercase font-bold">{disableAfip || isBudgetMode ? "Monto Final" : "Total Final"}</p>
                                 {discount > 0 && <span className="text-[10px] text-sys-400 line-through decoration-red-400">${subtotal.toLocaleString('es-AR')}</span>}
                             </div>
                             
@@ -552,7 +567,7 @@ export const PaymentModal = ({
                             
                             {isSplitMode && <p className="text-[10px] text-sys-400 font-bold mt-1">RESTANTE A PAGAR</p>}
 
-                            {!isSplitMode && currentInterestRate > 0 && (
+                            {!isSplitMode && currentInterestRate > 0 && !isBudgetMode && (
                                 <div className="mt-2 pt-2 border-t border-dashed border-sys-200 flex justify-between text-xs animate-in slide-in-from-left-2">
                                     <span className="text-sys-500">Base: ${total.toLocaleString('es-AR')}</span>
                                     <span className="text-indigo-600 font-bold">
@@ -593,13 +608,14 @@ export const PaymentModal = ({
                             </div>
                         ) : (
                             <div className={cn("p-4 rounded-xl border-2 transition-all duration-300", 
+                                isBudgetMode ? "bg-sys-100 border-sys-300 opacity-50 pointer-events-none" :
                                 isPartialPayment ? "bg-orange-50 border-orange-200" : 
                                 changeValue > 0 ? "bg-green-50 border-green-200" : "bg-white border-sys-200",
-                                (currentInterestRate > 0 || method === 'employee_account' || digitalState === 'waiting') && "opacity-90 grayscale-[0.5]"
+                                (currentInterestRate > 0 || method === 'employee_account' || digitalState === 'waiting') && !isBudgetMode && "opacity-90 grayscale-[0.5]"
                             )}>
                                 <p className={cn("text-[10px] uppercase font-bold mb-1 flex justify-between", isPartialPayment ? "text-orange-700" : "text-sys-500")}>
                                     <span>Monto que entrega</span>
-                                    {(currentInterestRate > 0 || method === 'employee_account' || method === 'point') && <span className="text-[9px] bg-sys-200 px-1 rounded text-sys-600">AUTO</span>}
+                                    {(currentInterestRate > 0 || method === 'employee_account' || method === 'point') && !isBudgetMode && <span className="text-[9px] bg-sys-200 px-1 rounded text-sys-600">AUTO</span>}
                                 </p>
                                 <div className="flex items-center relative">
                                     <span className="text-lg font-bold text-sys-400 mr-1">$</span>
@@ -608,18 +624,18 @@ export const PaymentModal = ({
                                         type="number" 
                                         className={cn(
                                             "w-full bg-transparent text-2xl font-black outline-none text-sys-900 placeholder-sys-300 transition-colors",
-                                            (currentInterestRate > 0 || method === 'employee_account' || method === 'point') && "cursor-not-allowed text-sys-600"
+                                            (currentInterestRate > 0 || method === 'employee_account' || method === 'point' || isBudgetMode) && "cursor-not-allowed text-sys-600"
                                         )}
                                         value={amountToPay} 
-                                        onChange={e => currentInterestRate === 0 && setAmountToPay(e.target.value)}
+                                        onChange={e => currentInterestRate === 0 && !isBudgetMode && setAmountToPay(e.target.value)}
                                         onKeyDown={handleKeyDown}
-                                        readOnly={currentInterestRate > 0 || method === 'employee_account' || isProcessing || method === 'point'}
-                                        disabled={isProcessing}
+                                        readOnly={currentInterestRate > 0 || method === 'employee_account' || isProcessing || method === 'point' || isBudgetMode}
+                                        disabled={isProcessing || isBudgetMode}
                                         placeholder={Math.round(total).toString()}
                                     />
                                 </div>
-                                {changeValue > 0 && <p className="text-right text-xs font-bold text-green-600 mt-1">Vuelto: $ {changeValue.toLocaleString('es-AR')}</p>}
-                                {debtValue > 0 && <p className="text-right text-xs font-bold text-orange-600 mt-1">Deuda Cta Cte: $ {debtValue.toLocaleString('es-AR')}</p>}
+                                {changeValue > 0 && !isBudgetMode && <p className="text-right text-xs font-bold text-green-600 mt-1">Vuelto: $ {changeValue.toLocaleString('es-AR')}</p>}
+                                {debtValue > 0 && !isBudgetMode && <p className="text-right text-xs font-bold text-orange-600 mt-1">Deuda Cta Cte: $ {debtValue.toLocaleString('es-AR')}</p>}
                             </div>
                         )}
                         
@@ -641,24 +657,26 @@ export const PaymentModal = ({
                         </button>
                     </div>
 
-                    <div className="grid grid-cols-3 sm:grid-cols-6 gap-2 mb-6">
+                    <div className="grid grid-cols-3 sm:grid-cols-7 gap-2 mb-6">
                         {[
                             {id:'cash', icon: Banknote, label:'Efectivo', color:'brand'},
                             {id:'transfer', icon: Landmark, label:'Transf.', color:'purple-600'},
                             {id:'mercadopago', icon: QrCode, label:'QR MP', color:'blue-500'},
                             {id:'point', icon: CreditCard, label:'Point', color:'blue-600'},
                             {id:'manual_card', icon: Calculator, label:'Tarjeta', color:'indigo-600'},
-                            {id:'employee_account', icon: User, label:'Personal', color:'orange-500'}
+                            {id:'employee_account', icon: User, label:'Personal', color:'orange-500'},
+                            {id:'budget', icon: FileArchive, label:'Presup.', color:'sys-600'} // 🔥 Botón de Presupuesto
                         ].map(opt => (
                             <button 
                                 key={opt.id}
                                 onClick={() => {
                                     setMethod(opt.id);
+                                    if (opt.id === 'budget') setIsSplitMode(false); // Presupuesto no se divide
                                     if (opt.id !== 'manual_card') { setSelectedBrand(null); setSelectedRate(null); }
                                     if (opt.id !== 'employee_account') setSelectedEmployeeId('');
-                                    setDigitalState('idle'); // Reseteamos si cambia de método
+                                    setDigitalState('idle'); 
                                 }} 
-                                disabled={digitalState === 'creating' || digitalState === 'waiting' || digitalState === 'approved' || isProcessing || (isSplitMode && isFullyPaid)} 
+                                disabled={digitalState === 'creating' || digitalState === 'waiting' || digitalState === 'approved' || isProcessing || (isSplitMode && (isFullyPaid || opt.id === 'budget'))} 
                                 className={cn(
                                     "flex flex-col items-center justify-center p-2 rounded-xl border-2 transition-all duration-200 h-24 relative overflow-hidden active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed group", 
                                     method === opt.id ? `bg-sys-50 border-${opt.color} shadow-md` : "bg-white border-sys-100 hover:border-sys-300 text-sys-500"
@@ -668,7 +686,7 @@ export const PaymentModal = ({
                                 <span className={cn("font-semibold text-[10px] leading-tight text-center", method === opt.id ? "text-sys-900" : "")}>{opt.label}</span>
                                 {method === opt.id && <div className={`absolute top-2 right-2 w-2 h-2 rounded-full bg-${opt.color}`}></div>}
                                 
-                                {posConfig?.paymentSurcharges?.[opt.id] > 0 && !['manual_card', 'employee_account'].includes(opt.id) && (
+                                {posConfig?.paymentSurcharges?.[opt.id] > 0 && !['manual_card', 'employee_account', 'budget'].includes(opt.id) && (
                                     <div className="absolute bottom-0 left-0 right-0 bg-orange-100 text-orange-700 text-[8px] font-black text-center py-0.5">
                                         +{posConfig.paymentSurcharges[opt.id]}%
                                     </div>
@@ -680,6 +698,18 @@ export const PaymentModal = ({
                     {/* ÁREA DINÁMICA DE CONTENIDO */}
                     <div className="flex-1 bg-sys-50 rounded-2xl border-2 border-dashed border-sys-200 p-4 flex flex-col items-center justify-center overflow-hidden relative">
                         
+                        {isBudgetMode && (
+                            <div className="text-center animate-in fade-in zoom-in-95">
+                                <div className="w-16 h-16 bg-sys-200 rounded-full flex items-center justify-center mx-auto mb-3 text-sys-600">
+                                    <FileArchive size={32}/>
+                                </div>
+                                <h4 className="font-black text-xl text-sys-900 uppercase">Modo Presupuesto</h4>
+                                <p className="text-sm text-sys-500 mt-2 max-w-[280px] mx-auto">
+                                    Se generará un ticket informativo con los precios actuales. <strong>No descuenta stock ni ingresa dinero a la caja.</strong>
+                                </p>
+                            </div>
+                        )}
+
                         {method === 'employee_account' && (
                             <div className="w-full max-w-sm space-y-4 animate-in fade-in zoom-in-95">
                                 <div className="text-center mb-4">
@@ -833,8 +863,7 @@ export const PaymentModal = ({
                     </div>
 
                     <div className="mt-6 pt-4 border-t border-sys-100">
-                        {/* Ocultar Switch AFIP si el método es Cuenta Empleado (Por defecto los consumos no se facturan fiscalmente) */}
-                        {!disableAfip && method !== 'employee_account' && !isSplitMode && (
+                        {!disableAfip && method !== 'employee_account' && !isSplitMode && !isBudgetMode && (
                             <div className={cn("flex items-center justify-between mb-4 p-3 rounded-xl border transition-all", isRI ? "bg-indigo-50 border-indigo-200" : "bg-sys-50 border-sys-100")}>
                                 <div className="flex items-center gap-2">
                                     <ShieldCheck className={cn(withAfip ? "text-brand" : "text-sys-300")} size={20}/>

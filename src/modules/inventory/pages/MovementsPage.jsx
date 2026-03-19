@@ -2,7 +2,7 @@ import React, { useEffect, useState, useMemo } from 'react';
 import { 
     Search, Filter, ArrowDownLeft, ArrowUpRight, 
     History, DollarSign, Tag, AlertCircle, CheckCircle2, Package,
-    BarChart3, List, Users, Calendar, Layers, X, MapPin
+    BarChart3, List, Users, Calendar, Layers, X, MapPin, Loader2, CloudDownload, FileArchive
 } from 'lucide-react';
 
 // Repositorios y Stores
@@ -26,6 +26,7 @@ const TYPE_CONFIG = {
   'OUT': { label: 'Salida Manual', icon: AlertCircle, color: 'text-red-600', bg: 'bg-red-50', border: 'border-red-200' },
   'CREATION': { label: 'Alta Producto', icon: Package, color: 'text-purple-600', bg: 'bg-purple-50', border: 'border-purple-200' },
   'STOCK_OUT': { label: 'Venta', icon: ArrowUpRight, color: 'text-sys-600', bg: 'bg-sys-100', border: 'border-sys-200' },
+  'BUDGET': { label: 'Presupuesto', icon: FileArchive, color: 'text-gray-500', bg: 'bg-gray-100', border: 'border-gray-200' }, // 🔥 SPRINT 3
 };
 
 // ====================================================================
@@ -74,7 +75,7 @@ const ProductHistoryModal = ({ productData, movements, onClose }) => {
                                     </div>
                                     {mov.amount && (
                                         <div className="text-right pl-2 border-l border-sys-100 min-w-[60px]">
-                                            <p className={cn("text-lg font-black", (mov.type.includes('OUT') || mov.amount < 0) ? 'text-red-600' : 'text-green-600')}>
+                                            <p className={cn("text-lg font-black", (mov.type.includes('OUT') || mov.amount < 0) ? 'text-red-600' : mov.type === 'BUDGET' ? 'text-gray-400' : 'text-green-600')}>
                                                 {(mov.type.includes('OUT') || mov.amount < 0) ? '-' : '+'}{Math.abs(Number(mov.amount))}
                                             </p>
                                         </div>
@@ -100,6 +101,7 @@ export const MovementsPage = () => {
     const [categories, setCategories] = useState([]);
     const [userList, setUserList] = useState([]); 
     const [loading, setLoading] = useState(true);
+    const [syncing, setSyncing] = useState(false); // Estado para hidratación desde Firebase
     
     // MODAL
     const [selectedProduct, setSelectedProduct] = useState(null); 
@@ -127,26 +129,52 @@ export const MovementsPage = () => {
                 
                 setCategories(allCats);
 
-                // 2. Cargar Movimientos Masivos desde Dexie
+                // 2. Cargar Movimientos desde Dexie
                 const { getDB } = await import('../../../database/db');
                 const db = await getDB();
                 
                 let allMovements = [];
 
                 // 🔥 LÓGICA MULTI-SUCURSAL
-                if (user?.role === 'OWNER') {
-                    // Owner ve TODO (o podría filtrar si activeBranchId !== 'ALL')
+                if (user?.role === 'OWNER' || user?.role === 'SUPER_ADMIN') {
                     if (activeBranchId && activeBranchId !== 'ALL') {
                         allMovements = await db.movements.where('branchId').equals(activeBranchId).toArray();
                     } else {
                         allMovements = await db.movements.toArray();
                     }
                 } else {
-                    // Cajero/Admin solo ve su sucursal
                     if (activeBranchId) {
                         allMovements = await db.movements.where('branchId').equals(activeBranchId).toArray();
                     } else {
-                        allMovements = []; // Sin sucursal asignada no ve nada
+                        allMovements = []; 
+                    }
+                }
+
+                // 🔥 HIDRATACIÓN DE EMERGENCIA: Si Dexie está vacío, traemos algo de Firebase
+                if (allMovements.length === 0 && navigator.onLine) {
+                    setSyncing(true);
+                    try {
+                        const { collection, query, orderBy, limit, getDocs, where } = await import('firebase/firestore');
+                        const { db: firestoreDB } = await import('../../../database/firebase');
+                        
+                        let q;
+                        if ((user?.role === 'OWNER' || user?.role === 'SUPER_ADMIN') && (!activeBranchId || activeBranchId === 'ALL')) {
+                            q = query(collection(firestoreDB, `companies/${user.companyId}/movements`), orderBy('date', 'desc'), limit(100));
+                        } else {
+                            q = query(collection(firestoreDB, `companies/${user.companyId}/movements`), where('branchId', '==', activeBranchId), orderBy('date', 'desc'), limit(100));
+                        }
+                        
+                        const snapshot = await getDocs(q);
+                        const cloudMovements = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                        
+                        if (cloudMovements.length > 0) {
+                            await db.movements.bulkPut(cloudMovements);
+                            allMovements = cloudMovements;
+                        }
+                    } catch (e) {
+                        console.warn("Fallo hidratación silenciosa de kardex:", e);
+                    } finally {
+                        setSyncing(false);
                     }
                 }
 
@@ -185,7 +213,7 @@ export const MovementsPage = () => {
             }
         };
         loadData();
-    }, [user, activeBranchId]); // Recarga si cambia la sucursal o el usuario
+    }, [user, activeBranchId]); 
 
     // ===================== LÓGICA DE FILTRADO =====================
     const filteredData = useMemo(() => {
@@ -224,7 +252,8 @@ export const MovementsPage = () => {
     const categoryStats = useMemo(() => {
         const stats = {}; 
         filteredData.forEach(mov => {
-            // Consideramos ventas o salidas para estadística de movimiento
+            // 🔥 SPRINT 3: Excluimos presupuestos de las estadísticas financieras
+            if (mov.type === 'BUDGET') return;
             if (mov.type !== 'STOCK_OUT' && mov.type !== 'OUT') return;
             
             const catName = mov.categoryName;
@@ -241,6 +270,9 @@ export const MovementsPage = () => {
     const aggregatedData = useMemo(() => {
         const grouping = {};
         filteredData.forEach(mov => {
+            // Ignoramos Presupuestos en la vista agregada para no alterar sumatorias de stock real
+            if (mov.type === 'BUDGET') return;
+
             if (!grouping[mov.productId]) {
                 grouping[mov.productId] = {
                     id: mov.productId,
@@ -262,7 +294,6 @@ export const MovementsPage = () => {
 
             if (isOut) {
                 entry.soldQty += Math.abs(qty);
-                // Solo sumamos revenue si es venta real, no ajuste
                 if (mov.type === 'STOCK_OUT') {
                     entry.revenue += Math.abs(qty) * (mov.priceAtMoment || 0);
                 }
@@ -294,16 +325,17 @@ export const MovementsPage = () => {
                         <h2 className="text-2xl font-bold text-sys-900 tracking-tight flex items-center gap-2">
                             <History className="text-brand" /> Control de Movimientos
                         </h2>
-                        <p className="text-sys-500 text-sm mt-1">
+                        <p className="text-sys-500 text-sm mt-1 flex items-center gap-2">
                            {dateRange === 'TODAY' ? 'Mostrando actividad de HOY' : 'Historial de movimientos'}
-                           {activeBranchId && activeBranchId !== 'ALL' && <span className="ml-2 font-bold text-brand">• Sucursal: {activeBranchId}</span>}
+                           {activeBranchId && activeBranchId !== 'ALL' && <span className="font-bold text-brand bg-brand/10 px-2 py-0.5 rounded-lg border border-brand/20 text-xs">Sucursal: {activeBranchId}</span>}
                         </p>
                     </div>
                     <div className="bg-white px-5 py-2 rounded-xl border border-sys-200 shadow-sm flex items-center gap-4">
                         <div className="text-right">
                             <p className="text-[10px] text-sys-400 font-bold uppercase">Movimientos Totales</p>
-                            <p className="text-2xl font-black text-sys-900 leading-none">
+                            <p className="text-2xl font-black text-sys-900 leading-none flex items-center gap-2">
                                 {filteredData.length.toLocaleString('es-AR')}
+                                {syncing && <CloudDownload size={14} className="text-sys-300 animate-pulse" title="Sincronizando de la nube..." />}
                             </p>
                         </div>
                         <div className="h-8 w-8 rounded-full bg-brand/10 text-brand flex items-center justify-center">
@@ -394,8 +426,8 @@ export const MovementsPage = () => {
             <div className="min-h-[300px]">
                 {loading ? (
                     <div className="text-center py-20 text-sys-400">
-                        <div className="animate-spin rounded-full h-8 w-8 border-4 border-sys-200 border-t-brand mx-auto mb-3"></div>
-                        <p className="text-xs">Analizando movimientos...</p>
+                        <Loader2 className="animate-spin h-8 w-8 text-brand mx-auto mb-3" />
+                        <p className="text-xs font-bold tracking-widest uppercase">Analizando movimientos...</p>
                     </div>
                 ) : filteredData.length === 0 ? (
                     <div className="text-center py-20 bg-white rounded-2xl border border-dashed border-sys-200">
@@ -453,8 +485,10 @@ export const MovementsPage = () => {
                         {filteredData.map((mov) => {
                            const style = TYPE_CONFIG[mov.type] || { label: mov.type, icon: AlertCircle, color: 'text-gray-500', bg: 'bg-gray-100', border: 'border-gray-200' };
                            const Icon = style.icon;
+                           const isBudget = mov.type === 'BUDGET';
+
                            return (
-                             <div key={mov.id} className="group bg-white rounded-lg p-2.5 border border-sys-100 hover:border-brand/20 hover:shadow-sm transition-all flex items-center gap-3">
+                             <div key={mov.id} className={cn("group bg-white rounded-lg p-2.5 border transition-all flex items-center gap-3", isBudget ? "border-sys-200 opacity-60" : "border-sys-100 hover:border-brand/20 hover:shadow-sm")}>
                                <div className={cn("w-8 h-8 rounded-full flex items-center justify-center border shrink-0", style.bg, style.color, style.border)}>
                                   <Icon size={14} />
                                </div>
@@ -476,7 +510,7 @@ export const MovementsPage = () => {
                                </div>
                                {mov.amount && (
                                  <div className="text-right pl-3 border-l border-sys-100 min-w-[70px]">
-                                    <span className={cn("text-sm font-black tracking-tight", (mov.type.includes('OUT') || mov.amount < 0) ? "text-red-600" : "text-green-600")}>
+                                    <span className={cn("text-sm font-black tracking-tight", isBudget ? "text-gray-400" : (mov.type.includes('OUT') || mov.amount < 0) ? "text-red-600" : "text-green-600")}>
                                       {(mov.type.includes('OUT') || mov.amount < 0) ? '-' : '+'}{Math.abs(Number(mov.amount))}
                                     </span>
                                  </div>

@@ -6,7 +6,7 @@ import {
     Printer, ArrowRightLeft, Calendar, ChevronLeft, ChevronRight,
     Upload, RefreshCw, MoreVertical, Cloud, MapPin, 
     Tag, Percent, Megaphone, MoreHorizontal, LayoutGrid, DollarSign,
-    CalendarClock, Info, Scale, Save, Pencil, Loader2
+    CalendarClock, Info, Scale, Save, Pencil, Loader2, ArrowDown, ArrowUp, Minus
 } from 'lucide-react';
 import toast from 'react-hot-toast'; 
 
@@ -508,10 +508,11 @@ export const InventoryPage = () => {
     const [globalStock, setGlobalStock] = useState({}); 
     const [loadingStock, setLoadingStock] = useState(false);
     
-    // Search & Filter
+    // Search, Filter & Sort 🔥
     const [inputValue, setInputValue] = useState(''); 
     const [searchTerm, setSearchTerm] = useState('');
     const [filters, setFilters] = useState({ category: '', brand: '' });
+    const [sortConfig, setSortConfig] = useState({ key: 'name', direction: 'asc' }); // 🔥 Estado de ordenamiento
     const searchInputRef = useRef(null);
 
     // Selection & View State
@@ -722,7 +723,7 @@ export const InventoryPage = () => {
             
             toast.success(`${field.toUpperCase()} actualizado`, { position: 'bottom-right', duration: 1000 });
             
-            // 🔥 SILENT RELOAD: Actualiza la matriz global en el fondo sin mostrar pantalla de carga
+            // 🔥 SILENT RELOAD
             loadData(false, true);
 
         } catch (e) {
@@ -743,12 +744,29 @@ export const InventoryPage = () => {
     }, [inputValue]);
 
     // =================================================================
-    // 🔍 FILTERING & PAGINATION
+    // 🔍 FILTERING, SORTING & PAGINATION 🔥 (SPRINT 2)
     // =================================================================
+
+    // Función para manejar el clic en el encabezado (Cambio de Sort)
+    const handleSort = (key) => {
+        let direction = 'asc';
+        if (sortConfig.key === key && sortConfig.direction === 'asc') {
+            direction = 'desc';
+        }
+        setSortConfig({ key, direction });
+    };
+
+    // Renderiza el iconito en el encabezado
+    const SortIcon = ({ columnKey }) => {
+        if (sortConfig.key !== columnKey) return <Minus size={12} className="opacity-20 inline ml-1" />;
+        return sortConfig.direction === 'asc' 
+            ? <ArrowUp size={12} className="inline ml-1 text-brand" /> 
+            : <ArrowDown size={12} className="inline ml-1 text-brand" />;
+    };
 
     const filteredProducts = useMemo(() => {
         const term = searchTerm.toLowerCase();
-        return products.filter(p => {
+        let filtered = products.filter(p => {
             const name = (p.name || '').toLowerCase();
             const code = (p.code || '').toString().toLowerCase();
             const barcodeStr = Array.isArray(p.barcode) ? p.barcode.join(' ') : (p.barcode || '');
@@ -757,7 +775,41 @@ export const InventoryPage = () => {
             const matchesBrand = filters.brand ? p.brand === filters.brand : true;
             return matchesSearch && matchesCat && matchesBrand;
         });
-    }, [products, searchTerm, filters]);
+
+        // Aplicamos el ordenamiento (Sort)
+        filtered.sort((a, b) => {
+            let aValue = a[sortConfig.key];
+            let bValue = b[sortConfig.key];
+
+            // Si es stock y estamos en modo multi-sucursal, ordenamos por el stock local (el de activeBranchId)
+            if (sortConfig.key === 'stock') {
+                aValue = parseFloat(a.stock || 0);
+                bValue = parseFloat(b.stock || 0);
+            }
+
+            if (aValue === undefined || aValue === null) aValue = '';
+            if (bValue === undefined || bValue === null) bValue = '';
+
+            // Comparación de strings o números
+            if (typeof aValue === 'string') {
+                aValue = aValue.toLowerCase();
+                bValue = bValue.toLowerCase();
+            } else {
+                aValue = Number(aValue);
+                bValue = Number(bValue);
+            }
+
+            if (aValue < bValue) {
+                return sortConfig.direction === 'asc' ? -1 : 1;
+            }
+            if (aValue > bValue) {
+                return sortConfig.direction === 'asc' ? 1 : -1;
+            }
+            return 0;
+        });
+
+        return filtered;
+    }, [products, searchTerm, filters, sortConfig]);
 
     const totalPages = Math.ceil(filteredProducts.length / ITEMS_PER_PAGE);
     const currentProducts = useMemo(() => {
@@ -937,7 +989,7 @@ export const InventoryPage = () => {
                         <input 
                             ref={searchInputRef}
                             type="text" 
-                            placeholder="Buscar (ESC para limpiar)..." 
+                            placeholder="Buscar por nombre, código o barra..." 
                             className="w-full pl-10 pr-3 py-2.5 bg-white border-2 border-sys-100 rounded-2xl text-sm font-bold outline-none focus:border-brand transition-all"
                             value={inputValue} 
                             onChange={e => setInputValue(e.target.value)} 
@@ -962,7 +1014,7 @@ export const InventoryPage = () => {
                     )}
                 </div>
 
-                {/* TABLE */}
+                {/* TABLE 🔥 CON ORDENAMIENTO EN ENCABEZADOS */}
                 <div className="flex-1 overflow-auto bg-white relative">
                     {loading ? (
                         <div className="absolute inset-0 flex items-center justify-center bg-white/80 backdrop-blur-sm z-50">
@@ -980,14 +1032,33 @@ export const InventoryPage = () => {
                                             {selectedIds.size >= filteredProducts.length && filteredProducts.length > 0 ? <CheckSquare className="text-brand" size={18} /> : <Square size={18} />}
                                         </button>
                                     </th>
-                                    <th className="p-4 font-bold">Detalle Producto</th>
+                                    <th 
+                                        className="p-4 font-bold cursor-pointer hover:bg-sys-100 transition-colors select-none"
+                                        onClick={() => handleSort('name')}
+                                    >
+                                        Detalle Producto <SortIcon columnKey="name" />
+                                    </th>
                                     {branches.map(b => (
-                                        <th key={b.id} className={cn("p-4 text-center border-l border-sys-100", b.id === activeBranchId ? "bg-brand/5 text-brand" : "")}>
-                                            {b.name}
+                                        <th 
+                                            key={b.id} 
+                                            className={cn("p-4 text-center border-l border-sys-100 cursor-pointer hover:bg-brand/10 transition-colors select-none", b.id === activeBranchId ? "bg-brand/5 text-brand" : "")}
+                                            onClick={() => handleSort('stock')}
+                                        >
+                                            {b.name} <SortIcon columnKey="stock" />
                                         </th>
                                     ))}
-                                    <th className="p-4 text-right border-l border-sys-100">Costo Neto</th>
-                                    <th className="p-4 text-right">Precio Actual</th>
+                                    <th 
+                                        className="p-4 text-right border-l border-sys-100 cursor-pointer hover:bg-sys-100 transition-colors select-none"
+                                        onClick={() => handleSort('cost')}
+                                    >
+                                        Costo Final <SortIcon columnKey="cost" />
+                                    </th>
+                                    <th 
+                                        className="p-4 text-right cursor-pointer hover:bg-sys-100 transition-colors select-none"
+                                        onClick={() => handleSort('price')}
+                                    >
+                                        Precio Público <SortIcon columnKey="price" />
+                                    </th>
                                     <th className="p-4 text-center w-24">Acciones</th>
                                 </tr>
                             </thead>
@@ -1019,6 +1090,7 @@ export const InventoryPage = () => {
                                                     <div className="flex items-center gap-2 mt-1">
                                                         <span className="text-[10px] font-mono font-bold text-sys-400 bg-sys-100 px-1.5 py-0.5 rounded border border-sys-200">{p.code || 'S/C'}</span>
                                                         <span className="text-[10px] font-black text-sys-400 uppercase tracking-tighter opacity-60">{p.brand}</span>
+                                                        {p.isWeighable && <span className="text-[9px] font-black text-orange-600 bg-orange-100 px-1 rounded flex items-center gap-1"><Scale size={10}/> BALANZA</span>}
                                                     </div>
                                                 </div>
                                             </td>
@@ -1052,7 +1124,7 @@ export const InventoryPage = () => {
                                                 );
                                             })}
 
-                                            {/* COSTO - EDITABLE */}
+                                            {/* COSTO FINAL - EDITABLE */}
                                             <td className="p-2 text-right border-l border-sys-100 font-mono text-xs font-bold text-sys-500" onClick={e => e.stopPropagation()}>
                                                 <EditableCell 
                                                     value={p.cost} 
@@ -1099,7 +1171,7 @@ export const InventoryPage = () => {
                                                 <div className="flex justify-center gap-1">
                                                     <button onClick={() => setStockEntryProduct(p)} className="p-2 rounded-xl text-green-600 hover:bg-green-50 transition-all border border-transparent hover:border-green-100"><Package size={18}/></button>
                                                     <button onClick={() => { setEditingProduct(p); setIsProductModalOpen(true); }} className="p-2 rounded-xl text-brand hover:bg-brand/5 transition-all"><Edit2 size={18}/></button>
-                                                    {isAdmin && <button onClick={() => productRepository.delete(p.id).then(() => loadData())} className="p-2 rounded-xl text-red-300 hover:text-red-600 hover:bg-red-50 transition-all"><Trash2 size={18}/></button>}
+                                                    {isAdmin && <button onClick={() => { if(window.confirm('¿Eliminar producto?')) productRepository.delete(p.id).then(() => loadData(false, true)); }} className="p-2 rounded-xl text-red-300 hover:text-red-600 hover:bg-red-50 transition-all"><Trash2 size={18}/></button>}
                                                 </div>
                                             </td>
                                         </tr>

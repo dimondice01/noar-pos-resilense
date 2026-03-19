@@ -4,7 +4,7 @@ import {
     Wallet, Lock, Unlock, FileText, AlertTriangle, Search, Eye, 
     ArrowRight, ShieldCheck, User, RefreshCw, ChevronLeft, ChevronRight,
     Printer, CheckCircle, Filter, Hash, TrendingUp,
-    History as HistoryIcon, Banknote, CreditCard, Building2
+    History as HistoryIcon, Banknote, CreditCard, Building2, PieChart
 } from 'lucide-react';
 
 // 🔥 REPOSITORIO ÚNICO DE VERDAD
@@ -22,7 +22,7 @@ import { TicketZModal } from '../../reports/components/TicketZModal';
 import { collection, query, where, getDocs } from 'firebase/firestore';
 import { db as firestoreDB } from '../../../database/firebase';
 
-const formatCurrency = (amount) => `$ ${Number(amount || 0).toLocaleString('es-AR', { minimumFractionDigits: 2 })}`;
+const formatCurrency = (amount) => `$ ${Number(amount || 0).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 // 🔥 HELPER INTELIGENTE: Lee foto si existe, si no, usa lo calculado
 const getShiftValues = (shift, calculatedDetails = null) => {
@@ -75,7 +75,14 @@ const getMovementProps = (mov) => {
     let color = isIncome ? 'text-green-600' : 'text-red-600';
     let typeLabel = mov.type === 'SALE' ? 'VENTA' : mov.type === 'DEPOSIT' || mov.type === 'IN' ? 'INGRESO' : 'RETIRO';
     let methodTag = (mov.method || 'desconocido'); 
-    if (methodTag === 'cash') methodTag = 'Efectivo';
+    
+    // 🔥 TRADUCCIÓN Y MAPEO DE MÉTODOS PARA UI
+    if (['cash', 'efectivo'].includes(methodTag)) methodTag = 'Efectivo';
+    else if (['transfer', 'transferencia'].includes(methodTag)) methodTag = 'Transferencia';
+    else if (['mercadopago', 'mp', 'qr'].includes(methodTag)) methodTag = 'MercadoPago QR';
+    else if (['point'].includes(methodTag)) methodTag = 'Terminal Point';
+    else if (['card', 'tarjeta', 'debit', 'credit', 'manual_card'].includes(methodTag)) methodTag = 'Tarjeta';
+    else if (['current_account', 'employee_account'].includes(methodTag)) methodTag = 'Cta. Corriente';
     else methodTag = methodTag.toUpperCase();
 
     if (mov.type === 'SALE' && !isCash) {
@@ -118,31 +125,33 @@ const AuditDetailModal = ({ shift, onClose, resolveName, resolveBranchName }) =>
     // 🧠 Hook 2: Inyección de Resumen Snapshot (Cierre Remoto)
     const processedMovements = useMemo(() => {
         if (!shift || !details) return [];
+        
         let list = [...(details.movements || [])];
         
+        // Solo inyectamos el resumen virtual si NO HAY ninguna venta local registrada 
         if (shift.auditSnapshot) {
             const snap = shift.auditSnapshot;
-            const hasLocalSales = list.some(m => m.type === 'SALE');
+            const hasLocalSales = list.some(m => m.type === 'SALE' || m.subtype === 'SALE');
 
             if (!hasLocalSales) {
                 const methods = snap.salesByMethod || {};
+                
                 if (methods.cash > 0) {
-                    list.push({
-                        id: 'v-cash', isVirtual: true, type: 'SALE', method: 'cash',
-                        amount: methods.cash, description: 'Total Ventas en Efectivo (Snapshot)',
-                        date: shift.closedAt || shift.openedAt
-                    });
+                    list.push({ id: 'v-cash', isVirtual: true, type: 'SALE', method: 'cash', amount: methods.cash, description: 'Ventas Resumidas en Efectivo', date: shift.closedAt || shift.openedAt });
                 }
-                const digitalTotal = (methods.mercadopago || 0) + (methods.clover || 0) + (methods.digitalOther || 0);
+                const digitalTotal = (methods.mercadopago || 0) + (methods.clover || 0) + (methods.point || 0) + (methods.manual_card || 0) + (methods.transfer || 0) + (methods.digitalOther || 0);
                 if (digitalTotal > 0) {
-                    list.push({
-                        id: 'v-digital', isVirtual: true, type: 'SALE', method: 'digital',
-                        amount: digitalTotal, description: 'Total Ventas Digitales (Snapshot)',
-                        date: shift.closedAt || shift.openedAt
-                    });
+                    list.push({ id: 'v-digital', isVirtual: true, type: 'SALE', method: 'digital', amount: digitalTotal, description: 'Ventas Digitales Resumidas', date: shift.closedAt || shift.openedAt });
+                }
+                if (snap.manualIn > 0) {
+                    list.push({ id: 'v-in', isVirtual: true, type: 'IN', method: 'cash', amount: snap.manualIn, description: 'Ingresos Manuales Resumidos', date: shift.closedAt || shift.openedAt });
+                }
+                if (snap.manualOut > 0) {
+                    list.push({ id: 'v-out', isVirtual: true, type: 'OUT', method: 'cash', amount: snap.manualOut, description: 'Retiros/Gastos Resumidos', date: shift.closedAt || shift.openedAt });
                 }
             }
         }
+        
         return list.sort((a, b) => new Date(b.date) - new Date(a.date));
     }, [details, shift]);
 
@@ -162,6 +171,11 @@ const AuditDetailModal = ({ shift, onClose, resolveName, resolveBranchName }) =>
     const safeDetails = details || { totalCash: 0, movements: [], totalDigital: 0 };
     const { expected, declared, diff, initial, left } = getShiftValues(shift, safeDetails);
     const isPerfect = Math.abs(diff) < 50; 
+    
+    // 🔥 EXTRAER MÉTODOS DE PAGO DEL SNAPSHOT (O DEL ESTADO ACTUAL SI ESTÁ ABIERTO)
+    const paymentMethods = shift.auditSnapshot?.salesByMethod || safeDetails.salesByMethod || {};
+    const totalTarjetas = (paymentMethods.clover || 0) + (paymentMethods.point || 0) + (paymentMethods.manual_card || 0);
+
     const totalPages = Math.ceil(processedMovements.length / itemsPerPage);
     const paginatedMovements = processedMovements.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
 
@@ -180,8 +194,9 @@ const AuditDetailModal = ({ shift, onClose, resolveName, resolveBranchName }) =>
                     <button onClick={onClose} className="p-2 hover:bg-sys-200 rounded-full text-sys-500 font-bold text-xl leading-none">&times;</button>
                 </div>
 
-                <div className="flex-1 overflow-y-auto p-6 space-y-6 bg-sys-50/30">
-                    {/* Tarjetas de Resumen */}
+                <div className="flex-1 overflow-y-auto p-6 space-y-6 bg-sys-50/30 custom-scrollbar">
+                    
+                    {/* 1. Tarjetas de Resumen Global */}
                     <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                         <div className="p-4 bg-white rounded-xl border border-sys-200 text-center shadow-sm">
                             <p className="text-[10px] uppercase font-bold text-sys-400 mb-1">Sistema (Esperado)</p>
@@ -207,47 +222,98 @@ const AuditDetailModal = ({ shift, onClose, resolveName, resolveBranchName }) =>
                         </div>
                     </div>
 
-                    {/* Tabla de Movimientos */}
+                    {/* 🔥 2. NUEVO: Desglose de Métodos de Pago */}
+                    <div className="bg-white p-4 rounded-xl border border-sys-200 shadow-sm">
+                        <h4 className="text-[10px] font-black text-sys-500 uppercase tracking-widest mb-3 flex items-center gap-1.5">
+                            <PieChart size={14} /> Desglose de Ventas (Según Sistema)
+                        </h4>
+                        <div className="flex flex-wrap gap-3">
+                            <div className="bg-green-50 border border-green-100 px-4 py-2 rounded-lg flex-1 min-w-[120px]">
+                                <p className="text-[9px] text-green-600 font-bold uppercase">Efectivo</p>
+                                <p className="text-sm font-black text-green-700">{formatCurrency(paymentMethods.cash || 0)}</p>
+                            </div>
+                            
+                            {(paymentMethods.transfer > 0) && (
+                                <div className="bg-blue-50 border border-blue-100 px-4 py-2 rounded-lg flex-1 min-w-[120px]">
+                                    <p className="text-[9px] text-blue-600 font-bold uppercase">Transferencia</p>
+                                    <p className="text-sm font-black text-blue-700">{formatCurrency(paymentMethods.transfer)}</p>
+                                </div>
+                            )}
+                            
+                            {(paymentMethods.mercadopago > 0) && (
+                                <div className="bg-blue-50 border border-blue-100 px-4 py-2 rounded-lg flex-1 min-w-[120px]">
+                                    <p className="text-[9px] text-blue-600 font-bold uppercase">MercadoPago QR</p>
+                                    <p className="text-sm font-black text-blue-700">{formatCurrency(paymentMethods.mercadopago)}</p>
+                                </div>
+                            )}
+
+                            {totalTarjetas > 0 && (
+                                <div className="bg-purple-50 border border-purple-100 px-4 py-2 rounded-lg flex-1 min-w-[120px]">
+                                    <p className="text-[9px] text-purple-600 font-bold uppercase">Tarjetas</p>
+                                    <p className="text-sm font-black text-purple-700">{formatCurrency(totalTarjetas)}</p>
+                                </div>
+                            )}
+
+                            {(paymentMethods.account > 0) && (
+                                <div className="bg-orange-50 border border-orange-100 px-4 py-2 rounded-lg flex-1 min-w-[120px]">
+                                    <p className="text-[9px] text-orange-600 font-bold uppercase">Cta. Corriente</p>
+                                    <p className="text-sm font-black text-orange-700">{formatCurrency(paymentMethods.account)}</p>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+
+                    {/* 3. Tabla de Movimientos */}
                     <div>
                         <div className="flex justify-between items-center mb-3">
-                            <h4 className="font-bold text-sys-800 flex items-center gap-2"><FileText size={16} /> Movimientos ({processedMovements.length})</h4>
-                            {shift.auditSnapshot && (
+                            <h4 className="font-bold text-sys-800 flex items-center gap-2"><FileText size={16} /> Detalle de Movimientos ({processedMovements.length})</h4>
+                            {(shift.auditSnapshot && details?.movements?.length === 0) && (
                                 <span className="text-[10px] font-bold text-blue-600 bg-blue-50 px-3 py-1 rounded-full border border-blue-100 flex items-center gap-1.5">
-                                    <ShieldCheck size={12}/> Auditoría Integrada (Snapshot)
+                                    <ShieldCheck size={12}/> Auditoría Resumida (Snapshot Remoto)
                                 </span>
                             )}
                         </div>
-                        <div className="border border-sys-200 rounded-xl overflow-hidden bg-white shadow-sm flex flex-col min-h-[300px]">
+                        <div className="border border-sys-200 rounded-xl overflow-hidden bg-white shadow-sm flex flex-col min-h-[250px]">
                             <table className="w-full text-sm text-left flex-1">
                                 <thead className="bg-sys-50 text-[10px] uppercase font-black text-sys-400 border-b border-sys-100">
                                     <tr>
                                         <th className="p-3 w-1/12 text-center">Tipo</th>
                                         <th className="p-3 w-2/12">Hora</th>
                                         <th className="p-3 w-4/12">Concepto</th>
-                                        <th className="p-3 w-2/12">Método</th>
+                                        <th className="p-3 w-2/12 text-center">Método</th>
                                         <th className="p-3 w-3/12 text-right">Monto</th>
                                     </tr>
                                 </thead>
                                 <tbody className="divide-y divide-sys-100">
-                                    {paginatedMovements.map(m => {
-                                        const { sign, color, typeLabel, methodTag } = getMovementProps(m);
-                                        return (
-                                            <tr key={m.id} className={cn("hover:bg-sys-50 transition-colors", m.isVirtual && "bg-blue-50/20")}>
-                                                <td className="p-3 text-center">
-                                                    <span className={cn("text-[9px] font-black uppercase px-2 py-0.5 rounded", m.isVirtual ? "bg-blue-100 text-blue-700" : "bg-sys-100", color)}>
-                                                        {typeLabel}
-                                                    </span>
-                                                </td>
-                                                <td className="p-3 font-mono text-sys-400 text-[10px]">{m.date ? new Date(m.date).toLocaleTimeString() : '-'}</td>
-                                                <td className="p-3">
-                                                    <p className="text-sys-800 font-bold text-xs uppercase">{m.description}</p>
-                                                    {m.isVirtual && <p className="text-[9px] text-blue-500 font-medium italic leading-none mt-0.5">Información recuperada del cierre</p>}
-                                                </td>
-                                                <td className="p-3 text-sys-500 text-[10px] uppercase font-black">{methodTag}</td>
-                                                <td className={cn("p-3 text-right font-black font-mono", color)}>{sign} {formatCurrency(m.amount)}</td>
-                                            </tr>
-                                        );
-                                    })}
+                                    {paginatedMovements.length === 0 ? (
+                                        <tr>
+                                            <td colSpan="5" className="p-10 text-center text-sys-400 uppercase font-bold text-xs italic">
+                                                Sin movimientos registrados
+                                            </td>
+                                        </tr>
+                                    ) : (
+                                        paginatedMovements.map(m => {
+                                            const { sign, color, typeLabel, methodTag } = getMovementProps(m);
+                                            return (
+                                                <tr key={m.id} className={cn("hover:bg-sys-50 transition-colors", m.isVirtual && "bg-blue-50/20")}>
+                                                    <td className="p-3 text-center">
+                                                        <span className={cn("text-[9px] font-black uppercase px-2 py-0.5 rounded", m.isVirtual ? "bg-blue-100 text-blue-700" : "bg-sys-100", color)}>
+                                                            {typeLabel}
+                                                        </span>
+                                                    </td>
+                                                    <td className="p-3 font-mono text-sys-400 text-[10px]">{m.date ? new Date(m.date).toLocaleTimeString() : '-'}</td>
+                                                    <td className="p-3">
+                                                        <p className="text-sys-800 font-bold text-xs uppercase">{m.description}</p>
+                                                        {m.isVirtual && <p className="text-[9px] text-blue-500 font-medium italic leading-none mt-0.5">Información recuperada del cierre</p>}
+                                                    </td>
+                                                    <td className="p-3 text-center">
+                                                        <span className="text-sys-500 text-[9px] uppercase font-black bg-sys-100 px-2 py-1 rounded border border-sys-200">{methodTag}</span>
+                                                    </td>
+                                                    <td className={cn("p-3 text-right font-black font-mono", color)}>{sign} {formatCurrency(m.amount)}</td>
+                                                </tr>
+                                            );
+                                        })
+                                    )}
                                 </tbody>
                             </table>
                             {totalPages > 1 && (
@@ -275,7 +341,7 @@ export const CashPage = () => {
     const [activeTab, setActiveTab] = useState('active'); 
     const [allShifts, setAllShifts] = useState([]);
     const [cashiersList, setCashiersList] = useState([]); 
-    const [branchesList, setBranchesList] = useState([]); // 🔥 NUEVA LISTA
+    const [branchesList, setBranchesList] = useState([]); 
     const [loading, setLoading] = useState(true);
     const [searchTerm, setSearchTerm] = useState('');
     const [historyPage, setHistoryPage] = useState(1);
@@ -382,13 +448,13 @@ export const CashPage = () => {
     );
 
     return (
-        <div className="space-y-6 pb-20 animate-in fade-in">
+        <div className="space-y-6 pb-20 animate-in fade-in p-4 md:p-6 max-w-[1600px] mx-auto">
             <div className="flex flex-col md:flex-row justify-between items-center gap-4">
                 <div>
                     <h2 className="text-2xl font-black text-sys-900 flex items-center gap-2">
                         <Wallet className="text-brand" size={32} /> Tesorería & Auditoría
                     </h2>
-                    <p className="text-sys-500 text-sm font-medium">Control multi-sucursal e integridad de flujos remotos.</p>
+                    <p className="text-sys-500 text-sm font-medium mt-1">Control multi-sucursal e integridad de flujos remotos.</p>
                 </div>
                 <div className="relative w-full md:w-80">
                     <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-sys-400" size={18} />
@@ -510,16 +576,20 @@ export const CashPage = () => {
     );
 };
 
+// 🔥 WRAPPER INTELIGENTE: Pasa todos los datos necesarios al nuevo CashClosingModal
 const CashClosingModalWrapper = ({ shift, onClose, onConfirm }) => {
     const [totals, setTotals] = useState(null);
     useEffect(() => {
         let mounted = true;
         cashRepository.getShiftBalance(shift.id).then(bal => {
-            if (mounted) setTotals({ totalCash: bal.totalCash, totalDigital: bal.totalDigital });
+            if (mounted) {
+                // Pasamos TODO el balance (manualIn, manualOut, etc.) para el Ticket Z
+                setTotals(bal);
+            }
         });
         return () => { mounted = false; };
     }, [shift]);
 
     if (!totals) return null;
-    return <CashClosingModal isOpen={true} onClose={onClose} systemTotals={totals} onConfirm={onConfirm} />;
+    return <CashClosingModal isOpen={true} onClose={onClose} systemTotals={totals} onConfirm={onConfirm} shiftId={shift.id} userName={shift.userName || 'Cajero'} branchName={shift.branchId} />;
 };

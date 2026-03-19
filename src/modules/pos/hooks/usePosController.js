@@ -5,7 +5,7 @@ import { useAuthStore } from '../../auth/store/useAuthStore';
 import { useShiftStore } from '../../cash/store/useShiftStore'; 
 import { cashRepository } from '../../cash/repositories/cashRepository'; 
 import { paymentService } from '../../payments/services/paymentService'; 
-import { employeeLedgerRepository } from '../../settings/repositories/employeeLedgerRepository'; // 🔥 NUEVO: Importación del Ledger
+import { employeeLedgerRepository } from '../../settings/repositories/employeeLedgerRepository'; 
 import { toast } from 'react-hot-toast'; 
 import { getDB } from '../../../database/db'; 
 
@@ -427,6 +427,72 @@ export const usePosController = () => {
         return currentShift;
     };
 
+    // 🔥 NUEVA FUNCIÓN: Generar Presupuesto (No descuenta stock ni afecta caja)
+    const processBudget = async () => {
+        if (activeTab.items.length === 0) {
+            toast.error("Carrito vacío");
+            return null;
+        }
+
+        setIsProcessing(true);
+        const toastId = toast.loading("Generando presupuesto...");
+
+        try {
+            const activeCompanyId = user?.companyId || user?.tenantId;
+            if (!activeCompanyId) throw new Error("⚠️ Sesión corrupta: Falta Company ID.");
+
+            // 1. Construcción del Payload
+            const basePayload = {
+                items: activeTab.items.map(i => ({
+                    id: i.id, code: i.code, name: i.name, 
+                    originalPrice: i.originalPrice, price: i.finalPrice, cost: i.cost, 
+                    quantity: i.quantity, subtotal: i.subtotal,
+                    promoLabel: i.promoLabel || '',
+                    appliedPromo: i.appliedPromo || false,
+                    appliedWholesale: i.appliedWholesale || false,
+                    taxRate: i.taxRate || 21
+                })),
+                client: activeTab.client || { name: 'Consumidor Final', fiscalCondition: 'CONSUMIDOR_FINAL' }, 
+                total: totals.total, subtotal: totals.subtotal, discount: totals.discountAmount,
+                surcharge: 0,
+                payments: [{ method: 'budget', amount: 0, total: 0 }],
+                payment: { method: 'budget', amount: 0 }, 
+                method: 'BUDGET',
+                
+                branchId: activeBranchId, 
+                companyId: activeCompanyId,
+                operatorId: user.uid,
+                operatorName: user.name,
+                
+                createdAt: new Date().toISOString(),
+                status: 'BUDGET', // 🔥 Estado clave
+                type: 'BUDGET'    // 🔥 Tipo clave
+            };
+
+            const localNumber = `PTO-${Date.now().toString().slice(-6)}`;
+            
+            // Lo guardamos en ventas para historial, pero su type/status lo excluyen de reportes y stock
+            const budgetResult = await salesRepository.createSale({
+                ...basePayload,
+                afip: { status: 'SKIPPED', cbteLetra: 'X' },
+                number: localNumber,
+                ticketNumber: localNumber, 
+                invoiceNumber: localNumber
+            });
+
+            toast.success(`Presupuesto generado`, { id: toastId });
+            clearCart();
+            return budgetResult;
+
+        } catch (error) {
+            console.error("Error generando presupuesto:", error);
+            toast.error(error.message || "Error al procesar", { id: toastId });
+            return null;
+        } finally {
+            setIsProcessing(false);
+        }
+    };
+
     const processSale = async (paymentData) => {
         if (activeTab.items.length === 0) {
             toast.error("Carrito vacío");
@@ -466,7 +532,7 @@ export const usePosController = () => {
                     amount: parseFloat(paymentData.amountPaid),
                     surcharge: parseFloat(paymentData.surcharge || 0),
                     total: parseFloat(paymentData.totalSale || totals.total),
-                    employeeId: paymentData.employeeId || null // 🔥 Capturamos el empleado si existe
+                    employeeId: paymentData.employeeId || null 
                 }];
                 totalWithInterest = parseFloat(paymentData.totalSale || totals.total);
             }
@@ -491,7 +557,7 @@ export const usePosController = () => {
                 total: totalWithInterest, 
                 subtotal: totals.subtotal,
                 discount: totals.discountAmount,
-                surcharge: parseFloat(paymentData.surcharge || 0), // Guardar el recargo total de la operacion
+                surcharge: parseFloat(paymentData.surcharge || 0), 
                 payments: finalPayments,
                 payment: finalPayments[0], 
                 method: finalPayments.length > 1 ? 'SPLIT' : finalPayments[0].method,
@@ -529,8 +595,8 @@ export const usePosController = () => {
                         cbteLetra: afipResult.letra,
                         qr_data: afipResult.qr_data,
                         ptoVta: afipResult.ptoVta || 1,
-                        impNeto: afipResult.impNeto, // 🔥 NUEVO: Guardado del neto desde AFIP
-                        impIVA: afipResult.impIVA    // 🔥 NUEVO: Guardado del IVA desde AFIP
+                        impNeto: afipResult.impNeto, 
+                        impIVA: afipResult.impIVA    
                     },
                     number: fiscalNumber,
                     ticketNumber: fiscalNumber, 
@@ -630,7 +696,7 @@ export const usePosController = () => {
     };
 
     // =================================================================
-    // 🔎 BUSCADOR & KEYBOARD (CON SOPORTE DE BALANZAS MEJORADO)
+    // 🔎 BUSCADOR & KEYBOARD 
     // =================================================================
     const searchProduct = async (query) => {
         if (!query) return setSearchResults([]);
@@ -648,8 +714,8 @@ export const usePosController = () => {
         } catch (err) { return false; }
     };
 
-    // 🔥 GLOBAL KEYBOARD LISTENER MOVIDO AL PAGE PRINCIPAL
-    // Dejamos este listener solo para la detección rápida de scanner
+    // 🔥 EL LISTENER GLOBAL FUE MOVIDO PARA NO BLOQUEAR NAVEGACIÓN
+    // Este effect ahora es minimalista, solo reacciona al escaneo si no estás escribiendo.
     useEffect(() => {
         let buffer = '';
         let lastKeyTime = Date.now();
@@ -706,12 +772,13 @@ export const usePosController = () => {
         return () => window.removeEventListener('keydown', handleKeyDown);
     }, [activeTabId, addToCart]); 
 
-    // 🔥 EXPORTAMOS `posConfig` AQUÍ
+    // 🔥 EXPORTAMOS LAS FUNCIONES Y EL ESTADO
     return { 
         tabs, activeTab, activeTabId, totals, searchResults, isProcessing, 
         posConfig,
         addTab, removeTab, switchTab, addToCart, removeFromCart, 
         updateItemQuantity, setClient, clearCart, searchProduct, 
-        setSearchResults, processSale, processInternalSale, applyWholesaleToLastItem 
+        setSearchResults, processSale, processInternalSale, applyWholesaleToLastItem,
+        processBudget // 🔥 Exportamos el generador de presupuestos
     };
 };

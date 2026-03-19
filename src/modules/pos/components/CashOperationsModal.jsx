@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { X, ArrowDownCircle, ArrowUpCircle, Banknote, User, FileText, Loader2, Save } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { X, ArrowDownCircle, ArrowUpCircle, Banknote, User, FileText, Loader2, Save, Printer } from 'lucide-react';
 import { Button } from '../../../core/ui/Button';
 import { cn } from '../../../core/utils/cn';
 import { collection, query, where, getDocs } from 'firebase/firestore';
@@ -7,14 +7,63 @@ import { db } from '../../../database/firebase';
 import { useAuthStore } from '../../auth/store/useAuthStore';
 import { useShiftStore } from '../../cash/store/useShiftStore';
 import { cashRepository } from '../../cash/repositories/cashRepository';
-import { employeeLedgerRepository } from '../../settings/repositories/employeeLedgerRepository'; // Ajusta la ruta si es necesario
+import { employeeLedgerRepository } from '../../settings/repositories/employeeLedgerRepository';
 import toast from 'react-hot-toast';
+import { useReactToPrint } from 'react-to-print';
 
+// =================================================================
+// 🖨️ COMPONENTE OCULTO PARA IMPRESIÓN DEL COMPROBANTE
+// =================================================================
+const CashReceiptPrint = React.forwardRef(({ data, companyName }, ref) => {
+    if (!data) return null;
+    const isOut = data.type === 'OUT';
+    
+    return (
+        <div ref={ref} style={{ width: '48mm', margin: '0 auto', padding: '0', fontFamily: 'monospace', textTransform: 'uppercase', fontSize: '10px', color: 'black', background: 'white' }}>
+            <div style={{ textAlign: 'center', borderBottom: '1px dashed black', paddingBottom: '4px', marginBottom: '6px' }}>
+                <h2 style={{ fontSize: '14px', fontWeight: 'bold', margin: '0 0 2px 0' }}>{companyName}</h2>
+                <p style={{ margin: 0, fontWeight: 'bold' }}>COMPROBANTE DE CAJA</p>
+                <p style={{ margin: 0 }}>{data.date.toLocaleDateString('es-AR')} {data.date.toLocaleTimeString('es-AR', {hour: '2-digit', minute:'2-digit'})}</p>
+            </div>
+            
+            <div style={{ marginBottom: '6px' }}>
+                <p style={{ margin: '2px 0' }}><strong>TIPO:</strong> {isOut ? 'RETIRO / EGRESO' : 'INGRESO'}</p>
+                <p style={{ margin: '2px 0' }}><strong>MOTIVO:</strong> {data.concept}</p>
+                {data.employee && <p style={{ margin: '2px 0' }}><strong>PERSONAL:</strong> {data.employee}</p>}
+                <p style={{ margin: '2px 0' }}><strong>OPERADOR:</strong> {data.operator}</p>
+            </div>
+            
+            <div style={{ borderTop: '1px dashed black', borderBottom: '1px dashed black', padding: '6px 0', margin: '6px 0', textAlign: 'center' }}>
+                <p style={{ fontSize: '16px', fontWeight: 'bold', margin: 0 }}>
+                    {isOut ? '-' : '+'}$ {data.amount.toLocaleString('es-AR', {minimumFractionDigits: 2})}
+                </p>
+            </div>
+            
+            <div style={{ marginTop: '30px', textAlign: 'center' }}>
+                <p style={{ borderTop: '1px solid black', width: '80%', margin: '0 auto 2px auto', paddingTop: '2px', fontSize: '9px' }}>
+                    Firma de Conformidad
+                </p>
+                {data.employee && <p style={{ margin: 0, fontSize: '9px', fontWeight: 'bold' }}>{data.employee}</p>}
+            </div>
+
+            <style>{`
+                @media print {
+                    @page { size: auto; margin: 0; }
+                    body { margin: 0; padding: 0; background: white; -webkit-print-color-adjust: exact; color: black; }
+                }
+            `}</style>
+        </div>
+    );
+});
+
+// =================================================================
+// 💸 MODAL PRINCIPAL DE OPERACIONES DE CAJA
+// =================================================================
 export const CashOperationsModal = ({ isOpen, onClose }) => {
     const { user, activeBranchId } = useAuthStore();
     const { activeShift } = useShiftStore();
 
-    const [type, setType] = useState('OUT'); // 'IN' (Ingreso) | 'OUT' (Egreso)
+    const [type, setType] = useState('OUT');
     const [amount, setAmount] = useState('');
     const [concept, setConcept] = useState('Gastos Generales');
     const [customConcept, setCustomConcept] = useState('');
@@ -23,7 +72,20 @@ export const CashOperationsModal = ({ isOpen, onClose }) => {
     const [employees, setEmployees] = useState([]);
     const [isProcessing, setIsProcessing] = useState(false);
 
-    // Cargar empleados de la sucursal activa cuando el modal se abre
+    // 🖨️ Estados y Refs de Impresión
+    const printRef = useRef(null);
+    const [printData, setPrintData] = useState(null);
+
+    const handlePrintReceipt = useReactToPrint({
+        contentRef: printRef,
+        documentTitle: 'Comprobante_Caja',
+        onAfterPrint: () => {
+            setPrintData(null);
+            onClose(); // Cierra el modal automáticamente después de imprimir
+        }
+    });
+
+    // Cargar empleados de la sucursal activa
     useEffect(() => {
         if (isOpen && user?.companyId && activeBranchId) {
             const fetchEmployees = async () => {
@@ -33,7 +95,6 @@ export const CashOperationsModal = ({ isOpen, onClose }) => {
                         where('companyId', '==', user.companyId)
                     );
                     const snap = await getDocs(q);
-                    // 🔥 AISLAMIENTO POR SUCURSAL: Solo empleados de esta caja
                     const branchEmployees = snap.docs
                         .map(doc => ({ uid: doc.id, ...doc.data() }))
                         .filter(u => String(u.branchId) === String(activeBranchId));
@@ -73,19 +134,19 @@ export const CashOperationsModal = ({ isOpen, onClose }) => {
         const toastId = toast.loading("Registrando movimiento...");
 
         try {
-            // 1. Crear el movimiento en la caja (Impacta el arqueo físico)
+            // 1. Crear el movimiento en la caja
             await cashRepository.addMovement(
                 activeShift.id,
                 type,
                 value,
                 finalDescription,
-                'cash', // Siempre impacta el efectivo físico
+                'cash', 
                 user.uid,
                 user.name,
                 activeBranchId
             );
 
-            // 2. Si es Adelanto, lo registramos en el Libro Mayor (Ledger) del Empleado
+            // 2. Si es Adelanto, lo registramos en el Libro Mayor
             if (type === 'OUT' && isAdvance) {
                 await employeeLedgerRepository.addTransaction({
                     companyId: user.companyId,
@@ -98,12 +159,28 @@ export const CashOperationsModal = ({ isOpen, onClose }) => {
                 });
             }
 
-            toast.success(type === 'IN' ? 'Ingreso registrado' : 'Egreso de caja registrado', { id: toastId });
-            onClose();
+            toast.success(type === 'IN' ? 'Ingreso registrado' : 'Egreso registrado', { id: toastId });
+            
+            // 3. Preparar datos para el ticket y disparar impresión
+            const opData = {
+                type,
+                amount: value,
+                concept: finalDescription,
+                employee: isAdvance ? employees.find(e => e.uid === selectedEmployeeId)?.name : null,
+                date: new Date(),
+                operator: user.name
+            };
+            
+            setPrintData(opData);
+            
+            // Pequeño delay para que React renderice el componente oculto antes de imprimir
+            setTimeout(() => {
+                handlePrintReceipt();
+            }, 200);
+
         } catch (error) {
             console.error("Error en operación de caja:", error);
             toast.error(error.message || "Error al procesar la operación", { id: toastId });
-        } finally {
             setIsProcessing(false);
         }
     };
@@ -127,7 +204,6 @@ export const CashOperationsModal = ({ isOpen, onClose }) => {
                 </div>
 
                 <form onSubmit={handleSubmit} className="p-6 space-y-6">
-                    
                     {/* TIPO DE MOVIMIENTO */}
                     <div className="flex bg-sys-100 p-1 rounded-xl">
                         <button 
@@ -231,11 +307,20 @@ export const CashOperationsModal = ({ isOpen, onClose }) => {
                             disabled={isProcessing} 
                             className={cn("w-full py-4 text-base font-black uppercase shadow-lg", type === 'OUT' ? "bg-red-600 hover:bg-red-700 shadow-red-200" : "bg-emerald-600 hover:bg-emerald-700 shadow-emerald-200")}
                         >
-                            {isProcessing ? <Loader2 className="animate-spin" size={20} /> : <Save size={20} />}
-                            {type === 'OUT' ? "REGISTRAR SALIDA" : "REGISTRAR INGRESO"}
+                            {isProcessing ? <Loader2 className="animate-spin" size={20} /> : <Printer size={20} />}
+                            {type === 'OUT' ? "REGISTRAR SALIDA Y TICKET" : "REGISTRAR INGRESO Y TICKET"}
                         </Button>
                     </div>
                 </form>
+
+                {/* 🔥 COMPONENTE OCULTO PARA IMPRESIÓN */}
+                <div className="hidden print:block">
+                    <CashReceiptPrint 
+                        ref={printRef} 
+                        data={printData} 
+                        companyName={user?.activeBranchName || 'MI NEGOCIO'} 
+                    />
+                </div>
             </div>
         </div>
     );

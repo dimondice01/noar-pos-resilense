@@ -4,7 +4,7 @@ import {
     ArrowDownLeft, ShoppingBag, XCircle, RotateCcw, Calendar, User,
     ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, 
     TrendingUp, Tag, Percent, DollarSign, Store, CreditCard, Banknote,
-    PackageMinus, Save, X, Loader2, PlusCircle, ArrowUpRight
+    PackageMinus, Save, X, Loader2, PlusCircle, ArrowUpRight, FileArchive
 } from 'lucide-react';
 import { billingService } from '../../billing/services/billingService';
 import { Card } from '../../../core/ui/Card';
@@ -281,9 +281,8 @@ export const SalesPage = () => {
           // Filtro de Sucursal (por seguridad, aunque ya se filtró en DB)
           if (activeBranchId && String(op.branchId) !== String(activeBranchId)) return false;
           
-          // Filtro de Tipo
-          if (filterType === 'SALE' && op.type === 'RECEIPT') return false;
-          if (filterType === 'RECEIPT' && op.type !== 'RECEIPT') return false;
+          // Filtro de Tipo (Añadido Soporte para Presupuestos BUDGET)
+          if (filterType !== 'ALL' && op.type !== filterType) return false;
 
           // Filtro de Cajero
           if (filterCashier !== 'ALL') {
@@ -311,7 +310,10 @@ export const SalesPage = () => {
                   if (!['mercadopago', 'mp', 'qr', 'point'].includes(method)) return false;
               }
               if (filterPaymentMethod === 'CURRENT_ACCOUNT') {
-                  if (!['current_account', 'cta_cte', 'cuenta_corriente'].includes(method)) return false;
+                  if (!['current_account', 'cta_cte', 'cuenta_corriente', 'employee_account'].includes(method)) return false;
+              }
+              if (filterPaymentMethod === 'BUDGET') {
+                  if (!['budget', 'presupuesto'].includes(method)) return false;
               }
           }
 
@@ -340,7 +342,7 @@ export const SalesPage = () => {
   // =================================================================
 
   const handleFacturar = async (op) => {
-    if (op.type === 'RECEIPT') return;
+    if (op.type === 'RECEIPT' || op.type === 'BUDGET') return;
     setLoadingMap(prev => ({ ...prev, [op.localId]: true }));
     try {
       const forcedCompanyId = user?.companyId || user?.tenantId;
@@ -379,7 +381,7 @@ export const SalesPage = () => {
 
   const handleAnular = async (op) => {
     if (!isAdmin) return;
-    if (!window.confirm("⚠️ ¿Desea anular esta operación?\nEl stock se repondrá automáticamente.")) return;
+    if (!window.confirm("⚠️ ¿Desea anular esta operación?\nEl stock se repondrá automáticamente (si aplica).")) return;
     
     setLoadingMap(prev => ({ ...prev, [op.localId]: true }));
     try {
@@ -419,7 +421,8 @@ export const SalesPage = () => {
           toast.success("Nota de Crédito generada en AFIP");
       }
       
-      if (op.items && Array.isArray(op.items)) {
+      // 🔥 FIX: Solo repone stock si NO ES un presupuesto
+      if (op.type !== 'BUDGET' && op.items && Array.isArray(op.items)) {
           for (const item of op.items) {
               await productRepository.addStock(item.id, item.quantity, `Anulación Venta #${getDisplayNumber(op)}`, user?.name, op.branchId || activeBranchId);
           }
@@ -445,9 +448,13 @@ export const SalesPage = () => {
           const branchToReturn = originalSale.branchId || activeBranchId;
 
           const itemsToReturn = originalSale.items.filter(i => returnMap[i.id] > 0);
-          for (const item of itemsToReturn) {
-              const qtyToReturn = returnMap[item.id];
-              await productRepository.addStock(item.id, qtyToReturn, `Devolución Parc. Venta #${getDisplayNumber(originalSale)}`, user?.name, branchToReturn);
+          
+          // 🔥 FIX: Solo repone stock si NO ES un presupuesto
+          if (originalSale.type !== 'BUDGET') {
+              for (const item of itemsToReturn) {
+                  const qtyToReturn = returnMap[item.id];
+                  await productRepository.addStock(item.id, qtyToReturn, `Devolución Parc. Venta #${getDisplayNumber(originalSale)}`, user?.name, branchToReturn);
+              }
           }
 
           const newTotal = originalSale.total - refundAmount;
@@ -525,9 +532,9 @@ export const SalesPage = () => {
     setOperations(prev => prev.map(o => o.localId === op.localId ? ventaActualizada : o));
   };
 
-  // 🔥 CALCULO DE TOTALES (INCLUYENDO RECARGOS)
+  // 🔥 CALCULO DE TOTALES (INCLUYENDO RECARGOS Y EXCLUYENDO PRESUPUESTOS/ANULADOS)
   const totals = useMemo(() => {
-      const filtered = visibleOperations.filter(op => op.afip?.status !== 'VOIDED' && op.status !== 'REFUNDED');
+      const filtered = visibleOperations.filter(op => op.afip?.status !== 'VOIDED' && op.status !== 'REFUNDED' && op.type !== 'BUDGET');
       return {
           gross: filtered.reduce((acc, op) => acc + (parseFloat(op.total) || 0), 0),
           netProfit: filtered.reduce((acc, op) => acc + (parseFloat(op.netProfit) || 0), 0)
@@ -622,6 +629,7 @@ export const SalesPage = () => {
                       <option value="ALL">Todo Tipo</option>
                       <option value="SALE">Ventas</option>
                       <option value="RECEIPT">Cobros</option>
+                      <option value="BUDGET">Presupuestos</option>
                   </select>
 
                   <div className="relative min-w-[120px]">
@@ -678,6 +686,7 @@ export const SalesPage = () => {
               ) : (
                 paginatedOperations.map((op) => {
                     const isReceipt = op.type === 'RECEIPT';
+                    const isBudget = op.type === 'BUDGET';
                     const isFacturado = op.afip?.status === 'APPROVED';
                     const isAnulado = op.afip?.status === 'VOIDED'; 
                     const isRefunded = op.status === 'REFUNDED' || op.status === 'PARTIAL_REFUND';
@@ -686,7 +695,7 @@ export const SalesPage = () => {
                     const paymentMethod = op.payment?.method || op.paymentMethod || 'cash';
                     
                     const cajeroName = resolveCashierName(op);
-                    const hasPromo = !isReceipt && op.items?.some(i => i.appliedPromo || i.promoLabel);
+                    const hasPromo = !isReceipt && !isBudget && op.items?.some(i => i.appliedPromo || i.promoLabel);
                     
                     // 🔥 LECTURA DE SURCHARGE
                     const surchargeAmount = parseFloat(op.surcharge || 0);
@@ -708,8 +717,10 @@ export const SalesPage = () => {
                         <td className="p-4">
                             {isReceipt ? (
                                 <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-blue-50 text-blue-700 text-[10px] font-bold uppercase border border-blue-100"><ArrowDownLeft size={12}/> Cobro</span>
+                            ) : isBudget ? (
+                                <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-sys-100 text-sys-600 text-[10px] font-bold uppercase border border-sys-300"><FileArchive size={12}/> Presupuesto</span>
                             ) : (
-                                <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-sys-100 text-sys-600 text-[10px] font-bold uppercase border border-sys-200"><ShoppingBag size={12}/> Venta</span>
+                                <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-emerald-50 text-emerald-700 text-[10px] font-bold uppercase border border-emerald-100"><ShoppingBag size={12}/> Venta</span>
                             )}
                         </td>
                         <td className="p-4 text-sys-800 font-medium">
@@ -728,21 +739,19 @@ export const SalesPage = () => {
                           </div>
                         </td>
                         
-                        {/* 🔥 COLUMNA DE MONTO CON INDICADOR DE RECARGO */}
                         <td className="p-4 text-right">
                           <div className="flex flex-col items-end">
-                              <span className={cn("font-bold whitespace-nowrap text-sm", (isAnulado || isRefunded) ? "text-red-400 line-through decoration-red-400" : "text-sys-900")}>
+                              <span className={cn("font-bold whitespace-nowrap text-sm", (isAnulado || isRefunded) ? "text-red-400 line-through decoration-red-400" : isBudget ? "text-sys-500" : "text-sys-900")}>
                                 $ {(parseFloat(op.total) || 0).toLocaleString('es-AR', {minimumFractionDigits: 2})}
                               </span>
                               
-                              {/* BADGE DE RECARGO */}
-                              {hasSurcharge && !isAnulado && !isRefunded && (
+                              {hasSurcharge && !isAnulado && !isRefunded && !isBudget && (
                                   <span className="text-[9px] font-bold text-indigo-600 bg-indigo-50 px-1.5 rounded border border-indigo-100 flex items-center gap-0.5 mt-0.5" title={`Incluye $${surchargeAmount} de recargo`}>
                                       <ArrowUpRight size={8}/> Recargo
                                   </span>
                               )}
 
-                              {isAdmin && !isReceipt && !isAnulado && !isRefunded && !hasSurcharge && (
+                              {isAdmin && !isReceipt && !isAnulado && !isRefunded && !hasSurcharge && !isBudget && (
                                   <span className={cn("text-[9px] font-bold flex items-center gap-1 mt-0.5", isProfitable ? "text-emerald-600" : "text-red-500")}>
                                       <TrendingUp size={8}/> 
                                       ${profit.toLocaleString('es-AR', {minimumFractionDigits: 0, maximumFractionDigits: 0})}
@@ -753,15 +762,22 @@ export const SalesPage = () => {
 
                         <td className="p-4 text-center">
                           <span className={cn("px-2 py-0.5 rounded text-[10px] font-bold uppercase border inline-block min-w-[60px]", 
+                            isBudget ? "bg-sys-100 text-sys-500 border-sys-200" :
                             ['cash', 'efectivo'].includes(paymentMethod) ? "bg-green-50 text-green-700 border-green-100" :
                             ['mercadopago', 'mp', 'qr', 'point'].includes(paymentMethod) ? "bg-blue-50 text-blue-700 border-blue-100" :
                             ['clover', 'card', 'debit', 'credit', 'tarjeta'].includes(paymentMethod) ? "bg-emerald-50 text-emerald-700 border-emerald-100" :
                             "bg-purple-50 text-purple-700 border-purple-100")}>
-                            {['mercadopago', 'mp'].includes(paymentMethod) ? 'MP QR' : paymentMethod.toUpperCase()}
+                            {['mercadopago', 'mp'].includes(paymentMethod) ? 'MP QR' :
+                             ['cash'].includes(paymentMethod) ? 'EFECTIVO' : 
+                             ['transfer'].includes(paymentMethod) ? 'TRANSFERENCIA' : 
+                             ['card', 'credit', 'debit', 'tarjeta', 'manual_card'].includes(paymentMethod) ? 'TARJETA' :
+                             ['employee_account', 'current_account'].includes(paymentMethod) ? 'CTA. CTE' :
+                             ['budget'].includes(paymentMethod) ? 'PRESUPUESTO' :
+                             paymentMethod.toUpperCase()}
                           </span>
                         </td>
                         <td className="p-4 text-center">
-                          {isReceipt ? (<span className="text-[10px] text-sys-300">-</span>) 
+                          {isReceipt || isBudget ? (<span className="text-[10px] text-sys-300">-</span>) 
                           : (isAnulado || isRefunded) ? (<span className="text-[10px] font-bold text-red-500 bg-red-50 px-2 py-0.5 rounded border border-red-100">ANULADO</span>) 
                           : isFacturado ? (
                             <div className="inline-flex items-center gap-1 text-green-600 bg-green-50 px-2 py-0.5 rounded border border-green-100 cursor-help" title={`CAE: ${op.afip?.cae}`}>
@@ -772,7 +788,7 @@ export const SalesPage = () => {
                         </td>
                         <td className="p-4 text-right whitespace-nowrap">
                           <div className="flex justify-end gap-1">
-                            {!isFacturado && !isAnulado && !isReceipt && !isRefunded && (
+                            {!isFacturado && !isAnulado && !isReceipt && !isRefunded && !isBudget && (
                               <Button variant="secondary" onClick={() => handleFacturar(op)} disabled={isLoading} className="h-7 text-[10px] px-2 bg-brand/10 text-brand hover:bg-brand hover:text-white border-none shadow-none">
                                 {isLoading ? <RefreshCw size={10} className="animate-spin" /> : "Facturar"}
                               </Button>
@@ -785,13 +801,15 @@ export const SalesPage = () => {
                                             {isLoading ? <RefreshCw size={10} className="animate-spin" /> : <RotateCcw size={12} />}
                                         </Button>
                                     )}
-                                    <Button variant="ghost" onClick={() => setRefundData({ isOpen: true, sale: op })} disabled={isLoading} className="h-7 w-7 p-0 text-orange-400 hover:text-orange-600 hover:bg-orange-50" title="Gestionar Devolución (Editar)">
-                                        <PackageMinus size={14} />
-                                    </Button>
+                                    {!isBudget && (
+                                        <Button variant="ghost" onClick={() => setRefundData({ isOpen: true, sale: op })} disabled={isLoading} className="h-7 w-7 p-0 text-orange-400 hover:text-orange-600 hover:bg-orange-50" title="Gestionar Devolución (Editar)">
+                                            <PackageMinus size={14} />
+                                        </Button>
+                                    )}
                                 </>
                             )}
 
-                            <Button variant="ghost" onClick={() => setSelectedOpForTicket(op)} className="h-7 w-7 p-0 text-sys-400 hover:text-sys-900 hover:bg-sys-100">
+                            <Button variant="ghost" onClick={() => setSelectedOpForTicket(op)} className="h-7 w-7 p-0 text-sys-400 hover:text-sys-900 hover:bg-sys-100" title="Imprimir Comprobante">
                               <Printer size={14} />
                             </Button>
                           </div>

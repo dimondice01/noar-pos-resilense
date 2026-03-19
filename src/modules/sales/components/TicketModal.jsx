@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, forwardRef } from 'react';
+import React, { useState, useEffect, useRef, forwardRef, useCallback } from 'react';
 import QRCode from "react-qr-code";
 import { X, Printer, Ticket, FileText } from 'lucide-react';
 import { useReactToPrint } from 'react-to-print';
@@ -54,7 +54,8 @@ const PAYMENT_LABELS = {
     mercadopago: 'MERCADOPAGO', 
     qr: 'QR / TRANSF.', 
     other: 'OTRO',
-    split: 'COMBINADO'
+    split: 'COMBINADO',
+    budget: 'PRESUPUESTO'
 };
 
 // =========================================================
@@ -72,13 +73,23 @@ const TicketContent = forwardRef(({
     let letraComprobante = "X";
     let tipoComprobante = "TICKET DE VENTA";
 
-    if (isFiscal) {
+    // 🔥 LÓGICA DE DETECCIÓN DE TIPO DE COMPROBANTE CON PRIORIDAD
+    const isBudget = data.type === 'BUDGET' || data.status === 'BUDGET';
+
+    if (isBudget) {
+        // 🔥 1. Prioridad Absoluta: Si es presupuesto, nada más importa.
+        tipoComprobante = "PRESUPUESTO";
+        letraComprobante = "P";
+        numeroComprobante = data.number || `ID: ${data.localId?.slice(-8).toUpperCase()}`;
+    } else if (isFiscal) {
+        // 2. Si es Venta Fiscal
         const pto = String(afip.ptoVta || "0").padStart(4, '0');
         const num = String(afip.cbteNumero || afip.numero || "0").padStart(8, '0');
         numeroComprobante = `${pto}-${num}`;
         letraComprobante = afip.cbteLetra || "B";
         tipoComprobante = "FACTURA";
     } else {
+        // 3. Ticket Interno / Venta No Fiscal
         if (data.number) {
             numeroComprobante = data.number; 
             const partes = data.number.split('-');
@@ -168,7 +179,6 @@ const TicketContent = forwardRef(({
                     {items.map((item, idx) => {
                         const hasPromo = item.appliedPromo || (item.originalPrice && item.originalPrice > item.price);
                         
-                        // 🔥 FIX FIAMBRERÍA: Si es pesable O tiene decimales, mostramos 3 dígitos.
                         const qty = parseFloat(item.quantity);
                         const displayQty = (item.isWeighable || qty % 1 !== 0) ? qty.toFixed(3) : Math.round(qty);
 
@@ -217,7 +227,7 @@ const TicketContent = forwardRef(({
                                 <span className="font-mono">-{formatCurrency(discount)}</span>
                             </div>
                         )}
-                        {surcharge > 0 && (
+                        {surcharge > 0 && !isBudget && (
                             <div className="flex justify-between">
                                 <span>RECARGO</span>
                                 <span className="font-mono">{formatCurrency(surcharge)}</span>
@@ -225,7 +235,7 @@ const TicketContent = forwardRef(({
                         )}
 
                         {/* 🔥 DESGLOSE DE IMPUESTOS */}
-                        {(afip.cbteLetra === 'A' || data.letra === 'A') && parseFloat(afip.impNeto) > 0 && (
+                        {(afip.cbteLetra === 'A' || data.letra === 'A') && parseFloat(afip.impNeto) > 0 && !isBudget && (
                             <div className="mt-1 pt-1 border-t border-black border-dashed">
                                 <div className="flex justify-between mb-0.5">
                                     <span>NETO GRAVADO</span>
@@ -239,29 +249,39 @@ const TicketContent = forwardRef(({
                         )}
                     </div>
                     <div className="flex justify-between items-center border-y-2 border-black py-1 mt-1">
-                        <span className="text-base font-black tracking-widest">TOTAL</span>
+                        <span className="text-base font-black tracking-widest">
+                            {isBudget ? "TOTAL PRESUPUESTADO" : "TOTAL"}
+                        </span>
                         <span className="text-xl font-black font-mono tracking-tight leading-none">
                             ${formatCurrency(total)}
                         </span>
                     </div>
                 </div>
                 
-                {/* --- FORMA DE PAGO --- */}
+                {/* --- FORMA DE PAGO O PRESUPUESTO --- */}
                 <div className="mt-2 mb-3 text-[9px]">
-                    <p className="font-black border-b border-black border-dashed mb-0.5 pb-0.5 text-black">PAGO</p>
-                    {paymentDetails.map((p, i) => (
-                        <div key={i} className="flex justify-between items-center font-bold py-0.5">
-                            <span className="uppercase">
-                                {PAYMENT_LABELS[p.method] || p.method}
-                                {p.surcharge > 0 && <span className="text-[7px] ml-1 font-normal">(+{formatCurrency(p.surcharge)})</span>}
-                            </span>
-                            <span className="font-mono">{formatCurrency(p.total || p.amount)}</span>
+                    {isBudget ? (
+                        <div className="text-center py-2 mt-3 font-bold border-2 border-black">
+                            DOCUMENTO NO VÁLIDO COMO PAGO
                         </div>
-                    ))}
+                    ) : (
+                        <>
+                            <p className="font-black border-b border-black border-dashed mb-0.5 pb-0.5 text-black">PAGO</p>
+                            {paymentDetails.map((p, i) => (
+                                <div key={i} className="flex justify-between items-center font-bold py-0.5">
+                                    <span className="uppercase">
+                                        {PAYMENT_LABELS[p.method] || p.method}
+                                        {p.surcharge > 0 && <span className="text-[7px] ml-1 font-normal">(+{formatCurrency(p.surcharge)})</span>}
+                                    </span>
+                                    <span className="font-mono">{formatCurrency(p.total || p.amount)}</span>
+                                </div>
+                            ))}
+                        </>
+                    )}
                 </div>
 
                 {/* --- FOOTER FISCAL --- */}
-                {isFiscal && cae && (
+                {isFiscal && !isBudget && cae && (
                     <div className="mt-2 text-center border-t border-black border-dashed pt-2">
                         <div className="flex justify-center mb-1">
                             {qrData && <QRCode value={qrData} size={90} level="M" />}
@@ -274,15 +294,24 @@ const TicketContent = forwardRef(({
                     </div>
                 )}
 
-                {!isFiscal && (
+                {!isFiscal && !isBudget && (
                       <div className="mt-3 text-center">
                         <p className="text-[8px] font-bold uppercase border border-black p-1 inline-block">Doc. no válido como factura</p>
                     </div>
                 )}
+                
+                {/* 🔥 MENSAJE FINAL DE PRESUPUESTO */}
+                {isBudget && (
+                    <div className="mt-3 text-center">
+                        <p className="text-[10px] font-black uppercase border-y border-black py-1.5 inline-block w-full">VÁLIDO POR 7 DÍAS</p>
+                    </div>
+                )}
 
                 <div className="mt-4 text-center pb-4">
-                    <p className="text-[10px] font-black uppercase tracking-tight">¡GRACIAS POR SU COMPRA!</p>
-                    <p className="text-[8px] font-mono mt-0.5 font-bold">Cajero: {data.userName || data.operatorName || 'Usuario'}</p>
+                    <p className="text-[10px] font-black uppercase tracking-tight">
+                        {isBudget ? "¡ESPERAMOS SU COMPRA!" : "¡GRACIAS POR SU COMPRA!"}
+                    </p>
+                    <p className="text-[8px] font-mono mt-0.5 font-bold">Operador: {data.userName || data.operatorName || 'Usuario'}</p>
                 </div>
             </div>
         </div>
@@ -313,20 +342,31 @@ export const TicketModal = ({ isOpen, onClose, sale, receipt }) => {
     const handlePrintTicket = useReactToPrint({
         contentRef: componentRef,
         documentTitle: `Ticket-${data?.number || 'venta'}`,
+        onAfterPrint: onClose 
     });
 
     const handlePrintA4 = useReactToPrint({
         contentRef: invoiceA4Ref,
         documentTitle: `Factura-${data?.number || 'venta'}`,
+        onAfterPrint: onClose 
     });
 
-    const handlePrint = () => {
+    const handlePrint = useCallback(() => {
         if (viewMode === 'a4') {
             handlePrintA4();
         } else {
             handlePrintTicket();
         }
-    };
+    }, [viewMode, handlePrintA4, handlePrintTicket]);
+
+    useEffect(() => {
+        if (isOpen && data) {
+            const timer = setTimeout(() => {
+                handlePrint();
+            }, 300); 
+            return () => clearTimeout(timer);
+        }
+    }, [isOpen, data, handlePrint]);
 
     useEffect(() => {
         if (!isOpen) return;
@@ -396,7 +436,7 @@ export const TicketModal = ({ isOpen, onClose, sale, receipt }) => {
 
     return (
         <div 
-            className="fixed inset-0 z-[70] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 outline-none print:bg-white print:p-0"
+            className="fixed inset-0 z-[-100] opacity-0 pointer-events-none flex items-center justify-center p-4 outline-none print:opacity-100 print:z-auto print:bg-white print:p-0"
             tabIndex={-1} 
             ref={modalRef} 
         >

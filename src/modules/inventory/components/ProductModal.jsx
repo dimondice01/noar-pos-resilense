@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { 
     X, Save, ScanLine, Scale, Package, DollarSign, Tag, Truck, 
     AlertTriangle, Award, ChevronDown, Check, Calendar, Plus, 
-    Trash2, Megaphone, Clock, Barcode, Edit2, Percent, Layers, ShoppingBag, MapPin, Loader2
+    Trash2, Megaphone, Clock, Barcode, Edit2, Percent, Layers, ShoppingBag, MapPin, Loader2, Info
 } from 'lucide-react';
 import { Button } from '../../../core/ui/Button';
 import { Switch } from '../../../core/ui/Switch';
@@ -86,8 +86,8 @@ const PremiumSelect = ({ label, icon: Icon, value, onChange, options, placeholde
 
 const PremiumInput = ({ label, icon: Icon, rightIcon, className, readOnly, ...props }) => (
     <div className={cn("group", readOnly && "opacity-60")}>
-      <label className="block text-[10px] font-bold text-sys-500 uppercase tracking-wider mb-1.5 ml-1 transition-colors group-focus-within:text-brand">
-        {label}
+      <label className="block text-[10px] font-bold text-sys-500 uppercase tracking-wider mb-1.5 ml-1 transition-colors group-focus-within:text-brand flex justify-between items-center">
+        <span>{label}</span>
       </label>
       <div className="relative transition-all duration-200">
         {Icon && (
@@ -135,10 +135,14 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
     category: '',
     brand: '',
     supplier: '',
-    cost: '',
-    markup: '40',
-    price: '',
-    taxRate: '21',
+    
+    // 🔥 SPRINT 2: Campos de Precio Expandidos
+    costNeto: '', // Costo sin IVA
+    cost: '',     // Costo CON IVA (Costo Final)
+    markup: '40', // Margen sobre el costo FINAL
+    price: '',    // PVP
+    taxRate: '21',// IVA (10.5 o 21)
+    
     stock: '', 
     minStock: '5',
     isWeighable: false,
@@ -175,8 +179,19 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
     if (isOpen) {
       if (productToEdit) {
         let calculatedMarkup = productToEdit.markup;
-        if (!calculatedMarkup && productToEdit.cost && productToEdit.price) {
-           const c = parseFloat(productToEdit.cost);
+        let cNeto = '';
+        let cFinal = productToEdit.cost || '';
+        let tax = productToEdit.taxRate || '21';
+        
+        // Si hay costo final y tax, calculamos el Neto hacia atrás
+        if (cFinal) {
+            const taxMult = 1 + (parseFloat(tax) / 100);
+            cNeto = (parseFloat(cFinal) / taxMult).toFixed(2);
+        }
+
+        // Si no hay markup guardado pero sí costo final y precio, lo calculamos
+        if (!calculatedMarkup && cFinal && productToEdit.price) {
+           const c = parseFloat(cFinal);
            const p = parseFloat(productToEdit.price);
            if (c > 0) calculatedMarkup = ((p - c) / c * 100).toFixed(2);
         }
@@ -193,15 +208,19 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
             name: productToEdit.name || '', 
             code: productToEdit.code || '',
             barcodes: loadedBarcodes,
-            markup: calculatedMarkup || '40',
             category: productToEdit.category || '',
             brand: productToEdit.brand || '',
             supplier: productToEdit.supplier || '',
             minStock: productToEdit.minStock || '5',
-            cost: productToEdit.cost || '',
-            price: productToEdit.price || '',
             stock: productToEdit.stock || '', 
             isWeighable: productToEdit.isWeighable === true,
+            
+            // Finanzas
+            taxRate: String(tax),
+            costNeto: cNeto,
+            cost: String(cFinal),
+            markup: String(calculatedMarkup || '40'),
+            price: String(productToEdit.price || ''),
             
             promoActive: hasPromo,
             promoType: hasPromo ? (promo.type || 'PERCENTAGE') : 'PERCENTAGE',
@@ -214,7 +233,7 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
       } else {
         setFormData({ 
             name: '', code: '', barcodes: [], category: '', brand: '',
-            cost: '', markup: '40', price: '', taxRate: '21',
+            costNeto: '', cost: '', markup: '40', price: '', taxRate: '21',
             stock: '', minStock: '5', supplier: '', 
             isWeighable: false,
             promoActive: false, promoType: 'PERCENTAGE', promoValue: '', promoDiscount: '', promoPayValue: '', 
@@ -228,24 +247,77 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
     }
   }, [isOpen, productToEdit]);
 
-  // Calculadora de Precios
+  // 🔥 SPRINT 2: CALCULADORA DE PRECIOS BIDIRECCIONAL
   const handlePriceCalculation = (field, value) => {
     let newData = { ...formData, [field]: value };
-    const cost = parseFloat(field === 'cost' ? value : formData.cost) || 0;
-    const markup = parseFloat(field === 'markup' ? value : formData.markup) || 0;
-    const price = parseFloat(field === 'price' ? value : formData.price) || 0;
+    
+    const taxMult = 1 + (parseFloat(newData.taxRate) / 100);
+    
+    // Si cambia la Tasa de IVA, recalculamos el Costo Final basados en el Costo Neto
+    if (field === 'taxRate') {
+        if (newData.costNeto) {
+            const newCost = parseFloat(newData.costNeto) * taxMult;
+            newData.cost = newCost.toFixed(2);
+            // Y arrastramos el cálculo al Precio Final
+            if (newData.markup) {
+                const newPrice = newCost * (1 + parseFloat(newData.markup) / 100);
+                newData.price = (Math.ceil(newPrice / 10) * 10).toFixed(2);
+            }
+        }
+    }
 
-    if (field === 'cost' || field === 'markup') {
-        if (cost > 0) {
-            const newPrice = cost * (1 + markup / 100);
+    // 1. Si cambian el Costo NETO -> Calculamos Costo Final (+IVA) -> Y Precio de Venta
+    if (field === 'costNeto') {
+        const cNeto = parseFloat(value) || 0;
+        if (cNeto > 0) {
+            const cFinal = cNeto * taxMult;
+            newData.cost = cFinal.toFixed(2);
+            
+            const markup = parseFloat(newData.markup) || 0;
+            const newPrice = cFinal * (1 + markup / 100);
+            newData.price = (Math.ceil(newPrice / 10) * 10).toFixed(2);
+        } else {
+            newData.cost = '';
+            newData.price = '';
+        }
+    }
+    
+    // 2. Si cambian el Costo FINAL -> Calculamos Costo Neto (-IVA) -> Y Precio de Venta
+    else if (field === 'cost') {
+        const cFinal = parseFloat(value) || 0;
+        if (cFinal > 0) {
+            const cNeto = cFinal / taxMult;
+            newData.costNeto = cNeto.toFixed(2);
+            
+            const markup = parseFloat(newData.markup) || 0;
+            const newPrice = cFinal * (1 + markup / 100);
+            newData.price = (Math.ceil(newPrice / 10) * 10).toFixed(2);
+        } else {
+            newData.costNeto = '';
+            newData.price = '';
+        }
+    }
+    
+    // 3. Si cambian el MARGEN -> Mantenemos Costo Final -> Calculamos Precio
+    else if (field === 'markup') {
+        const cFinal = parseFloat(newData.cost) || 0;
+        const markup = parseFloat(value) || 0;
+        if (cFinal > 0) {
+            const newPrice = cFinal * (1 + markup / 100);
             newData.price = (Math.ceil(newPrice / 10) * 10).toFixed(2);
         }
-    } else if (field === 'price') {
-        if (cost > 0 && price > 0) {
-            const newMarkup = ((price - cost) / cost) * 100;
+    }
+    
+    // 4. Si cambian el PRECIO FINAL -> Mantenemos Costo Final -> Recalculamos Margen
+    else if (field === 'price') {
+        const cFinal = parseFloat(newData.cost) || 0;
+        const price = parseFloat(value) || 0;
+        if (cFinal > 0 && price > 0) {
+            const newMarkup = ((price - cFinal) / cFinal) * 100;
             newData.markup = newMarkup.toFixed(2);
         }
     }
+
     setFormData(newData);
   };
 
@@ -264,11 +336,18 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
   const handleSubmit = async (e) => { 
     if (e) e.preventDefault(); 
     
-    // 🛡️ 1. VALIDACIONES INSTANTÁNEAS
+    // 🛡️ 1. VALIDACIONES ESTRICTAS (SPRINT 2)
     if (!formData.name.trim()) {
         setActiveTab('general');
         return toast.error("⚠️ El nombre del producto es obligatorio");
     }
+
+    // Validación de Código de Barras (Obligatorio si no es balanza)
+    if (!formData.isWeighable && (!formData.code.trim() && formData.barcodes.length === 0)) {
+        setActiveTab('general');
+        return toast.error("⚠️ CRÍTICO: Debe asignar al menos un Código o escanear un Código de Barras para vender este producto.");
+    }
+
     if (!formData.price || parseFloat(String(formData.price).replace(',', '.')) <= 0) {
         setActiveTab('precios');
         return toast.error("⚠️ Debes ingresar un precio final válido");
@@ -289,12 +368,10 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
     const loadingToastId = toast.loading('Guardando producto...');
 
     try {
-        // 🔥 FIX CRÍTICO: Mantenemos ...formData para no perder IDs ocultos (branchId, etc)
-        // pero sobreescribimos con formato estricto.
         const masterPayload = {
             ...formData, 
             name: formData.name.trim(),
-            code: formData.code.trim(),
+            code: formData.code.trim() || formData.barcodes[0] || `SKU-${Date.now().toString().slice(-6)}`, // Fallback de seguridad
             barcode: formData.barcodes, 
             category: formData.category,
             brand: formData.brand,
@@ -312,7 +389,7 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
         masterPayload.stock = parseFloat(String(formData.stock).replace(',', '.')) || 0;
 
         // Si estamos EDITANDO un producto existente, borramos el stock del payload
-        // para evitar sobrescribir el inventario actual.
+        // para evitar sobrescribir el inventario actual (Se hace desde Ajustes).
         if (productToEdit && productToEdit.id) {
             delete masterPayload.stock; 
         }
@@ -326,6 +403,7 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
         delete masterPayload.promoStartDate;
         delete masterPayload.promoEndDate;
         delete masterPayload.promo; 
+        delete masterPayload.costNeto; // Este no va a la DB, calculamos al vuelo el costo final
 
         // Construcción limpia del objeto Promo
         let promoPayload = null;
@@ -425,9 +503,9 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
                 
                 <div className="grid grid-cols-2 gap-5">
                     <PremiumInput 
-                        label="Código Interno (SKU)"
+                        label={<span className="flex items-center gap-1">Código Interno (SKU) {!formData.isWeighable && <span className="text-red-500">*</span>}</span>}
                         icon={ScanLine}
-                        placeholder="Automático si vacío"
+                        placeholder={formData.isWeighable ? "Opcional si es balanza" : "Obligatorio (o escanee abajo)"}
                         value={formData.code}
                         onChange={e => setFormData({...formData, code: e.target.value})}
                         disabled={isSaving}
@@ -444,12 +522,12 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
                 </div>
 
                 <div className="bg-sys-50 p-4 rounded-xl border border-sys-200">
-                    <label className="text-[10px] font-bold text-sys-500 uppercase block mb-2">Códigos de Barras</label>
+                    <label className="text-[10px] font-bold text-sys-500 uppercase block mb-2">Códigos de Barras Adicionales</label>
                     <div className="flex gap-2 mb-3">
                         <input 
                             type="text" 
                             className="flex-1 px-3 py-2 rounded-lg border border-sys-200 text-sm outline-none focus:border-brand disabled:opacity-50"
-                            placeholder="Escanear código adicional..."
+                            placeholder="Escanear código..."
                             value={tempBarcode}
                             onChange={e => setTempBarcode(e.target.value)}
                             onKeyDown={e => e.key === 'Enter' && (e.preventDefault(), addBarcode())}
@@ -493,7 +571,7 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
                         <div>
                             <p className="text-sm font-bold">{formData.isWeighable ? 'Producto Pesable' : 'Producto Unitario'}</p>
                             <p className="text-[10px] text-sys-500 font-medium">
-                                {formData.isWeighable ? 'Venta por KG (Balanza)' : 'Venta por Unidad (Bulto)'}
+                                {formData.isWeighable ? 'Venta por KG (Requiere Balanza)' : 'Venta por Unidad (Bulto cerrado)'}
                             </p>
                         </div>
                     </div>
@@ -521,35 +599,59 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
              </div>
           )}
 
-          {/* --- TAB PRECIOS --- */}
+          {/* --- TAB PRECIOS (SPRINT 2) --- */}
           {activeTab === 'precios' && (
              <div className="space-y-6 animate-in slide-in-from-right-8 duration-300 fade-in">
-                <div className="grid grid-cols-3 gap-5 items-end">
-                    <div className="col-span-1">
-                        <PremiumInput 
-                            label="Costo Unitario" type="number" step="0.01" placeholder="0.00"
-                            value={formData.cost} onChange={e => handlePriceCalculation('cost', e.target.value)}
-                            rightIcon={<span className="text-xs font-bold text-sys-400">$</span>}
-                            disabled={isSaving}
-                        />
+                
+                {/* Selector de IVA */}
+                <div className="bg-indigo-50 border border-indigo-100 p-4 rounded-xl flex items-center justify-between">
+                    <div>
+                        <p className="text-sm font-bold text-indigo-900">Impuesto AFIP (IVA)</p>
+                        <p className="text-[10px] text-indigo-600 font-medium">Requerido para generar la Factura A/B correcta.</p>
                     </div>
-                    <div className="col-span-1">
-                        <PremiumInput 
-                            label="Margen %" type="number" step="0.1" placeholder="30"
-                            value={formData.markup} onChange={e => handlePriceCalculation('markup', e.target.value)}
-                            rightIcon={<span className="text-xs font-bold text-sys-400">%</span>}
-                            disabled={isSaving}
-                        />
+                    <div className="flex bg-white rounded-lg border border-indigo-200 p-1">
+                        <button type="button" onClick={() => handlePriceCalculation('taxRate', '10.5')} className={cn("px-4 py-1.5 rounded-md text-xs font-bold transition-colors", formData.taxRate === '10.5' ? "bg-indigo-600 text-white" : "text-sys-500 hover:bg-sys-100")}>10.5%</button>
+                        <button type="button" onClick={() => handlePriceCalculation('taxRate', '21')} className={cn("px-4 py-1.5 rounded-md text-xs font-bold transition-colors", formData.taxRate === '21' || !formData.taxRate ? "bg-indigo-600 text-white" : "text-sys-500 hover:bg-sys-100")}>21%</button>
+                        <button type="button" onClick={() => handlePriceCalculation('taxRate', '0')} className={cn("px-4 py-1.5 rounded-md text-xs font-bold transition-colors", formData.taxRate === '0' ? "bg-indigo-600 text-white" : "text-sys-500 hover:bg-sys-100")}>Exento</button>
                     </div>
-                    <div className="col-span-1">
-                        <PremiumInput 
-                            label="Precio Final *" type="number" step="0.01"
-                            className="bg-brand/5 border-2 border-brand/20 text-brand-hover text-lg font-bold"
-                            value={formData.price} onChange={e => handlePriceCalculation('price', e.target.value)} placeholder="0.00"
-                            rightIcon={<span className="text-brand font-bold">$</span>}
-                            disabled={isSaving}
-                        />
-                    </div>
+                </div>
+
+                {/* Fila de Costos (Bidireccional) */}
+                <div className="grid grid-cols-2 gap-5 items-start">
+                    <PremiumInput 
+                        label="Costo Neto (Sin IVA)" type="number" step="0.01" placeholder="0.00"
+                        value={formData.costNeto} onChange={e => handlePriceCalculation('costNeto', e.target.value)}
+                        rightIcon={<span className="text-xs font-bold text-sys-400">$</span>}
+                        disabled={isSaving}
+                    />
+                    <PremiumInput 
+                        label="Costo Final (Con IVA)" type="number" step="0.01" placeholder="0.00"
+                        className="font-bold text-indigo-900 bg-indigo-50 border-indigo-200"
+                        value={formData.cost} onChange={e => handlePriceCalculation('cost', e.target.value)}
+                        rightIcon={<span className="text-xs font-bold text-indigo-400">$</span>}
+                        disabled={isSaving}
+                    />
+                </div>
+                
+                <div className="flex justify-center my-2 text-sys-300">
+                    <ChevronDown size={20} />
+                </div>
+
+                {/* Fila de Venta (Margen y PVP) */}
+                <div className="grid grid-cols-2 gap-5 items-end">
+                    <PremiumInput 
+                        label="Margen de Ganancia (%)" type="number" step="0.1" placeholder="30"
+                        value={formData.markup} onChange={e => handlePriceCalculation('markup', e.target.value)}
+                        rightIcon={<span className="text-xs font-bold text-sys-400">%</span>}
+                        disabled={isSaving}
+                    />
+                    <PremiumInput 
+                        label="Precio de Venta Público *" type="number" step="0.01"
+                        className="bg-brand/5 border-2 border-brand/20 text-brand-hover text-2xl font-black h-14"
+                        value={formData.price} onChange={e => handlePriceCalculation('price', e.target.value)} placeholder="0.00"
+                        rightIcon={<span className="text-brand font-bold">$</span>}
+                        disabled={isSaving}
+                    />
                 </div>
 
                 {parseFloat(formData.cost) > parseFloat(formData.price) && (
@@ -560,7 +662,7 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
                 )}
 
                 <div className="p-5 bg-sys-50 rounded-2xl border border-sys-200 flex justify-between items-center">
-                    <span className="text-sm font-medium text-sys-500">Ganancia Estimada:</span>
+                    <span className="text-sm font-medium text-sys-500">Ganancia Neta (Aprox):</span>
                     <span className="text-2xl font-black text-emerald-600 tracking-tight">
                         $ {((parseFloat(formData.price || 0) - parseFloat(formData.cost || 0))).toLocaleString('es-AR', {minimumFractionDigits: 2})}
                     </span>

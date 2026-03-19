@@ -21,7 +21,7 @@ const SYNC_KEYS = {
     PRODUCTS: 'last_sync_products_v4', // Versionado para forzar recarga si cambia estructura
     INVENTORY_PREFIX: 'last_sync_inv_br_', // Prefijo para stock por sucursal
     GLOBAL_CONFIG: 'last_sync_config',
-    SALES_PREFIX: 'last_sync_sales_br_' // 🔥 NUEVO: Checkpoint de ventas
+    SALES_PREFIX: 'last_sync_sales_br_' // 🔥 Checkpoint de ventas
 };
 
 export const syncService = {
@@ -29,7 +29,7 @@ export const syncService = {
   _unsubscribes: [],
 
   // =================================================================
-  // 🧼 SANITIZADORES (Defensa de Datos & Integridad)
+  // 🧼 SANITIZADORES (Defensa de Datos & Integridad anti-Firebase)
   // =================================================================
 
   _deepSanitize(obj) {
@@ -82,7 +82,7 @@ export const syncService = {
       };
   },
 
-  // 2. VENTAS (Blindadas con Identidad)
+  // 2. VENTAS (Blindadas con Identidad y Devoluciones)
   _sanitizeCloudSale(data, id) {
       let rawItems = data.items || data.cart || data.details || [];
       if (typeof rawItems === 'string') { try { rawItems = JSON.parse(rawItems); } catch (e) { rawItems = []; } }
@@ -109,24 +109,33 @@ export const syncService = {
           shiftId: data.shiftId || null, 
           date: data.date || new Date().toISOString(),
           
+          // 🔥 SPRINT 3 FINANZAS: Montos extendidos
           total: parseFloat(data.total) || 0,
           baseAmount: parseFloat(data.baseAmount) || 0, 
           surcharge: parseFloat(data.surcharge) || 0,
           subtotal: parseFloat(data.subtotal) || 0,
           discount: parseFloat(data.discount) || 0,
+          netProfit: parseFloat(data.netProfit) || 0,
+          totalCost: parseFloat(data.totalCost) || 0,
+          refundedAmount: parseFloat(data.refundedAmount) || 0,
+          notes: data.notes || '',
           
-          status: data.status || 'COMPLETED',
-          type: data.type || 'SALE', // 🔥 Asegurar que el type exista para filtros en UI
+          status: data.status || 'COMPLETED', // COMPLETED, VOIDED, REFUNDED, BUDGET
+          type: data.type || 'SALE',          // SALE, RECEIPT, BUDGET, INTERNAL
           
           items: Array.isArray(rawItems) ? rawItems.map(item => ({
               ...item,
               price: parseFloat(item.price) || 0,
               cost: parseFloat(item.cost) || 0,
-              originalPrice: parseFloat(item.originalPrice) || parseFloat(item.price) || 0
+              originalPrice: parseFloat(item.originalPrice) || parseFloat(item.price) || 0,
+              returnedQty: parseFloat(item.returnedQty) || 0 // Para devoluciones parciales
           })) : [],
           itemCount: Array.isArray(rawItems) ? rawItems.length : 0, 
           
+          // 🔥 SPRINT 3 PAGOS: Multi-pagos soportados
           payment: data.payment || { method: 'cash' },
+          payments: Array.isArray(data.payments) ? data.payments : (data.payment ? [data.payment] : [{ method: 'cash' }]),
+          
           userId: data.userId || 'unknown',
           userName: data.userName || 'Vendedor',
           client: data.client || null, 
@@ -141,8 +150,8 @@ export const syncService = {
               cbteLetra: data.afip.cbteLetra || null,
               ptoVta: data.afip.ptoVta || null,
               qr_data: data.afip.qr_data || null,
-              impNeto: data.afip.impNeto || 0, // 🔥 Añadido para preservar histórico
-              impIVA: data.afip.impIVA || 0    // 🔥 Añadido para preservar histórico
+              impNeto: data.afip.impNeto || 0, 
+              impIVA: data.afip.impIVA || 0    
           } : null,
           
           // 🔥 CRÍTICO PARA EL DELTA SYNC: Garantizar updatedAt
@@ -168,7 +177,7 @@ export const syncService = {
       };
   },
 
-  // 4. CAJAS (SHIFTS)
+  // 4. CAJAS (SHIFTS) - 🔥 AHORA CON SOPORTE PARA TICKET Z
   _sanitizeCloudShift(data, id) {
       const finalVal = data.finalCash !== undefined ? data.finalCash : (data.finalAmount || 0);
       const systemVal = data.expectedCash !== undefined ? data.expectedCash : (data.systemAmount || 0);
@@ -189,6 +198,10 @@ export const syncService = {
           difference: parseFloat(data.difference) || 0,
           expectedDigital: parseFloat(data.expectedDigital || 0),
           audited: data.audited === true,
+          
+          // 🔥 AÑADIDO: Si la nube tiene el reporte Z, lo guardamos localmente
+          auditSnapshot: data.auditSnapshot || null, 
+          
           updatedAt: data.updatedAt || new Date().toISOString(),
           syncStatus: 'synced'
       };

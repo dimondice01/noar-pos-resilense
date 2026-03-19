@@ -137,7 +137,10 @@ export const cashRepository = {
             auditSnapshot: {
                 totalSales: currentAudit.totalSales,
                 salesCount: currentAudit.salesCount,
-                salesByMethod: currentAudit.salesByMethod,
+                salesByMethod: currentAudit.salesByMethod, // 🔥 DESGLOSE DE MÉTODOS DE PAGO
+                
+                manualIn: currentAudit.manualIn,   // 🔥 INGRESOS MANUALES
+                manualOut: currentAudit.manualOut, // 🔥 RETIROS MANUALES
                 
                 cashIn: currentAudit.cashIn,
                 cashOut: currentAudit.cashOut,
@@ -378,7 +381,7 @@ export const cashRepository = {
         let filteredShifts = [];
 
         if (user.role === 'ADMIN' || user.role === 'OWNER') {
-            if (branchId) {
+            if (branchId && branchId !== 'main') {
                 filteredShifts = shifts.filter(s => s.branchId === branchId);
             } else {
                 filteredShifts = shifts;
@@ -452,9 +455,13 @@ export const cashRepository = {
             salesDigital: 0,
             totalSales: 0,
             salesCount: 0,
-            salesByMethod: { cash: 0, mercadopago: 0, clover: 0, digitalOther: 0, account: 0 },
+            salesByMethod: { cash: 0, mercadopago: 0, clover: 0, point: 0, manual_card: 0, digitalOther: 0, account: 0, transfer: 0 },
             
-            // Movimientos
+            // Movimientos Manuales (Para Ticket Z)
+            manualIn: 0,
+            manualOut: 0,
+
+            // Movimientos Internos
             deposits: 0,
             expenses: 0,
             withdrawals: 0,
@@ -466,7 +473,7 @@ export const cashRepository = {
 
         // A. PROCESAR VENTAS 
         sales.forEach(sale => {
-            if (sale.type === 'INTERNAL') return; 
+            if (sale.type === 'INTERNAL' || sale.type === 'BUDGET') return; // Ignorar consumo interno y presupuestos
             if (sale.afip?.status === 'VOIDED' || sale.status === 'CANCELLED' || sale.status === 'REFUNDED') return; 
 
             const amount = parseFloat(sale.total) || 0;
@@ -482,11 +489,19 @@ export const cashRepository = {
             } else if (['mercadopago', 'mp', 'qr'].includes(method)) {
                 state.salesByMethod.mercadopago += amount;
                 state.salesDigital += amount;
-            } else if (['clover', 'card', 'tarjeta', 'credit', 'debit'].includes(method)) {
+            } else if (['clover'].includes(method)) {
                 state.salesByMethod.clover += amount;
                 state.salesDigital += amount;
+            } else if (['point'].includes(method)) {
+                state.salesByMethod.point += amount;
+                state.salesDigital += amount;
+            } else if (['manual_card', 'card', 'tarjeta', 'credit', 'debit'].includes(method)) {
+                state.salesByMethod.manual_card += amount;
+                state.salesDigital += amount;
+            } else if (['transfer', 'transferencia', 'deposito'].includes(method)) {
+                state.salesByMethod.transfer += amount;
+                state.salesDigital += amount;
             } else if (['current_account', 'cuenta_corriente', 'employee_account'].includes(method)) {
-                // 🔥 AHORA LOS CONSUMOS DEL EMPLEADO NO SUMAN CAJA NI DIGITAL (Solo van a Ledger)
                 state.salesByMethod.account += amount;
             } else {
                 state.salesByMethod.digitalOther += amount;
@@ -494,30 +509,30 @@ export const cashRepository = {
             }
         });
 
-        // B. PROCESAR MOVIMIENTOS 
+        // B. PROCESAR MOVIMIENTOS CAJA (Solo manuales)
         movements.forEach(m => {
             const amount = Number(m.amount) || 0;
             const isCash = (m.method || 'cash') === 'cash';
             
-            if (m.type === 'SALE' || m.type === 'INTERNAL') return; 
-            if (m.type === 'TREASURY' || m.subtype === 'CLOSING') return;
+            // 🔥 IGNORAR MOVIMIENTOS GENERADOS AUTOMÁTICAMENTE POR VENTAS
+            if (m.type === 'SALE' || m.subtype === 'SALE' || m.type === 'INTERNAL') return; 
+            if (m.type === 'TREASURY' || m.subtype === 'CLOSING' || m.subtype === 'OPENING') return;
 
-            if (m.type === 'DEPOSIT') {
-                if (m.subtype !== 'OPENING') { 
-                    state.deposits += amount;
-                    if (isCash) state.salesCash += amount; 
-                }
-            } else if (m.type === 'EXPENSE') {
-                state.expenses += amount;
-            } else if (m.type === 'WITHDRAWAL' || m.type === 'OUT') { // 🔥 Agregado 'OUT' por los Vales manuales
-                state.withdrawals += amount;
-            } else if (m.type === 'IN') { 
-                if (isCash) state.salesCash += amount;
+            if (m.type === 'DEPOSIT' || m.type === 'IN') {
+                 state.deposits += amount;
+                 if (isCash) {
+                     state.salesCash += amount; 
+                     state.manualIn += amount; // SUMA PARA EL Z
+                 }
+            } else if (m.type === 'EXPENSE' || m.type === 'WITHDRAWAL' || m.type === 'OUT') {
+                 if (m.type === 'EXPENSE') state.expenses += amount;
+                 if (m.type === 'WITHDRAWAL' || m.type === 'OUT') state.withdrawals += amount;
+                 if (isCash) state.manualOut += amount; // SUMA PARA EL Z
             }
         });
 
-        // C. CÁLCULO FINAL DE CAJA TEÓRICA
-        // Caja Teórica = Inicial + VentasEfvo + Depositos + IngresosManuales - Gastos - RetirosManuales
+        // C. CÁLCULO FINAL DE CAJA TEÓRICA 🔥
+        // Efectivo Inicial + Ventas Efectivo + Ingresos Manuales - Retiros Manuales
         state.totalCash = state.initialAmount + state.salesCash - state.expenses - state.withdrawals;
         state.totalDigital = state.salesDigital;
 
@@ -580,8 +595,12 @@ export const cashRepository = {
                 salesCount: state.salesCount,
                 salesByMethod: state.salesByMethod,
                 
-                cashIn: state.deposits + (state.salesCash - state.salesByMethod.cash), // Entradas extra
-                cashOut: state.expenses + state.withdrawals, // Salidas
+                // Desglose para Ticket Z
+                manualIn: state.manualIn,
+                manualOut: state.manualOut,
+                
+                cashIn: state.deposits + (state.salesCash - state.salesByMethod.cash), 
+                cashOut: state.expenses + state.withdrawals, 
                 
                 totalExpenses: state.expenses,
                 totalWithdrawals: state.withdrawals,

@@ -131,7 +131,8 @@ export const PosPage = () => {
       searchProduct,
       setSearchResults, 
       processSale,
-      applyWholesaleToLastItem
+      applyWholesaleToLastItem,
+      processBudget // 🔥 Recibimos la función de presupuestos
   } = usePosController();
 
   // Estados Locales
@@ -155,7 +156,7 @@ export const PosPage = () => {
   // Refs
   const searchInputRef = useRef(null);
   const openingInputRef = useRef(null);
-  const productsListRef = useRef(null); // 🔥 REPARADO: Declaración agregada
+  const productsListRef = useRef(null);
   const lastScanTime = useRef(0);
 
   // =================================================================
@@ -276,13 +277,11 @@ export const PosPage = () => {
   };
 
   // =================================================================
-  // 2. MANEJO DE INPUT BÚSQUEDA (🔥 FIX DEL BUCLE INFINITO Y ESPACIOS)
+  // 2. MANEJO DE INPUT BÚSQUEDA
   // =================================================================
   useEffect(() => {
       let isSubscribed = true;
 
-      // 1. Permite buscar "Coca Cola " sin que se borre el espacio (NO usamos trim aquí)
-      // 2. Permite buscar códigos de 1 sola letra (ej: "A")
       if (searchTerm.length === 0) {
           setSearchResults([]);
           setFocusedIndex(-1);
@@ -307,7 +306,6 @@ export const PosPage = () => {
           isSubscribed = false;
           clearTimeout(timer);
       };
-      // 🔥 CRÍTICO: Removidas dependencias inestables para evitar el bucle de renderizado
       // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchTerm]); 
 
@@ -348,7 +346,6 @@ export const PosPage = () => {
           const now = Date.now();
           if (now - lastScanTime.current < 500) return; 
 
-          // Al dar Enter, hacemos trim() para asegurar match exacto del código
           const queryValue = searchTerm.trim();
           if (!queryValue) return;
           
@@ -358,22 +355,18 @@ export const PosPage = () => {
               const wasScale = await parseScaleBarcode(queryValue);
               if (wasScale) return; 
 
-              // 1. Si el usuario se movió manualmente con flechas
               if (focusedIndex >= 0 && list[focusedIndex]) {
                   handleSelectProduct(list[focusedIndex]);
                   return;
               }
 
-              // 🔥 FIX BÚSQUEDA PRECISA (G1 / F1): Buscamos coincidencia EXACTA
               const queryUpper = queryValue.toUpperCase();
               
-              // Verificamos primero en la lista rápida
               let exactMatch = list.find(p => 
                   String(p.barcode || '').toUpperCase() === queryUpper || 
                   String(p.code || '').toUpperCase() === queryUpper
               );
 
-              // Si no está, forzamos búsqueda profunda en la base de datos
               if (!exactMatch) {
                   const directResults = await productRepository.search(queryValue);
                   exactMatch = directResults.find(p => 
@@ -382,13 +375,11 @@ export const PosPage = () => {
                   );
               }
 
-              // Si existe el código exacto, lo cobra de una
               if (exactMatch) {
                   handleSelectProduct(exactMatch);
                   return;
               } 
               
-              // Si no hay match exacto, pero solo hay 1 en la lista, lo agrega
               if (list.length === 1) {
                   handleSelectProduct(list[0]);
                   return;
@@ -431,7 +422,7 @@ export const PosPage = () => {
       window.addEventListener('keydown', handleGlobalKeys);
       return () => window.removeEventListener('keydown', handleGlobalKeys);
       // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasOpenShift, activeTab.items.length]); // Dependencias minimizadas para no interferir con la navegación
+  }, [hasOpenShift, activeTab.items.length]); 
 
   const handleProcessSale = async (paymentData) => {
     const result = await processSale(paymentData);
@@ -447,6 +438,25 @@ export const PosPage = () => {
         if (tabs.length > 1 && activeIndex !== 0) removeTab(activeTabId);
         setTimeout(refocusInput, 100);
     }
+  };
+
+  // 🔥 NUEVA FUNCIÓN: Wrapper para Presupuesto
+  const handleProcessBudget = async () => {
+    const result = await processBudget();
+    if (result) {
+        const enrichedTicket = {
+            ...result,
+            companySnapshot: { nombre: user?.activeBranchName || 'MI NEGOCIO' }
+        };
+        setLastSaleTicket(enrichedTicket);
+        setIsPaymentOpen(false);
+        setSearchTerm('');
+        const activeIndex = tabs.findIndex(t => t.id === activeTabId);
+        if (tabs.length > 1 && activeIndex !== 0) removeTab(activeTabId);
+        setTimeout(refocusInput, 100);
+        return true;
+    }
+    return false;
   };
 
   const formatQuantity = (qty, isWeighable) => {
@@ -722,6 +732,7 @@ export const PosPage = () => {
           onClose={() => { setIsPaymentOpen(false); refocusInput(); }} 
           onConfirm={handleProcessSale} 
           isProcessing={isProcessing} 
+          processBudget={handleProcessBudget} // 🔥 PROP PASADA AQUÍ
       />
       
       <CashOperationsModal 

@@ -102,7 +102,10 @@ export const salesRepository = {
     let nextSequenceVal = 0;
 
     if (!finalNumber) {
-        const docType = saleData.afip?.status === 'APPROVED' ? saleData.afip.cbteLetra : 'X';
+        // 🔥 Si es presupuesto forzamos la letra P
+        const isBudget = saleData.type === 'BUDGET';
+        const docType = isBudget ? 'P' : (saleData.afip?.status === 'APPROVED' ? saleData.afip.cbteLetra : 'X');
+        
         const gen = await this._generateTicketNumber(docType, targetBranchId);
         finalNumber = gen.finalNumber;
         configKeyToUpdate = gen.configKey;
@@ -137,26 +140,29 @@ export const salesRepository = {
     });
 
     const totalProfit = enrichedItems.reduce((acc, item) => acc + item.profit, 0);
+    
+    // 🔥 CONTROL DE TIPO DE OPERACIÓN
+    const isBudget = saleData.type === 'BUDGET';
 
     // 3. ARMADO DEL OBJETO VENTA MAESTRO
     const sale = {
       id: saleId,
       localId: saleId,
       
-      // 🔥 FIX CRÍTICO: Aseguramos que el número se guarde en todas sus variantes
       number: finalNumber,
       ticketNumber: finalNumber, 
       invoiceNumber: finalNumber,
 
-      branchId: targetBranchId, // 🔥 Dato crítico para segregación
+      branchId: targetBranchId, 
       date: timestamp, 
       createdAt: timestamp,
-      status: 'COMPLETED', 
-      syncStatus: 'pending', // Dexie syncService lo subirá
+      status: isBudget ? 'BUDGET' : 'COMPLETED', // Status claro
+      type: isBudget ? 'BUDGET' : (saleData.type || 'SALE'), // Mantenemos el tipo
+      syncStatus: 'pending', 
       userId: user?.uid || 'unknown',
       userName: user?.name || 'Vendedor',
       companyId: user.companyId,
-      shiftId: currentShift?.id || null, // Asociación con caja
+      shiftId: currentShift?.id || null, 
       
       // Totales
       items: enrichedItems,
@@ -172,13 +178,11 @@ export const salesRepository = {
       
       client: saleData.client || null,
       
-      // 🔥 SOPORTE SPLIT PAYMENTS
-      payments: saleData.payments || (saleData.payment ? [saleData.payment] : [{ method: 'cash', total: saleData.total }]),
-      
-      // Compatibilidad Legacy
-      payment: saleData.payment || { method: 'cash' },
+      // Pagos
+      payments: saleData.payments || (saleData.payment ? [saleData.payment] : [{ method: isBudget ? 'budget' : 'cash', total: saleData.total }]),
+      payment: saleData.payment || { method: isBudget ? 'budget' : 'cash' },
 
-      // 🔥 BLINDAJE AFIP: Aseguramos explícitamente la persistencia del Neto y el IVA
+      // Afip
       afip: saleData.afip ? {
           ...saleData.afip,
           impNeto: saleData.afip.impNeto || 0,
@@ -194,39 +198,37 @@ export const salesRepository = {
         dbLocal.sales, 
         dbLocal.config, 
         dbLocal.products, 
-        dbLocal.inventory, // 🔥 Tabla crítica para multi-sucursal
+        dbLocal.inventory, 
         dbLocal.movements, 
         dbLocal.cash_movements
     ], async () => {
         
-        // A. Guardar Venta
+        // A. Guardar Venta o Presupuesto
         await dbLocal.sales.put(sale);
         
         if (configKeyToUpdate) {
             await dbLocal.config.put({ key: configKeyToUpdate, value: nextSequenceVal });
         }
 
+        // 🔥 BLOQUEO: Si es Presupuesto, NO hacemos nada más (Ni stock ni caja)
+        if (isBudget) return;
+
         // B. DESCUENTO DE STOCK & KARDEX (Blindado por Sucursal)
         for (const item of enrichedItems) {
-            // Actualizar stock en tabla Inventory (Localizado por sucursal)
-            // Usamos clave compuesta [branchId+productId] definida en db.js v15
             const inventoryKey = [targetBranchId, item.id];
             
-            // Obtenemos stock actual LOCAL
             const currentInv = await dbLocal.inventory.get(inventoryKey);
             const currentStock = currentInv ? parseFloat(currentInv.stock) : 0;
             const newStock = currentStock - item.quantity;
 
-            // Guardamos el nuevo stock localmente
             await dbLocal.inventory.put({
                 branchId: targetBranchId,
                 productId: item.id,
                 stock: newStock,
                 updatedAt: timestamp,
-                syncStatus: 'pending' // Flag para que syncService suba el cambio
+                syncStatus: 'pending' 
             });
 
-            // Registrar movimiento Kardex (Auditoría)
             const movement = {
                 id: `mov_${crypto.randomUUID()}`, 
                 productId: item.id, 
@@ -275,23 +277,23 @@ export const salesRepository = {
         }
     });
     
-    // 4. ACTUALIZACIÓN CLOUD ATÓMICA (BLINDAJE DE STOCK)
-    // 🔥 Usamos increment() para que Firebase maneje la concurrencia.
-    // Esto es mucho más seguro que leer y escribir el valor absoluto.
-    enrichedItems.forEach(item => {
-        const stockRef = doc(db, `companies/${user.companyId}/branches/${targetBranchId}/inventory`, item.id);
-        
-        // Operación "Fire and Forget" Atómica
-        setDoc(stockRef, { 
-            stock: increment(-item.quantity), // 🔥 RESTA ATÓMICA
-            updatedAt: serverTimestamp() 
-        }, { merge: true }).catch(err => console.error("Error atomic stock decrement:", err));
-    });
+    // 4. ACTUALIZACIÓN CLOUD ATÓMICA (BLINDAJE DE STOCK) - Solo si no es Presupuesto
+    if (!isBudget) {
+        enrichedItems.forEach(item => {
+            const stockRef = doc(db, `companies/${user.companyId}/branches/${targetBranchId}/inventory`, item.id);
+            setDoc(stockRef, { 
+                stock: increment(-item.quantity), 
+                updatedAt: serverTimestamp() 
+            }, { merge: true }).catch(err => console.error("Error atomic stock decrement:", err));
+        });
+    }
 
     // 5. SYNC OPTIMISTA (Cloud Replication)
-    // Intentamos subir la venta y los movimientos de caja YA MISMO.
     triggerOptimisticSync('sales', sale, user.companyId);
-    cashMovementsToCreate.forEach(cm => triggerOptimisticSync('cash_movements', cm, user.companyId));
+    
+    if (!isBudget) {
+        cashMovementsToCreate.forEach(cm => triggerOptimisticSync('cash_movements', cm, user.companyId));
+    }
 
     return sale;
   },
@@ -332,9 +334,6 @@ export const salesRepository = {
     const startISO = startDate.toISOString();
     const endISO = endDate.toISOString();
 
-    // 🔥 OPTIMIZACIÓN EXTREMA: Consulta DIRECTA a Dexie.
-    // Asumimos que syncService mantiene Dexie actualizado en background.
-    
     const localSales = await dbLocal.sales
         .where('date').between(startISO, endISO, true, true)
         .filter(s => s.branchId === activeBranchId) // Filtro estricto por sucursal
