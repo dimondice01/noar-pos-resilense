@@ -53,8 +53,10 @@ const PAYMENT_LABELS = {
     transfer: 'TRANSFERENCIA', 
     mercadopago: 'MERCADOPAGO', 
     qr: 'QR / TRANSF.', 
+    employee_account: 'CTA. PERSONAL',
+    account: 'CTA. CTE. (FIADO)',
     other: 'OTRO',
-    split: 'COMBINADO',
+    split: 'PAGO COMBINADO',
     budget: 'PRESUPUESTO'
 };
 
@@ -75,21 +77,27 @@ const TicketContent = forwardRef(({
 
     // 🔥 LÓGICA DE DETECCIÓN DE TIPO DE COMPROBANTE CON PRIORIDAD
     const isBudget = data.type === 'BUDGET' || data.status === 'BUDGET';
+    const isReceipt = data.type === 'RECEIPT'; // Para los cobros desde el ClientDashboard
 
     if (isBudget) {
         // 🔥 1. Prioridad Absoluta: Si es presupuesto, nada más importa.
         tipoComprobante = "PRESUPUESTO";
         letraComprobante = "P";
         numeroComprobante = data.number || `ID: ${data.localId?.slice(-8).toUpperCase()}`;
+    } else if (isReceipt) {
+        // 🔥 2. Recibo de pago de Cuenta Corriente
+        tipoComprobante = "RECIBO DE PAGO";
+        letraComprobante = "R";
+        numeroComprobante = data.number || data.localId || `ID: ${Date.now().toString().slice(-8)}`;
     } else if (isFiscal) {
-        // 2. Si es Venta Fiscal
+        // 3. Si es Venta Fiscal
         const pto = String(afip.ptoVta || "0").padStart(4, '0');
         const num = String(afip.cbteNumero || afip.numero || "0").padStart(8, '0');
         numeroComprobante = `${pto}-${num}`;
         letraComprobante = afip.cbteLetra || "B";
         tipoComprobante = "FACTURA";
     } else {
-        // 3. Ticket Interno / Venta No Fiscal
+        // 4. Ticket Interno / Venta No Fiscal
         if (data.number) {
             numeroComprobante = data.number; 
             const partes = data.number.split('-');
@@ -107,18 +115,25 @@ const TicketContent = forwardRef(({
     const docValue = (client.docNumber && client.docNumber !== '0') ? client.docNumber : null;
     const condFiscalCliente = (client.fiscalCondition || 'Consumidor Final').replace(/_/g, ' ');
 
-    const total = parseFloat(data.total || 0);
+    const total = parseFloat(data.total || data.amount || 0); // data.amount si es Recibo
     const subtotal = parseFloat(data.subtotal || data.total || 0);
     const surcharge = parseFloat(data.surcharge || 0);
     const discount = parseFloat(data.discount || 0);
+
+    // Valores Financieros (Para desglosar Cta Cte)
+    const amountPaid = parseFloat(data.amountPaid || 0);
+    const amountDebt = parseFloat(data.amountDebt || 0);
+    const newBalance = parseFloat(data.newBalance || 0); // Viene en el recibo
 
     let paymentDetails = [];
     if (data.payments && Array.isArray(data.payments) && data.payments.length > 0) {
         paymentDetails = data.payments;
     } else if (data.payment) {
         paymentDetails = [data.payment];
+    } else if (data.method) {
+        paymentDetails = [{ method: data.method, amount: total }];
     } else {
-        paymentDetails = [{ method: data.method || 'cash', amount: total }];
+        paymentDetails = [{ method: 'cash', amount: total }];
     }
 
     return (
@@ -135,6 +150,13 @@ const TicketContent = forwardRef(({
                             style={{ maxHeight: '20mm', maxWidth: '80%' }} 
                             onError={(e) => e.target.style.display = 'none'}
                         />
+                    )}
+                    
+                    {/* 🔥 ALERTA VISUAL DE PRESUPUESTO */}
+                    {isBudget && (
+                        <div className="w-full text-center font-black text-[12px] border-y-2 border-black py-1 my-1 tracking-widest bg-gray-100 print:bg-transparent">
+                            *** PRESUPUESTO ***
+                        </div>
                     )}
                     
                     <h1 className="text-lg font-black leading-tight uppercase mb-1">{EMPRESA.nombre}</h1>
@@ -168,97 +190,130 @@ const TicketContent = forwardRef(({
                     <div className="flex mb-0.5"><span className="w-10">IVA:</span> <span className="truncate flex-1">{condFiscalCliente}</span></div>
                 </div>
 
-                {/* --- TABLA ITEMS --- */}
-                <div className="mb-2">
-                    <div className="flex border-b-2 border-black py-0.5 mb-1 text-[9px] font-black bg-gray-100 print:bg-transparent">
-                        <div className="w-[15%] text-left">CANT</div>
-                        <div className="w-[55%] pl-1">DETALLE</div>
-                        <div className="w-[30%] text-right">TOTAL</div>
-                    </div>
-                    
-                    {items.map((item, idx) => {
-                        const hasPromo = item.appliedPromo || (item.originalPrice && item.originalPrice > item.price);
+                {/* --- TABLA ITEMS (Solo si no es recibo) --- */}
+                {!isReceipt && (
+                    <div className="mb-2">
+                        <div className="flex border-b-2 border-black py-0.5 mb-1 text-[9px] font-black bg-gray-100 print:bg-transparent">
+                            <div className="w-[15%] text-left">CANT</div>
+                            <div className="w-[55%] pl-1">DETALLE</div>
+                            <div className="w-[30%] text-right">TOTAL</div>
+                        </div>
                         
-                        const qty = parseFloat(item.quantity);
-                        const displayQty = (item.isWeighable || qty % 1 !== 0) ? qty.toFixed(3) : Math.round(qty);
+                        {items.map((item, idx) => {
+                            const hasPromo = item.appliedPromo || (item.originalPrice && item.originalPrice > item.price);
+                            
+                            const qty = parseFloat(item.quantity);
+                            const displayQty = (item.isWeighable || qty % 1 !== 0) ? qty.toFixed(3) : Math.round(qty);
 
-                        return (
-                            <div key={idx} className="mb-1.5 border-b border-dotted border-gray-400 pb-1 last:border-0 last:pb-0">
-                                <div className="flex items-start text-[10px] font-bold leading-none">
-                                    <div className="w-[15%] text-left font-mono">
-                                        {displayQty}
+                            return (
+                                <div key={idx} className="mb-1.5 border-b border-dotted border-gray-400 pb-1 last:border-0 last:pb-0">
+                                    <div className="flex items-start text-[10px] font-bold leading-none">
+                                        <div className="w-[15%] text-left font-mono">
+                                            {displayQty}
+                                        </div>
+                                        <div className="w-[55%] uppercase pl-1 pr-1 break-words">
+                                            {item.name}
+                                        </div>
+                                        <div className="w-[30%] text-right font-mono text-black">
+                                            {formatCurrency(item.subtotal)}
+                                        </div>
                                     </div>
-                                    <div className="w-[55%] uppercase pl-1 pr-1 break-words">
-                                        {item.name}
-                                    </div>
-                                    <div className="w-[30%] text-right font-mono text-black">
-                                        {formatCurrency(item.subtotal)}
-                                    </div>
+                                    {hasPromo ? (
+                                        <div className="flex items-center text-[8px] mt-0.5 pl-[15%] text-black font-bold">
+                                            <span className="italic uppercase mr-1">{item.promoLabel || "OFERTA"}</span>
+                                            {item.originalPrice > 0 && (
+                                                <span className="line-through decoration-1 text-[7px]">
+                                                    ({formatCurrency(item.originalPrice)})
+                                                </span>
+                                            )}
+                                        </div>
+                                    ) : (
+                                        <div className="text-[8px] text-right font-mono mt-0.5 text-gray-500 print:text-black">
+                                            Unit: {formatCurrency(item.price)}
+                                        </div>
+                                    )}
                                 </div>
-                                {hasPromo ? (
-                                    <div className="flex items-center text-[8px] mt-0.5 pl-[15%] text-black font-bold">
-                                        <span className="italic uppercase mr-1">{item.promoLabel || "OFERTA"}</span>
-                                        {item.originalPrice > 0 && (
-                                            <span className="line-through decoration-1 text-[7px]">
-                                                ({formatCurrency(item.originalPrice)})
-                                            </span>
-                                        )}
-                                    </div>
-                                ) : (
-                                    <div className="text-[8px] text-right font-mono mt-0.5 text-gray-500 print:text-black">
-                                        Unit: {formatCurrency(item.price)}
-                                    </div>
-                                )}
-                            </div>
-                        );
-                    })}
-                </div>
+                            );
+                        })}
+                    </div>
+                )}
 
                 {/* --- TOTALES --- */}
                 <div className="mt-1 border-t-2 border-black pt-2">
-                    <div className="text-[9px] font-bold mb-1 space-y-0.5">
-                         <div className="flex justify-between">
-                            <span>SUBTOTAL</span>
-                            <span className="font-mono">{formatCurrency(subtotal)}</span>
-                        </div>
-                        {discount > 0 && (
-                            <div className="flex justify-between text-black">
-                                <span>DESCUENTO</span>
-                                <span className="font-mono">-{formatCurrency(discount)}</span>
+                    {!isReceipt && (
+                        <div className="text-[9px] font-bold mb-1 space-y-0.5">
+                             <div className="flex justify-between">
+                                <span>SUBTOTAL</span>
+                                <span className="font-mono">{formatCurrency(subtotal)}</span>
                             </div>
-                        )}
-                        {surcharge > 0 && !isBudget && (
-                            <div className="flex justify-between">
-                                <span>RECARGO</span>
-                                <span className="font-mono">{formatCurrency(surcharge)}</span>
-                            </div>
-                        )}
-
-                        {/* 🔥 DESGLOSE DE IMPUESTOS */}
-                        {(afip.cbteLetra === 'A' || data.letra === 'A') && parseFloat(afip.impNeto) > 0 && !isBudget && (
-                            <div className="mt-1 pt-1 border-t border-black border-dashed">
-                                <div className="flex justify-between mb-0.5">
-                                    <span>NETO GRAVADO</span>
-                                    <span className="font-mono">{formatCurrency(afip.impNeto)}</span>
+                            {discount > 0 && (
+                                <div className="flex justify-between text-black">
+                                    <span>DESCUENTO</span>
+                                    <span className="font-mono">-{formatCurrency(discount)}</span>
                                 </div>
+                            )}
+                            {surcharge > 0 && !isBudget && (
                                 <div className="flex justify-between">
-                                    <span>IVA (21%)</span>
-                                    <span className="font-mono">{formatCurrency(afip.impIVA)}</span>
+                                    <span>RECARGO</span>
+                                    <span className="font-mono">{formatCurrency(surcharge)}</span>
                                 </div>
-                            </div>
-                        )}
-                    </div>
+                            )}
+
+                            {/* 🔥 DESGLOSE DE IMPUESTOS */}
+                            {(afip.cbteLetra === 'A' || data.letra === 'A') && parseFloat(afip.impNeto) > 0 && !isBudget && (
+                                <div className="mt-1 pt-1 border-t border-black border-dashed">
+                                    <div className="flex justify-between mb-0.5">
+                                        <span>NETO GRAVADO</span>
+                                        <span className="font-mono">{formatCurrency(afip.impNeto)}</span>
+                                    </div>
+                                    <div className="flex justify-between">
+                                        <span>IVA (21%)</span>
+                                        <span className="font-mono">{formatCurrency(afip.impIVA)}</span>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    )}
+                    
                     <div className="flex justify-between items-center border-y-2 border-black py-1 mt-1">
                         <span className="text-base font-black tracking-widest">
-                            {isBudget ? "TOTAL PRESUPUESTADO" : "TOTAL"}
+                            {isBudget ? "TOTAL PPTADO." : isReceipt ? "IMPORTE PAGO" : "TOTAL"}
                         </span>
                         <span className="text-xl font-black font-mono tracking-tight leading-none">
                             ${formatCurrency(total)}
                         </span>
                     </div>
+
+                    {/* 🔥 RESUMEN FINANCIERO: CTA CTE Y FIADOS 🔥 */}
+                    {amountDebt > 0 && !isReceipt && !isBudget && (
+                        <div className="mt-1 mb-1 pt-1 border-b-2 border-black text-[10px] font-bold">
+                            <div className="flex justify-between text-black mb-0.5">
+                                <span>ABONÓ EN ACTO:</span>
+                                <span className="font-mono">{formatCurrency(amountPaid)}</span>
+                            </div>
+                            <div className="flex justify-between text-black">
+                                <span>SALDO ADEUDADO:</span>
+                                <span className="font-mono">{formatCurrency(amountDebt)}</span>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* 🔥 RESUMEN FINANCIERO: RECIBOS (PAGOS DE CTA CTE) 🔥 */}
+                    {isReceipt && (
+                        <div className="mt-1 mb-1 pt-1 border-b-2 border-black text-[10px] font-bold">
+                            <div className="flex justify-between text-black mb-0.5">
+                                <span>ENTREGA A CUENTA:</span>
+                                <span className="font-mono">{formatCurrency(total)}</span>
+                            </div>
+                            <div className="flex justify-between text-black">
+                                <span>DEUDA ACTUALIZADA:</span>
+                                <span className="font-mono">{formatCurrency(newBalance)}</span>
+                            </div>
+                        </div>
+                    )}
                 </div>
                 
-                {/* --- FORMA DE PAGO O PRESUPUESTO --- */}
+                {/* --- FORMA DE PAGO --- */}
                 <div className="mt-2 mb-3 text-[9px]">
                     {isBudget ? (
                         <div className="text-center py-2 mt-3 font-bold border-2 border-black">
@@ -266,7 +321,9 @@ const TicketContent = forwardRef(({
                         </div>
                     ) : (
                         <>
-                            <p className="font-black border-b border-black border-dashed mb-0.5 pb-0.5 text-black">PAGO</p>
+                            <p className="font-black border-b border-black border-dashed mb-0.5 pb-0.5 text-black">
+                                {isReceipt ? "MEDIO DE PAGO" : "FORMA DE PAGO"}
+                            </p>
                             {paymentDetails.map((p, i) => (
                                 <div key={i} className="flex justify-between items-center font-bold py-0.5">
                                     <span className="uppercase">
@@ -294,7 +351,7 @@ const TicketContent = forwardRef(({
                     </div>
                 )}
 
-                {!isFiscal && !isBudget && (
+                {!isFiscal && !isBudget && !isReceipt && (
                       <div className="mt-3 text-center">
                         <p className="text-[8px] font-bold uppercase border border-black p-1 inline-block">Doc. no válido como factura</p>
                     </div>

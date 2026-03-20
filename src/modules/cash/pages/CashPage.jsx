@@ -24,7 +24,73 @@ import { db as firestoreDB } from '../../../database/firebase';
 
 const formatCurrency = (amount) => `$ ${Number(amount || 0).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
-// 🔥 HELPER INTELIGENTE: Lee foto si existe, si no, usa lo calculado
+// ============================================================================
+// 🧠 INTERCEPTOR MATEMÁTICO: SOLUCIÓN A PAGOS COMBINADOS (SPLIT)
+// ============================================================================
+const fetchAndCorrectShiftBalance = async (shift) => {
+    const bal = await cashRepository.getShiftBalance(shift.id);
+    
+    let correctSalesByMethod = { cash: 0, transfer: 0, mercadopago: 0, debit: 0, credit: 0, point: 0, clover: 0, manual_card: 0, card: 0, account: 0, employee_account: 0 };
+    let correctTotalCashSales = 0;
+    let correctTotalDigital = 0;
+
+    const newMovements = [];
+
+    (bal.movements || []).forEach(m => {
+        const isSale = m.type === 'SALE' || m.subtype === 'SALE';
+        
+        // 🔥 Si la venta tiene array de pagos (Pago Combinado), desglosamos
+        if (isSale && Array.isArray(m.payments) && m.payments.length > 0) {
+            m.payments.forEach((p, idx) => {
+                const pAmount = Number(p.total || p.amount || 0);
+                const pMethod = p.method || 'cash';
+                
+                correctSalesByMethod[pMethod] = (correctSalesByMethod[pMethod] || 0) + pAmount;
+
+                if (pMethod === 'cash') {
+                    correctTotalCashSales += pAmount;
+                } else if (!['account', 'employee_account', 'budget'].includes(pMethod)) {
+                    correctTotalDigital += pAmount;
+                }
+
+                newMovements.push({
+                    ...m,
+                    id: `${m.id}-p${idx}`,
+                    method: pMethod,
+                    amount: pAmount,
+                    description: m.payments.length > 1 ? `${m.description || 'Venta'} (Mix: ${pMethod.toUpperCase()})` : m.description
+                });
+            });
+        } else {
+            // Venta Simple o Movimiento Manual de Caja
+            newMovements.push(m);
+            if (isSale) {
+                const mAmount = Number(m.amount || 0);
+                const mMethod = m.method || 'cash';
+                correctSalesByMethod[mMethod] = (correctSalesByMethod[mMethod] || 0) + mAmount;
+                
+                if (mMethod === 'cash') correctTotalCashSales += mAmount;
+                else if (!['account', 'employee_account', 'budget'].includes(mMethod)) correctTotalDigital += mAmount;
+            }
+        }
+    });
+
+    // Reconstruimos el EFECTIVO ESPERADO con exactitud
+    const initialAmount = Number(shift.initialAmount || 0);
+    const manualIn = (bal.movements || []).filter(m => m.type === 'IN' || m.type === 'DEPOSIT').reduce((acc, m) => acc + Number(m.amount), 0);
+    const manualOut = (bal.movements || []).filter(m => m.type === 'OUT' || m.type === 'WITHDRAWAL').reduce((acc, m) => acc + Number(m.amount), 0);
+    
+    const recalculatedTotalCash = initialAmount + correctTotalCashSales + manualIn - manualOut;
+
+    return {
+        ...bal,
+        movements: newMovements.sort((a, b) => new Date(b.date || b.createdAt) - new Date(a.date || a.createdAt)),
+        salesByMethod: correctSalesByMethod,
+        totalCash: recalculatedTotalCash,
+        totalDigital: correctTotalDigital
+    };
+};
+
 const getShiftValues = (shift, calculatedDetails = null) => {
     if (!shift) return { expected: 0, declared: 0, diff: 0, initial: 0, left: 0 };
     
@@ -82,7 +148,9 @@ const getMovementProps = (mov) => {
     else if (['mercadopago', 'mp', 'qr'].includes(methodTag)) methodTag = 'MercadoPago QR';
     else if (['point'].includes(methodTag)) methodTag = 'Terminal Point';
     else if (['card', 'tarjeta', 'debit', 'credit', 'manual_card'].includes(methodTag)) methodTag = 'Tarjeta';
-    else if (['current_account', 'employee_account'].includes(methodTag)) methodTag = 'Cta. Corriente';
+    else if (['account', 'current_account'].includes(methodTag)) methodTag = 'Cta. Corriente';
+    else if (['employee_account'].includes(methodTag)) methodTag = 'Cta. Empleado';
+    else if (['budget'].includes(methodTag)) methodTag = 'Presupuesto';
     else methodTag = methodTag.toUpperCase();
 
     if (mov.type === 'SALE' && !isCash) {
@@ -106,12 +174,12 @@ const AuditDetailModal = ({ shift, onClose, resolveName, resolveBranchName }) =>
     const [currentPage, setCurrentPage] = useState(1);
     const itemsPerPage = 20;
 
-    // 🔄 Hook 1: Carga de Datos
+    // 🔄 Hook 1: Carga de Datos Mejorada con Interceptor
     useEffect(() => {
         if (shift) {
             setLoadingDetails(true);
             setCurrentPage(1); 
-            cashRepository.getShiftBalance(shift.id).then(bal => {
+            fetchAndCorrectShiftBalance(shift).then(bal => {
                 setDetails(bal);
             }).catch(err => {
                 console.error("Error balance:", err);
@@ -122,37 +190,27 @@ const AuditDetailModal = ({ shift, onClose, resolveName, resolveBranchName }) =>
         }
     }, [shift]);
 
-    // 🧠 Hook 2: Inyección de Resumen Snapshot (Cierre Remoto)
     const processedMovements = useMemo(() => {
         if (!shift || !details) return [];
-        
         let list = [...(details.movements || [])];
         
-        // Solo inyectamos el resumen virtual si NO HAY ninguna venta local registrada 
+        // Resumen virtual si NO HAY ventas locales (snapshot cerrado)
         if (shift.auditSnapshot) {
             const snap = shift.auditSnapshot;
             const hasLocalSales = list.some(m => m.type === 'SALE' || m.subtype === 'SALE');
 
             if (!hasLocalSales) {
                 const methods = snap.salesByMethod || {};
-                
                 if (methods.cash > 0) {
                     list.push({ id: 'v-cash', isVirtual: true, type: 'SALE', method: 'cash', amount: methods.cash, description: 'Ventas Resumidas en Efectivo', date: shift.closedAt || shift.openedAt });
                 }
-                const digitalTotal = (methods.mercadopago || 0) + (methods.clover || 0) + (methods.point || 0) + (methods.manual_card || 0) + (methods.transfer || 0) + (methods.digitalOther || 0);
+                const digitalTotal = (methods.mercadopago || 0) + (methods.clover || 0) + (methods.point || 0) + (methods.manual_card || 0) + (methods.card || 0) + (methods.transfer || 0) + (methods.digitalOther || 0);
                 if (digitalTotal > 0) {
                     list.push({ id: 'v-digital', isVirtual: true, type: 'SALE', method: 'digital', amount: digitalTotal, description: 'Ventas Digitales Resumidas', date: shift.closedAt || shift.openedAt });
                 }
-                if (snap.manualIn > 0) {
-                    list.push({ id: 'v-in', isVirtual: true, type: 'IN', method: 'cash', amount: snap.manualIn, description: 'Ingresos Manuales Resumidos', date: shift.closedAt || shift.openedAt });
-                }
-                if (snap.manualOut > 0) {
-                    list.push({ id: 'v-out', isVirtual: true, type: 'OUT', method: 'cash', amount: snap.manualOut, description: 'Retiros/Gastos Resumidos', date: shift.closedAt || shift.openedAt });
-                }
             }
         }
-        
-        return list.sort((a, b) => new Date(b.date) - new Date(a.date));
+        return list.sort((a, b) => new Date(b.date || b.createdAt) - new Date(a.date || a.createdAt));
     }, [details, shift]);
 
     if (!shift) return null;
@@ -172,9 +230,8 @@ const AuditDetailModal = ({ shift, onClose, resolveName, resolveBranchName }) =>
     const { expected, declared, diff, initial, left } = getShiftValues(shift, safeDetails);
     const isPerfect = Math.abs(diff) < 50; 
     
-    // 🔥 EXTRAER MÉTODOS DE PAGO DEL SNAPSHOT (O DEL ESTADO ACTUAL SI ESTÁ ABIERTO)
     const paymentMethods = shift.auditSnapshot?.salesByMethod || safeDetails.salesByMethod || {};
-    const totalTarjetas = (paymentMethods.clover || 0) + (paymentMethods.point || 0) + (paymentMethods.manual_card || 0);
+    const totalTarjetas = (paymentMethods.clover || 0) + (paymentMethods.point || 0) + (paymentMethods.manual_card || 0) + (paymentMethods.card || 0);
 
     const totalPages = Math.ceil(processedMovements.length / itemsPerPage);
     const paginatedMovements = processedMovements.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
@@ -222,7 +279,7 @@ const AuditDetailModal = ({ shift, onClose, resolveName, resolveBranchName }) =>
                         </div>
                     </div>
 
-                    {/* 🔥 2. NUEVO: Desglose de Métodos de Pago */}
+                    {/* 🔥 2. Desglose de Métodos de Pago */}
                     <div className="bg-white p-4 rounded-xl border border-sys-200 shadow-sm">
                         <h4 className="text-[10px] font-black text-sys-500 uppercase tracking-widest mb-3 flex items-center gap-1.5">
                             <PieChart size={14} /> Desglose de Ventas (Según Sistema)
@@ -255,9 +312,16 @@ const AuditDetailModal = ({ shift, onClose, resolveName, resolveBranchName }) =>
                             )}
 
                             {(paymentMethods.account > 0) && (
+                                <div className="bg-red-50 border border-red-100 px-4 py-2 rounded-lg flex-1 min-w-[120px]">
+                                    <p className="text-[9px] text-red-600 font-bold uppercase">Cta. Corriente (Fiado)</p>
+                                    <p className="text-sm font-black text-red-700">{formatCurrency(paymentMethods.account)}</p>
+                                </div>
+                            )}
+                            
+                            {(paymentMethods.employee_account > 0) && (
                                 <div className="bg-orange-50 border border-orange-100 px-4 py-2 rounded-lg flex-1 min-w-[120px]">
-                                    <p className="text-[9px] text-orange-600 font-bold uppercase">Cta. Corriente</p>
-                                    <p className="text-sm font-black text-orange-700">{formatCurrency(paymentMethods.account)}</p>
+                                    <p className="text-[9px] text-orange-600 font-bold uppercase">Cta. Empleado</p>
+                                    <p className="text-sm font-black text-orange-700">{formatCurrency(paymentMethods.employee_account)}</p>
                                 </div>
                             )}
                         </div>
@@ -301,7 +365,7 @@ const AuditDetailModal = ({ shift, onClose, resolveName, resolveBranchName }) =>
                                                             {typeLabel}
                                                         </span>
                                                     </td>
-                                                    <td className="p-3 font-mono text-sys-400 text-[10px]">{m.date ? new Date(m.date).toLocaleTimeString() : '-'}</td>
+                                                    <td className="p-3 font-mono text-sys-400 text-[10px]">{m.date || m.createdAt ? new Date(m.date || m.createdAt).toLocaleTimeString() : '-'}</td>
                                                     <td className="p-3">
                                                         <p className="text-sys-800 font-bold text-xs uppercase">{m.description}</p>
                                                         {m.isVirtual && <p className="text-[9px] text-blue-500 font-medium italic leading-none mt-0.5">Información recuperada del cierre</p>}
@@ -576,14 +640,13 @@ export const CashPage = () => {
     );
 };
 
-// 🔥 WRAPPER INTELIGENTE: Pasa todos los datos necesarios al nuevo CashClosingModal
+// 🔥 WRAPPER INTELIGENTE: Ejecuta el interceptor antes del Cierre Z
 const CashClosingModalWrapper = ({ shift, onClose, onConfirm }) => {
     const [totals, setTotals] = useState(null);
     useEffect(() => {
         let mounted = true;
-        cashRepository.getShiftBalance(shift.id).then(bal => {
+        fetchAndCorrectShiftBalance(shift).then(bal => {
             if (mounted) {
-                // Pasamos TODO el balance (manualIn, manualOut, etc.) para el Ticket Z
                 setTotals(bal);
             }
         });

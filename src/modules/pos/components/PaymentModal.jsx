@@ -121,9 +121,9 @@ export const PaymentModal = ({
     const isBudgetMode = method === 'budget';
     const isAccountMode = method === 'account'; // 🔥 MODO FIADO
 
-    const hasError = !isBudgetMode && !isAccountMode && ((!isSplitMode && isPartialPayment && !isClientRegistered) || isEmployeePaymentInvalid); 
+    const hasError = !isBudgetMode && ((!isSplitMode && isPartialPayment && !isClientRegistered) || isEmployeePaymentInvalid || (isAccountMode && !isClientRegistered)); 
     
-    const canConfirmSimple = isBudgetMode || isAccountMode || (!hasError && payValue > 0 && amountToPay !== '' && !isProcessing);
+    const canConfirmSimple = isBudgetMode || (!hasError && payValue > 0 && amountToPay !== '' && !isProcessing);
 
     const isRI = client?.fiscalCondition === 'RESPONSABLE_INSCRIPTO';
     
@@ -156,7 +156,7 @@ export const PaymentModal = ({
             if (pollingRef.current) clearInterval(pollingRef.current);
             
             setTimeout(() => {
-                if (cashInputRef.current && !isBudgetMode && !isAccountMode) {
+                if (cashInputRef.current && !isBudgetMode) {
                     cashInputRef.current.focus();
                     cashInputRef.current.select();
                 }
@@ -166,23 +166,24 @@ export const PaymentModal = ({
         }
     }, [isOpen, total, isRI, disableAfip]);
 
+    // 🔥 Permite que el input de Cta Cte se pueda editar igual que el efectivo
     useEffect(() => {
-        if (!isSplitMode && !isBudgetMode && !isAccountMode) {
+        if (!isSplitMode && !isBudgetMode) {
             if (currentInterestRate > 0) {
                 setAmountToPay(effectiveTotal.toFixed(2));
             } else {
                 setAmountToPay(Math.round(total).toString());
             }
-        } else if (isBudgetMode || isAccountMode) {
+        } else if (isBudgetMode) {
              setAmountToPay(Math.round(total).toString());
         }
-    }, [currentInterestRate, effectiveTotal, isSplitMode, total, isBudgetMode, isAccountMode]);
+    }, [currentInterestRate, effectiveTotal, isSplitMode, total, isBudgetMode]);
 
     useEffect(() => {
-        if (isSplitMode && !selectedRate && !isFullyPaid && !isBudgetMode && !isAccountMode) {
+        if (isSplitMode && !selectedRate && !isFullyPaid && !isBudgetMode) {
             setAmountToPay(remainingBase.toFixed(2));
         }
-    }, [remainingBase, isSplitMode, selectedRate, isFullyPaid, isBudgetMode, isAccountMode]);
+    }, [remainingBase, isSplitMode, selectedRate, isFullyPaid, isBudgetMode]);
 
     // ==========================================
     // 4. DATA FETCHING
@@ -311,7 +312,7 @@ export const PaymentModal = ({
         } else if (method === 'employee_account') {
             finalReference = `A cuenta: ${employees.find(e => e.uid === selectedEmployeeId)?.name}`;
         } else if (method === 'account') {
-            finalReference = `Fiado en Cta. Corriente`; // 🔥 Referencia para el recibo
+            finalReference = `Fiado en Cta. Corriente`; 
         }
 
         let finalMethod = method;
@@ -324,9 +325,11 @@ export const PaymentModal = ({
             employeeId: method === 'employee_account' ? selectedEmployeeId : null,
             branchId: activeBranchId, 
             totalSale: effectiveTotal,
-            // 🔥 Si es a Cta. Corriente, no entró efectivo, todo es deuda
+            // Si es a Cta. Corriente en un pago total simple, no entra dinero a caja. 
+            // Si el cajero hace un pago "Parcial" con Cta Cte pero NO usa modo split (ej. 500 de 1000),
+            // se trata como un abono parcial regular. Para combinar métodos (ej: efectivo + fiado), se debe usar Pago Combinado.
             amountPaid: method === 'account' ? 0 : (payValue - changeValue), 
-            amountDebt: method === 'account' ? effectiveTotal : debtValue, 
+            amountDebt: method === 'account' ? payValue : debtValue, 
             baseAmount: total,
             surcharge: surchargeAmountUI, 
             discount: discount || 0,
@@ -467,7 +470,6 @@ export const PaymentModal = ({
             );
         }
 
-        // 🔥 BOTÓN ESPECÍFICO PARA PRESUPUESTOS
         if (isBudgetMode) {
             return (
                 <Button onClick={handleMainAction} className="w-full py-6 text-xl font-black uppercase shadow-xl bg-sys-800 hover:bg-black text-white rounded-2xl flex items-center justify-center gap-2 transition-all active:scale-[0.98]">
@@ -476,7 +478,6 @@ export const PaymentModal = ({
             );
         }
 
-        // 🔥 BOTÓN ESPECÍFICO PARA FIADO (CUENTA CORRIENTE)
         if (isAccountMode) {
             return (
                 <Button onClick={handleMainAction} className="w-full py-6 text-xl font-black uppercase shadow-xl bg-sys-800 hover:bg-black text-white rounded-2xl flex items-center justify-center gap-2 transition-all active:scale-[0.98]">
@@ -551,8 +552,9 @@ export const PaymentModal = ({
                             </span>
                             <Switch checked={isSplitMode} onCheckedChange={(val) => {
                                 setIsSplitMode(val);
-                                if (val && (isBudgetMode || isAccountMode)) setMethod('cash'); // No se puede combinar presupuestos ni fiado simple
-                            }} size="sm" disabled={isBudgetMode || isAccountMode} />
+                                // 🔥 Permitimos combinar Cta Cte con otros medios
+                                if (val && isBudgetMode) setMethod('cash'); 
+                            }} size="sm" disabled={isBudgetMode} />
                         </div>
 
                         <div className={cn("bg-white p-4 rounded-xl border shadow-sm relative overflow-hidden transition-all duration-300", isBudgetMode ? "border-sys-400 bg-sys-100" : isAccountMode ? "border-red-400 bg-red-50" : "border-sys-200")}>
@@ -639,13 +641,13 @@ export const PaymentModal = ({
                             </div>
                         ) : (
                             <div className={cn("p-4 rounded-xl border-2 transition-all duration-300", 
-                                isBudgetMode || isAccountMode ? "bg-sys-100 border-sys-300 opacity-50 pointer-events-none" :
+                                isBudgetMode ? "bg-sys-100 border-sys-300 opacity-50 pointer-events-none" :
                                 isPartialPayment ? "bg-orange-50 border-orange-200" : 
                                 changeValue > 0 ? "bg-green-50 border-green-200" : "bg-white border-sys-200",
-                                (currentInterestRate > 0 || method === 'employee_account' || digitalState === 'waiting') && !isBudgetMode && !isAccountMode && "opacity-90 grayscale-[0.5]"
+                                (currentInterestRate > 0 || method === 'employee_account' || digitalState === 'waiting') && !isBudgetMode && "opacity-90 grayscale-[0.5]"
                             )}>
                                 <p className={cn("text-[10px] uppercase font-bold mb-1 flex justify-between", isPartialPayment ? "text-orange-700" : "text-sys-500")}>
-                                    <span>Monto que entrega</span>
+                                    <span>Monto que entrega / fía</span>
                                     {(currentInterestRate > 0 || method === 'employee_account' || method === 'point') && !isBudgetMode && !isAccountMode && <span className="text-[9px] bg-sys-200 px-1 rounded text-sys-600">AUTO</span>}
                                 </p>
                                 <div className="flex items-center relative">
@@ -655,13 +657,13 @@ export const PaymentModal = ({
                                         type="number" 
                                         className={cn(
                                             "w-full bg-transparent text-2xl font-black outline-none text-sys-900 placeholder-sys-300 transition-colors",
-                                            (currentInterestRate > 0 || method === 'employee_account' || method === 'point' || isBudgetMode || isAccountMode) && "cursor-not-allowed text-sys-600"
+                                            (currentInterestRate > 0 || method === 'employee_account' || method === 'point' || isBudgetMode) && "cursor-not-allowed text-sys-600"
                                         )}
                                         value={amountToPay} 
-                                        onChange={e => currentInterestRate === 0 && !isBudgetMode && !isAccountMode && setAmountToPay(e.target.value)}
+                                        onChange={e => currentInterestRate === 0 && !isBudgetMode && setAmountToPay(e.target.value)}
                                         onKeyDown={handleKeyDown}
-                                        readOnly={currentInterestRate > 0 || method === 'employee_account' || isProcessing || method === 'point' || isBudgetMode || isAccountMode}
-                                        disabled={isProcessing || isBudgetMode || isAccountMode}
+                                        readOnly={currentInterestRate > 0 || method === 'employee_account' || isProcessing || method === 'point' || isBudgetMode}
+                                        disabled={isProcessing || isBudgetMode}
                                         placeholder={Math.round(total).toString()}
                                     />
                                 </div>
@@ -696,20 +698,19 @@ export const PaymentModal = ({
                             {id:'point', icon: CreditCard, label:'Point', color:'blue-600'},
                             {id:'manual_card', icon: Calculator, label:'Tarjeta', color:'indigo-600'},
                             {id:'employee_account', icon: User, label:'Personal', color:'orange-500'},
-                            {id:'account', icon: Users, label:'Cta. Cte.', color:'red-500'}, // 🔥 NUEVO BOTÓN: FIADO
+                            {id:'account', icon: Users, label:'Cta. Cte.', color:'red-500'}, 
                             {id:'budget', icon: FileArchive, label:'Presup.', color:'sys-600'} 
                         ].map(opt => (
                             <button 
                                 key={opt.id}
                                 onClick={() => {
-                                    // 🔥 PROTECCIÓN: No podés fiar si no tenés un cliente asignado al ticket
                                     if (opt.id === 'account' && !isClientRegistered) {
                                         toast.error("Debe asignar un Cliente (F3) antes de enviarlo a Cta Cte.");
                                         return;
                                     }
 
                                     setMethod(opt.id);
-                                    if (opt.id === 'budget' || opt.id === 'account') setIsSplitMode(false); // Presupuesto y Fiado total no se dividen
+                                    if (opt.id === 'budget') setIsSplitMode(false); 
                                     if (opt.id !== 'manual_card') { setSelectedBrand(null); setSelectedRate(null); }
                                     if (opt.id !== 'employee_account') setSelectedEmployeeId('');
                                     setDigitalState('idle'); 
@@ -719,8 +720,8 @@ export const PaymentModal = ({
                                     digitalState === 'waiting' || 
                                     digitalState === 'approved' || 
                                     isProcessing || 
-                                    (isSplitMode && (isFullyPaid || opt.id === 'budget' || opt.id === 'account')) ||
-                                    (opt.id === 'account' && !isClientRegistered) // 🔥 Se deshabilita visualmente si no hay cliente
+                                    (isSplitMode && (isFullyPaid || opt.id === 'budget')) ||
+                                    (opt.id === 'account' && !isClientRegistered) 
                                 } 
                                 className={cn(
                                     "flex flex-col items-center justify-center p-2 rounded-xl border-2 transition-all duration-200 h-24 relative overflow-hidden active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed group", 
@@ -755,7 +756,7 @@ export const PaymentModal = ({
                             </div>
                         )}
 
-                        {isAccountMode && (
+                        {isAccountMode && !isSplitMode && (
                             <div className="text-center animate-in fade-in zoom-in-95">
                                 <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-3 text-red-600">
                                     <Users size={32}/>
@@ -763,7 +764,7 @@ export const PaymentModal = ({
                                 <h4 className="font-black text-xl text-sys-900 uppercase tracking-tight">Cuenta Corriente</h4>
                                 <p className="text-sm font-bold text-red-600 mt-1 uppercase">{client?.name}</p>
                                 <p className="text-xs text-sys-500 mt-2 max-w-[300px] mx-auto">
-                                    El total de <strong>$ {effectiveTotal.toLocaleString('es-AR')}</strong> se sumará a la deuda actual del cliente. No se registrará ingreso en la caja física.
+                                    Si utiliza el <strong>Pago Combinado (Split)</strong> podrá mezclar efectivo con deuda. De lo contrario, todo el monto ingresado será deuda nueva.
                                 </p>
                             </div>
                         )}

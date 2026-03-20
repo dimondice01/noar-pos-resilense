@@ -59,9 +59,11 @@ const TicketZContent = React.forwardRef(({ data }, ref) => {
         cashIn: parseFloat(getVal(snap.cashIn, data.cashIn)), // Ingresos
         cashOut: parseFloat(getVal(snap.cashOut, data.cashOut)), // Salidas
         
-        // 🔥 LOS MOVIMIENTOS MANUALES LOS LEE TAMBIÉN DE LA RAIZ O EL SNAPSHOT
+        // 🔥 LOS MOVIMIENTOS MANUALES Y DIGITALES EXTRAS LOS LEE TAMBIÉN DEL SNAPSHOT
         manualIn: parseFloat(getVal(snap.manualIn, data.manualIn)),
         manualOut: parseFloat(getVal(snap.manualOut, data.manualOut)),
+        digitalIn: parseFloat(getVal(snap.digitalIn, data.digitalIn)), // Total de ingresos digitales extras
+        digitalInByMethod: snap.digitalInByMethod || data.digitalInByMethod || {},
 
         salesByMethod: snap.salesByMethod || data.salesByMethod || { cash: 0 },
         salesCount: getVal(snap.salesCount, data.salesCount),
@@ -72,23 +74,31 @@ const TicketZContent = React.forwardRef(({ data }, ref) => {
     const closeDate = source.closedAt && source.closedAt !== 0 ? new Date(source.closedAt).toLocaleString() : 'PENDIENTE';
     
     // --- LÓGICA DE CONSISTENCIA VISUAL ---
-    // Calculamos las ventas en efectivo exactas reportadas (OJO: No el teórico de caja)
+    // Extraemos totales de VENTAS (El backend ya separó los ingresos extras)
     const ventasEfectivo = parseFloat(source.salesByMethod.cash || 0);
-
-    // Extraemos totales de otros medios de pago conocidos
     const mp = parseFloat(source.salesByMethod.mercadopago || 0);
     const clover = parseFloat(source.salesByMethod.clover || 0);
     const point = parseFloat(source.salesByMethod.point || 0);
     const manualCard = parseFloat(source.salesByMethod.manual_card || 0);
+    const regularCard = parseFloat(source.salesByMethod.card || 0);
     const transfer = parseFloat(source.salesByMethod.transfer || 0);
     const account = parseFloat(source.salesByMethod.account || source.salesByMethod.employee_account || 0);
     const digitalOther = parseFloat(source.salesByMethod.digitalOther || source.salesByMethod.digital || 0);
     
-    const totalTarjetas = clover + point + manualCard;
+    const totalTarjetas = clover + point + manualCard + regularCard;
     const ventasDigitales = mp + totalTarjetas + transfer + account + digitalOther;
     
-    // Validamos el Total de Ventas
+    // Validamos el Total de Ventas Puras
     const ventasTotales = ventasEfectivo + ventasDigitales;
+
+    // 🔥 NUEVO: Cálculo de Cobros de Cta Cte y Otros Ingresos
+    const cobrosEfectivo = source.manualIn;
+    const cobrosTransferencia = parseFloat(source.digitalInByMethod.transfer || 0);
+    const cobrosMercadoPago = parseFloat(source.digitalInByMethod.mercadopago || 0);
+    const cobrosTarjetas = parseFloat(source.digitalInByMethod.clover || 0) + parseFloat(source.digitalInByMethod.point || 0) + parseFloat(source.digitalInByMethod.manual_card || 0) + parseFloat(source.digitalInByMethod.card || 0);
+    const cobrosOtrosDigitales = parseFloat(source.digitalInByMethod.digitalOther || 0);
+    
+    const hasCobrosExtras = cobrosEfectivo > 0 || source.digitalIn > 0;
 
     const retiroNeto = Math.max(0, source.declaredCash - source.leftInCash);
     const desvio = source.declaredCash - source.expectedCash;
@@ -114,9 +124,9 @@ const TicketZContent = React.forwardRef(({ data }, ref) => {
 
                 <div className="border-solid"></div>
 
-                {/* DESGLOSE DE VENTAS (NUEVO) */}
+                {/* DESGLOSE DE VENTAS */}
                 <div className="mb-2">
-                    <p className="t-header">DESGLOSE DE VENTAS</p>
+                    <p className="t-header">VENTAS DEL TURNO</p>
                     
                     <div className="row-flex t-normal mt-1"><span>EFECTIVO:</span><span>{formatMoney(ventasEfectivo)}</span></div>
                     
@@ -131,16 +141,32 @@ const TicketZContent = React.forwardRef(({ data }, ref) => {
                     <div className="row-flex t-small mt-0.5"><span>CANTIDAD OPS:</span><span>{source.salesCount}</span></div>
                 </div>
 
+                {/* 🔥 SECCIÓN DE COBROS Y PAGOS EXTRAS */}
+                {(hasCobrosExtras || source.manualOut > 0) && (
+                    <>
+                        <div className="border-solid"></div>
+                        <div className="mb-2">
+                            <p className="t-header">OTROS MOVIMIENTOS</p>
+                            {cobrosEfectivo > 0 && <div className="row-flex t-normal mt-1"><span>(+) RECIBOS / INGRESOS EFVO:</span><span>{formatMoney(cobrosEfectivo)}</span></div>}
+                            {cobrosTransferencia > 0 && <div className="row-flex t-normal mt-1 text-gray-700"><span>(+) RECIBOS TRANSF:</span><span>{formatMoney(cobrosTransferencia)}</span></div>}
+                            {cobrosMercadoPago > 0 && <div className="row-flex t-normal mt-1 text-gray-700"><span>(+) RECIBOS MP QR:</span><span>{formatMoney(cobrosMercadoPago)}</span></div>}
+                            {cobrosTarjetas > 0 && <div className="row-flex t-normal mt-1 text-gray-700"><span>(+) RECIBOS TARJETAS:</span><span>{formatMoney(cobrosTarjetas)}</span></div>}
+                            {cobrosOtrosDigitales > 0 && <div className="row-flex t-normal mt-1 text-gray-700"><span>(+) OTROS ING. DIGITALES:</span><span>{formatMoney(cobrosOtrosDigitales)}</span></div>}
+                            
+                            {source.manualOut > 0 && <div className="row-flex t-normal mt-1 text-red-600"><span>(-) GASTOS/RETIROS:</span><span>{formatMoney(source.manualOut)}</span></div>}
+                        </div>
+                    </>
+                )}
+
                 <div className="border-solid"></div>
 
-                {/* FLUJO DE CAJA (Calculado Matemáticamente para Efectivo) */}
+                {/* FLUJO DE CAJA EFECTIVO (SISTEMA) */}
                 <div className="mb-2">
                     <p className="t-header">FLUJO EFECTIVO (SISTEMA)</p>
                     <div className="row-flex t-normal mt-1"><span>(+) FONDO INICIAL:</span><span>{formatMoney(source.initialAmount)}</span></div>
                     <div className="row-flex t-normal"><span>(+) VENTAS EFVO:</span><span>{formatMoney(ventasEfectivo)}</span></div>
                     
-                    {/* Mostramos manualIn / manualOut que sacamos del backend */}
-                    {source.manualIn > 0 && <div className="row-flex t-normal"><span>(+) INGRESOS MANUALES:</span><span>{formatMoney(source.manualIn)}</span></div>}
+                    {cobrosEfectivo > 0 && <div className="row-flex t-normal"><span>(+) OTROS INGRESOS:</span><span>{formatMoney(cobrosEfectivo)}</span></div>}
                     {source.manualOut > 0 && <div className="row-flex t-normal text-red-600"><span>(-) GASTOS/RETIROS:</span><span>{formatMoney(source.manualOut)}</span></div>}
                     
                     <div className="border-dash my-1"></div>

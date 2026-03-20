@@ -52,7 +52,7 @@ export const ClientDashboard = ({ clientId, onBack }) => {
   }, [clientId]);
 
   // =================================================================
-  // 💰 PROCESAMIENTO DEL COBRO DE DEUDA (SOPORTA MULTI-PAGO)
+  // 💰 PROCESAMIENTO DEL COBRO DE DEUDA (SOPORTA MULTI-PAGO BLINDADO)
   // =================================================================
   const handlePaymentConfirm = async (paymentData) => {
       try {
@@ -62,16 +62,12 @@ export const ClientDashboard = ({ clientId, onBack }) => {
               return;
           }
 
-          // Compatibilidad con Multi-Pago (Si PaymentModal devuelve array o un solo objeto)
-          const paymentsToProcess = Array.isArray(paymentData.payments) 
+          // 🔥 FIX: Normalizamos la estructura de datos.
+          // Si es un pago dividido, usamos el array de 'payments'.
+          // Si es pago simple, envolvemos todo el objeto en un array para iterar igual.
+          const paymentsToProcess = (Array.isArray(paymentData.payments) && paymentData.payments.length > 0)
                 ? paymentData.payments 
-                : [{
-                    method: paymentData.method,
-                    amountPaid: parseFloat(paymentData.amountPaid || 0),
-                    surcharge: parseFloat(paymentData.surcharge || 0),
-                    totalSale: parseFloat(paymentData.totalSale || paymentData.amountPaid || 0),
-                    baseAmount: parseFloat(paymentData.baseAmount || paymentData.amountPaid || 0)
-                }];
+                : [paymentData];
 
           let totalCapitalPaid = 0;
           let totalMoneyInBox = 0;
@@ -79,31 +75,39 @@ export const ClientDashboard = ({ clientId, onBack }) => {
 
           // 1. Registrar Ingresos en Caja por cada método utilizado
           for (const p of paymentsToProcess) {
-              const realPaymentAmount = p.baseAmount || p.amountPaid; // Lo que baja la deuda
-              const moneyInBox = p.totalSale || p.amountPaid; // Lo que entra a la caja (con recargo)
+              // 🔥 EL FIX ESTÁ AQUÍ: Buscamos las propiedades tanto del formato Simple como del Split
+              const realPaymentAmount = parseFloat(p.baseAmount ?? p.amountPaid ?? p.amount ?? 0); // Lo que baja la deuda
+              const moneyInBox = parseFloat(p.totalSale ?? p.total ?? p.amountPaid ?? p.amount ?? 0); // Lo que entra a la caja (con recargo)
+              const surcharge = parseFloat(p.surcharge ?? 0);
+              const method = p.method || 'cash';
               
               if (realPaymentAmount <= 0) continue;
 
               await cashRepository.registerIncome(
                   moneyInBox,
-                  p.method, 
-                  `Cobro Cta Cte: ${client.name} ${p.surcharge > 0 ? '(c/Interés)' : ''}` 
+                  method, 
+                  `Cobro Cta Cte: ${client.name} ${surcharge > 0 ? '(c/Interés)' : ''}` 
               );
 
               totalCapitalPaid += realPaymentAmount;
               totalMoneyInBox += moneyInBox;
-              methodsUsed.push(p.method);
+              methodsUsed.push(method);
           }
 
-          if (totalCapitalPaid <= 0) return;
+          if (totalCapitalPaid <= 0) {
+              toast.error("El monto a cobrar es inválido o cero.");
+              return;
+          }
 
           // 2. Registrar Baja Única en Ledger (Solo baja el Capital total)
           const referenceId = `rec_${Date.now()}`;
+          const uniqueMethods = [...new Set(methodsUsed)].map(m => m.toUpperCase());
+
           const newBalance = await clientRepository.registerMovement(
               client.id,
               'PAYMENT',
               totalCapitalPaid, 
-              `Pago a cuenta (${methodsUsed.join(', ')})`,
+              `Pago a cuenta (${uniqueMethods.join(' + ')})`,
               referenceId 
           );
 
@@ -112,12 +116,12 @@ export const ClientDashboard = ({ clientId, onBack }) => {
               localId: referenceId,
               date: new Date().toISOString(),
               client: client,
-              amount: totalMoneyInBox, // En el recibo mostramos lo que pagó realmente
+              amount: totalMoneyInBox, // En el recibo mostramos lo que pagó realmente con recargos
               newBalance: newBalance,
-              method: methodsUsed.length > 1 ? 'MIXTO' : methodsUsed[0],
+              method: methodsUsed.length > 1 ? 'SPLIT' : methodsUsed[0],
               type: 'RECEIPT',
               // Guardamos detalle financiero para el ticket
-              surcharge: paymentData.surcharge || 0,
+              surcharge: parseFloat(paymentData.surcharge || 0),
               baseAmount: totalCapitalPaid,
               totalSale: totalMoneyInBox,
               // Snapshot de la sucursal actual para el encabezado del ticket

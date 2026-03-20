@@ -6,6 +6,7 @@ import { useShiftStore } from '../../cash/store/useShiftStore';
 import { cashRepository } from '../../cash/repositories/cashRepository'; 
 import { paymentService } from '../../payments/services/paymentService'; 
 import { employeeLedgerRepository } from '../../settings/repositories/employeeLedgerRepository'; 
+import { clientRepository } from '../../clients/repositories/clientRepository'; // 🔥 IMPORTACIÓN CLAVE
 import { toast } from 'react-hot-toast'; 
 import { getDB } from '../../../database/db'; 
 
@@ -427,7 +428,7 @@ export const usePosController = () => {
         return currentShift;
     };
 
-    // 🔥 NUEVA FUNCIÓN: Generar Presupuesto (No descuenta stock ni afecta caja)
+    // 🔥 FUNCIÓN: Generar Presupuesto (No descuenta stock ni afecta caja)
     const processBudget = async () => {
         if (activeTab.items.length === 0) {
             toast.error("Carrito vacío");
@@ -515,54 +516,104 @@ export const usePosController = () => {
                 throw new Error("⚠️ EL TURNO ABIERTO PERTENECE A OTRA SUCURSAL");
             }
 
-            // 🛡️ BLINDAJE DE IDENTIFICADORES SAAS
             const activeCompanyId = user?.companyId || user?.tenantId;
             if (!activeCompanyId) throw new Error("⚠️ Sesión corrupta: Falta Company ID.");
 
-            // 1. Preparación de Pagos
+            // 🔥 1. PREPARACIÓN INTELIGENTE DE PAGOS Y DEUDAS
             let finalPayments = [];
             let totalWithInterest = totals.total;
+            let totalDebtAmount = 0;
+            let totalPaidInCash = 0;
 
-            if (Array.isArray(paymentData.payments)) {
+            if (Array.isArray(paymentData.payments) && paymentData.payments.length > 0) {
+                // MODALIDAD: PAGO COMBINADO (SPLIT) DESDE EL MODAL
                 finalPayments = paymentData.payments;
                 totalWithInterest = finalPayments.reduce((acc, p) => acc + parseFloat(p.total || 0), 0);
+                
+                totalDebtAmount = finalPayments
+                    .filter(p => p.method === 'account')
+                    .reduce((acc, p) => acc + parseFloat(p.amount || 0), 0);
+                    
+                totalPaidInCash = finalPayments
+                    .filter(p => p.method !== 'account')
+                    .reduce((acc, p) => acc + parseFloat(p.amount || 0), 0);
             } else {
-                finalPayments = [{
-                    method: paymentData.method,
-                    amount: parseFloat(paymentData.amountPaid),
-                    surcharge: parseFloat(paymentData.surcharge || 0),
-                    total: parseFloat(paymentData.totalSale || totals.total),
-                    employeeId: paymentData.employeeId || null 
-                }];
+                // MODALIDAD: PAGO SIMPLE O PAGO PARCIAL
                 totalWithInterest = parseFloat(paymentData.totalSale || totals.total);
+                const amountPaid = parseFloat(paymentData.amountPaid || 0);
+                const amountDebt = parseFloat(paymentData.amountDebt || 0);
+                const selectedMethod = paymentData.method;
+
+                totalDebtAmount = amountDebt;
+                totalPaidInCash = amountPaid;
+
+                if (selectedMethod === 'account') {
+                    // El cliente pidió fiar el 100%
+                    finalPayments = [{
+                        method: 'account',
+                        amount: amountDebt,
+                        surcharge: 0,
+                        total: amountDebt,
+                        employeeId: null
+                    }];
+                } else if (amountDebt > 0) {
+                    // 🔥 SPLIT VIRTUAL: Pagó una parte en efectivo/tarjeta y el resto queda en deuda
+                    finalPayments = [
+                        {
+                            method: selectedMethod,
+                            amount: amountPaid,
+                            surcharge: parseFloat(paymentData.surcharge || 0),
+                            total: amountPaid + parseFloat(paymentData.surcharge || 0),
+                            employeeId: paymentData.employeeId || null 
+                        },
+                        {
+                            method: 'account',
+                            amount: amountDebt,
+                            surcharge: 0,
+                            total: amountDebt,
+                            employeeId: null
+                        }
+                    ];
+                } else {
+                    // Pago total normal
+                    finalPayments = [{
+                        method: selectedMethod,
+                        amount: amountPaid,
+                        surcharge: parseFloat(paymentData.surcharge || 0),
+                        total: totalWithInterest,
+                        employeeId: paymentData.employeeId || null 
+                    }];
+                }
+            }
+
+            // 🛡️ BARRERA DE SEGURIDAD FISCAL Y DE COBROS
+            if (totalDebtAmount > 0 && !activeTab.client?.id) {
+                throw new Error("⚠️ Queda un saldo adeudado. Debe seleccionar un Cliente (F3) para enviarlo a Cuenta Corriente.");
             }
 
             // 2. Construcción del Payload
             const basePayload = {
                 items: activeTab.items.map(i => ({
-                    id: i.id, 
-                    code: i.code, 
-                    name: i.name, 
-                    originalPrice: i.originalPrice,
-                    price: i.finalPrice,
-                    cost: i.cost,
-                    quantity: i.quantity, 
-                    subtotal: i.subtotal,
-                    promoLabel: i.promoLabel || '',
-                    appliedPromo: i.appliedPromo || false,
-                    appliedWholesale: i.appliedWholesale || false,
-                    taxRate: i.taxRate || 21
+                    id: i.id, code: i.code, name: i.name, 
+                    originalPrice: i.originalPrice, price: i.finalPrice, cost: i.cost,
+                    quantity: i.quantity, subtotal: i.subtotal,
+                    promoLabel: i.promoLabel || '', appliedPromo: i.appliedPromo || false,
+                    appliedWholesale: i.appliedWholesale || false, taxRate: i.taxRate || 21
                 })),
                 client: activeTab.client || { name: 'Consumidor Final', fiscalCondition: 'CONSUMIDOR_FINAL' }, 
                 total: totalWithInterest, 
                 subtotal: totals.subtotal,
                 discount: totals.discountAmount,
                 surcharge: parseFloat(paymentData.surcharge || 0), 
+                
                 payments: finalPayments,
                 payment: finalPayments[0], 
                 method: finalPayments.length > 1 ? 'SPLIT' : finalPayments[0].method,
                 
-                branchId: activeBranch, 
+                amountPaid: totalPaidInCash, // 🔥 GUARDAMOS CUÁNTO ENTRÓ A CAJA REALMENTE
+                amountDebt: totalDebtAmount, // 🔥 GUARDAMOS CUÁNTA DEUDA SE GENERÓ
+                
+                branchId: activeBranchId, 
                 shiftId: currentShift.id, 
                 companyId: activeCompanyId,
                 operatorId: user.uid,
@@ -575,6 +626,7 @@ export const usePosController = () => {
 
             let saleResult = null;
 
+            // 3. Creación de la Venta (AFIP o Ticket Interno)
             if (paymentData.withAfip) {
                 loadingToast = toast.loading("📡 Autorizando con AFIP...");
                 const afipResult = await paymentService.createInvoice({
@@ -617,13 +669,25 @@ export const usePosController = () => {
                 toast.success(`Venta registrada`);
             }
 
-            // 🔥 3. REGISTRO EN EL LEDGER DEL EMPLEADO (SI APLICA)
+            // 🔥 4. IMPACTO EN EL LIBRO MAYOR DE CLIENTES (FIADO)
+            if (totalDebtAmount > 0) {
+                await clientRepository.registerMovement(
+                    activeTab.client.id,
+                    'SALE_DEBT', // Tipo: Aumento de Deuda
+                    totalDebtAmount,
+                    `Compra Fiada (Ticket: ${saleResult.number})`,
+                    saleResult.id // Referencia cruzada
+                );
+                console.log(`[CTA CTE] Deuda de $${totalDebtAmount} registrada al cliente ${activeTab.client.name}`);
+            }
+
+            // 5. REGISTRO EN EL LEDGER DEL EMPLEADO (SI APLICA)
             try {
                 for (const p of finalPayments) {
                     if (p.method === 'employee_account' && p.employeeId) {
                         await employeeLedgerRepository.addTransaction({
                             companyId: activeCompanyId,
-                            branchId: activeBranch,
+                            branchId: activeBranchId,
                             userId: p.employeeId,
                             type: 'POS_CONSUMPTION',
                             amount: p.total,
@@ -714,8 +778,6 @@ export const usePosController = () => {
         } catch (err) { return false; }
     };
 
-    // 🔥 EL LISTENER GLOBAL FUE MOVIDO PARA NO BLOQUEAR NAVEGACIÓN
-    // Este effect ahora es minimalista, solo reacciona al escaneo si no estás escribiendo.
     useEffect(() => {
         let buffer = '';
         let lastKeyTime = Date.now();
@@ -774,11 +836,8 @@ export const usePosController = () => {
 
     // 🔥 EXPORTAMOS LAS FUNCIONES Y EL ESTADO
     return { 
-        tabs, activeTab, activeTabId, totals, searchResults, isProcessing, 
-        posConfig,
-        addTab, removeTab, switchTab, addToCart, removeFromCart, 
-        updateItemQuantity, setClient, clearCart, searchProduct, 
-        setSearchResults, processSale, processInternalSale, applyWholesaleToLastItem,
-        processBudget // 🔥 Exportamos el generador de presupuestos
+        tabs, activeTab, activeTabId, totals, searchResults, isProcessing, posConfig,
+        addTab, removeTab, switchTab, addToCart, removeFromCart, updateItemQuantity, setClient, clearCart, searchProduct, 
+        setSearchResults, processSale, processInternalSale, applyWholesaleToLastItem, processBudget
     };
 };
