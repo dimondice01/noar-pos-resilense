@@ -36,6 +36,7 @@ import { MovementsPage } from './modules/inventory/pages/MovementsPage';
 
 // 🚛 PROVEEDORES & COMPRAS
 import { SuppliersPage } from './modules/suppliers/pages/SuppliersPage'; 
+import { SupplierDashboard } from './modules/suppliers/pages/SupplierDashboard'; // 🔥 NUEVO: Importación del Dashboard
 import { PurchaseHistoryPage } from './modules/suppliers/pages/PurchaseHistoryPage'; 
 import { PurchasePage } from './modules/suppliers/pages/PurchasePage'; 
 
@@ -148,6 +149,8 @@ function App() {
                         
                         {/* 🚛 PROVEEDORES Y COMPRAS */}
                         <Route path="suppliers" element={<SuppliersPage />} />
+                        {/* 🔥 NUEVA RUTA: Dashboard individual del proveedor */}
+                        <Route path="suppliers/dashboard/:supplierId" element={<SupplierDashboard />} />
                         <Route path="suppliers/purchases" element={<PurchaseHistoryPage />} />
                         <Route path="suppliers/purchases/new" element={<PurchasePage />} />
 

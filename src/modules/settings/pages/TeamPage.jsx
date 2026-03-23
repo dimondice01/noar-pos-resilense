@@ -3,10 +3,11 @@ import {
     Users, UserPlus, Shield, ShieldCheck, Mail, Lock, Info, Building2, Store, 
     Trash2, CreditCard, Percent, PlusCircle, AlertTriangle, Layers, Tag, Save,
     ChevronDown, ChevronUp, CheckCircle2, MonitorSmartphone, Loader2, ArrowUpRight,
-    Wallet, ReceiptText, ArrowRightCircle, X
+    Wallet, ReceiptText, ArrowRightCircle, X, ShieldAlert, Package
 } from 'lucide-react';
 import { Card } from '../../../core/ui/Card';
 import { Button } from '../../../core/ui/Button';
+import { Switch } from '../../../core/ui/Switch'; 
 import { authService } from '../../auth/services/authService';
 import { collection, getDocs, query, where, updateDoc, doc, deleteDoc, getDoc, setDoc } from 'firebase/firestore'; 
 import { db } from '../../../database/firebase';
@@ -27,7 +28,6 @@ const LiquidationModal = ({ isOpen, onClose, employee, onLiquidated }) => {
     const [isLiquidating, setIsLiquidating] = useState(false);
 
     useEffect(() => {
-        // 🔥 FIX: Buscar por uid o id (según cómo venga el objeto)
         const targetUserId = employee?.uid || employee?.id;
 
         if (isOpen && targetUserId && currentUser?.companyId) {
@@ -44,7 +44,6 @@ const LiquidationModal = ({ isOpen, onClose, employee, onLiquidated }) => {
             };
             fetchHistory();
         } else if (isOpen) {
-            // Si se abre pero no hay datos, quitamos el loading para no dejar la ruedita infinita
             setIsLoading(false);
         }
     }, [isOpen, employee, currentUser]);
@@ -69,7 +68,7 @@ const LiquidationModal = ({ isOpen, onClose, employee, onLiquidated }) => {
             });
             
             toast.success(`Cuenta de ${employee.name} liquidada exitosamente.`, { id: toastId });
-            onLiquidated(); // Recarga la lista de empleados
+            onLiquidated(); 
             onClose();
         } catch (error) {
             console.error("Error al liquidar:", error);
@@ -154,6 +153,9 @@ const LiquidationModal = ({ isOpen, onClose, employee, onLiquidated }) => {
     );
 };
 
+// =================================================================================
+// 👑 MAIN PAGE
+// =================================================================================
 export const TeamPage = () => {
   const [activeTab, setActiveTab] = useState('team'); 
   const [users, setUsers] = useState([]);
@@ -181,18 +183,31 @@ export const TeamPage = () => {
   });
   const [savingPosConfig, setSavingPosConfig] = useState(false);
 
-  // 🔥 ESTADO MODAL DE LIQUIDACIÓN
+  // ESTADO MODAL DE LIQUIDACIÓN
   const [selectedEmployeeForLedger, setSelectedEmployeeForLedger] = useState(null);
 
   const { user: currentUser, activeBranchId } = useAuthStore();
 
   const [isCreating, setIsCreating] = useState(false);
+  
+  // 🔥 ESTADO CON LA MATRIZ DE PERMISOS COMPLETADA
   const [formData, setFormData] = useState({ 
       name: '', 
       email: '', 
       password: '', 
       role: 'CAJERO',
-      branchId: '' 
+      branchId: '',
+      permissions: {
+          // Permisos de Caja y Ventas
+          canApplyDiscount: false, 
+          canVoidSales: false,     
+          canWithdrawCash: false,  
+          canSeeExpectedCash: false,
+          // Permisos de Inventario
+          canAddStock: false,
+          canRemoveStock: false,
+          canChangePrices: false
+      }
   });
 
   useEffect(() => {
@@ -272,7 +287,7 @@ export const TeamPage = () => {
 
   const handleDeleteUser = async (userId, userEmail, userRole) => {
       if (userRole === 'ADMIN' && users.filter(u => u.role === 'ADMIN').length <= 1) {
-          return alert("❌ No puedes borrar al último administrador.");
+          return toast.error("❌ No puedes borrar al último administrador.");
       }
 
       if (!window.confirm(`⚠️ ¿Estás seguro de eliminar a ${userEmail}?\nEsta acción borrará su acceso y datos permanentemente.`)) {
@@ -295,11 +310,11 @@ export const TeamPage = () => {
               });
           } catch (e) { console.warn("Delete auth skipped"); }
 
-          alert("Usuario eliminado correctamente.");
+          toast.success("Usuario eliminado correctamente.");
           loadData();
       } catch (error) {
           console.error("Error eliminando usuario:", error);
-          alert("Error al eliminar usuario.");
+          toast.error("Error al eliminar usuario.");
       } finally {
           setLoading(false);
       }
@@ -307,14 +322,28 @@ export const TeamPage = () => {
 
   const handleCreate = async (e) => {
     e.preventDefault();
-    if (formData.password.length < 6) return alert("La contraseña debe tener 6 caracteres mínimo.");
-    if (!currentUser?.companyId) return alert("Error crítico: No tienes empresa asignada.");
+    if (formData.password.length < 6) return toast.error("La contraseña debe tener 6 caracteres mínimo.");
+    if (!currentUser?.companyId) return toast.error("Error crítico: No tienes empresa asignada.");
     
     if (formData.role === 'CAJERO' && !formData.branchId) {
-        return alert("⚠️ Atención: Un CAJERO debe tener una sucursal asignada obligatoriamente.");
+        return toast.error("⚠️ Atención: Un CAJERO debe tener una sucursal asignada obligatoriamente.");
+    }
+
+    // Validar permisos ilógicos
+    if (formData.role === 'ADMIN') {
+        formData.permissions = {
+            canApplyDiscount: true, 
+            canVoidSales: true, 
+            canWithdrawCash: true, 
+            canSeeExpectedCash: true,
+            canAddStock: true, 
+            canRemoveStock: true, 
+            canChangePrices: true
+        };
     }
 
     setIsCreating(true);
+    const toastId = toast.loading("Creando credenciales...");
     try {
       const newEmployeeData = {
           ...formData,
@@ -322,7 +351,7 @@ export const TeamPage = () => {
           status: 'ACTIVE',
           createdAt: new Date().toISOString(),
           branchId: formData.branchId || null,
-          ledgerDebt: 0 // Inicializamos su deuda en cero
+          ledgerDebt: 0 
       };
 
       await authService.createUser(newEmployeeData);
@@ -340,25 +369,42 @@ export const TeamPage = () => {
           await updateDoc(userDoc.ref, {
               branchId: formData.branchId || null,
               role: formData.role,
+              permissions: formData.permissions, // 🔥 GUARDAMOS LOS PERMISOS EN FIREBASE
               ledgerDebt: 0
           });
       }
 
-      alert(`✅ Usuario ${formData.name} creado exitosamente.`);
-      setFormData({ name: '', email: '', password: '', role: 'CAJERO', branchId: '' }); 
+      toast.success(`Usuario ${formData.name} creado exitosamente.`, { id: toastId });
+      setFormData({ 
+          name: '', email: '', password: '', role: 'CAJERO', branchId: '',
+          permissions: { canApplyDiscount: false, canVoidSales: false, canWithdrawCash: false, canSeeExpectedCash: false, canAddStock: false, canRemoveStock: false, canChangePrices: false }
+      }); 
       loadData(); 
     } catch (error) {
       console.error(error);
-      alert(`❌ Error: ${error.message}`);
+      toast.error(`Error: ${error.message}`, { id: toastId });
     } finally {
       setIsCreating(false);
     }
   };
 
+  const togglePermission = (key) => {
+      setFormData(prev => ({
+          ...prev,
+          permissions: {
+              ...prev.permissions,
+              [key]: !prev.permissions[key]
+          }
+      }));
+  };
+
   const handleAddBrand = () => {
       const name = newBrandName.trim().toUpperCase();
       if (!name) return;
-      if (paymentMethods.some(m => m.brand === name)) return alert("Esta marca ya existe.");
+      if (paymentMethods.some(m => m.brand === name)) {
+          toast.error("Esta marca ya existe.");
+          return;
+      }
 
       const newMethod = { brand: name, rates: [] };
       const updatedMethods = [...paymentMethods, newMethod];
@@ -380,13 +426,16 @@ export const TeamPage = () => {
       const qty = parseInt(newRate.qty);
       const interest = parseFloat(newRate.interest);
 
-      if (!qty || isNaN(interest)) return alert("Datos inválidos");
+      if (!qty || isNaN(interest)) {
+          toast.error("Datos inválidos");
+          return;
+      }
 
       const updatedMethods = paymentMethods.map(method => {
           if (method.brand === brandName) {
               const exists = method.rates.some(r => r.qty === qty);
               if (exists) {
-                  alert(`Ya existe una regla para ${qty} cuotas en ${brandName}. Bórrala primero.`);
+                  toast.error(`Ya existe una regla para ${qty} cuotas en ${brandName}. Bórrala primero.`);
                   return method;
               }
               const newRates = [...method.rates, { qty, interest }].sort((a,b) => a.qty - b.qty);
@@ -418,7 +467,7 @@ export const TeamPage = () => {
           await setDoc(docRef, { methods: data }, { merge: true });
       } catch (error) {
           console.error("Error guardando:", error);
-          alert("Error de conexión al guardar configuración.");
+          toast.error("Error de conexión al guardar configuración.");
       } finally {
           setSavingFinancials(false);
       }
@@ -429,10 +478,10 @@ export const TeamPage = () => {
       try {
           const docRef = doc(db, `companies/${currentUser.companyId}/config/pos_settings`);
           await setDoc(docRef, posConfig, { merge: true });
-          alert("✅ Configuración del Punto de Venta guardada correctamente.");
+          toast.success("Configuración del Punto de Venta guardada correctamente.");
       } catch (error) {
           console.error("Error guardando config POS:", error);
-          alert("Error al guardar la configuración.");
+          toast.error("Error al guardar la configuración.");
       } finally {
           setSavingPosConfig(false);
       }
@@ -576,14 +625,81 @@ export const TeamPage = () => {
                                 ))}
                             </select>
                             <div className="absolute right-3 top-3 pointer-events-none">
-                                <svg className="w-4 h-4 text-sys-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path></svg>
+                                <ChevronDown size={14} className="text-sys-400" />
                             </div>
                         </div>
                       </div>
                   </div>
 
+                  {/* 🔥 BLOQUE DE PERMISOS */}
+                  {formData.role === 'CAJERO' && (
+                      <div className="pt-2 border-t border-sys-200 mt-4 space-y-4">
+                          
+                          {/* Permisos de Caja y Ventas */}
+                          <div>
+                              <label className="text-[11px] font-bold text-sys-500 uppercase tracking-wider ml-1 flex items-center gap-1 mb-2">
+                                  <MonitorSmartphone size={14} className="text-blue-500"/> Caja y Ventas
+                              </label>
+                              <div className="space-y-3 bg-sys-50 p-3 rounded-xl border border-sys-200">
+                                  <div className="flex items-center justify-between">
+                                      <div>
+                                          <p className="text-xs font-bold text-sys-800">Aplicar Descuentos</p>
+                                      </div>
+                                      <Switch checked={formData.permissions.canApplyDiscount} onCheckedChange={() => togglePermission('canApplyDiscount')} />
+                                  </div>
+                                  <div className="flex items-center justify-between border-t border-sys-200 pt-3">
+                                      <div>
+                                          <p className="text-xs font-bold text-sys-800">Anular Ventas</p>
+                                      </div>
+                                      <Switch checked={formData.permissions.canVoidSales} onCheckedChange={() => togglePermission('canVoidSales')} />
+                                  </div>
+                                  <div className="flex items-center justify-between border-t border-sys-200 pt-3">
+                                      <div>
+                                          <p className="text-xs font-bold text-sys-800">Retirar Efectivo</p>
+                                      </div>
+                                      <Switch checked={formData.permissions.canWithdrawCash} onCheckedChange={() => togglePermission('canWithdrawCash')} />
+                                  </div>
+                                  <div className="flex items-center justify-between border-t border-sys-200 pt-3">
+                                      <div>
+                                          <p className="text-xs font-bold text-sys-800">Ver Cierre Z</p>
+                                      </div>
+                                      <Switch checked={formData.permissions.canSeeExpectedCash} onCheckedChange={() => togglePermission('canSeeExpectedCash')} />
+                                  </div>
+                              </div>
+                          </div>
+
+                          {/* Permisos de Inventario */}
+                          <div>
+                              <label className="text-[11px] font-bold text-sys-500 uppercase tracking-wider ml-1 flex items-center gap-1 mb-2">
+                                  <Package size={14} className="text-emerald-500"/> Gestión de Inventario
+                              </label>
+                              <div className="space-y-3 bg-sys-50 p-3 rounded-xl border border-sys-200">
+                                  <div className="flex items-center justify-between">
+                                      <div>
+                                          <p className="text-xs font-bold text-sys-800">Cargar Stock</p>
+                                      </div>
+                                      <Switch checked={formData.permissions.canAddStock} onCheckedChange={() => togglePermission('canAddStock')} />
+                                  </div>
+                                  <div className="flex items-center justify-between border-t border-sys-200 pt-3">
+                                      <div>
+                                          <p className="text-xs font-bold text-sys-800">Ajuste de Mermas</p>
+                                      </div>
+                                      <Switch checked={formData.permissions.canRemoveStock} onCheckedChange={() => togglePermission('canRemoveStock')} />
+                                  </div>
+                                  <div className="flex items-center justify-between border-t border-sys-200 pt-3">
+                                      <div>
+                                          <p className="text-xs font-bold text-sys-800">Cambiar Precios</p>
+                                      </div>
+                                      <Switch checked={formData.permissions.canChangePrices} onCheckedChange={() => togglePermission('canChangePrices')} />
+                                  </div>
+                              </div>
+                          </div>
+
+                      </div>
+                  )}
+
                   <Button type="submit" className="w-full mt-4 h-12 shadow-md" disabled={isCreating}>
-                    {isCreating ? 'Procesando...' : 'Dar de Alta'}
+                    {isCreating ? <Loader2 size={18} className="animate-spin" /> : 'Dar de Alta Empleado'}
                   </Button>
                 </form>
               </Card>
@@ -601,18 +717,17 @@ export const TeamPage = () => {
                 
                 <div className="divide-y divide-sys-100">
                   {loading ? (
-                    <div className="p-10 text-center flex flex-col items-center gap-2">
-                        <div className="w-6 h-6 border-2 border-brand border-t-transparent rounded-full animate-spin"></div>
-                    </div>
+                    <div className="p-10 text-center flex justify-center"><Loader2 className="animate-spin text-brand" size={24} /></div>
                   ) : filteredUsers.length === 0 ? (
                     <div className="p-8 text-center text-sys-400 italic">No hay usuarios en esta vista.</div>
                   ) : (
                     filteredUsers.map((u) => {
                         const debt = parseFloat(u.ledgerDebt || 0);
                         const hasDebt = debt > 0;
+                        const perms = u.permissions || {};
 
                         return (
-                          <div key={u.id} className="p-4 flex items-center justify-between group hover:bg-sys-50 transition-colors">
+                          <div key={u.id} className="p-4 flex flex-col md:flex-row items-start md:items-center justify-between group hover:bg-sys-50 transition-colors gap-4">
                             <div className="flex items-center gap-4">
                               <div className={cn(
                                 "w-10 h-10 rounded-full flex items-center justify-center text-white shadow-sm font-bold text-sm",
@@ -623,14 +738,25 @@ export const TeamPage = () => {
                               <div>
                                 <p className="font-bold text-sys-900 text-sm flex items-center gap-2">
                                     {u.name}
-                                    {u.role === 'ADMIN' && <span className="px-1.5 py-0.5 rounded text-[8px] bg-sys-200 text-sys-600 uppercase">Admin</span>}
+                                    {u.role === 'ADMIN' && <span className="px-1.5 py-0.5 rounded text-[8px] bg-sys-200 text-sys-600 uppercase font-black tracking-widest"><ShieldCheck size={10} className="inline mr-0.5"/> ADMIN</span>}
                                 </p>
                                 <p className="text-xs text-sys-500 font-mono">{u.email}</p>
+                                
+                                {u.role === 'CAJERO' && (
+                                    <div className="flex flex-wrap gap-1 mt-1">
+                                        <span className={cn("text-[9px] px-1.5 rounded-full border uppercase font-bold", perms.canApplyDiscount ? "bg-green-50 text-green-600 border-green-200" : "bg-sys-100 text-sys-400 border-sys-200")}>Desc</span>
+                                        <span className={cn("text-[9px] px-1.5 rounded-full border uppercase font-bold", perms.canVoidSales ? "bg-green-50 text-green-600 border-green-200" : "bg-sys-100 text-sys-400 border-sys-200")}>Anular</span>
+                                        <span className={cn("text-[9px] px-1.5 rounded-full border uppercase font-bold", perms.canWithdrawCash ? "bg-green-50 text-green-600 border-green-200" : "bg-sys-100 text-sys-400 border-sys-200")}>Retiros</span>
+                                        <span className={cn("text-[9px] px-1.5 rounded-full border uppercase font-bold", perms.canSeeExpectedCash ? "bg-green-50 text-green-600 border-green-200" : "bg-red-50 text-red-500 border-red-200")}>Z</span>
+                                        <span className={cn("text-[9px] px-1.5 rounded-full border uppercase font-bold ml-2", perms.canAddStock ? "bg-green-50 text-green-600 border-green-200" : "bg-sys-100 text-sys-400 border-sys-200")}>+Stock</span>
+                                        <span className={cn("text-[9px] px-1.5 rounded-full border uppercase font-bold", perms.canRemoveStock ? "bg-green-50 text-green-600 border-green-200" : "bg-sys-100 text-sys-400 border-sys-200")}>Merma</span>
+                                        <span className={cn("text-[9px] px-1.5 rounded-full border uppercase font-bold", perms.canChangePrices ? "bg-green-50 text-green-600 border-green-200" : "bg-sys-100 text-sys-400 border-sys-200")}>Precios</span>
+                                    </div>
+                                )}
                               </div>
                             </div>
                             
-                            <div className="flex items-center gap-4">
-                                {/* 🔥 BADGE Y BOTÓN DE DEUDA LEDGER */}
+                            <div className="flex items-center gap-4 self-end md:self-auto w-full md:w-auto justify-end">
                                 <button 
                                     onClick={() => setSelectedEmployeeForLedger(u)}
                                     className={cn(
@@ -794,7 +920,7 @@ export const TeamPage = () => {
       )}
 
       {/* =================================================================================
-          🔥 NUEVA VISTA: PUNTO DE VENTA (Configuraciones Especiales)
+          VISTA: PUNTO DE VENTA (Configuraciones Especiales)
       ================================================================================= */}
       {activeTab === 'pos' && (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 animate-in fade-in">
@@ -814,18 +940,10 @@ export const TeamPage = () => {
                               </p>
                           </div>
                           
-                          <button 
-                              onClick={() => setPosConfig({...posConfig, isWholesaleEnabled: !posConfig.isWholesaleEnabled})}
-                              className={cn(
-                                  "w-14 h-7 rounded-full flex items-center transition-colors p-1",
-                                  posConfig.isWholesaleEnabled ? "bg-orange-500" : "bg-sys-300"
-                              )}
-                          >
-                              <div className={cn(
-                                  "w-5 h-5 bg-white rounded-full shadow-md transition-transform duration-300",
-                                  posConfig.isWholesaleEnabled ? "translate-x-7" : "translate-x-0"
-                              )}></div>
-                          </button>
+                          <Switch 
+                              checked={posConfig.isWholesaleEnabled} 
+                              onCheckedChange={(checked) => setPosConfig({...posConfig, isWholesaleEnabled: checked})} 
+                          />
                       </div>
 
                       <div className={cn("transition-all duration-300", posConfig.isWholesaleEnabled ? "opacity-100" : "opacity-40 pointer-events-none")}>
@@ -886,7 +1004,6 @@ export const TeamPage = () => {
                       </div>
                   </Card>
 
-                  {/* BOTÓN GUARDAR GLOBAL POS */}
                   <div className="flex justify-end pt-2">
                       <Button 
                           onClick={savePosConfig} 
@@ -931,7 +1048,7 @@ export const TeamPage = () => {
           isOpen={!!selectedEmployeeForLedger}
           employee={selectedEmployeeForLedger}
           onClose={() => setSelectedEmployeeForLedger(null)}
-          onLiquidated={loadData} // Recargamos para ver la deuda en cero
+          onLiquidated={loadData} 
       />
     </div>
   );

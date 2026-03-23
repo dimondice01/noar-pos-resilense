@@ -1,17 +1,19 @@
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { 
     FileText, CheckCircle, AlertCircle, Printer, RefreshCw, Search, 
     ArrowDownLeft, ShoppingBag, XCircle, RotateCcw, Calendar, User,
     ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, 
     TrendingUp, Tag, Percent, DollarSign, Store, CreditCard, Banknote,
-    PackageMinus, Save, X, Loader2, PlusCircle, ArrowUpRight, FileArchive
+    PackageMinus, Save, X, Loader2, PlusCircle, ArrowUpRight, FileArchive, ArrowDownRight, Users
 } from 'lucide-react';
 import { billingService } from '../../billing/services/billingService';
 import { Card } from '../../../core/ui/Card';
 import { Button } from '../../../core/ui/Button';
+import { Switch } from '../../../core/ui/Switch';
 import { cn } from '../../../core/utils/cn';
 import { salesRepository } from '../repositories/salesRepository'; 
 import { productRepository } from '../../inventory/repositories/productRepository'; 
+import { cashRepository } from '../../cash/repositories/cashRepository'; // 🔥 IMPORTANTE: Agregado para impactar devoluciones
 import { TicketModal } from '../components/TicketModal';
 import { useAuthStore } from '../../auth/store/useAuthStore'; 
 import { collection, query, where, getDocs } from 'firebase/firestore';
@@ -26,16 +28,20 @@ const toInputDate = (date) => {
 };
 
 // =================================================================
-// 🛍️ MODAL DE DEVOLUCIÓN PARCIAL
+// 🛍️ MODAL DE DEVOLUCIÓN PARCIAL (AHORA PIDE MOTIVO E IMPACTA CAJA)
 // =================================================================
 const RefundModal = ({ isOpen, onClose, sale, onConfirm, isProcessing }) => {
     const [returnMap, setReturnMap] = useState({}); 
     const [refundTotal, setRefundTotal] = useState(0);
+    const [reason, setReason] = useState('');
+    const [refundCash, setRefundCash] = useState(true); // Switch para sacar plata de la caja
 
     useEffect(() => {
         if (isOpen) {
             setReturnMap({});
             setRefundTotal(0);
+            setReason('');
+            setRefundCash(true);
         }
     }, [isOpen, sale]);
 
@@ -59,7 +65,7 @@ const RefundModal = ({ isOpen, onClose, sale, onConfirm, isProcessing }) => {
 
     return (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-sys-900/60 backdrop-blur-sm p-4 animate-in fade-in">
-            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[80vh]">
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]">
                 <div className="p-5 border-b border-sys-100 bg-sys-50 flex justify-between items-center">
                     <div>
                         <h3 className="font-bold text-lg text-sys-900 flex items-center gap-2">
@@ -94,7 +100,29 @@ const RefundModal = ({ isOpen, onClose, sale, onConfirm, isProcessing }) => {
                     })}
                 </div>
 
-                <div className="p-5 border-t border-sys-100 bg-sys-50">
+                {refundTotal > 0 && (
+                    <div className="p-4 bg-sys-50 border-t border-sys-200 space-y-4 animate-in slide-in-from-bottom-2">
+                        <div>
+                            <label className="text-[10px] font-bold text-sys-500 uppercase tracking-widest mb-1.5 block">Motivo de Devolución *</label>
+                            <input 
+                                type="text" 
+                                placeholder="Ej: Producto en mal estado, Cambio de talle..." 
+                                className="w-full p-2.5 rounded-lg border border-sys-200 text-sm outline-none focus:border-orange-400"
+                                value={reason}
+                                onChange={e => setReason(e.target.value)}
+                            />
+                        </div>
+                        <div className="flex items-center justify-between bg-white p-3 rounded-lg border border-sys-200">
+                            <div>
+                                <p className="text-xs font-bold text-sys-700 flex items-center gap-1"><ArrowDownRight size={14} className="text-red-500"/> Retirar dinero de caja</p>
+                                <p className="text-[10px] text-sys-500">Registra el egreso en el arqueo actual</p>
+                            </div>
+                            <Switch checked={refundCash} onCheckedChange={setRefundCash} disabled={isProcessing} />
+                        </div>
+                    </div>
+                )}
+
+                <div className="p-5 border-t border-sys-100 bg-white">
                     <div className="flex justify-between items-center mb-4">
                         <span className="text-sm font-bold text-sys-600 uppercase">Monto a Reintegrar:</span>
                         <span className="text-2xl font-black text-orange-600">
@@ -102,9 +130,12 @@ const RefundModal = ({ isOpen, onClose, sale, onConfirm, isProcessing }) => {
                         </span>
                     </div>
                     <div className="flex gap-3">
-                        <Button variant="ghost" onClick={onClose} disabled={isProcessing} className="flex-1">Cancelar</Button>
+                        <Button variant="ghost" onClick={onClose} disabled={isProcessing} className="flex-1 border border-sys-200">Cancelar</Button>
                         <Button 
-                            onClick={() => onConfirm(sale, returnMap, refundTotal)} 
+                            onClick={() => {
+                                if (!reason.trim()) return toast.error("El motivo es obligatorio");
+                                onConfirm(sale, returnMap, refundTotal, reason, refundCash);
+                            }} 
                             disabled={refundTotal === 0 || isProcessing}
                             className="flex-1 bg-orange-500 hover:bg-orange-600 text-white shadow-lg shadow-orange-200"
                         >
@@ -241,6 +272,7 @@ export const SalesPage = () => {
   // Escuchar cambios en los filtros o en el límite para recargar
   useEffect(() => { 
       fetchOperations(displayLimit > 50); 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filterPeriod, customStart, customEnd, activeBranchId, displayLimit]);
 
   // Polling silencioso para mantener la lista fresca (cada 30s) sin bloquear la UI
@@ -251,6 +283,7 @@ export const SalesPage = () => {
           }
       }, 30000);
       return () => clearInterval(interval);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading, loadingMore, currentPage, filterPeriod, activeBranchId]);
 
   const resolveCashierName = (op) => {
@@ -301,7 +334,7 @@ export const SalesPage = () => {
                   if (!['cash', 'efectivo'].includes(method)) return false;
               }
               if (filterPaymentMethod === 'CARD') {
-                  if (!['card', 'credit', 'debit', 'tarjeta', 'clover'].includes(method)) return false;
+                  if (!['card', 'credit', 'debit', 'tarjeta', 'clover', 'manual_card'].includes(method)) return false;
               }
               if (filterPaymentMethod === 'TRANSFER') {
                   if (!['transfer', 'transferencia', 'deposito'].includes(method)) return false;
@@ -309,8 +342,9 @@ export const SalesPage = () => {
               if (filterPaymentMethod === 'MP') {
                   if (!['mercadopago', 'mp', 'qr', 'point'].includes(method)) return false;
               }
+              // 🔥 FIX Cta Corriente: Agregamos 'account' a las validaciones de búsqueda
               if (filterPaymentMethod === 'CURRENT_ACCOUNT') {
-                  if (!['current_account', 'cta_cte', 'cuenta_corriente', 'employee_account'].includes(method)) return false;
+                  if (!['current_account', 'cta_cte', 'cuenta_corriente', 'employee_account', 'account'].includes(method)) return false;
               }
               if (filterPaymentMethod === 'BUDGET') {
                   if (!['budget', 'presupuesto'].includes(method)) return false;
@@ -338,7 +372,7 @@ export const SalesPage = () => {
   }, [visibleOperations, currentPage]);
 
   // =================================================================
-  // 🚀 ACCIONES (FACTURAR, ANULAR, DEVOLVER) - BLINDADAS
+  // 🚀 ACCIONES (FACTURAR, ANULAR, DEVOLVER) - BLINDADAS E INTEGRADAS A CAJA
   // =================================================================
 
   const handleFacturar = async (op) => {
@@ -381,7 +415,13 @@ export const SalesPage = () => {
 
   const handleAnular = async (op) => {
     if (!isAdmin) return;
-    if (!window.confirm("⚠️ ¿Desea anular esta operación?\nEl stock se repondrá automáticamente (si aplica).")) return;
+    
+    // 🔥 NUEVO: Pedir motivo de anulación
+    const reason = window.prompt("⚠️ INGRESE EL MOTIVO DE LA ANULACIÓN:\n(El stock se repondrá automáticamente. Si hubo efectivo, se extraerá de la caja).");
+    if (!reason) {
+        toast.error("Anulación cancelada: Motivo obligatorio.");
+        return;
+    }
     
     setLoadingMap(prev => ({ ...prev, [op.localId]: true }));
     try {
@@ -421,12 +461,27 @@ export const SalesPage = () => {
           toast.success("Nota de Crédito generada en AFIP");
       }
       
-      // 🔥 FIX: Solo repone stock si NO ES un presupuesto
+      // 🔥 FIX: Repone stock solo si NO ES presupuesto
       if (op.type !== 'BUDGET' && op.items && Array.isArray(op.items)) {
           for (const item of op.items) {
-              await productRepository.addStock(item.id, item.quantity, `Anulación Venta #${getDisplayNumber(op)}`, user?.name, op.branchId || activeBranchId);
+              await productRepository.addStock(item.id, item.quantity, `Anulación #${getDisplayNumber(op)} - ${reason}`, user?.name, op.branchId || activeBranchId);
           }
       }
+
+      // 🔥 FIX: Retirar Efectivo de la Caja si aplica
+      let cashPaid = 0;
+      if (op.method === 'cash') {
+          cashPaid = op.amountPaid || op.total;
+      } else if (op.method === 'SPLIT' && Array.isArray(op.payments)) {
+          cashPaid = op.payments.filter(p => p.method === 'cash').reduce((acc, p) => acc + p.amount, 0);
+      }
+      
+      if (cashPaid > 0) {
+          await cashRepository.registerExpense(cashPaid, `Anulación Ticket #${getDisplayNumber(op)} - Motivo: ${reason}`, op.localId, user?.name);
+      }
+
+      // Dejamos registro del motivo en las notas
+      op.notes = `${op.notes || ''} | Anulado por: ${reason}`.trim();
 
       await updateOperationStatus(op, notaCreditoData, 'VOIDED'); 
       toast.success("Operación Anulada con Éxito");
@@ -438,7 +493,8 @@ export const SalesPage = () => {
     }
   };
 
-  const handleProcessRefund = async (originalSale, returnMap, refundAmount) => {
+  // 🔥 NUEVA FIRMA: onConfirm(sale, returnMap, refundTotal, reason, refundCash)
+  const handleProcessRefund = async (originalSale, returnMap, refundAmount, reason, refundCash) => {
       setIsProcessingRefund(true);
       const toastId = toast.loading("Procesando devolución...");
       try {
@@ -446,17 +502,22 @@ export const SalesPage = () => {
           const db = await getDB();
 
           const branchToReturn = originalSale.branchId || activeBranchId;
-
           const itemsToReturn = originalSale.items.filter(i => returnMap[i.id] > 0);
           
-          // 🔥 FIX: Solo repone stock si NO ES un presupuesto
+          // 1. Reposición de Stock
           if (originalSale.type !== 'BUDGET') {
               for (const item of itemsToReturn) {
                   const qtyToReturn = returnMap[item.id];
-                  await productRepository.addStock(item.id, qtyToReturn, `Devolución Parc. Venta #${getDisplayNumber(originalSale)}`, user?.name, branchToReturn);
+                  await productRepository.addStock(item.id, qtyToReturn, `Devolución #${getDisplayNumber(originalSale)} - ${reason}`, user?.name, branchToReturn);
               }
           }
 
+          // 2. Retiro de Efectivo (Si se marcó el switch)
+          if (refundCash) {
+              await cashRepository.registerExpense(refundAmount, `Reintegro Venta #${getDisplayNumber(originalSale)} - Motivo: ${reason}`, originalSale.localId, user?.name);
+          }
+
+          // 3. Ajuste de Ticket
           const newTotal = originalSale.total - refundAmount;
           const newSubtotal = originalSale.subtotal - refundAmount; 
           
@@ -479,7 +540,7 @@ export const SalesPage = () => {
               total: newTotal,
               subtotal: newSubtotal,
               refundedAmount: (originalSale.refundedAmount || 0) + refundAmount,
-              notes: `${originalSale.notes || ''} | Devolución: -$${refundAmount} (${new Date().toLocaleTimeString()})`.trim()
+              notes: `${originalSale.notes || ''} | Devolución: -$${refundAmount} (${reason})`.trim()
           };
 
           if (newTotal <= 0) {
@@ -645,6 +706,7 @@ export const SalesPage = () => {
                           <option value="TRANSFER">Transferencia</option>
                           <option value="MP">MercadoPago</option>
                           <option value="CURRENT_ACCOUNT">Cta. Corriente</option>
+                          <option value="BUDGET">Presupuesto</option>
                       </select>
                   </div>
 
@@ -736,6 +798,11 @@ export const SalesPage = () => {
                                     </span>
                                 )}
                             </div>
+                            {op.notes && (
+                                <span className="text-[9px] text-orange-600 font-medium mt-1 truncate max-w-[200px]" title={op.notes}>
+                                    📝 {op.notes}
+                                </span>
+                            )}
                           </div>
                         </td>
                         
@@ -761,17 +828,19 @@ export const SalesPage = () => {
                         </td>
 
                         <td className="p-4 text-center">
+                          {/* 🔥 FIX: Etiqueta y color para CTA. CORRIENTE */}
                           <span className={cn("px-2 py-0.5 rounded text-[10px] font-bold uppercase border inline-block min-w-[60px]", 
                             isBudget ? "bg-sys-100 text-sys-500 border-sys-200" :
                             ['cash', 'efectivo'].includes(paymentMethod) ? "bg-green-50 text-green-700 border-green-100" :
                             ['mercadopago', 'mp', 'qr', 'point'].includes(paymentMethod) ? "bg-blue-50 text-blue-700 border-blue-100" :
-                            ['clover', 'card', 'debit', 'credit', 'tarjeta'].includes(paymentMethod) ? "bg-emerald-50 text-emerald-700 border-emerald-100" :
+                            ['clover', 'card', 'debit', 'credit', 'tarjeta', 'manual_card'].includes(paymentMethod) ? "bg-emerald-50 text-emerald-700 border-emerald-100" :
+                            ['employee_account', 'current_account', 'account'].includes(paymentMethod) ? "bg-red-50 text-red-700 border-red-100" :
                             "bg-purple-50 text-purple-700 border-purple-100")}>
                             {['mercadopago', 'mp'].includes(paymentMethod) ? 'MP QR' :
                              ['cash'].includes(paymentMethod) ? 'EFECTIVO' : 
                              ['transfer'].includes(paymentMethod) ? 'TRANSFERENCIA' : 
                              ['card', 'credit', 'debit', 'tarjeta', 'manual_card'].includes(paymentMethod) ? 'TARJETA' :
-                             ['employee_account', 'current_account'].includes(paymentMethod) ? 'CTA. CTE' :
+                             ['employee_account', 'current_account', 'account'].includes(paymentMethod) ? 'CTA. CORRIENTE' :
                              ['budget'].includes(paymentMethod) ? 'PRESUPUESTO' :
                              paymentMethod.toUpperCase()}
                           </span>

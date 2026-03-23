@@ -172,6 +172,10 @@ export const salesRepository = {
       surcharge: saleData.surcharge || 0,
       total: saleData.total,
       
+      // 🔥 FIX CRÍTICO: Aseguramos guardar los montos para el Historial (Si no se perdían)
+      amountPaid: saleData.amountPaid || 0,
+      amountDebt: saleData.amountDebt || 0,
+      
       // Inteligencia Nexus (Reporting)
       totalCost: enrichedItems.reduce((acc, i) => acc + (i.cost * i.quantity), 0),
       netProfit: parseFloat(totalProfit.toFixed(2)),
@@ -252,6 +256,9 @@ export const salesRepository = {
         for (const p of paymentList) {
             const amount = parseFloat(p.total || p.amount || 0);
             if (amount <= 0) continue;
+
+            // 🔥 FIX CRÍTICO: La deuda ("account") NUNCA ingresa como dinero físico en la caja
+            if (p.method === 'account' || p.method === 'debt') continue;
 
             const description = paymentList.length > 1 
                 ? `Venta ${finalNumber} (${p.method.toUpperCase()})` 

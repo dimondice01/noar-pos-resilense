@@ -4,7 +4,7 @@ import { doc, setDoc, deleteDoc } from 'firebase/firestore';
 import { useAuthStore } from '../../auth/store/useAuthStore'; 
 
 // ==========================================
-// ☁️ HELPER: SYNC OPTIMISTA (Fire & Forget)
+// ☁️ HELPER: SYNC OPTIMISTA
 // ==========================================
 const triggerOptimisticSync = async (collectionName, data) => {
   if (!navigator.onLine) return; 
@@ -16,19 +16,17 @@ const triggerOptimisticSync = async (collectionName, data) => {
     const { syncStatus, ...cloudData } = data;
     const path = `companies/${user.companyId}/${collectionName}`;
 
-    // No await to avoid blocking UI
     setDoc(doc(db, path, data.id), {
       ...cloudData,
       firestoreId: data.id,
       syncedAt: new Date().toISOString(),
       syncStatus: 'synced'
     }, { merge: true }).then(async () => {
-        // Update local status on success
         try {
             const dbLocal = await getDB();
-            const table = collectionName === 'customer_ledger' ? dbLocal.customer_ledger : dbLocal.clients;
-            await table.update(data.id, { syncStatus: 'synced' });
-        } catch (e) { /* Ignore local update error */ }
+            const table = dbLocal.table(collectionName);
+            if (table) await table.update(data.id, { syncStatus: 'synced' });
+        } catch (e) { }
     });
   } catch (e) {
     console.warn(`⚠️ Sync Optimista falló (${collectionName})`);
@@ -38,13 +36,18 @@ const triggerOptimisticSync = async (collectionName, data) => {
 export const clientRepository = {
   
   // ==========================================
-  // 📖 LECTURA (Optimizado con Dexie)
+  // 📖 LECTURA
   // ==========================================
 
   async getAll() {
     const dbLocal = await getDB();
     const clients = await dbLocal.clients.toArray();
-    return clients.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+    // Ordenamos por ID Secuencial (los más nuevos arriba)
+    return clients.sort((a, b) => {
+        const idA = parseInt(a.sequentialId || 0, 10);
+        const idB = parseInt(b.sequentialId || 0, 10);
+        return idB - idA;
+    });
   },
 
   async getById(id) {
@@ -52,29 +55,21 @@ export const clientRepository = {
     return await dbLocal.clients.get(id);
   },
 
-  /**
-   * Obtiene el historial financiero (Ledger) de un cliente
-   */
   async getLedger(clientId) {
     const dbLocal = await getDB();
-    // Uso de índice 'clientId' es O(1)
     return await dbLocal.customer_ledger
         .where('clientId')
         .equals(clientId)
-        .reverse() // Descending order (newest first)
+        .reverse() 
         .sortBy('date');
   },
 
-  /**
-   * Búsqueda híbrida optimizada
-   */
   async search(query) {
     const dbLocal = await getDB();
     const term = query.toLowerCase().trim();
     
     if (!term) return [];
 
-    // Estrategia 1: Si es numérico, usar índice docNumber (Rápido)
     if (/^\d+$/.test(term)) {
         return await dbLocal.clients
             .where('docNumber')
@@ -82,80 +77,114 @@ export const clientRepository = {
             .toArray();
     }
 
-    // Estrategia 2: Búsqueda por Nombre (Scan optimizado)
     return await dbLocal.clients
         .filter(c => 
             (c.name && c.name.toLowerCase().includes(term)) || 
-            (c.email && c.email.toLowerCase().includes(term))
+            (c.email && c.email.toLowerCase().includes(term)) ||
+            (c.sequentialId && c.sequentialId.includes(term))
         )
         .toArray();
   },
 
   // ==========================================
-  // 💰 GESTIÓN FINANCIERA (Transaccional & Trazable)
+  // 🔢 GENERADOR DE ID SECUENCIAL (0001, 0002...)
+  // ==========================================
+  async generateNextId() {
+      const dbLocal = await getDB();
+      const count = await dbLocal.clients.count();
+      return String(count + 1).padStart(4, '0'); // 4 dígitos para clientes
+  },
+
+  // ==========================================
+  // 💰 GESTIÓN FINANCIERA (Transaccional & Trazable a Caja)
   // ==========================================
 
-  async registerMovement(clientId, type, amount, description, referenceId = null) {
+  async registerMovement(clientId, type, amount, description, referenceId = null, paymentMethod = 'cash') {
     const dbLocal = await getDB();
     const { user, activeBranchId } = useAuthStore.getState();
     
-    // Safety check
     if (!user) throw new Error("Usuario no autenticado");
 
     let newBalance = 0;
-    
-    // Generar IDs y Datos fuera de la transacción
     const movementId = `ledger_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
     const timestamp = new Date().toISOString();
-    
-    // 🔥 TRAZABILIDAD: Registramos la sucursal donde ocurrió el movimiento
     const currentBranch = activeBranchId || user.branchId || 'main';
 
-    // 🔥 TRANSACCIÓN ACID: Balance Global + Movimiento Localizado
-    await dbLocal.transaction('rw', [dbLocal.clients, dbLocal.customer_ledger], async () => {
+    // 🔥 TRANSACCIÓN ACID: Ledger Cliente + Saldo Cliente + Movimiento de Caja
+    await dbLocal.transaction('rw', [
+        dbLocal.clients, 
+        dbLocal.customer_ledger, 
+        dbLocal.cash_movements, 
+        dbLocal.shifts
+    ], async () => {
         
         const client = await dbLocal.clients.get(clientId);
         if (!client) throw new Error("Cliente no encontrado");
 
         const currentBalance = parseFloat(client.balance || 0);
+        const parsedAmount = parseFloat(amount);
         
-        // SALE_DEBT = Aumenta Deuda (+) (El cliente debe más)
-        // PAYMENT = Disminuye Deuda (-) (El cliente pagó)
+        // SALE_DEBT = Aumenta Deuda (+)
+        // PAYMENT = Disminuye Deuda (-)
         newBalance = type === 'SALE_DEBT' 
-            ? currentBalance + parseFloat(amount) 
-            : currentBalance - parseFloat(amount);
+            ? currentBalance + parsedAmount 
+            : currentBalance - parsedAmount;
 
         const movement = {
             id: movementId,
             clientId,
             date: timestamp,
             type,
-            amount: parseFloat(amount),
+            amount: parsedAmount,
             oldBalance: currentBalance,
             newBalance: newBalance,
             description,
             referenceId,
-            branchId: currentBranch, // 👈 Trazabilidad: Sucursal origen
-            userId: user.uid,        // 👈 Trazabilidad: Operador
+            branchId: currentBranch, 
+            userId: user.uid,        
             syncStatus: 'pending'
         };
 
+        await dbLocal.customer_ledger.put(movement);
+        
         const updatedClient = {
             ...client,
             balance: newBalance,
             updatedAt: timestamp,
             syncStatus: 'pending'
         };
-
-        // Ejecutar actualizaciones atómicas
-        await dbLocal.customer_ledger.put(movement);
         await dbLocal.clients.put(updatedClient);
-        
-        // Disparar sync (dentro de IIFE para no bloquear)
-        (async () => {
-             triggerOptimisticSync('clients', updatedClient);
-             triggerOptimisticSync('customer_ledger', movement);
-        })();
+
+        // 🔥 IMPACTO EN CAJA: Si el cliente PAGA deuda, entra dinero al cajero
+        if (type === 'PAYMENT' && paymentMethod !== 'debt') {
+            const activeShift = await dbLocal.shifts
+                .where('status').equals('OPEN')
+                .filter(s => s.userId === user.uid && s.branchId === currentBranch)
+                .first();
+
+            if (activeShift) {
+                const cashMovement = {
+                    id: `cm_${crypto.randomUUID()}`,
+                    shiftId: activeShift.id,
+                    type: 'RECEIPT', // 🔥 Tipo "RECEIPT" = Cobro de Deuda (Ingreso)
+                    method: paymentMethod,
+                    amount: parsedAmount,
+                    description: `Cobro Cta.Cte.: ${client.name} - ${description}`,
+                    date: timestamp,
+                    branchId: currentBranch,
+                    userId: user.uid,
+                    companyId: user.companyId,
+                    referenceId: movementId,
+                    syncStatus: 'pending'
+                };
+                await dbLocal.cash_movements.put(cashMovement);
+                triggerOptimisticSync('cash_movements', cashMovement);
+            }
+        }
+
+        // Sincronización en segundo plano
+        triggerOptimisticSync('clients', updatedClient);
+        triggerOptimisticSync('customer_ledger', movement);
     });
 
     return newBalance;
@@ -165,7 +194,6 @@ export const clientRepository = {
   // ✍️ ABM (Fiscal Aware)
   // ==========================================
 
-  // 🔥 VALIDACIÓN FISCAL PREVIA
   validateForFiscal(client) {
       if (client.fiscalCondition === 'RESPONSABLE_INSCRIPTO') {
           if (client.docType !== '80') return { valid: false, error: 'RI requiere CUIT' };
@@ -185,11 +213,13 @@ export const clientRepository = {
     
     if (!user?.companyId) throw new Error("Sin sesión de empresa.");
 
-    // 1. Sanitización
+    const isNew = !client.id;
+    const id = client.id || crypto.randomUUID();
+    const sequentialId = isNew ? await this.generateNextId() : client.sequentialId;
+
     const cleanDocNumber = client.docNumber ? client.docNumber.replace(/\D/g, '') : '';
     const cleanName = client.name.toUpperCase().trim();
     
-    // 2. Validación Fiscal Dura
     const fiscalCheck = this.validateForFiscal({ ...client, docNumber: cleanDocNumber });
     if (!fiscalCheck.valid) {
         throw new Error(`Error Fiscal: ${fiscalCheck.error}`);
@@ -197,23 +227,22 @@ export const clientRepository = {
 
     const clientToSave = {
       ...client,
-      id: client.id || crypto.randomUUID(),
+      id,
+      sequentialId,
       name: cleanName,
-      docType: client.docType || '96', // Default DNI
+      docType: client.docType || '96', 
       docNumber: cleanDocNumber,
       address: client.address || '-',
-      fiscalCondition: client.fiscalCondition || 'CONSUMIDOR_FINAL', // Default seguro
-      
-      companyId: user.companyId, // Aseguramos tenant
-      balance: client.balance || 0,
+      fiscalCondition: client.fiscalCondition || 'CONSUMIDOR_FINAL', 
+      companyId: user.companyId, 
+      balance: parseFloat(client.balance || 0),
       updatedAt: new Date().toISOString(),
       syncStatus: 'pending'
     };
 
-    // 3. Local
-    await dbLocal.clients.put(clientToSave);
+    if (isNew) clientToSave.createdAt = new Date().toISOString();
 
-    // 4. Nube (Optimista)
+    await dbLocal.clients.put(clientToSave);
     triggerOptimisticSync('clients', clientToSave);
 
     return clientToSave;
@@ -223,10 +252,13 @@ export const clientRepository = {
     const dbLocal = await getDB();
     const { user } = useAuthStore.getState();
     
-    // 1. Local
+    const client = await dbLocal.clients.get(id);
+    if (client && parseFloat(client.balance) > 0) {
+        throw new Error("No se puede eliminar un cliente con deuda pendiente.");
+    }
+
     await dbLocal.clients.delete(id);
 
-    // 2. Nube (Fire & Forget)
     if (navigator.onLine && user?.companyId) {
         try {
             const path = `companies/${user.companyId}/clients`;

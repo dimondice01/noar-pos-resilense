@@ -4,7 +4,7 @@ import {
     Truck, Plus, FileText, Search, 
     DollarSign, Package, ChevronRight, ChevronLeft,
     Filter, AlertCircle, CheckCircle2, Clock, Wallet, X, MapPin,
-    Eye, Trash2
+    Eye, Trash2, PackageMinus, Printer, Loader2
 } from 'lucide-react';
 
 // 🔥 REPOSITORIO
@@ -12,9 +12,272 @@ import { purchaseRepository } from '../repositories/purchaseRepository';
 
 import { useAuthStore } from '../../auth/store/useAuthStore';
 import { Button } from '../../../core/ui/Button';
+import { Switch } from '../../../core/ui/Switch';
 import { cn } from '../../../core/utils/cn';
 import { SupplierPaymentModal } from '../components/SupplierPaymentModal'; 
 import toast from 'react-hot-toast';
+
+// =================================================================
+// 🖨️ MODAL: TICKET DE COMPRA IMPRIMIBLE (NUEVO)
+// =================================================================
+const PurchaseTicketModal = ({ isOpen, onClose, purchase }) => {
+    if (!isOpen || !purchase) return null;
+
+    const handlePrint = () => {
+        window.print();
+    };
+
+    const isAnulado = purchase.status === 'VOIDED' || purchase.afip?.status === 'VOIDED';
+    const isRefunded = purchase.status === 'REFUNDED' || purchase.status === 'PARTIAL_REFUND';
+
+    return (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-sys-900/60 backdrop-blur-sm p-4 animate-in fade-in print:bg-white print:z-[9999] print:inset-0">
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm flex flex-col max-h-[90vh] print:shadow-none print:w-full print:max-w-none print:h-auto">
+                
+                {/* Header solo pantalla */}
+                <div className="p-4 border-b flex justify-between items-center bg-sys-50 print:hidden">
+                    <h3 className="font-bold text-lg flex items-center gap-2 text-sys-900"><Printer size={18} className="text-brand"/> Comprobante de Compra</h3>
+                    <button onClick={onClose} className="p-2 hover:bg-sys-200 rounded-full text-sys-500"><X size={20}/></button>
+                </div>
+
+                {/* Contenido Imprimible (Formato Ticket Térmico) */}
+                <div className="flex-1 overflow-y-auto p-6 print:p-0 custom-scrollbar bg-sys-100 print:bg-white flex justify-center">
+                    <div className="bg-white w-full max-w-[80mm] min-h-[100mm] p-4 text-black shadow-sm print:shadow-none font-mono text-[11px] leading-tight mx-auto border print:border-none relative">
+                        
+                        {(isAnulado || isRefunded) && (
+                            <div className="absolute inset-0 flex items-center justify-center opacity-20 pointer-events-none z-0 rotate-[-30deg]">
+                                <span className="text-6xl font-black text-red-600 border-8 border-red-600 px-4 py-2 rounded-xl">ANULADO</span>
+                            </div>
+                        )}
+
+                        <div className="text-center mb-4 border-b border-dashed border-black pb-4 relative z-10">
+                            <h2 className="text-lg font-black uppercase mb-1">INGRESO MERCADERÍA</h2>
+                            <p>Sucursal: {purchase.branchName || 'Principal'}</p>
+                            <p>Usuario: {purchase.userName || 'Admin'}</p>
+                            <p>Fecha: {new Date(purchase.date).toLocaleString('es-AR')}</p>
+                        </div>
+
+                        <div className="mb-4 border-b border-dashed border-black pb-4 relative z-10">
+                            <p><span className="font-bold">PROVEEDOR:</span> {purchase.supplierName}</p>
+                            <p><span className="font-bold">FACTURA:</span> {purchase.invoiceNumber || 'S/N'}</p>
+                            <p><span className="font-bold">ESTADO PAGO:</span> {purchase.paymentStatus === 'PAID' ? 'PAGADO' : purchase.paymentStatus === 'PARTIAL' ? 'PAGO PARCIAL' : 'IMPAGO'}</p>
+                            <p><span className="font-bold">ESTADO DOC:</span> {isAnulado ? 'ANULADO' : isRefunded ? 'DEV. PARCIAL' : 'VIGENTE'}</p>
+                        </div>
+
+                        <table className="w-full mb-4 relative z-10">
+                            <thead>
+                                <tr className="border-b border-black">
+                                    <th className="text-left pb-1 font-bold">CANT x DESC</th>
+                                    <th className="text-right pb-1 font-bold">TOTAL</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-dashed divide-gray-300">
+                                {(!purchase.items || purchase.items.length === 0) ? (
+                                    <tr><td colSpan="2" className="text-center py-4 italic">Cargando detalles...</td></tr>
+                                ) : (
+                                    purchase.items.map((item, idx) => {
+                                        const q = item.qty || item.quantity || 1;
+                                        const c = item.cost || item.price || 0;
+                                        return (
+                                            <tr key={idx}>
+                                                <td className="py-1">
+                                                    <div className="font-bold truncate max-w-[150px]">{item.name}</div>
+                                                    <div>{q} x ${c.toLocaleString('es-AR', {minimumFractionDigits: 2})}</div>
+                                                </td>
+                                                <td className="text-right py-1 align-bottom font-bold">
+                                                    ${(q * c).toLocaleString('es-AR', {minimumFractionDigits: 2})}
+                                                </td>
+                                            </tr>
+                                        )
+                                    })
+                                )}
+                            </tbody>
+                        </table>
+
+                        <div className="border-t border-black pt-2 space-y-1 relative z-10">
+                            <div className="flex justify-between font-bold text-sm">
+                                <span>TOTAL:</span>
+                                <span>${(parseFloat(purchase.total || purchase.totalFinal || 0)).toLocaleString('es-AR', {minimumFractionDigits: 2})}</span>
+                            </div>
+                            <div className="flex justify-between">
+                                <span>Pagado:</span>
+                                <span>${(parseFloat(purchase.amountPaid || 0)).toLocaleString('es-AR', {minimumFractionDigits: 2})}</span>
+                            </div>
+                            <div className="flex justify-between text-red-600 font-bold mt-1 pt-1 border-t border-dashed border-gray-300">
+                                <span>Saldo Deudor:</span>
+                                <span>${(parseFloat(purchase.remainingBalance || 0)).toLocaleString('es-AR', {minimumFractionDigits: 2})}</span>
+                            </div>
+                        </div>
+                        
+                        {purchase.notes && (
+                            <div className="mt-4 pt-2 border-t border-dashed border-black relative z-10">
+                                <p className="font-bold">NOTAS Y AUDITORÍA:</p>
+                                <p className="text-[10px] whitespace-pre-line">{purchase.notes}</p>
+                            </div>
+                        )}
+
+                        <div className="text-center mt-6 pt-4 border-t border-black text-[9px] relative z-10">
+                            <p>*** COMPROBANTE INTERNO ***</p>
+                            <p>CONTROL DE INVENTARIO</p>
+                        </div>
+                    </div>
+                </div>
+
+                {/* Footer solo pantalla */}
+                <div className="p-4 border-t bg-white flex gap-3 print:hidden">
+                    <Button variant="ghost" onClick={onClose} className="flex-1 border border-sys-200">Cerrar</Button>
+                    <Button onClick={handlePrint} className="flex-1 bg-sys-900 hover:bg-black text-white shadow-lg">
+                        <Printer size={18} className="mr-2"/> Imprimir
+                    </Button>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+// =================================================================
+// 🛍️ MODAL DE DEVOLUCIÓN PARCIAL (BLINDADO)
+// =================================================================
+const RefundModal = ({ isOpen, onClose, sale, onConfirm, isProcessing }) => {
+    const [returnMap, setReturnMap] = useState({}); 
+    const [refundTotal, setRefundTotal] = useState(0);
+    const [reason, setReason] = useState('');
+    const [refundCash, setRefundCash] = useState(true);
+
+    useEffect(() => {
+        if (isOpen) {
+            setReturnMap({});
+            setRefundTotal(0);
+            setReason('');
+            setRefundCash(true);
+        }
+    }, [isOpen, sale]);
+
+    const handleQtyChange = (item, change) => {
+        if (isProcessing) return; 
+        
+        const itemId = item.id || item.productId;
+        const currentReturn = returnMap[itemId] || 0;
+        
+        // 🔥 CALCULAMOS CUÁNTO QUEDA DISPONIBLE PARA DEVOLVER
+        const maxQty = parseFloat(item.qty || item.quantity || 0) - parseFloat(item.returnedQty || 0);
+        
+        const newReturn = Math.max(0, Math.min(maxQty, currentReturn + change));
+        
+        const newMap = { ...returnMap, [itemId]: newReturn };
+        setReturnMap(newMap);
+
+        let total = 0;
+        sale.items.forEach(i => {
+            const iId = i.id || i.productId;
+            const returnedQty = newMap[iId] || 0;
+            const itemCost = parseFloat(i.cost || i.price || 0);
+            total += returnedQty * itemCost;
+        });
+        setRefundTotal(total);
+    };
+
+    if (!isOpen || !sale) return null;
+
+    return (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-sys-900/60 backdrop-blur-sm p-4 animate-in fade-in">
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]">
+                <div className="p-5 border-b border-sys-100 bg-sys-50 flex justify-between items-center">
+                    <div>
+                        <h3 className="font-bold text-lg text-sys-900 flex items-center gap-2">
+                            <PackageMinus className="text-orange-500" /> Devolución a Proveedor
+                        </h3>
+                        <p className="text-xs text-sys-500">Seleccione la mercadería a devolver.</p>
+                    </div>
+                    <button onClick={onClose} disabled={isProcessing} className="p-2 hover:bg-sys-200 rounded-full disabled:opacity-50"><X size={20}/></button>
+                </div>
+                
+                <div className="flex-1 overflow-y-auto p-4 space-y-3 custom-scrollbar">
+                    {(!sale.items || sale.items.length === 0) ? (
+                        <p className="text-center text-sys-400 italic">No hay ítems para devolver.</p>
+                    ) : (
+                        sale.items.map(item => {
+                            const itemId = item.id || item.productId;
+                            const returnQty = returnMap[itemId] || 0;
+                            // Calculamos lo que realmente queda para devolver
+                            const maxQty = parseFloat(item.qty || item.quantity || 0) - parseFloat(item.returnedQty || 0);
+                            const itemCost = parseFloat(item.cost || item.price || 0);
+                            
+                            // Si ya se devolvió todo este ítem, lo ocultamos
+                            if (maxQty <= 0) return null;
+
+                            return (
+                                <div key={itemId} className={cn("flex items-center justify-between p-3 rounded-xl border transition-all", returnQty > 0 ? "border-orange-200 bg-orange-50" : "border-sys-100 bg-white")}>
+                                    <div className="flex-1">
+                                        <p className="text-sm font-bold text-sys-800">{item.name}</p>
+                                        <p className="text-xs text-sys-500">
+                                            Disponibles: <b>{maxQty}</b> x ${itemCost.toLocaleString('es-AR', {minimumFractionDigits: 2})}
+                                        </p>
+                                    </div>
+                                    <div className="flex items-center gap-3">
+                                        <div className="flex items-center border border-sys-200 rounded-lg bg-white">
+                                            <button onClick={() => handleQtyChange(item, -1)} disabled={isProcessing} className="px-2 py-1 hover:bg-sys-100 text-sys-600 disabled:opacity-50">-</button>
+                                            <span className="w-8 text-center text-sm font-bold text-orange-600">{returnQty}</span>
+                                            <button onClick={() => handleQtyChange(item, 1)} disabled={isProcessing} className="px-2 py-1 hover:bg-sys-100 text-sys-600 disabled:opacity-50">+</button>
+                                        </div>
+                                    </div>
+                                </div>
+                            );
+                        })
+                    )}
+                </div>
+
+                {refundTotal > 0 && (
+                    <div className="p-4 bg-sys-50 border-t border-sys-200 space-y-4 animate-in slide-in-from-bottom-2">
+                        <div>
+                            <label className="text-[10px] font-bold text-sys-500 uppercase tracking-widest mb-1.5 block">Motivo de Devolución *</label>
+                            <input 
+                                type="text" 
+                                placeholder="Ej: Mercadería en mal estado, error de pedido..." 
+                                className="w-full p-2.5 rounded-lg border border-sys-200 text-sm outline-none focus:border-orange-400"
+                                value={reason}
+                                onChange={e => setReason(e.target.value)}
+                            />
+                        </div>
+                        <div className="flex items-center justify-between bg-white p-3 rounded-lg border border-sys-200">
+                            <div>
+                                <p className="text-xs font-bold text-sys-700 flex items-center gap-1">Ingresar dinero a caja</p>
+                                <p className="text-[10px] text-sys-500">Apágalo si es Nota de Crédito (descuenta deuda)</p>
+                            </div>
+                            <Switch checked={refundCash} onCheckedChange={setRefundCash} disabled={isProcessing} />
+                        </div>
+                    </div>
+                )}
+
+                <div className="p-5 border-t border-sys-100 bg-white">
+                    <div className="flex justify-between items-center mb-4">
+                        <span className="text-sm font-bold text-sys-600 uppercase">Monto a Reintegrar:</span>
+                        <span className="text-2xl font-black text-orange-600">
+                            $ {refundTotal.toLocaleString('es-AR', {minimumFractionDigits: 2})}
+                        </span>
+                    </div>
+                    <div className="flex gap-3">
+                        <Button variant="ghost" onClick={onClose} disabled={isProcessing} className="flex-1 border border-sys-200">Cancelar</Button>
+                        <Button 
+                            onClick={() => {
+                                if (!reason.trim()) return toast.error("El motivo es obligatorio");
+                                onConfirm(sale, returnMap, refundTotal, reason, refundCash);
+                            }} 
+                            disabled={refundTotal <= 0 || isProcessing}
+                            className="flex-1 bg-orange-500 hover:bg-orange-600 text-white shadow-lg shadow-orange-200"
+                        >
+                            {isProcessing ? (
+                                <><Loader2 className="animate-spin mr-2" size={18}/> Procesando...</>
+                            ) : (
+                                "Confirmar Devolución"
+                            )}
+                        </Button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+};
 
 export const PurchaseHistoryPage = () => {
     const navigate = useNavigate();
@@ -23,7 +286,6 @@ export const PurchaseHistoryPage = () => {
     const { activeBranchName, activeBranchId, user } = useAuthStore();
     
     // --- CONTROL DE PERMISOS ---
-    // Cajero solo ve (READ ONLY). Owner/Admin operan (FULL ACCESS).
     const canOperate = user?.role === 'OWNER' || user?.role === 'ADMIN' || user?.role === 'SUPER_ADMIN';
 
     // Estados
@@ -45,7 +307,9 @@ export const PurchaseHistoryPage = () => {
     // Modales
     const [selectedPurchase, setSelectedPurchase] = useState(null);
     const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
-    const [viewDetail, setViewDetail] = useState(null); // Detalle de compra
+    const [viewDetail, setViewDetail] = useState(null); 
+    const [refundData, setRefundData] = useState(null); 
+    const [isProcessingRefund, setIsProcessingRefund] = useState(false);
 
     // Inicialización
     useEffect(() => {
@@ -97,7 +361,7 @@ export const PurchaseHistoryPage = () => {
     // ACCIONES
     const handleOpenPayment = (e, purchase) => {
         e.stopPropagation();
-        if (!canOperate) return; // Doble check
+        if (!canOperate) return; 
         setSelectedPurchase(purchase);
         setIsPaymentModalOpen(true);
     };
@@ -142,13 +406,39 @@ export const PurchaseHistoryPage = () => {
     const handleViewDetail = async (e, purchase) => {
         e.stopPropagation();
         
-        // Si los items ya vienen cargados, usamos esos
         if (purchase.items && purchase.items.length > 0) {
             setViewDetail(purchase);
         } else {
-            // Si no, hacemos fetch on-demand
             const items = await purchaseRepository.getPurchaseItems(purchase.id);
             setViewDetail({ ...purchase, items });
+        }
+    };
+
+    // 🔥 DEVOLUCIÓN DE MERCADERÍA CONECTADA AL REPOSITORIO 🔥
+    const handleProcessRefund = async (originalSale, returnMap, refundAmount, reason, refundCash) => {
+        setIsProcessingRefund(true);
+        try {
+            await purchaseRepository.processRefund(originalSale, returnMap, refundAmount, reason, refundCash);
+            toast.success("Devolución procesada correctamente.");
+            setRefundData(null); 
+            loadData(); // Refrescamos la UI para ver los nuevos saldos y estados
+        } catch (error) {
+            console.error(error);
+            toast.error("Error: " + error.message);
+        } finally {
+            setIsProcessingRefund(false);
+        }
+    };
+
+    const handleOpenRefund = async (e, purchase) => {
+        e.stopPropagation();
+        if (!canOperate) return;
+        
+        if (purchase.items && purchase.items.length > 0) {
+            setRefundData({ isOpen: true, sale: purchase });
+        } else {
+            const items = await purchaseRepository.getPurchaseItems(purchase.id);
+            setRefundData({ isOpen: true, sale: { ...purchase, items } });
         }
     };
 
@@ -178,7 +468,7 @@ export const PurchaseHistoryPage = () => {
                     <div>
                         <h1 className="text-3xl font-black text-sys-900 tracking-tight flex items-center gap-3">
                             <Truck className="text-brand" size={32} />
-                            {activeSupplierFilter ? `Cuenta: ${activeSupplierFilter.name}` : 'Gestión de Abastecimiento'}
+                            {activeSupplierFilter ? `Cuenta: ${activeSupplierFilter.name}` : 'Historial de Compras'}
                         </h1>
                         <div className="flex items-center gap-2 mt-2">
                             <span className={cn(
@@ -194,7 +484,6 @@ export const PurchaseHistoryPage = () => {
                         </div>
                     </div>
                     
-                    {/* 🔥 BOTÓN NUEVA COMPRA (SOLO ADMIN/OWNER) */}
                     {canOperate && (
                         <Button 
                             onClick={handleNewPurchase} 
@@ -206,17 +495,15 @@ export const PurchaseHistoryPage = () => {
                     )}
                 </div>
 
-                {/* KPI CARDS (Solo visibles si tienes permiso o quizás limitadas para cajero) */}
-                {/* Asumimos que el cajero PUEDE ver qué llegó, pero quizás no le importan las deudas globales */}
                 <div className="grid grid-cols-4 gap-4">
                     <div className="bg-sys-50 border border-sys-200 p-4 rounded-2xl flex items-center gap-4 group hover:border-brand/30 transition-all">
                         <div className="w-10 h-10 rounded-xl bg-white flex items-center justify-center text-emerald-600 shadow-sm group-hover:scale-110 transition-transform">
                             <DollarSign size={20}/>
                         </div>
                         <div>
-                            <p className="text-[10px] uppercase font-bold text-sys-400">Total Comprado (Mes)</p>
+                            <p className="text-[10px] uppercase font-bold text-sys-400">Total Comprado (30d)</p>
                             <p className="text-xl font-black text-sys-900">
-                                ${stats.monthTotal?.toLocaleString('es-AR', { notation: 'compact' }) || '0'}
+                                ${stats.monthTotal?.toLocaleString('es-AR', { minimumFractionDigits: 0, maximumFractionDigits: 0 }) || '0'}
                             </p>
                         </div>
                     </div>
@@ -242,7 +529,7 @@ export const PurchaseHistoryPage = () => {
                                 "text-xl font-black", 
                                 stats.totalDebt > 0 ? "text-red-600" : "text-emerald-700"
                             )}>
-                                ${stats.totalDebt?.toLocaleString('es-AR') || '0'}
+                                ${stats.totalDebt?.toLocaleString('es-AR', { minimumFractionDigits: 0, maximumFractionDigits: 0 }) || '0'}
                             </p>
                         </div>
                     </div>
@@ -348,9 +635,11 @@ export const PurchaseHistoryPage = () => {
                                         const status = purchase.paymentStatus || 'PAID';
                                         const remaining = purchase.remainingBalance !== undefined ? purchase.remainingBalance : 0;
                                         const isDebt = status === 'UNPAID' || status === 'PARTIAL';
+                                        const isAnulado = purchase.status === 'VOIDED';
+                                        const isRefunded = purchase.status === 'REFUNDED' || purchase.status === 'PARTIAL_REFUND';
 
                                         return (
-                                            <tr key={purchase.id} className="hover:bg-sys-50 transition-colors group">
+                                            <tr key={purchase.id} onClick={(e) => handleViewDetail(e, purchase)} className={cn("hover:bg-sys-50/40 transition-colors group cursor-pointer", isAnulado && "opacity-50 bg-red-50/20")}>
                                                 <td className="px-6 py-4 text-sm font-medium text-sys-600">
                                                     {new Date(purchase.date).toLocaleDateString()}
                                                     <span className="block text-[10px] text-sys-400">{new Date(purchase.date).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
@@ -360,42 +649,54 @@ export const PurchaseHistoryPage = () => {
                                                 </td>
                                                 <td className="px-6 py-4 text-sm font-mono text-sys-500 uppercase">{purchase.invoiceNumber || 'S/N'}</td>
                                                 <td className="px-6 py-4 text-center">
-                                                    <span className={cn(
-                                                        "px-2.5 py-1 rounded-full text-[10px] font-black uppercase tracking-wide border",
-                                                        status === 'PAID' ? "bg-emerald-50 text-emerald-600 border-emerald-100" :
-                                                        status === 'PARTIAL' ? "bg-amber-50 text-amber-600 border-amber-100" :
-                                                        "bg-red-50 text-red-600 border-red-100"
-                                                    )}>
-                                                        {status === 'PAID' ? 'PAGADO' : status === 'PARTIAL' ? 'PARCIAL' : 'PENDIENTE'}
-                                                    </span>
+                                                    {isAnulado ? (
+                                                        <span className="px-2.5 py-1 rounded-full text-[10px] font-black uppercase tracking-wide border bg-red-50 text-red-600 border-red-100">ANULADO</span>
+                                                    ) : isRefunded ? (
+                                                        <span className="px-2.5 py-1 rounded-full text-[10px] font-black uppercase tracking-wide border bg-orange-50 text-orange-600 border-orange-100">
+                                                            {purchase.status === 'REFUNDED' ? 'DEVUELTO' : 'DEV. PARCIAL'}
+                                                        </span>
+                                                    ) : (
+                                                        <span className={cn(
+                                                            "px-2.5 py-1 rounded-full text-[10px] font-black uppercase tracking-wide border",
+                                                            status === 'PAID' ? "bg-emerald-50 text-emerald-600 border-emerald-100" :
+                                                            status === 'PARTIAL' ? "bg-amber-50 text-amber-600 border-amber-100" :
+                                                            "bg-orange-50 text-orange-600 border-orange-100"
+                                                        )}>
+                                                            {status === 'PAID' ? 'PAGADO' : status === 'PARTIAL' ? 'PARCIAL' : 'IMPAGO'}
+                                                        </span>
+                                                    )}
                                                 </td>
-                                                <td className="px-6 py-4 text-right font-black text-sys-900">${purchase.total.toLocaleString('es-AR', {minimumFractionDigits: 2})}</td>
+                                                <td className="px-6 py-4 text-right font-black text-sys-900">${(purchase.total || purchase.totalFinal || 0).toLocaleString('es-AR', {minimumFractionDigits: 2})}</td>
                                                 <td className="px-6 py-4 text-right">
-                                                    {remaining > 0.01 ? (
+                                                    {remaining > 0.01 && !isAnulado ? (
                                                         <span className="font-black text-red-600 bg-red-50 px-2 py-1 rounded border border-red-100">${remaining.toLocaleString('es-AR', {minimumFractionDigits: 2})}</span>
                                                     ) : <span className="text-sys-300 font-bold">-</span>}
                                                 </td>
                                                 <td className="px-6 py-4 text-right">
                                                     <div className="flex justify-end gap-2">
-                                                        {/* 🔥 BOTÓN PAGAR (SOLO ADMIN) */}
-                                                        {isDebt && canOperate && (
+                                                        {isDebt && canOperate && !isAnulado && (
                                                             <Button 
                                                                 size="xs" 
                                                                 onClick={(e) => handleOpenPayment(e, purchase)} 
                                                                 className="bg-emerald-600 hover:bg-emerald-700 text-white shadow-emerald-200"
+                                                                title="Pagar Deuda"
                                                             >
                                                                 <DollarSign size={14}/>
                                                             </Button>
                                                         )}
                                                         
-                                                        {/* 👀 BOTÓN VER (TODOS) */}
-                                                        <Button size="xs" variant="secondary" onClick={(e) => handleViewDetail(e, purchase)}>
-                                                            <Eye size={14} className="text-sys-600"/>
+                                                        {canOperate && !isAnulado && (
+                                                            <Button size="xs" variant="ghost" onClick={(e) => handleOpenRefund(e, purchase)} className="text-orange-400 hover:text-orange-600 hover:bg-orange-50" title="Devolución">
+                                                                <PackageMinus size={14}/>
+                                                            </Button>
+                                                        )}
+
+                                                        <Button size="xs" variant="secondary" onClick={(e) => handleViewDetail(e, purchase)} className="text-sys-600 hover:bg-sys-100 shadow-none border-sys-200" title="Ver Comprobante">
+                                                            <Eye size={14} />
                                                         </Button>
                                                         
-                                                        {/* 🔥 BOTÓN BORRAR (SOLO ADMIN) */}
-                                                        {canOperate && (
-                                                            <Button size="xs" variant="ghost" onClick={(e) => handleVoidPurchase(e, purchase)} className="text-sys-400 hover:text-red-500 hover:bg-red-50">
+                                                        {canOperate && !isAnulado && (
+                                                            <Button size="xs" variant="ghost" onClick={(e) => handleVoidPurchase(e, purchase)} className="text-sys-400 hover:text-red-500 hover:bg-red-50" title="Anular Totalmente">
                                                                 <Trash2 size={14}/>
                                                             </Button>
                                                         )}
@@ -438,11 +739,11 @@ export const PurchaseHistoryPage = () => {
                 <SupplierPaymentModal 
                     isOpen={isPaymentModalOpen}
                     onClose={() => setIsPaymentModalOpen(false)}
-                    total={selectedPurchase.total} 
+                    total={selectedPurchase.total || selectedPurchase.totalFinal || 0} 
                     supplierName={selectedPurchase.supplierName}
                     invoiceToPay={{ 
                         id: selectedPurchase.id,
-                        amount: selectedPurchase.total,
+                        amount: selectedPurchase.total || selectedPurchase.totalFinal || 0,
                         remainingBalance: selectedPurchase.remainingBalance,
                         invoiceNumber: selectedPurchase.invoiceNumber,
                         description: `Fac #${selectedPurchase.invoiceNumber}`
@@ -451,45 +752,21 @@ export const PurchaseHistoryPage = () => {
                 />
             )}
 
-            {/* MODAL DETALLE (READ ONLY) */}
-            {viewDetail && (
-                <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in">
-                    <div className="bg-white w-full max-w-2xl rounded-2xl shadow-2xl flex flex-col max-h-[80vh]">
-                        <div className="p-4 border-b flex justify-between items-center bg-sys-50">
-                            <div>
-                                <h3 className="font-bold text-lg">Detalle de Compra</h3>
-                                <p className="text-xs text-sys-500">Factura: {viewDetail.invoiceNumber}</p>
-                            </div>
-                            <button onClick={() => setViewDetail(null)} className="p-2 hover:bg-sys-200 rounded-full"><X size={20}/></button>
-                        </div>
-                        <div className="p-4 overflow-y-auto">
-                            {(!viewDetail.items || viewDetail.items.length === 0) ? (
-                                <p className="text-center text-sys-400 p-8 italic">No hay detalles disponibles para esta compra.</p>
-                            ) : (
-                                <table className="w-full text-sm">
-                                    <thead className="bg-sys-50 text-xs font-bold text-sys-500 uppercase">
-                                        <tr>
-                                            <th className="p-2 text-left">Producto</th>
-                                            <th className="p-2 text-center">Cant.</th>
-                                            <th className="p-2 text-right">Costo U.</th>
-                                            <th className="p-2 text-right">Subtotal</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody className="divide-y">
-                                        {viewDetail.items.map((item, idx) => (
-                                            <tr key={idx}>
-                                                <td className="p-2 font-medium">{item.name}</td>
-                                                <td className="p-2 text-center font-mono">{item.qty}</td>
-                                                <td className="p-2 text-right">${item.cost?.toLocaleString()}</td>
-                                                <td className="p-2 text-right font-bold">${(item.cost * item.qty).toLocaleString()}</td>
-                                            </tr>
-                                        ))}
-                                    </tbody>
-                                </table>
-                            )}
-                        </div>
-                    </div>
-                </div>
+            {/* 🔥 MODAL DETALLE E IMPRESIÓN (TICKET) */}
+            <PurchaseTicketModal 
+                isOpen={!!viewDetail} 
+                onClose={() => setViewDetail(null)} 
+                purchase={viewDetail} 
+            />
+
+            {refundData && (
+                <RefundModal 
+                    isOpen={refundData.isOpen}
+                    sale={refundData.sale}
+                    isProcessing={isProcessingRefund} 
+                    onClose={() => setRefundData(null)}
+                    onConfirm={handleProcessRefund}
+                />
             )}
         </div>
     );

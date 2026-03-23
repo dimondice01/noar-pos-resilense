@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { X, Lock, DollarSign, Calculator, AlertTriangle, ArrowRight, Wallet, Printer, FileText } from 'lucide-react';
+import { X, Lock, DollarSign, Calculator, AlertTriangle, ArrowRight, Wallet, Printer, Eye, EyeOff } from 'lucide-react';
 import { Button } from '../../../core/ui/Button';
 import { cn } from '../../../core/utils/cn';
 import { useReactToPrint } from 'react-to-print';
+import { useAuthStore } from '../../auth/store/useAuthStore'; // 🔥 IMPORTAMOS PARA VER LOS PERMISOS
 
 // Helper de Moneda
 const formatMoney = (val) => `$ ${Number(val).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -14,6 +15,11 @@ const formatDate = () => {
 };
 
 export const CashClosingModal = ({ isOpen, onClose, onConfirm, systemTotals, userName, branchName, shiftId }) => {
+    // 🔥 PERMISOS DEL USUARIO ACTUAL
+    const { user } = useAuthStore();
+    const isSuperUser = user?.role === 'ADMIN' || user?.role === 'OWNER';
+    const canSeeExpected = isSuperUser || user?.permissions?.canSeeExpectedCash === true;
+
     // ESTADOS
     const [step, setStep] = useState(1); // 1: Conteo, 2: Distribución, 3: Ticket Declaración
     
@@ -47,7 +53,7 @@ export const CashClosingModal = ({ isOpen, onClose, onConfirm, systemTotals, use
     const valLeft = leftInCash === '' ? 0 : parseFloat(leftInCash);
     const totalWithdrawal = Math.max(0, valDeclared - valLeft);
     
-    // VARIABLES DEL SISTEMA (Protegidas, NO se muestran en UI pero se envían al backend)
+    // VARIABLES DEL SISTEMA 
     const expectedCash = systemTotals?.totalCash || 0; 
     const expectedDigital = systemTotals?.totalDigital || 0;
     const difference = valDeclared - expectedCash; 
@@ -87,13 +93,25 @@ export const CashClosingModal = ({ isOpen, onClose, onConfirm, systemTotals, use
                     {/* ================================================= */}
                     {step === 1 && (
                       <div className="space-y-6 animate-in slide-in-from-right-4 duration-300 max-w-sm mx-auto">
-                        <div className="bg-blue-50 p-4 rounded-xl border border-blue-100 text-blue-800 text-sm flex gap-3">
-                           <Calculator className="shrink-0 mt-0.5" size={20}/>
-                           <div>
-                               <p className="font-bold">Modo Auditoría Ciega</p>
-                               <p className="opacity-90 text-xs mt-1">Cuente TODO el dinero físico que hay en la caja (billetes + monedas) e ingrese el total.</p>
-                           </div>
-                        </div>
+                        
+                        {/* 🔥 PANEL INTELIGENTE BASADO EN PERMISOS */}
+                        {canSeeExpected ? (
+                            <div className="bg-emerald-50 p-4 rounded-xl border border-emerald-100 text-emerald-800 text-sm flex gap-3">
+                               <Eye className="shrink-0 mt-0.5 text-emerald-600" size={20}/>
+                               <div>
+                                   <p className="font-black text-emerald-900">Modo Transparente</p>
+                                   <p className="opacity-90 text-xs mt-1 leading-relaxed">Según el sistema, debes tener <strong>{formatMoney(expectedCash)}</strong> en tu cajón.</p>
+                               </div>
+                            </div>
+                        ) : (
+                            <div className="bg-blue-50 p-4 rounded-xl border border-blue-100 text-blue-800 text-sm flex gap-3">
+                               <EyeOff className="shrink-0 mt-0.5 text-blue-600" size={20}/>
+                               <div>
+                                   <p className="font-black text-blue-900">Auditoría Ciega</p>
+                                   <p className="opacity-90 text-xs mt-1 leading-relaxed">Cuente TODO el dinero físico que hay en la caja (billetes + monedas) e ingrese el total real.</p>
+                               </div>
+                            </div>
+                        )}
 
                         <div>
                            <label className="block text-xs font-bold text-sys-500 uppercase tracking-wider mb-2">Total Efectivo Físico en Caja</label>
@@ -102,13 +120,23 @@ export const CashClosingModal = ({ isOpen, onClose, onConfirm, systemTotals, use
                               <input 
                                 type="number" 
                                 autoFocus
-                                className="w-full pl-10 pr-4 py-4 text-3xl font-black text-sys-900 border-2 border-sys-200 rounded-xl focus:border-brand outline-none transition-all placeholder:text-sys-200"
+                                className={cn(
+                                    "w-full pl-10 pr-4 py-4 text-3xl font-black border-2 rounded-xl outline-none transition-all placeholder:text-sys-200",
+                                    canSeeExpected && declaredCash !== '' && valDeclared !== expectedCash ? "border-orange-300 focus:border-orange-500 text-orange-600 bg-orange-50" : "border-sys-200 focus:border-brand text-sys-900 bg-white"
+                                )}
                                 placeholder="0.00"
                                 value={declaredCash}
                                 onChange={e => setDeclaredCash(e.target.value)}
                                 onKeyDown={e => e.key === 'Enter' && valDeclared >= 0 && setStep(2)}
                               />
                            </div>
+                           
+                           {/* Ayuda visual si tiene permisos y hay diferencia */}
+                           {canSeeExpected && declaredCash !== '' && valDeclared !== expectedCash && (
+                               <p className={cn("text-[10px] font-bold mt-2 text-right", difference > 0 ? "text-emerald-600" : "text-rose-600")}>
+                                   Diferencia: {difference > 0 ? '+' : ''}{formatMoney(difference)}
+                               </p>
+                           )}
                         </div>
 
                         <div className="pt-4">

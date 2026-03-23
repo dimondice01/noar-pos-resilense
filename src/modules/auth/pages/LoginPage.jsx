@@ -4,9 +4,9 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { ArrowRight, AlertCircle, Loader2 } from 'lucide-react';
 import { Button } from '../../../core/ui/Button';
 
-// Firebase
-import { collection, query, where, getDocs, doc, getDoc } from 'firebase/firestore'; 
-import { db, auth } from '../../../database/firebase';
+// Firebase 
+import { collection, query, where, getDocs } from 'firebase/firestore'; 
+import { db } from '../../../database/firebase';
 
 export const LoginPage = () => {
   const [email, setEmail] = useState('');
@@ -23,11 +23,10 @@ export const LoginPage = () => {
       isCustom: false 
   });
 
-  // 👇 IMPORTAMOS updateUser PARA ACTUALIZAR EL STORE MANUALMENTE
-  const { login, updateUser } = useAuthStore();
+  const { login } = useAuthStore();
   const navigate = useNavigate();
 
-  // 1. CARGAR BRANDING SI HAY SLUG
+  // 1. CARGAR BRANDING SI HAY SLUG EN LA URL
   useEffect(() => {
       if (companySlug) {
           const fetchBranding = async () => {
@@ -59,16 +58,22 @@ export const LoginPage = () => {
 
     try {
       // ---------------------------------------------------------
-      // PASO 1: AUTENTICACIÓN (Firebase Auth)
+      // PASO 1: AUTENTICACIÓN (Store de Zustand + AuthService)
       // ---------------------------------------------------------
-      // Esto actualiza el usuario de Firebase internamente
+      // Esto hace el signInWithEmailAndPassword y resuelve el Bypass si aplica
       await login(email, password);
       
+      // Obtenemos el usuario fresco directamente del Store 
+      const currentUser = useAuthStore.getState().user;
+      
+      if (!currentUser) throw new Error("No se pudo obtener la sesión.");
+
       // ---------------------------------------------------------
       // PASO 2: REDIRECCIÓN "VIP" (SUPER ADMIN)
       // ---------------------------------------------------------
-      if (email.trim().toLowerCase() === 'admin@admin.com') {
-          console.log("👑 Super Admin detectado. Redirigiendo...");
+      // Comprobamos si es el SuperAdmin por su UID quemado o por el flag superAdmin
+      if (currentUser.uid === 'master-admin-nexus' || currentUser.superAdmin || currentUser.companyId === 'master_admin') {
+          console.log("👑 Super Admin detectado. Redirigiendo al Master Panel...");
           navigate('/master-admin');
           return; 
       }
@@ -76,56 +81,34 @@ export const LoginPage = () => {
       // ---------------------------------------------------------
       // PASO 3: REDIRECCIÓN USUARIOS NORMALES (Empresas)
       // ---------------------------------------------------------
-      // Esperamos un microtick para asegurar que auth.currentUser esté poblado
-      const currentUser = auth.currentUser;
-      
-      if (!currentUser) throw new Error("No se pudo obtener la sesión.");
+      if (currentUser.companyId && currentUser.companyId !== 'master_admin') {
+          console.log("✅ Acceso concedido a:", currentUser.companyId);
 
-      // Buscamos los datos completos del usuario (Rol, CompanyID, etc)
-      // Esto es vital porque auth.currentUser NO tiene el rol custom de Firestore
-      const userDocRef = doc(db, "users", currentUser.uid);
-      const userSnap = await getDoc(userDocRef);
-
-      if (userSnap.exists()) {
-          const userData = userSnap.data();
-          
-          // 🔥 FIX CRÍTICO: INYECTAMOS LOS DATOS AL STORE AHORA MISMO
-          // Esto evita que ProtectedRoute vea el usuario incompleto y nos expulse.
-          // Al hacerlo manual aquí, garantizamos que el estado global esté listo ANTES del navigate.
-          updateUser({ ...userData, uid: currentUser.uid });
-
-          // A. Si tiene empresa asignada (Cajero / Dueño)
-          if (userData.companyId) {
-              console.log("✅ Acceso concedido a:", userData.companyId);
-
-              // Si entró por link personalizado correcto, se queda ahí
-              if (branding.isCustom && companySlug === userData.companyId) {
-                  navigate(`/${companySlug}`);
-              } else {
-                  // Si no, lo mandamos a SU dashboard
-                  navigate(`/${userData.companyId}`);
-              }
-              return;
+          // Si entró por link personalizado correcto, se queda ahí
+          if (branding.isCustom && companySlug === currentUser.companyId) {
+              navigate(`/${companySlug}`);
+          } else {
+              // Si no, lo mandamos a SU dashboard
+              navigate(`/${currentUser.companyId}`);
           }
-          
-          // B. Caso raro: Admin sin email "admin@admin.com"
-          if (userData.role === 'ADMIN' || userData.role === 'SUPER_ADMIN') {
-             navigate('/master-admin');
-             return;
-          }
+          return;
       }
       
-      // Si llegamos aquí, el usuario existe en Auth pero no en Firestore
-      console.warn("⚠️ Usuario sin rol ni empresa detectado.");
-      navigate('/');
+      // Caso raro de error de base de datos
+      console.warn("⚠️ Usuario sin empresa asignada detectado.");
+      setError("Su cuenta no tiene un negocio asignado. Contacte a soporte.");
+      setIsSubmitting(false);
 
     } catch (err) {
-      console.error(err);
-      setError("Credenciales incorrectas o error de conexión.");
-      setIsSubmitting(false); // Solo desbloqueamos si hubo error
+      console.error("Error en login:", err);
+      // Personalizamos el error de offline si aplica
+      if (err.message && err.message.includes('Offline')) {
+          setError(err.message);
+      } else {
+          setError("Credenciales incorrectas o error de conexión.");
+      }
+      setIsSubmitting(false); // Desbloqueamos el botón
     } 
-    // Nota: No ponemos setIsSubmitting(false) en finally si hubo éxito, 
-    // para que el botón no parpadee antes de cambiar de página.
   };
 
   return (
@@ -218,7 +201,7 @@ export const LoginPage = () => {
       </div>
 
       <p className="mt-8 text-xs text-sys-400 text-center">
-        © 2025 NoarPOS Resilience v2.1<br/>
+        © 2026 NoarPOS Resilience v2.1<br/>
         <span className="opacity-50">Secure Connection • {branding.isCustom ? 'Managed Hosting' : 'Public Access'}</span>
       </p>
     </div>

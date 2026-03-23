@@ -35,6 +35,28 @@ const getDateRange = (period) => {
     return { start, end };
 };
 
+// Formateador de fechas para el gráfico según el periodo
+const getGroupKeyAndLabel = (dateObj, period) => {
+    if (period === 'today') {
+        const hour = String(dateObj.getHours()).padStart(2, '0');
+        return { key: `${hour}:00`, label: `${hour}:00` };
+    }
+    if (period === 'week' || period === 'month') {
+        const day = String(dateObj.getDate()).padStart(2, '0');
+        const month = String(dateObj.getMonth() + 1).padStart(2, '0');
+        return { 
+            key: `${dateObj.getFullYear()}-${month}-${day}`, 
+            label: dateObj.toLocaleDateString('es-AR', { day: '2-digit', month: 'short' }) 
+        };
+    }
+    // Año o 6 meses (Agrupar por mes)
+    const month = String(dateObj.getMonth() + 1).padStart(2, '0');
+    return { 
+        key: `${dateObj.getFullYear()}-${month}`, 
+        label: dateObj.toLocaleDateString('es-AR', { month: 'short', year: '2-digit' }) 
+    };
+};
+
 export const useBusinessIntelligence = () => {
     // 1. Centralización por BranchId (Consumiendo directamente de Zustand)
     const { user, activeBranchId } = useAuthStore();
@@ -61,7 +83,7 @@ export const useBusinessIntelligence = () => {
                 const companyPath = `companies/${user.companyId}`;
                 
                 // ------------------------------------------------
-                // QUERY A: VENTAS (Ingresos y Costos de Venta)
+                // QUERY A: VENTAS (Ingresos Teóricos y Costos)
                 // ------------------------------------------------
                 let salesQ = query(
                     collection(db, companyPath, 'sales'),
@@ -69,13 +91,12 @@ export const useBusinessIntelligence = () => {
                     where('date', '<=', end.toISOString())
                 );
 
-                // Lógica de Segregación: Si no es 'ALL', filtramos estrictamente por branchId
                 if (activeBranchId && activeBranchId !== 'ALL') {
                     salesQ = query(salesQ, where('branchId', '==', activeBranchId));
                 }
 
                 // ------------------------------------------------
-                // QUERY B: MOVIMIENTOS (Gastos, Compras, Retiros)
+                // QUERY B: MOVIMIENTOS (Caja Real: Gastos, Compras, Recibos)
                 // ------------------------------------------------
                 let movQ = query(
                     collection(db, companyPath, 'cash_movements'),
@@ -100,7 +121,6 @@ export const useBusinessIntelligence = () => {
                         id: doc.id,
                         ...data,
                         total: parseFloat(data.total || 0),
-                        // Si no hay totalCost guardado, lo calculamos si hay items en el KPI
                         totalCost: parseFloat(data.totalCost || 0), 
                         dateObj: new Date(data.date)
                     };
@@ -129,11 +149,10 @@ export const useBusinessIntelligence = () => {
         };
 
         fetchData();
-    }, [user?.companyId, period, activeBranchId]); // 🔥 Se dispara al cambiar de sucursal en el Sidebar
+    }, [user?.companyId, period, activeBranchId]); 
 
     // 3. PROCESAMIENTO DE KPIs (El Cerebro Financiero)
     const metrics = useMemo(() => {
-        // Si no hay datos, retornamos estructura vacía segura
         if (!salesData.length && !movementsData.length) {
             return {
                 global: { revenue: 0, cost: 0, expenses: 0, profit: 0, margin: 0, avgTicket: 0, purchases: 0, cashFlow: 0 },
@@ -145,192 +164,177 @@ export const useBusinessIntelligence = () => {
         }
 
         // ----------------------------------------------------
-        // A. CÁLCULO DE TOTALES GLOBALES
+        // A. CÁLCULO DE TOTALES GLOBALES (ECONÓMICO)
         // ----------------------------------------------------
-        
-        // INGRESOS (VENTAS REALES)
-        const totalRevenue = salesData.reduce((acc, s) => acc + s.total, 0);
-        
-        // COSTO DE LO VENDIDO (COGS) - Calculado desde las ventas
-        // Esto representa la salida de inventario (Económico)
-        const totalCogs = salesData.reduce((acc, s) => {
-            if (s.totalCost) return acc + s.totalCost;
-            // Fallback: Sumar costos de items si existen y no hay totalCost pre-calculado
-            if (s.items && Array.isArray(s.items)) {
-                return acc + s.items.reduce((sum, item) => sum + (parseFloat(item.cost || 0) * parseFloat(item.quantity || 0)), 0);
-            }
-            return acc;
-        }, 0);
+        let totalRevenue = 0; 
+        let totalCogs = 0;
+        const productMap = {};
+        const paymentMap = {};
 
-        // CLASIFICACIÓN DE SALIDAS DE CAJA
-        let totalExpenses = 0; // Gastos operativos (Luz, Alquiler, Retiros)
-        let totalPurchases = 0; // Reposición de Stock (Pagos a Proveedores)
+        salesData.forEach(sale => {
+            if (sale.type === 'INTERNAL' || sale.type === 'BUDGET') return;
+            if (sale.status === 'CANCELLED' || sale.afip?.status === 'VOIDED') return;
+
+            totalRevenue += sale.total;
+            
+            // Costo de Mercadería
+            totalCogs += sale.totalCost || (sale.items?.reduce((sum, item) => sum + (parseFloat(item.cost || 0) * parseFloat(item.quantity || 0)), 0) || 0);
+
+            // Rentabilidad por Producto (80/20)
+            sale.items?.forEach(item => {
+                const id = item.productId || item.id || item.name;
+                if (!productMap[id]) productMap[id] = { name: item.name || 'Desconocido', qty: 0, revenue: 0, profit: 0 };
+                const qty = parseFloat(item.quantity || 0);
+                const unitPrice = parseFloat(item.price || 0);
+                const unitCost = parseFloat(item.cost || 0);
+                
+                productMap[id].qty += qty;
+                productMap[id].revenue += parseFloat(item.subtotal || item.total || 0);
+                productMap[id].profit += (unitPrice - unitCost) * qty;
+            });
+
+            // Mix de Pagos
+            const payments = Array.isArray(sale.payments) && sale.payments.length > 0 
+                ? sale.payments 
+                : [{ method: sale.payment?.method || sale.paymentMethod || sale.method || 'cash', amount: sale.total }];
+            
+            payments.forEach(p => {
+                const methodRaw = String(p.method || 'cash').toLowerCase().trim();
+                const amount = parseFloat(p.amount || p.total || 0);
+                
+                let label = methodRaw;
+                if (['cash', 'efectivo'].includes(methodRaw)) label = 'EFECTIVO';
+                else if (['transfer', 'transferencia'].includes(methodRaw)) label = 'TRANSFERENCIA';
+                else if (['mercadopago', 'mp', 'qr'].includes(methodRaw)) label = 'MERCADOPAGO QR';
+                else if (['clover', 'point', 'manual_card', 'card', 'tarjeta', 'credit', 'debit'].includes(methodRaw)) label = 'TARJETA';
+                else if (['account', 'current_account', 'debt'].includes(methodRaw)) label = 'CTA CORRIENTE';
+                else if (['employee_account'].includes(methodRaw)) label = 'CTA EMPLEADO';
+                else label = 'OTROS';
+
+                paymentMap[label] = (paymentMap[label] || 0) + amount;
+            });
+        });
+
+        // ----------------------------------------------------
+        // B. CÁLCULO DE FLUJO DE CAJA (FINANCIERO)
+        // ----------------------------------------------------
+        let totalInflow = 0;     // Plata Real Entrante (Ventas Efectivas + Cobros Deudas)
+        let totalExpenses = 0;   // Gastos Operativos Reales
+        let totalPurchases = 0;  // Pago a Proveedores Reales
+        const supplierMap = {};
 
         movementsData.forEach(m => {
-            // 'EXPENSE' = Gastos Varios, 'WITHDRAWAL' = Retiros de caja
-            if (m.type === 'EXPENSE' || m.type === 'WITHDRAWAL') {
-                totalExpenses += m.amount;
-            } 
-            // 'PURCHASE' = Pago a Proveedores (Esto afecta Cash Flow, no P&L operativo directo)
-            else if (m.type === 'PURCHASE') {
-                totalPurchases += m.amount;
+            const amount = m.amount;
+            const type = m.type;
+            const subtype = m.subtype;
+            const isClosing = m.description && m.description.toLowerCase().includes('rendición de cierre');
+            const isDuplicatedIn = type === 'IN' && m.description?.toLowerCase().includes('cobro cta cte');
+
+            // Ignoramos retiros de cierre y duplicados manuales de recibos
+            if (isClosing || isDuplicatedIn || subtype === 'OPENING') return;
+
+            if (type === 'SALE' || type === 'RECEIPT' || type === 'IN' || type === 'DEPOSIT') {
+                // Como los pagos a cuenta corriente NO están en cash_movements, 
+                // esto ya representa la liquidez perfecta.
+                totalInflow += amount;
+            } else if (type === 'PURCHASE') {
+                totalPurchases += amount;
+                
+                // Ranking Proveedores
+                let supName = 'Varios';
+                if (m.supplierName) supName = m.supplierName;
+                else if (m.description && m.description.includes(':')) supName = m.description.split(':')[1].split('-')[0].trim();
+                else if (m.description) supName = m.description;
+                
+                supplierMap[supName] = (supplierMap[supName] || 0) + amount;
+            } else if (type === 'EXPENSE' || type === 'OUT' || type === 'WITHDRAWAL') {
+                totalExpenses += amount;
             }
         });
 
-        // VISIÓN ECONÓMICA (Estado de Resultados / P&L)
-        // Ventas - Costo de lo Vendido - Gastos Operativos = Utilidad Neta
-        const economicProfit = totalRevenue - totalCogs - totalExpenses;
-        
-        // VISIÓN FINANCIERA (Flujo de Caja / Cash Flow)
-        // Ingresos Reales - (Pagos a Proveedores + Gastos Pagados)
-        const cashFlow = totalRevenue - (totalPurchases + totalExpenses);
-
-        // MARGEN %
+        // ----------------------------------------------------
+        // C. CONSOLIDACIÓN GLOBAL
+        // ----------------------------------------------------
+        const economicProfit = totalRevenue - totalCogs - totalExpenses; // Rentabilidad
+        const cashFlow = totalInflow - (totalPurchases + totalExpenses); // Liquidez
         const margin = totalRevenue > 0 ? ((economicProfit / totalRevenue) * 100).toFixed(1) : 0;
 
         const global = {
             revenue: totalRevenue,
-            cost: totalCogs, // COGS (Costo Venta)
-            expenses: totalExpenses, // Gastos Fijos
-            purchases: totalPurchases, // Compras Stock (Para Cash Flow)
-            profit: economicProfit, // Resultado Económico (Utilidad)
-            cashFlow: cashFlow, // Disponibilidad Real
+            cost: totalCogs,
+            expenses: totalExpenses,
+            purchases: totalPurchases,
+            profit: economicProfit, 
+            cashFlow: cashFlow, 
             margin: margin,
             avgTicket: salesData.length > 0 ? totalRevenue / salesData.length : 0
         };
 
         // ----------------------------------------------------
-        // B. HISTÓRICO MENSUAL (VELAS Y TENDENCIAS)
+        // D. ARMADO DEL GRÁFICO HISTÓRICO (DOBLE VISIÓN)
         // ----------------------------------------------------
         const historyMap = {};
-        
-        // 1. Sumar Ventas y COGS por mes
-        salesData.forEach(sale => {
-            const d = sale.dateObj;
-            const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-            const label = d.toLocaleDateString('es-AR', { month: 'short', year: '2-digit' });
 
-            if (!historyMap[key]) historyMap[key] = { name: label, Ventas: 0, COGS: 0, Gastos: 0, Compras: 0, order: key };
+        salesData.forEach(sale => {
+            if (sale.type === 'INTERNAL' || sale.type === 'BUDGET' || sale.status === 'CANCELLED') return;
+            const { key, label } = getGroupKeyAndLabel(sale.dateObj, period);
+
+            if (!historyMap[key]) historyMap[key] = { name: label, Ventas: 0, COGS: 0, Gastos: 0, Compras: 0, IngresosReales: 0, order: key };
             
             historyMap[key].Ventas += sale.total;
             historyMap[key].COGS += (sale.totalCost || 0);
         });
 
-        // 2. Sumar Egresos por mes
         movementsData.forEach(m => {
-            const d = m.dateObj;
-            const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-            const label = d.toLocaleDateString('es-AR', { month: 'short', year: '2-digit' });
+            const { key, label } = getGroupKeyAndLabel(m.dateObj, period);
+            
+            if (!historyMap[key]) historyMap[key] = { name: label, Ventas: 0, COGS: 0, Gastos: 0, Compras: 0, IngresosReales: 0, order: key };
 
-            if (!historyMap[key]) historyMap[key] = { name: label, Ventas: 0, COGS: 0, Gastos: 0, Compras: 0, order: key };
+            const isClosing = m.description && m.description.toLowerCase().includes('rendición de cierre');
+            const isDuplicatedIn = m.type === 'IN' && m.description?.toLowerCase().includes('cobro cta cte');
+            if (isClosing || isDuplicatedIn || m.subtype === 'OPENING') return;
 
             if (m.type === 'PURCHASE') {
                 historyMap[key].Compras += m.amount;
-            } else if (m.type === 'EXPENSE' || m.type === 'WITHDRAWAL') {
+            } else if (m.type === 'EXPENSE' || m.type === 'WITHDRAWAL' || m.type === 'OUT') {
                 historyMap[key].Gastos += m.amount;
+            } else if (m.type === 'SALE' || m.type === 'RECEIPT' || m.type === 'IN' || m.type === 'DEPOSIT') {
+                historyMap[key].IngresosReales += m.amount;
             }
         });
 
-        // 3. Calcular Métricas Mensuales y Aplanar
         const historyChart = Object.values(historyMap)
             .map(item => ({
-                ...item,
-                // Ganancia Económica del mes
-                Utilidad: item.Ventas - item.COGS - item.Gastos,
-                // Flujo de Caja del mes (Dinero que quedó)
-                FlujoCaja: item.Ventas - item.Compras - item.Gastos 
+                name: item.name,
+                order: item.order,
+                // Visión Económica
+                Ingresos: item.Ventas,
+                CostoVenta: item.COGS,
+                Gastos: item.Gastos,
+                Resultado: item.Ventas - item.COGS - item.Gastos,
+                // Visión Financiera
+                Entradas: item.IngresosReales,
+                SalidasStock: item.Compras,
+                SalidasFijas: item.Gastos,
+                FlujoNeto: item.IngresosReales - item.Compras - item.Gastos 
             }))
             .sort((a, b) => a.order.localeCompare(b.order));
 
         // ----------------------------------------------------
-        // C. RANKING PROVEEDORES (Compras)
+        // E. RANKINGS FINALES
         // ----------------------------------------------------
-        const supplierMap = {};
-        movementsData.forEach(m => {
-            if (m.type === 'PURCHASE') {
-                // Prioridad 1: Campo explícito 'supplierName'
-                // Prioridad 2: Parseo de 'description' ("Compra: Coca Cola")
-                // Prioridad 3: 'Varios'
-                let name = 'Varios';
-                
-                if (m.supplierName) {
-                    name = m.supplierName;
-                } else if (m.description && m.description.includes(':')) {
-                    name = m.description.split(':')[1].split('-')[0].trim();
-                } else if (m.description) {
-                    name = m.description;
-                }
-                
-                if (!supplierMap[name]) supplierMap[name] = 0;
-                supplierMap[name] += m.amount;
-            }
-        });
-
         const topSuppliers = Object.entries(supplierMap)
-            .sort(([, a], [, b]) => b - a)
-            .slice(0, 5)
-            .map(([name, value]) => ({ name, value }));
+            .map(([name, value]) => ({ name, value }))
+            .sort((a, b) => b.value - a.value)
+            .slice(0, 5);
 
-        // ----------------------------------------------------
-        // D. PRODUCTOS (Top Profit - Regla 80/20)
-        // ----------------------------------------------------
-        const productMap = {};
-        salesData.forEach(sale => {
-            if (sale.items && Array.isArray(sale.items)) {
-                sale.items.forEach(item => {
-                    const id = item.productId || item.id || item.name; // Identificador único
-                    const name = item.name || 'Desconocido';
-                    
-                    if (!productMap[id]) productMap[id] = { name, qty: 0, revenue: 0, profit: 0 };
-                    
-                    const qty = parseFloat(item.quantity || 0);
-                    const total = parseFloat(item.subtotal || item.total || 0);
-                    
-                    // Profit por item = (Precio - Costo) * Cantidad
-                    const unitCost = parseFloat(item.cost || 0);
-                    const unitPrice = parseFloat(item.price || 0);
-                    const itemProfit = (unitPrice - unitCost) * qty;
+        const topProfit = Object.values(productMap)
+            .sort((a, b) => b.profit - a.profit)
+            .slice(0, 5);
 
-                    productMap[id].qty += qty;
-                    productMap[id].revenue += total;
-                    productMap[id].profit += itemProfit;
-                });
-            }
-        });
-
-        const productsArray = Object.values(productMap);
-        // Ordenamos por Utilidad (Profit) descendente
-        const topProfit = [...productsArray].sort((a, b) => b.profit - a.profit).slice(0, 5);
-
-        // ----------------------------------------------------
-        // E. MIX DE PAGOS
-        // ----------------------------------------------------
-        const paymentMap = {};
-        salesData.forEach(sale => {
-            let methods = [];
-            // Soporte para estructura nueva (array) o vieja (objeto único)
-            if (sale.payments && Array.isArray(sale.payments)) {
-                methods = sale.payments;
-            } else if (sale.paymentMethod) {
-                 methods = [{ method: sale.paymentMethod, amount: sale.total }];
-            }
-
-            methods.forEach(p => {
-                const key = (p.method || 'cash').toUpperCase();
-                // Normalizar nombres para el gráfico
-                const label = key === 'CASH' ? 'EFECTIVO' : 
-                              key === 'CARD' ? 'TARJETA' : 
-                              key === 'TRANSFER' ? 'TRANSFERENCIA' : key;
-
-                if (!paymentMap[label]) paymentMap[label] = 0;
-                paymentMap[label] += parseFloat(p.amount || p.total || 0);
-            });
-        });
-
-        const paymentChart = Object.keys(paymentMap).map(key => ({
-            name: key,
-            value: paymentMap[key]
-        }));
+        const paymentChart = Object.entries(paymentMap)
+            .map(([name, value]) => ({ name, value }))
+            .filter(p => p.value > 0);
 
         return {
             global,
@@ -348,6 +352,6 @@ export const useBusinessIntelligence = () => {
         error,
         period,
         setPeriod,
-        activeBranchId // Exponemos el estado para debug o UI si es necesario
+        activeBranchId
     };
 };

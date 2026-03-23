@@ -6,7 +6,7 @@ import { useShiftStore } from '../../cash/store/useShiftStore';
 import { cashRepository } from '../../cash/repositories/cashRepository'; 
 import { paymentService } from '../../payments/services/paymentService'; 
 import { employeeLedgerRepository } from '../../settings/repositories/employeeLedgerRepository'; 
-import { clientRepository } from '../../clients/repositories/clientRepository'; // 🔥 IMPORTACIÓN CLAVE
+import { clientRepository } from '../../clients/repositories/clientRepository'; 
 import { toast } from 'react-hot-toast'; 
 import { getDB } from '../../../database/db'; 
 
@@ -115,10 +115,10 @@ export const usePosController = () => {
     }, []);
 
     // =================================================================
-    // 🧮 MOTOR DE PROMOCIONES COMPLEJAS
+    // 🧮 MOTOR DE PROMOCIONES COMPLEJAS (🔥 BLINDADO POR MÉTODO DE PAGO)
     // =================================================================
     
-    const _calculatePromo = (product, quantity) => {
+    const _calculatePromo = (product, quantity, currentPaymentMethod = 'cash') => {
         if (!product) return { applied: false, totalLine: 0, finalPrice: 0 };
         const promo = product.promo;
         const price = parseFloat(product.price) || 0;
@@ -137,6 +137,20 @@ export const usePosController = () => {
         const end = new Date(promo.endDate + 'T23:59:59');
         
         if (now < start || now > end) return result;
+
+        // 🔥 FIX DEFINITIVO: Validación estricta del método de pago
+        if (Array.isArray(promo.allowedMethods) && promo.allowedMethods.length > 0) {
+            
+            // 1. Si es modo "split" (pago combinado), las ofertas exclusivas se anulan instantáneamente.
+            if (currentPaymentMethod === 'split') {
+                return result; 
+            }
+
+            // 2. Si el método actual NO ESTÁ en el array de permitidos, anulamos.
+            if (!promo.allowedMethods.includes(currentPaymentMethod)) {
+                return result;
+            }
+        }
 
         const val = parseFloat(promo.value) || 0;
 
@@ -217,6 +231,29 @@ export const usePosController = () => {
 
     const switchTab = (tabId) => setActiveTabId(tabId);
 
+    // 🔥 NUEVO: Función para que el PaymentModal informe el método y recalcule precios vivos
+    const setTabPaymentMethod = useCallback((newMethod) => {
+        updateActiveTab(tab => {
+            if (tab.paymentMethod === newMethod) return tab; // Evitamos render innecesario
+            
+            const newItems = tab.items.map(item => {
+                // Ignoramos re-cálculo si es manual o si forzó un descuento mayorista general
+                if (item.appliedWholesale || item.code === 'MANUAL') return item;
+                
+                const promoResult = _calculatePromo(item, item.quantity, newMethod);
+                return {
+                    ...item,
+                    finalPrice: promoResult.finalPrice,
+                    subtotal: promoResult.totalLine,
+                    promoLabel: promoResult.promoLabel,
+                    appliedPromo: promoResult.applied
+                };
+            });
+            
+            return { ...tab, paymentMethod: newMethod, items: newItems };
+        });
+    }, [activeTabId]);
+
     // =================================================================
     // 🕒 WATCHDOG DE PRECIOS
     // =================================================================
@@ -234,7 +271,9 @@ export const usePosController = () => {
                 if (freshProduct && Math.abs(freshProduct.price - item.originalPrice) > 0.01 && !item.appliedWholesale) {
                     updatedCount++;
                     const newItem = { ...item, ...freshProduct, originalPrice: parseFloat(freshProduct.price) };
-                    const promoResult = _calculatePromo(newItem, item.quantity);
+                    
+                    // 🔥 Le pasamos el método de pago actual del tab para recalcular bien
+                    const promoResult = _calculatePromo(newItem, item.quantity, activeTab.paymentMethod);
                     
                     return {
                         ...newItem,
@@ -255,7 +294,7 @@ export const usePosController = () => {
 
         const interval = setInterval(checkPrices, 60000); 
         return () => clearInterval(interval);
-    }, [activeTab.items, activeTabId]);
+    }, [activeTab.items, activeTabId, activeTab.paymentMethod]);
 
     // =================================================================
     // 🛒 LÓGICA DEL CARRITO
@@ -279,7 +318,8 @@ export const usePosController = () => {
                         subtotal: currentItem.finalPrice * newQty
                     };
                 } else {
-                    const promoResult = _calculatePromo(product, newQty);
+                    // 🔥 Le pasamos el método de pago actual
+                    const promoResult = _calculatePromo(product, newQty, tab.paymentMethod);
                     newItems[existingIndex] = {
                         ...currentItem,
                         quantity: newQty,
@@ -290,7 +330,8 @@ export const usePosController = () => {
                     };
                 }
             } else {
-                const promoResult = _calculatePromo(product, qty);
+                // 🔥 Le pasamos el método de pago actual
+                const promoResult = _calculatePromo(product, qty, tab.paymentMethod);
                 newItems.push({
                     ...product,
                     originalPrice: parseFloat(product.price), 
@@ -319,7 +360,8 @@ export const usePosController = () => {
                             subtotal: item.finalPrice * newQty 
                         };
                     }
-                    const promoResult = _calculatePromo(item, newQty);
+                    // 🔥 Le pasamos el método de pago actual
+                    const promoResult = _calculatePromo(item, newQty, tab.paymentMethod);
                     return { 
                         ...item, 
                         quantity: newQty, 
@@ -428,7 +470,6 @@ export const usePosController = () => {
         return currentShift;
     };
 
-    // 🔥 FUNCIÓN: Generar Presupuesto (No descuenta stock ni afecta caja)
     const processBudget = async () => {
         if (activeTab.items.length === 0) {
             toast.error("Carrito vacío");
@@ -466,13 +507,12 @@ export const usePosController = () => {
                 operatorName: user.name,
                 
                 createdAt: new Date().toISOString(),
-                status: 'BUDGET', // 🔥 Estado clave
-                type: 'BUDGET'    // 🔥 Tipo clave
+                status: 'BUDGET', 
+                type: 'BUDGET'    
             };
 
             const localNumber = `PTO-${Date.now().toString().slice(-6)}`;
             
-            // Lo guardamos en ventas para historial, pero su type/status lo excluyen de reportes y stock
             const budgetResult = await salesRepository.createSale({
                 ...basePayload,
                 afip: { status: 'SKIPPED', cbteLetra: 'X' },
@@ -519,66 +559,77 @@ export const usePosController = () => {
             const activeCompanyId = user?.companyId || user?.tenantId;
             if (!activeCompanyId) throw new Error("⚠️ Sesión corrupta: Falta Company ID.");
 
-            // 🔥 1. PREPARACIÓN INTELIGENTE DE PAGOS Y DEUDAS
+            // 1. Preparación Inteligente de Pagos y Deudas
             let finalPayments = [];
             let totalWithInterest = totals.total;
             let totalDebtAmount = 0;
             let totalPaidInCash = 0;
 
             if (Array.isArray(paymentData.payments) && paymentData.payments.length > 0) {
-                // MODALIDAD: PAGO COMBINADO (SPLIT) DESDE EL MODAL
                 finalPayments = paymentData.payments;
                 totalWithInterest = finalPayments.reduce((acc, p) => acc + parseFloat(p.total || 0), 0);
-                
-                totalDebtAmount = finalPayments
-                    .filter(p => p.method === 'account')
-                    .reduce((acc, p) => acc + parseFloat(p.amount || 0), 0);
-                    
-                totalPaidInCash = finalPayments
-                    .filter(p => p.method !== 'account')
-                    .reduce((acc, p) => acc + parseFloat(p.amount || 0), 0);
             } else {
-                // MODALIDAD: PAGO SIMPLE O PAGO PARCIAL
                 totalWithInterest = parseFloat(paymentData.totalSale || totals.total);
-                const amountPaid = parseFloat(paymentData.amountPaid || 0);
-                const amountDebt = parseFloat(paymentData.amountDebt || 0);
-                const selectedMethod = paymentData.method;
+                const amountInput = parseFloat(paymentData.amountPaid || 0); 
+                const expectedTotal = parseFloat(paymentData.baseAmount || totals.total); 
 
-                totalDebtAmount = amountDebt;
-                totalPaidInCash = amountPaid;
+                const difference = expectedTotal - amountInput;
 
-                if (selectedMethod === 'account') {
-                    // El cliente pidió fiar el 100%
-                    finalPayments = [{
-                        method: 'account',
-                        amount: amountDebt,
-                        surcharge: 0,
-                        total: amountDebt,
-                        employeeId: null
-                    }];
-                } else if (amountDebt > 0) {
-                    // 🔥 SPLIT VIRTUAL: Pagó una parte en efectivo/tarjeta y el resto queda en deuda
-                    finalPayments = [
+                // 🔥 FIX CRÍTICO: LÓGICA DE PAGOS CORREGIDA PARA CTA CTE
+                if (paymentData.method === 'account' || paymentData.method === 'debt') {
+                   // Si el método es 'account', asumimos que el usuario pudo haber entregado un adelanto.
+                   // La entrega (amountInput) es CASH, lo restante (difference) es DEUDA.
+                   if (amountInput > 0) {
+                       finalPayments = [
+                           {
+                               method: 'cash',
+                               amount: amountInput,
+                               surcharge: 0,
+                               total: amountInput,
+                               employeeId: null
+                           },
+                           {
+                               method: 'account',
+                               amount: difference > 0 ? difference : 0,
+                               surcharge: 0,
+                               total: difference > 0 ? difference : 0,
+                               employeeId: null
+                           }
+                       ];
+                   } else {
+                       // Si la entrega es 0, es 100% deuda
+                       finalPayments = [{
+                           method: 'account',
+                           amount: expectedTotal,
+                           surcharge: parseFloat(paymentData.surcharge || 0),
+                           total: totalWithInterest,
+                           employeeId: paymentData.employeeId || null 
+                       }];
+                   }
+                } else if (difference > 0.05) {
+                     // Si el método NO ES cuenta corriente, pero pagó de menos (y no usó el slider split)
+                     // asumimos que dejó un saldo deudor (Cta Cte).
+                     finalPayments = [
                         {
-                            method: selectedMethod,
-                            amount: amountPaid,
+                            method: paymentData.method,
+                            amount: amountInput,
                             surcharge: parseFloat(paymentData.surcharge || 0),
-                            total: amountPaid + parseFloat(paymentData.surcharge || 0),
+                            total: amountInput + parseFloat(paymentData.surcharge || 0),
                             employeeId: paymentData.employeeId || null 
                         },
                         {
                             method: 'account',
-                            amount: amountDebt,
+                            amount: difference,
                             surcharge: 0,
-                            total: amountDebt,
+                            total: difference,
                             employeeId: null
                         }
                     ];
                 } else {
-                    // Pago total normal
+                    // Pago total simple
                     finalPayments = [{
-                        method: selectedMethod,
-                        amount: amountPaid,
+                        method: paymentData.method,
+                        amount: expectedTotal,
                         surcharge: parseFloat(paymentData.surcharge || 0),
                         total: totalWithInterest,
                         employeeId: paymentData.employeeId || null 
@@ -586,7 +637,14 @@ export const usePosController = () => {
                 }
             }
 
-            // 🛡️ BARRERA DE SEGURIDAD FISCAL Y DE COBROS
+            totalDebtAmount = finalPayments
+                .filter(p => p.method === 'account' || p.method === 'debt')
+                .reduce((acc, p) => acc + parseFloat(p.total || 0), 0);
+                
+            totalPaidInCash = finalPayments
+                .filter(p => p.method !== 'account' && p.method !== 'debt')
+                .reduce((acc, p) => acc + parseFloat(p.total || 0), 0);
+
             if (totalDebtAmount > 0 && !activeTab.client?.id) {
                 throw new Error("⚠️ Queda un saldo adeudado. Debe seleccionar un Cliente (F3) para enviarlo a Cuenta Corriente.");
             }
@@ -610,8 +668,9 @@ export const usePosController = () => {
                 payment: finalPayments[0], 
                 method: finalPayments.length > 1 ? 'SPLIT' : finalPayments[0].method,
                 
-                amountPaid: totalPaidInCash, // 🔥 GUARDAMOS CUÁNTO ENTRÓ A CAJA REALMENTE
-                amountDebt: totalDebtAmount, // 🔥 GUARDAMOS CUÁNTA DEUDA SE GENERÓ
+                // 🔥 CRÍTICO PARA EL HISTORIAL Y DASHBOARD
+                amountPaid: totalPaidInCash, 
+                amountDebt: totalDebtAmount, 
                 
                 branchId: activeBranchId, 
                 shiftId: currentShift.id, 
@@ -626,7 +685,6 @@ export const usePosController = () => {
 
             let saleResult = null;
 
-            // 3. Creación de la Venta (AFIP o Ticket Interno)
             if (paymentData.withAfip) {
                 loadingToast = toast.loading("📡 Autorizando con AFIP...");
                 const afipResult = await paymentService.createInvoice({
@@ -669,19 +727,16 @@ export const usePosController = () => {
                 toast.success(`Venta registrada`);
             }
 
-            // 🔥 4. IMPACTO EN EL LIBRO MAYOR DE CLIENTES (FIADO)
-            if (totalDebtAmount > 0) {
+            if (totalDebtAmount > 0 && saleResult) {
                 await clientRepository.registerMovement(
                     activeTab.client.id,
-                    'SALE_DEBT', // Tipo: Aumento de Deuda
+                    'SALE_DEBT', 
                     totalDebtAmount,
                     `Compra Fiada (Ticket: ${saleResult.number})`,
-                    saleResult.id // Referencia cruzada
+                    saleResult.id 
                 );
-                console.log(`[CTA CTE] Deuda de $${totalDebtAmount} registrada al cliente ${activeTab.client.name}`);
             }
 
-            // 5. REGISTRO EN EL LEDGER DEL EMPLEADO (SI APLICA)
             try {
                 for (const p of finalPayments) {
                     if (p.method === 'employee_account' && p.employeeId) {
@@ -695,12 +750,10 @@ export const usePosController = () => {
                             refId: saleResult?.id || null,
                             operatorName: user.name
                         });
-                        console.log(`[LEDGER] Consumo de $${p.total} registrado a empleado ${p.employeeId}`);
                     }
                 }
             } catch (ledgerError) {
-                console.error("No se pudo registrar el consumo en el Ledger del empleado:", ledgerError);
-                toast.error("Venta hecha, pero falló el registro en la cuenta del empleado.");
+                console.error("No se pudo registrar el consumo del empleado:", ledgerError);
             }
 
             clearCart();
@@ -791,7 +844,6 @@ export const usePosController = () => {
             if (e.key === 'Enter') {
                 if (buffer.length > 2) { 
                     
-                    // 1. INTENTO: CÓDIGO DE BALANZA
                     const scaleInfo = parseScaleBarcode(buffer);
                     
                     if (scaleInfo.isScale) {
@@ -818,7 +870,6 @@ export const usePosController = () => {
                         }
                     }
 
-                    // 2. INTENTO: CÓDIGO NORMAL
                     const exactProduct = await productRepository.findByCode(buffer);
                     if (exactProduct) {
                         addToCart(exactProduct, 1);
@@ -834,10 +885,11 @@ export const usePosController = () => {
         return () => window.removeEventListener('keydown', handleKeyDown);
     }, [activeTabId, addToCart]); 
 
-    // 🔥 EXPORTAMOS LAS FUNCIONES Y EL ESTADO
+    // 🔥 EXPORTAMOS LAS FUNCIONES Y EL ESTADO (Incluye setTabPaymentMethod)
     return { 
         tabs, activeTab, activeTabId, totals, searchResults, isProcessing, posConfig,
         addTab, removeTab, switchTab, addToCart, removeFromCart, updateItemQuantity, setClient, clearCart, searchProduct, 
-        setSearchResults, processSale, processInternalSale, applyWholesaleToLastItem, processBudget
+        setSearchResults, processSale, processInternalSale, applyWholesaleToLastItem, processBudget,
+        setTabPaymentMethod // 🔥 EXPONEMOS LA FUNCIÓN DE RECÁLCULO PARA EL MODAL
     };
 };

@@ -37,7 +37,8 @@ export const PaymentModal = ({
     disableAfip = false, 
     isProcessing = false,
     posConfig,
-    processBudget // 🔥 Función de presupuestos
+    processBudget,
+    setTabPaymentMethod // 🔥 PROP PARA RECALCULAR PROMOS EN VIVO
 }) => {
     
     // ==========================================
@@ -117,9 +118,9 @@ export const PaymentModal = ({
     const isClientRegistered = client && client.id; 
     const isEmployeePaymentInvalid = method === 'employee_account' && !selectedEmployeeId;
     
-    // 🔥 FIX PRESUPUESTOS Y CUENTA CORRIENTE
+    // FIX PRESUPUESTOS Y CUENTA CORRIENTE
     const isBudgetMode = method === 'budget';
-    const isAccountMode = method === 'account'; // 🔥 MODO FIADO
+    const isAccountMode = method === 'account';
 
     const hasError = !isBudgetMode && ((!isSplitMode && isPartialPayment && !isClientRegistered) || isEmployeePaymentInvalid || (isAccountMode && !isClientRegistered)); 
     
@@ -149,6 +150,9 @@ export const PaymentModal = ({
             setSelectedRate(null);
             setSelectedEmployeeId('');
             
+            // 🔥 Aseguramos que la promo base se respete al abrir
+            if (setTabPaymentMethod) setTabPaymentMethod('cash');
+
             fetchHardwareAssignments();
             fetchFinancialPlans();
             fetchEmployees();
@@ -164,10 +168,15 @@ export const PaymentModal = ({
         } else {
             if (pollingRef.current) clearInterval(pollingRef.current);
         }
-    }, [isOpen, total, isRI, disableAfip]);
+        // 🔥 FIX CRÍTICO: Se quitó 'total' y 'isRI' de las dependencias.
+        // Esto evita el "Flicker Loop" que reseteaba el modal a 'cash' cuando el total cambiaba por un descuento.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [isOpen]); 
 
-    // 🔥 Permite que el input de Cta Cte se pueda editar igual que el efectivo
+    // Permite que el input se adapte a los recálculos en vivo sin reiniciar todo el modal
     useEffect(() => {
+        if (!isOpen) return; // Solo ejecutar si está abierto
+        
         if (!isSplitMode && !isBudgetMode) {
             if (currentInterestRate > 0) {
                 setAmountToPay(effectiveTotal.toFixed(2));
@@ -177,7 +186,7 @@ export const PaymentModal = ({
         } else if (isBudgetMode) {
              setAmountToPay(Math.round(total).toString());
         }
-    }, [currentInterestRate, effectiveTotal, isSplitMode, total, isBudgetMode]);
+    }, [currentInterestRate, effectiveTotal, isSplitMode, total, isBudgetMode, isOpen]);
 
     useEffect(() => {
         if (isSplitMode && !selectedRate && !isFullyPaid && !isBudgetMode) {
@@ -297,7 +306,6 @@ export const PaymentModal = ({
     };
 
     const handleManualConfirm = async () => {
-        // 🔥 LÓGICA DE PRESUPUESTOS
         if (isBudgetMode) {
             const success = await processBudget();
             if (success) onClose();
@@ -325,9 +333,6 @@ export const PaymentModal = ({
             employeeId: method === 'employee_account' ? selectedEmployeeId : null,
             branchId: activeBranchId, 
             totalSale: effectiveTotal,
-            // Si es a Cta. Corriente en un pago total simple, no entra dinero a caja. 
-            // Si el cajero hace un pago "Parcial" con Cta Cte pero NO usa modo split (ej. 500 de 1000),
-            // se trata como un abono parcial regular. Para combinar métodos (ej: efectivo + fiado), se debe usar Pago Combinado.
             amountPaid: method === 'account' ? 0 : (payValue - changeValue), 
             amountDebt: method === 'account' ? payValue : debtValue, 
             baseAmount: total,
@@ -433,8 +438,10 @@ export const PaymentModal = ({
                 if (pollingRef.current) clearInterval(pollingRef.current);
                 setDigitalState('idle'); 
                 setMethod('cash'); 
+                if (setTabPaymentMethod) setTabPaymentMethod('cash'); 
             }
         } else {
+            if (setTabPaymentMethod) setTabPaymentMethod('cash'); 
             onClose();
         }
     };
@@ -552,8 +559,19 @@ export const PaymentModal = ({
                             </span>
                             <Switch checked={isSplitMode} onCheckedChange={(val) => {
                                 setIsSplitMode(val);
-                                // 🔥 Permitimos combinar Cta Cte con otros medios
-                                if (val && isBudgetMode) setMethod('cash'); 
+                                // 🔥 LÓGICA DE ACTUALIZACIÓN DE PROMOS PARA SPLIT
+                                if (val && isBudgetMode) {
+                                    setMethod('cash');
+                                    if (setTabPaymentMethod) setTabPaymentMethod('cash');
+                                } else if (val) {
+                                    // 🔥 ANTI-TRAMPAS: Modo Split borra promos exclusivas
+                                    if (setTabPaymentMethod) setTabPaymentMethod('split'); 
+                                } else {
+                                    // 🔥 Restaura la promo del método actual si sale de Split
+                                    let mappedMethod = method;
+                                    if (['manual_card', 'point', 'clover'].includes(method)) mappedMethod = 'card';
+                                    if (setTabPaymentMethod) setTabPaymentMethod(mappedMethod); 
+                                }
                             }} size="sm" disabled={isBudgetMode} />
                         </div>
 
@@ -714,6 +732,13 @@ export const PaymentModal = ({
                                     if (opt.id !== 'manual_card') { setSelectedBrand(null); setSelectedRate(null); }
                                     if (opt.id !== 'employee_account') setSelectedEmployeeId('');
                                     setDigitalState('idle'); 
+                                    
+                                    // 🔥 MAGIA AQUÍ: Recalcula promos al vuelo y mapea las tarjetas al estándar 'card'
+                                    if (setTabPaymentMethod && !isSplitMode) {
+                                        let mappedMethod = opt.id;
+                                        if (['manual_card', 'point', 'clover'].includes(opt.id)) mappedMethod = 'card';
+                                        setTabPaymentMethod(mappedMethod);
+                                    }
                                 }} 
                                 disabled={
                                     digitalState === 'creating' || 

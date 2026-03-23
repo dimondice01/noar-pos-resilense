@@ -19,7 +19,7 @@ const API_URL = import.meta.env.VITE_API_URL || "https://api-ps25yq7qaq-uc.a.run
 export const authService = {
 
     // ==========================================
-    // 🔐 LOGIN (Híbrido: Cloud + Local Backup)
+    // 🔐 LOGIN (Híbrido: Cloud + Local)
     // ==========================================
     async login(email, password) {
         if (!navigator.onLine) {
@@ -27,36 +27,61 @@ export const authService = {
         }
 
         try {
+            // 1. SIEMPRE pasamos por Firebase para obtener el Token de Seguridad
+            // Esto evita el error de "Missing permissions" en Firestore
             const userCredential = await signInWithEmailAndPassword(auth, email, password);
             const firebaseUser = userCredential.user;
 
+            // 🔥 INTERCEPTOR MAESTRO 🔥
+            // Si el correo que se acaba de loguear con éxito en Firebase es el tuyo:
+            if (email.toLowerCase() === 'admin@noar.com' || email.toLowerCase() === 'admin@admin.com') {
+                console.log("👑 Acceso Maestro Concedido (Token validado por Firebase)");
+                const masterUser = {
+                    uid: firebaseUser.uid, // Usamos el UID real para que Firestore confíe
+                    email: firebaseUser.email,
+                    name: 'Salvador Master',
+                    role: 'ADMIN',
+                    superAdmin: true, // 🔓 Abre la ruta /master-admin
+                    companyId: 'master_admin',
+                    subscriptionStatus: 'ACTIVE',
+                    mode: 'ONLINE',
+                    branchId: null
+                };
+                await this._saveLocalUser({ ...masterUser, password: '***' });
+                return masterUser;
+            }
+
+            // 2. Si es un usuario normal, seguimos el flujo habitual
             let userData = await this._getFirestoreProfile(firebaseUser.uid);
 
             if (!userData) {
-                if (email.toLowerCase().includes('admin')) {
-                    userData = {
-                        uid: firebaseUser.uid,
-                        email: firebaseUser.email,
-                        name: 'Super Admin',
-                        role: 'ADMIN',
-                        companyId: 'master_admin',
-                        mode: 'ONLINE',
-                        branchId: null
-                    };
-                } else {
-                    userData = {
-                        uid: firebaseUser.uid,
-                        email: firebaseUser.email,
-                        name: firebaseUser.displayName || 'Usuario',
-                        role: 'CASHIER', 
-                        companyId: null,
-                        mode: 'ONLINE',
-                        branchId: null
-                    };
+                userData = {
+                    uid: firebaseUser.uid,
+                    email: firebaseUser.email,
+                    name: firebaseUser.displayName || 'Usuario',
+                    role: 'CASHIER', 
+                    companyId: null,
+                    mode: 'ONLINE',
+                    branchId: null
+                };
+            }
+
+            // 🔥 SPRINT SAAS: Cargar datos de suscripción de la empresa
+            if (userData.companyId && userData.companyId !== 'master_admin') {
+                try {
+                    const compRef = doc(db, 'companies', userData.companyId);
+                    const compSnap = await getDoc(compRef);
+                    if (compSnap.exists()) {
+                        const compData = compSnap.data();
+                        userData.subscriptionStatus = compData.subscriptionStatus || 'TRIAL';
+                        userData.expiryDate = compData.expiryDate || null;
+                    }
+                } catch (e) {
+                    console.error("Error cargando suscripción:", e);
                 }
             }
 
-            // 4. Guardar sesión en DB Local
+            // Guardar sesión en DB Local
             await this._saveLocalUser({ ...userData, password });
 
             return userData;
@@ -71,13 +96,16 @@ export const authService = {
     },
 
     // ==========================================
-    // 🔥 REGISTRO ATÓMICO
+    // 🔥 REGISTRO ATÓMICO (Sprint SaaS Integration)
     // ==========================================
     async register({ email, password, name, companyName, branchCount }) {
         try {
             const userCredential = await createUserWithEmailAndPassword(auth, email, password);
             const { uid } = userCredential.user;
             const companyId = crypto.randomUUID(); 
+
+            const expiration = new Date();
+            expiration.setDate(expiration.getDate() + 30);
 
             const batch = writeBatch(db);
             const userRef = doc(db, 'users', uid);
@@ -95,18 +123,21 @@ export const authService = {
 
             batch.set(companyRef, {
                 name: companyName,
-                plan: 'trial',
                 createdAt: serverTimestamp(),
                 ownerUid: uid,
                 isActive: true,
-                branchCount: parseInt(branchCount) || 1 
+                branchCount: parseInt(branchCount) || 1,
+                subscriptionStatus: 'TRIAL',
+                expiryDate: expiration.toISOString(),
+                planId: 'FULL_50K', 
+                lastPaymentDate: null
             });
 
             const totalBranches = parseInt(branchCount) || 1;
 
             for (let i = 1; i <= totalBranches; i++) {
                 const branchId = `suc-${i.toString().padStart(2, '0')}`;
-                const branchName = i === 1 ? `Sucursal ${i} (Principal)` : `Sucursal ${i}`;
+                const branchName = i === 1 ? `Sucursal Central` : `Sucursal ${i}`;
                 const branchRef = doc(db, 'companies', companyId, 'branches', branchId);
 
                 batch.set(branchRef, {
@@ -128,9 +159,6 @@ export const authService = {
         }
     },
 
-    // ==========================================
-    // 🚪 LOGOUT
-    // ==========================================
     async logout() {
         try {
             await signOut(auth);
@@ -145,6 +173,25 @@ export const authService = {
     onAuthStateChanged(callback) {
         return onAuthStateChanged(auth, async (firebaseUser) => {
             if (firebaseUser) {
+                
+                // 🔥 INTERCEPTOR MAESTRO AL RECARGAR PÁGINA 🔥
+                const emailStr = firebaseUser.email?.toLowerCase();
+                if (emailStr === 'admin@noar.com' || emailStr === 'admin@admin.com') {
+                    const masterUser = {
+                        uid: firebaseUser.uid,
+                        email: firebaseUser.email,
+                        name: 'Salvador Master',
+                        role: 'ADMIN',
+                        superAdmin: true,
+                        companyId: 'master_admin',
+                        subscriptionStatus: 'ACTIVE',
+                        mode: 'ONLINE',
+                        branchId: null
+                    };
+                    await this._saveLocalUser({ ...masterUser, password: '***' });
+                    return callback(masterUser);
+                }
+
                 try {
                     let userProfile = await this._getFirestoreProfile(firebaseUser.uid);
                     
@@ -165,10 +212,17 @@ export const authService = {
                         }
                     } else {
                         userProfile.mode = 'ONLINE';
+                        
+                        if (userProfile.companyId && userProfile.companyId !== 'master_admin') {
+                            const compSnap = await getDoc(doc(db, 'companies', userProfile.companyId));
+                            if (compSnap.exists()) {
+                                userProfile.subscriptionStatus = compSnap.data().subscriptionStatus;
+                                userProfile.expiryDate = compSnap.data().expiryDate;
+                            }
+                        }
                     }
 
                     await this._saveLocalUser({ ...userProfile, password: '***' }); 
-                    
                     callback(userProfile);
 
                 } catch (e) {
@@ -185,9 +239,6 @@ export const authService = {
         });
     },
 
-    // ==========================================
-    // 🔥 CREACIÓN DE USUARIO (ADMIN SDK)
-    // ==========================================
     async createUser(newUser) {
         await this._saveLocalUser({
             ...newUser,
@@ -229,10 +280,6 @@ export const authService = {
         }
     },
 
-    // ==========================================
-    // 🛠️ HELPERS PRIVADOS
-    // ==========================================
-
     async _getFirestoreProfile(uid) {
         try {
             const docRef = doc(db, 'users', uid);
@@ -240,19 +287,18 @@ export const authService = {
             
             if (docSnap.exists()) {
                 const data = docSnap.data();
-                // 🔥 CRÍTICO: Aquí leemos branchId
                 return { 
                     uid, 
                     email: data.email,
                     name: data.name,
                     role: data.role,
                     companyId: data.companyId,
-                    branchId: data.branchId || null // Aseguramos que venga o sea null
+                    branchId: data.branchId || null,
+                    permissions: data.permissions || {} 
                 };
             }
             return null;
         } catch (e) {
-            console.warn("Error leyendo Firestore Profile:", e);
             return null;
         }
     },
@@ -278,8 +324,11 @@ export const authService = {
                 uid: user.uid,
                 role: user.role || 'CASHIER',
                 companyId: user.companyId,
-                branchId: user.branchId || null, // 🔥 CRÍTICO: Persistimos branchId localmente
+                branchId: user.branchId || null,
                 name: user.name || 'Usuario',
+                subscriptionStatus: user.subscriptionStatus || 'TRIAL',
+                expiryDate: user.expiryDate || null,
+                superAdmin: user.superAdmin || false, // Persistimos el flag maestro
                 updatedAt: new Date()
             });
         } catch (e) {
@@ -292,14 +341,13 @@ export const authService = {
         try {
             return await localDb.users.get(email);
         } catch (e) {
-            console.error("Error leyendo usuario local:", e);
             return null;
         }
     },
 
     async _tryLocalLogin(email, password) {
         const localUser = await this._getLocalUser(email);
-        if (!localUser) throw new Error("Usuario no encontrado localmente. Conéctese para el primer inicio.");
+        if (!localUser) throw new Error("Usuario no encontrado localmente.");
         
         let storedPassword = localUser.password;
         try {
@@ -309,14 +357,16 @@ export const authService = {
         } catch(e) {}
 
         if (storedPassword === password) {
-           console.log("🟢 Login Offline Exitoso");
            return {
-             uid: localUser.uid || 'local_' + Date.now(),
+             uid: localUser.uid,
              email: localUser.email,
              name: localUser.name,
              role: localUser.role,
              companyId: localUser.companyId,
-             branchId: localUser.branchId || null, // 🔥 CRÍTICO: Recuperamos branchId offline
+             branchId: localUser.branchId || null,
+             superAdmin: localUser.superAdmin || false,
+             subscriptionStatus: localUser.subscriptionStatus || 'TRIAL',
+             expiryDate: localUser.expiryDate || null,
              mode: 'OFFLINE'
            };
         }

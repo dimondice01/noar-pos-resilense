@@ -414,7 +414,7 @@ export const Sidebar = () => {
                     
                     <div className="px-4 py-2 text-xs font-semibold text-sys-400 uppercase tracking-wider mb-1">Operación</div>
                     
-                    <MenuLink to={getLink('')} icon={LayoutDashboard} label="Dashboard" />
+                    <MenuLink to={getLink('')} icon={LayoutDashboard} label="Principal" />
                     <MenuLink to={getLink('pos')} icon={ShoppingCart} label="Punto de Venta" />
                     <MenuLink to={getLink('sales')} icon={FileText} label="Ventas" />
                     <MenuLink to={getLink('clients')} icon={Users} label="Clientes" />

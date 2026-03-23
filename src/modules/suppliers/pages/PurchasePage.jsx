@@ -4,7 +4,7 @@ import {
     AlertCircle, PackagePlus, 
     RefreshCw, Globe, MapPin, 
     Info, Printer, CheckCircle,
-    Trash2, Percent, CalendarClock
+    Trash2, Percent, CalendarClock, CalendarDays
 } from 'lucide-react';
 import { usePurchaseController } from '../hooks/usePurchaseController';
 import { masterRepository } from '../../inventory/repositories/masterRepository';
@@ -83,11 +83,11 @@ export const PurchasePage = () => {
         return () => clearTimeout(timer);
     }, [searchTerm]);
 
-    // 🔥 3. AUTO-FOCO AL AGREGAR ITEM (AHORA EN CANTIDAD)
+    // 🔥 3. AUTO-FOCO AL AGREGAR ITEM (AHORA EN CANTIDAD - A LA IZQUIERDA)
     useEffect(() => {
         if (items.length > 0) {
             const lastItem = items[items.length - 1];
-            // 🔥 CAMBIO CLAVE: Enfocamos "quantity" por defecto para carga rápida
+            // Enfocamos "quantity" por defecto para carga rápida
             const targetRef = rowRefs.current[`${lastItem.product.id}-quantity`];
             if (targetRef) {
                 setTimeout(() => {
@@ -105,7 +105,7 @@ export const PurchasePage = () => {
     const handleRowKeyDown = (e, itemId, field, index) => {
         if (e.key === 'Enter') {
             e.preventDefault();
-            // 🔥 CAMBIO CLAVE: Volver al buscador y SELECCIONAR TODO para sobre-escritura inmediata
+            // Volver al buscador y SELECCIONAR TODO para sobre-escritura inmediata
             if (searchInputRef.current) {
                 searchInputRef.current.focus();
                 searchInputRef.current.select();
@@ -113,9 +113,8 @@ export const PurchasePage = () => {
         } else if (e.key === 'ArrowRight' || e.key === 'ArrowLeft' || e.key === 'ArrowUp' || e.key === 'ArrowDown') {
             e.preventDefault();
             
-            // Orden lógico de navegación (Quantity está al final visualmente, pero es el start point lógico ahora)
-            // Si el usuario presiona flechas, puede moverse libremente.
-            const fields = ['costInput', 'markup', 'newPrice', 'quantity'];
+            // 🔥 NUEVO ORDEN LÓGICO VISUAL (De izquierda a derecha)
+            const fields = ['quantity', 'costInput', 'markup', 'newPrice', 'expiryDate'];
             const currentFieldIndex = fields.indexOf(field);
             
             let nextField = field;
@@ -144,7 +143,7 @@ export const PurchasePage = () => {
             const targetRef = rowRefs.current[`${nextItem.product.id}-${nextField}`];
             if (targetRef) {
                 targetRef.focus();
-                targetRef.select();
+                if (targetRef.select) targetRef.select();
             }
         }
     };
@@ -360,8 +359,24 @@ export const PurchasePage = () => {
                                 const hasPriceChange = Math.abs(parseFloat(item.product.price) - parseFloat(item.newPrice)) > 0.01;
                                 return (
                                     <div key={item.product.id} className="bg-white border border-sys-200 rounded-2xl p-4 shadow-sm hover:shadow-md transition-all group animate-in slide-in-from-right-4">
-                                        <div className="flex items-center gap-6">
-                                            <div className="w-1/4 min-w-0">
+                                        <div className="flex items-center gap-4">
+                                            
+                                            {/* 🔥 NUEVO: CANTIDAD INPUT A LA IZQUIERDA */}
+                                            <div className="w-24 shrink-0">
+                                                <label className="text-[8px] font-black text-brand uppercase mb-1 block text-center">Cantidad</label>
+                                                <input 
+                                                    ref={el => rowRefs.current[`${item.product.id}-quantity`] = el}
+                                                    type="number" 
+                                                    className="w-full h-10 px-2 border-2 border-brand/30 rounded-xl font-black text-center text-brand bg-brand/5 outline-none focus:border-brand focus:ring-2 focus:ring-brand/20 transition-all" 
+                                                    value={item.quantity} 
+                                                    onChange={(e) => updateItem(item.product.id, 'quantity', e.target.value)} 
+                                                    min="1" 
+                                                    onKeyDown={(e) => handleRowKeyDown(e, item.product.id, 'quantity', index)}
+                                                />
+                                            </div>
+
+                                            {/* INFO PRODUCTO */}
+                                            <div className="flex-1 min-w-[200px]">
                                                 <div className="flex items-center gap-2 mb-1">
                                                     <span className="text-[9px] font-black bg-sys-100 text-sys-500 px-1.5 py-0.5 rounded border border-sys-200">{item.product.code || 'S/C'}</span>
                                                     {hasPriceChange && <span className="text-[8px] font-black bg-orange-100 text-orange-600 px-1.5 py-0.5 rounded border border-orange-200 animate-pulse">NUEVO PRECIO</span>}
@@ -370,75 +385,76 @@ export const PurchasePage = () => {
                                                 <p className="text-[10px] text-sys-400 font-bold mt-1">Stock Actual: <span className="font-mono text-sys-600">{item.product.stock || 0}</span></p>
                                             </div>
 
-                                            <div className="flex-1 grid grid-cols-4 gap-4 bg-sys-50 p-3 rounded-xl border border-sys-100">
-                                                {/* COSTO INPUT (NAV) */}
+                                            {/* BLOQUE CENTRAL DE PRECIOS */}
+                                            <div className="flex-[2] grid grid-cols-4 gap-3 bg-sys-50 p-2.5 rounded-xl border border-sys-100">
+                                                {/* COSTO INPUT */}
                                                 <div>
                                                     <label className="text-[8px] font-black text-sys-400 uppercase mb-1 block">Costo Unit.</label>
                                                     <div className="relative">
-                                                        <span className="absolute left-2 top-2 text-sys-400 text-[10px] font-bold">$</span>
+                                                        <span className="absolute left-2 top-1.5 text-sys-400 text-[10px] font-bold">$</span>
                                                         <input 
                                                             ref={el => rowRefs.current[`${item.product.id}-costInput`] = el}
                                                             type="number" 
-                                                            className="w-full pl-5 pr-2 py-1.5 border border-sys-200 rounded-lg font-bold text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/20 transition-all" 
+                                                            className="w-full pl-5 pr-2 py-1 border border-sys-200 rounded-lg font-bold text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/20 transition-all" 
                                                             value={item.costInput} 
                                                             onChange={(e) => updateItem(item.product.id, 'costInput', e.target.value)}
                                                             onKeyDown={(e) => handleRowKeyDown(e, item.product.id, 'costInput', index)}
                                                         />
                                                     </div>
                                                 </div>
-                                                {/* MARGEN INPUT (NAV) */}
+                                                {/* MARGEN INPUT */}
                                                 <div>
                                                     <label className="text-[8px] font-black text-sys-400 uppercase mb-1 block">Margen %</label>
                                                     <div className="relative">
-                                                        <Percent className="absolute right-2 top-2.5 text-sys-300 pointer-events-none" size={12}/>
+                                                        <Percent className="absolute right-2 top-2 text-sys-300 pointer-events-none" size={10}/>
                                                         <input 
                                                             ref={el => rowRefs.current[`${item.product.id}-markup`] = el}
                                                             type="number" 
-                                                            className="w-full pl-2 pr-6 py-1.5 border border-sys-200 rounded-lg font-black text-brand text-sm outline-none text-center focus:border-brand focus:ring-2 focus:ring-brand/20 transition-all" 
+                                                            className="w-full pl-2 pr-5 py-1 border border-sys-200 rounded-lg font-black text-brand text-sm outline-none text-center focus:border-brand focus:ring-2 focus:ring-brand/20 transition-all" 
                                                             value={item.markup} 
                                                             onChange={(e) => updateItem(item.product.id, 'markup', e.target.value)}
                                                             onKeyDown={(e) => handleRowKeyDown(e, item.product.id, 'markup', index)}
                                                         />
                                                     </div>
                                                 </div>
-                                                {/* PRECIO INPUT (NAV) */}
+                                                {/* PRECIO INPUT */}
                                                 <div>
                                                     <label className="text-[8px] font-black text-emerald-600 uppercase mb-1 block">P. Venta</label>
                                                     <div className="relative">
-                                                        <span className="absolute left-2 top-2 text-emerald-400 text-[10px] font-bold">$</span>
+                                                        <span className="absolute left-2 top-1.5 text-emerald-400 text-[10px] font-bold">$</span>
                                                         <input 
                                                             ref={el => rowRefs.current[`${item.product.id}-newPrice`] = el}
                                                             type="number" 
-                                                            className="w-full pl-5 pr-2 py-1.5 border-2 border-emerald-100 bg-white rounded-lg font-black text-emerald-700 text-sm outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-200 transition-all" 
+                                                            className="w-full pl-5 pr-2 py-1 border-2 border-emerald-100 bg-white rounded-lg font-black text-emerald-700 text-sm outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-200 transition-all" 
                                                             value={item.newPrice} 
                                                             onChange={(e) => updateItem(item.product.id, 'newPrice', e.target.value)}
                                                             onKeyDown={(e) => handleRowKeyDown(e, item.product.id, 'newPrice', index)}
                                                         />
                                                     </div>
                                                 </div>
-                                                <div className="flex flex-col justify-center items-center border-l border-sys-200 pl-4">
-                                                    <span className="text-[8px] font-black text-sys-400 uppercase mb-1">IVA</span>
-                                                    <button onClick={() => updateItem(item.product.id, 'includesTax', !item.includesTax)} className={cn("text-[9px] font-black px-2 py-1 rounded border w-full text-center", item.includesTax ? "bg-brand text-white border-brand" : "bg-white text-sys-400 border-sys-200")}>
-                                                        {item.includesTax ? 'FINAL' : 'NETO'}
+                                                {/* SWITCH IVA */}
+                                                <div className="flex flex-col justify-end pb-1 border-l border-sys-200 pl-3">
+                                                    <button onClick={() => updateItem(item.product.id, 'includesTax', !item.includesTax)} className={cn("text-[8px] font-black px-1.5 py-1 rounded border w-full text-center tracking-wider", item.includesTax ? "bg-brand text-white border-brand" : "bg-white text-sys-400 border-sys-200")}>
+                                                        {item.includesTax ? '+ IVA' : 'NETO'}
                                                     </button>
                                                 </div>
                                             </div>
 
-                                            {/* CANTIDAD INPUT (NAV - DEFAULT FOCUS) */}
-                                            <div className="w-28">
-                                                <label className="text-[8px] font-black text-sys-400 uppercase mb-1 block text-center">Cantidad</label>
+                                            {/* 🔥 NUEVO: VENCIMIENTO LOTE (A LA DERECHA) */}
+                                            <div className="w-32 shrink-0">
+                                                <label className="text-[8px] font-black text-purple-600 uppercase mb-1 block flex items-center gap-1"><CalendarDays size={10}/> Vencimiento Lote</label>
                                                 <input 
-                                                    ref={el => rowRefs.current[`${item.product.id}-quantity`] = el}
-                                                    type="number" 
-                                                    className="w-full h-10 px-3 border-2 border-sys-100 rounded-xl font-black text-center text-sys-900 bg-white outline-none focus:border-brand focus:ring-2 focus:ring-brand/20 transition-all" 
-                                                    value={item.quantity} 
-                                                    onChange={(e) => updateItem(item.product.id, 'quantity', e.target.value)} 
-                                                    min="1" 
-                                                    onKeyDown={(e) => handleRowKeyDown(e, item.product.id, 'quantity', index)}
+                                                    ref={el => rowRefs.current[`${item.product.id}-expiryDate`] = el}
+                                                    type="date" 
+                                                    className="w-full h-10 px-2 border border-purple-100 bg-purple-50 rounded-xl font-bold text-xs text-purple-700 outline-none focus:border-purple-400 focus:ring-2 focus:ring-purple-200 transition-all" 
+                                                    value={item.expiryDate || ''} 
+                                                    onChange={(e) => updateItem(item.product.id, 'expiryDate', e.target.value)} 
+                                                    onKeyDown={(e) => handleRowKeyDown(e, item.product.id, 'expiryDate', index)}
                                                 />
                                             </div>
 
-                                            <button onClick={() => removeItem(item.product.id)} className="p-2.5 text-sys-300 hover:text-red-500 hover:bg-red-50 rounded-xl transition-all"><Trash2 size={20} /></button>
+                                            {/* ELIMINAR */}
+                                            <button onClick={() => removeItem(item.product.id)} className="p-2.5 text-sys-300 hover:text-red-500 hover:bg-red-50 rounded-xl transition-all shrink-0"><Trash2 size={20} /></button>
                                         </div>
                                     </div>
                                 );

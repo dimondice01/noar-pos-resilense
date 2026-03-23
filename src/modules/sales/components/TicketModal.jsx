@@ -80,24 +80,20 @@ const TicketContent = forwardRef(({
     const isReceipt = data.type === 'RECEIPT'; // Para los cobros desde el ClientDashboard
 
     if (isBudget) {
-        // 🔥 1. Prioridad Absoluta: Si es presupuesto, nada más importa.
         tipoComprobante = "PRESUPUESTO";
         letraComprobante = "P";
         numeroComprobante = data.number || `ID: ${data.localId?.slice(-8).toUpperCase()}`;
     } else if (isReceipt) {
-        // 🔥 2. Recibo de pago de Cuenta Corriente
         tipoComprobante = "RECIBO DE PAGO";
         letraComprobante = "R";
         numeroComprobante = data.number || data.localId || `ID: ${Date.now().toString().slice(-8)}`;
     } else if (isFiscal) {
-        // 3. Si es Venta Fiscal
         const pto = String(afip.ptoVta || "0").padStart(4, '0');
         const num = String(afip.cbteNumero || afip.numero || "0").padStart(8, '0');
         numeroComprobante = `${pto}-${num}`;
         letraComprobante = afip.cbteLetra || "B";
         tipoComprobante = "FACTURA";
     } else {
-        // 4. Ticket Interno / Venta No Fiscal
         if (data.number) {
             numeroComprobante = data.number; 
             const partes = data.number.split('-');
@@ -115,15 +111,14 @@ const TicketContent = forwardRef(({
     const docValue = (client.docNumber && client.docNumber !== '0') ? client.docNumber : null;
     const condFiscalCliente = (client.fiscalCondition || 'Consumidor Final').replace(/_/g, ' ');
 
-    const total = parseFloat(data.total || data.amount || 0); // data.amount si es Recibo
+    const total = parseFloat(data.total || data.amount || 0);
     const subtotal = parseFloat(data.subtotal || data.total || 0);
     const surcharge = parseFloat(data.surcharge || 0);
     const discount = parseFloat(data.discount || 0);
 
-    // Valores Financieros (Para desglosar Cta Cte)
     const amountPaid = parseFloat(data.amountPaid || 0);
     const amountDebt = parseFloat(data.amountDebt || 0);
-    const newBalance = parseFloat(data.newBalance || 0); // Viene en el recibo
+    const newBalance = parseFloat(data.newBalance || 0); 
 
     let paymentDetails = [];
     if (data.payments && Array.isArray(data.payments) && data.payments.length > 0) {
@@ -152,7 +147,6 @@ const TicketContent = forwardRef(({
                         />
                     )}
                     
-                    {/* 🔥 ALERTA VISUAL DE PRESUPUESTO */}
                     {isBudget && (
                         <div className="w-full text-center font-black text-[12px] border-y-2 border-black py-1 my-1 tracking-widest bg-gray-100 print:bg-transparent">
                             *** PRESUPUESTO ***
@@ -201,7 +195,6 @@ const TicketContent = forwardRef(({
                         
                         {items.map((item, idx) => {
                             const hasPromo = item.appliedPromo || (item.originalPrice && item.originalPrice > item.price);
-                            
                             const qty = parseFloat(item.quantity);
                             const displayQty = (item.isWeighable || qty % 1 !== 0) ? qty.toFixed(3) : Math.round(qty);
 
@@ -448,7 +441,12 @@ export const TicketModal = ({ isOpen, onClose, sale, receipt }) => {
             const fetchConfig = async () => {
                 try {
                     const cacheKey = `SALVADOR_BRANCH_CONFIG_${activeBranchId}`;
-                    if (navigator.onLine) {
+                    // 🔥 LECTURA DEL CACHÉ EN EL MOMENTO
+                    const localData = localStorage.getItem(cacheKey);
+                    
+                    if (localData) {
+                        setBranchConfig(JSON.parse(localData));
+                    } else if (navigator.onLine) {
                         const docRef = doc(db, 'companies', user.companyId, 'branches', activeBranchId);
                         const snap = await getDoc(docRef);
                         
@@ -484,7 +482,8 @@ export const TicketModal = ({ isOpen, onClose, sale, receipt }) => {
         direccion: branchConfig?.address || "",
         domicilio: branchConfig?.address || "",
         condicionIva: branchConfig?.taxCondition || "Consumidor Final",
-        logoUrl: branchConfig?.logoUrl || null,
+        // 🔥 AHORA LEE DIRECTAMENTE EL BASE64 EN CACHÉ ANTES DE MIRAR LA URL VIEJA
+        logoUrl: branchConfig?.logoBase64 || branchConfig?.logoUrl || null,
         iibb: branchConfig?.iibb || "",
         inicioAct: branchConfig?.inicioAct || "",
     };

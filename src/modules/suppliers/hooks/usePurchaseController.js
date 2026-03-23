@@ -1,5 +1,5 @@
 import { useState, useMemo, useCallback } from 'react';
-import { supplierRepository } from '../repositories/supplierRepository'; // 🔥 REPO MAESTRO
+import { purchaseRepository } from '../repositories/purchaseRepository'; // 🔥 APUNTANDO AL NUEVO SÚPER MOTOR
 import { useAuthStore } from '../../auth/store/useAuthStore';
 import toast from 'react-hot-toast';
 
@@ -111,7 +111,8 @@ export const usePurchaseController = () => {
                 costInput: product.cost || 0,
                 includesTax: globalIncludesTax,
                 markup: parseFloat(initialMarkup),
-                newPrice: product.price || 0
+                newPrice: product.price || 0,
+                expiryDate: '' // 🔥 Preparado para SPRINT 3 (Vencimientos por Lote)
             }, ...prevItems];
         });
     }, [globalIncludesTax]);
@@ -119,6 +120,12 @@ export const usePurchaseController = () => {
     const updateItem = useCallback((productId, field, value) => {
         setItems(prev => prev.map(item => {
             if (item.product.id !== productId) return item;
+            
+            // Si es un campo directo que no requiere recálculo bidireccional (como quantity o expiryDate)
+            if (field === 'quantity' || field === 'expiryDate') {
+                return { ...item, [field]: value };
+            }
+            
             const updates = calculateBidirectional(field, value, item);
             return { ...item, ...updates };
         }));
@@ -188,12 +195,13 @@ export const usePurchaseController = () => {
                 // Si es null, el cambio es inmediato.
                 activationDate: paymentData?.effectiveDate || null,
                 
-                expiryDate: null 
+                // 🔥 SPRINT 3: SOPORTE DE VENCIMIENTO POR LOTES
+                expiryDate: item.expiryDate || null 
             }));
 
-            // 3. LLAMADA AL REPO "PESADO" (SupplierRepository)
+            // 3. LLAMADA AL NUEVO REPO PESADO (PurchaseRepository)
             // Este repo leerá `branchId` y `userId` para crear el movimiento de caja correcto.
-            await supplierRepository.registerPurchase(purchaseHeader, cleanItems);
+            await purchaseRepository.registerPurchase(purchaseHeader, cleanItems);
             
             toast.success("¡Compra Procesada Exitosamente!", { id: toastId });
             

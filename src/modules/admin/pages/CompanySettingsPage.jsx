@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { Camera, Save, Store, FileText, MapPin, Hash, Calendar, AlertTriangle, Info } from 'lucide-react';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
-import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
-import { db, storage } from '../../../database/firebase'; 
+import { db } from '../../../database/firebase'; 
+import { getDB } from '../../../database/db'; // 🔥 IMPORTAMOS DEXIE
 import { useAuthStore } from '../../auth/store/useAuthStore';
 import { Card } from '../../../core/ui/Card';
 import { Button } from '../../../core/ui/Button';
@@ -14,7 +14,7 @@ export const CompanySettingsPage = () => {
     // Estado inicial completo para evitar uncontrolled inputs
     const [branchData, setBranchData] = useState({ 
         name: '',           // Nombre de Fantasía
-        logoUrl: null,      // Logo específico de la sucursal
+        logoBase64: null,   // 🔥 Logo en memoria local
         razonSocial: '',    // Razón Social
         cuit: '',           // CUIT 
         iibb: '',           // IIBB
@@ -23,12 +23,32 @@ export const CompanySettingsPage = () => {
         taxCondition: 'CONSUMIDOR FINAL'
     });
     
-    const [file, setFile] = useState(null);
     const [loading, setLoading] = useState(false);
     const [loadingData, setLoadingData] = useState(true);
 
     // =================================================================
-    // 1. CARGAR DATOS (Estrategia: Branch > Company Fallback)
+    // 🔥 HELPER: Convertir Imagen a Base64 (Local First)
+    // =================================================================
+    const handleImageUpload = (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        // Validación de tamaño (Max 1MB para no saturar Firestore/Dexie)
+        if (file.size > 1024 * 1024) {
+            toast.error("La imagen es muy grande. Máximo 1MB.");
+            return;
+        }
+
+        const reader = new FileReader();
+        reader.onloadend = () => {
+            // Guardamos el Base64 en el estado
+            setBranchData(prev => ({ ...prev, logoBase64: reader.result }));
+        };
+        reader.readAsDataURL(file);
+    };
+
+    // =================================================================
+    // 1. CARGAR DATOS (Estrategia: Dexie > Firebase > Company Fallback)
     // =================================================================
     useEffect(() => {
         if (!user?.companyId || !activeBranchId) return;
@@ -36,31 +56,40 @@ export const CompanySettingsPage = () => {
         const fetchConfig = async () => {
             setLoadingData(true);
             try {
-                // A. Buscamos config específica de la sucursal
+                // 🔥 1. Intentamos leer rápido de la memoria local primero (Cache)
+                const cacheKey = `SALVADOR_BRANCH_CONFIG_${activeBranchId}`;
+                const cachedData = localStorage.getItem(cacheKey);
+                
+                if (cachedData) {
+                    setBranchData(prev => ({ ...prev, ...JSON.parse(cachedData) }));
+                }
+
+                // 2. Leemos la configuración real de Firebase
                 const branchRef = doc(db, 'companies', user.companyId, 'branches', activeBranchId);
                 const branchSnap = await getDoc(branchRef);
                 
-                // B. Buscamos config general de la empresa (para rellenar huecos)
                 const companyRef = doc(db, 'companies', user.companyId);
                 const companySnap = await getDoc(companyRef);
                 const companyData = companySnap.exists() ? companySnap.data() : {};
 
                 if (branchSnap.exists()) {
                     const data = branchSnap.data();
-                    // Prioridad: Lo que tenga la sucursal. Si falta, usamos lo de la empresa.
-                    setBranchData(prev => ({
-                        ...prev,
-                        ...data,
+                    
+                    const payload = {
                         name: data.name || activeBranchName,
+                        // Leemos el Base64. Si es un logo viejo (URL), intentamos mantenerlo.
+                        logoBase64: data.logoBase64 || data.logoUrl || null, 
                         razonSocial: data.razonSocial || companyData.razonSocial || '',
                         cuit: data.cuit || companyData.cuit || '',
                         taxCondition: data.taxCondition || companyData.taxCondition || 'CONSUMIDOR FINAL',
                         iibb: data.iibb || companyData.iibb || '',
                         inicioAct: data.inicioAct || companyData.inicioAct || '',
                         address: data.address || ''
-                    }));
+                    };
+
+                    setBranchData(prev => ({ ...prev, ...payload }));
+                    localStorage.setItem(cacheKey, JSON.stringify(payload)); // Refrescamos Cache
                 } else {
-                    // Si la sucursal no tiene config, pre-cargamos con datos de empresa
                     setBranchData(prev => ({ 
                         ...prev, 
                         ...companyData, 
@@ -71,7 +100,9 @@ export const CompanySettingsPage = () => {
                 }
             } catch (error) {
                 console.error("Error cargando configuración:", error);
-                toast.error("No se pudieron cargar los datos de la sucursal.");
+                if (!localStorage.getItem(`SALVADOR_BRANCH_CONFIG_${activeBranchId}`)) {
+                    toast.error("No se pudieron cargar los datos de la sucursal.");
+                }
             } finally {
                 setLoadingData(false);
             }
@@ -88,33 +119,27 @@ export const CompanySettingsPage = () => {
         setLoading(true);
 
         try {
-            let newLogoUrl = branchData.logoUrl;
-
-            // A. Subir Logo 
-            if (file) {
-                const storageRef = ref(storage, `logos/${user.companyId}/${activeBranchId}/logo_${Date.now()}`);
-                await uploadBytes(storageRef, file);
-                newLogoUrl = await getDownloadURL(storageRef);
-            }
-
-            // B. Guardar en Firestore (merge: true no borra certificados AFIP)
             const branchRef = doc(db, 'companies', user.companyId, 'branches', activeBranchId);
             
             const payload = {
                 ...branchData,
-                logoUrl: newLogoUrl,
                 updatedAt: new Date().toISOString()
             };
 
+            // A. Guardar en Firestore (merge: true no borra certificados AFIP)
             await setDoc(branchRef, payload, { merge: true });
 
-            // C. Actualizar estado local
-            setBranchData(prev => ({ ...prev, logoUrl: newLogoUrl }));
-            setFile(null); // Limpiamos el archivo subido
-            
-            // D. Actualizar Cache Local (PARA QUE TICKET MODAL LO VEA INSTANTÁNEAMENTE)
+            // B. Actualizar Cache Local (PARA QUE TICKET MODAL LO VEA INSTANTÁNEAMENTE)
             const cacheKey = `SALVADOR_BRANCH_CONFIG_${activeBranchId}`;
             localStorage.setItem(cacheKey, JSON.stringify(payload));
+
+            // C. 🔥 GUARDAR EN DEXIE (Configuración Global Local)
+            const localDb = await getDB();
+            await localDb.config.put({
+                key: `branch_config_${activeBranchId}`,
+                value: payload,
+                updatedAt: payload.updatedAt
+            });
 
             toast.success(`Datos de "${activeBranchName}" guardados correctamente.`);
 
@@ -156,13 +181,11 @@ export const CompanySettingsPage = () => {
                     </h3>
                     
                     <div className="flex flex-col md:flex-row gap-8 items-center md:items-start">
-                        {/* Logo Upload */}
+                        {/* Logo Upload (BASE64) */}
                         <div className="flex flex-col items-center gap-3">
-                            <div className="w-32 h-32 rounded-full bg-slate-900 overflow-hidden flex items-center justify-center border-4 border-slate-600 shadow-xl relative group transition-all hover:border-blue-500">
-                                {file ? (
-                                    <img src={URL.createObjectURL(file)} className="w-full h-full object-cover" alt="Preview" />
-                                ) : branchData.logoUrl ? (
-                                    <img src={branchData.logoUrl} className="w-full h-full object-contain p-2 bg-white" alt="Logo" />
+                            <div className="w-32 h-32 rounded-full bg-slate-900 overflow-hidden flex items-center justify-center border-4 border-slate-600 shadow-xl relative group transition-all hover:border-blue-500 bg-white">
+                                {branchData.logoBase64 ? (
+                                    <img src={branchData.logoBase64} className="w-full h-full object-contain p-2" alt="Logo de la Empresa" />
                                 ) : (
                                     <Camera size={40} className="text-slate-600 group-hover:text-blue-500 transition-colors" />
                                 )}
@@ -172,13 +195,18 @@ export const CompanySettingsPage = () => {
                                 </label>
                                 <input 
                                     type="file" 
-                                    accept="image/*"
+                                    accept="image/jpeg, image/png"
                                     id="logo-upload"
                                     className="hidden"
-                                    onChange={(e) => setFile(e.target.files[0])}
+                                    onChange={handleImageUpload}
                                 />
                             </div>
-                            <p className="text-[10px] text-slate-500 font-mono">JPG/PNG (Max 2MB)</p>
+                            <p className="text-[10px] text-slate-500 font-mono">JPG/PNG (Max 1MB)</p>
+                            {branchData.logoBase64 && (
+                                <button type="button" onClick={() => setBranchData({...branchData, logoBase64: null})} className="text-[10px] text-red-400 hover:text-red-300 font-bold uppercase tracking-widest mt-1">
+                                    Eliminar Logo
+                                </button>
+                            )}
                         </div>
 
                         {/* Nombre */}

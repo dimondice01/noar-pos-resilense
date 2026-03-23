@@ -140,29 +140,35 @@ export const ValeriaRegisterPage = () => {
     };
 
     // --- REGISTRO FINAL (DESDE PASO 1 O 2) ---
-    const handleRegister = async (e) => {
-        if (e) e.preventDefault();
-        setLoading(true);
-        setError('');
+  const handleRegister = async (e) => {
+    if (e) e.preventDefault();
+    setLoading(true);
+    setError('');
 
-        try {
-            // Preparar payload de sucursales
-            const finalBranches = formData.planType === 'single' 
-                ? ['Sucursal Central'] 
-                : branchNames;
+    try {
+        const finalBranches = formData.planType === 'single' 
+            ? ['Sucursal Central'] 
+            : branchNames;
 
-            // 1. REGISTRO ATÓMICO EN FIREBASE
-            // 🔥 AQUÍ ESTÁ EL CAMBIO: Forzamos el rol 'OWNER'
-            await authService.register({
-                email: formData.email,
-                password: formData.password,
-                name: formData.ownerName,
-                companyName: formData.businessName,
-                branchCount: formData.branchesCount,
-                branchNames: finalBranches, 
-                role: 'OWNER' // 👑 El creador de la cuenta ES el dueño
-            });
+        // Calculamos fecha de vencimiento inicial (hoy + 30 días)
+        const expiration = new Date();
+        expiration.setDate(expiration.getDate() + 30);
 
+        // 1. REGISTRO ATÓMICO
+        await authService.register({
+            email: formData.email,
+            password: formData.password,
+            name: formData.ownerName,
+            companyName: formData.businessName,
+            branchCount: formData.branchesCount,
+            branchNames: finalBranches, 
+            role: 'OWNER',
+            // 🔥 NUEVOS CAMPOS PARA EL SAAS DASHBOARD 🔥
+            subscriptionStatus: 'TRIAL', 
+            expiryDate: expiration.toISOString(),
+            planId: formData.planType === 'multi' ? 'ENTERPRISE_50K' : 'COMERCIO_50K',
+            createdAt: new Date().toISOString()
+        });
             // 2. AUTO-LOGIN
             const userProfile = await authService.login(formData.email, formData.password);
             

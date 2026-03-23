@@ -1,11 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import { 
     TrendingUp, Users, Package, AlertTriangle, 
-    Wallet, RefreshCw, DollarSign,
+    Wallet, RefreshCw, DollarSign, Scale,
     Lock, Unlock, Monitor, FileText, CheckCircle2, History,
     ShoppingBag, Banknote, Shield, TrendingDown,
     Activity, Building2, Plus, ArrowRight, MapPin,
-    BarChart3, PieChart, LineChart
+    BarChart3, PieChart, LineChart, BellRing
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
@@ -145,20 +145,20 @@ const AdminSecurityPanel = ({ onUpdatePin, activeBranchName, activeBranchId }) =
 // TARJETAS Y COMPONENTES VISUALES
 // =================================================================
 const StatCard = ({ title, value, subtext, icon: Icon, colorClass, borderClass }) => (
-    <div className={cn("p-5 rounded-xl border flex flex-col justify-between shadow-sm transition-all hover:shadow-md bg-white group", borderClass)}>
+    <div className={cn("p-5 rounded-2xl border flex flex-col justify-between shadow-sm transition-all hover:shadow-md bg-white group", borderClass)}>
         <div className="flex justify-between items-start mb-2">
             <p className={cn("text-[11px] font-bold uppercase tracking-wider text-slate-500")}>{title}</p>
             <div className={cn("p-2 rounded-full bg-slate-50 transition-colors group-hover:scale-110", colorClass)}><Icon size={18} /></div>
         </div>
         <div>
             <h3 className="text-2xl font-black tracking-tight text-slate-900">{value}</h3>
-            {subtext && <p className="text-xs text-slate-400 mt-1 font-medium">{subtext}</p>}
+            {subtext && <p className="text-[10px] font-bold text-slate-400 mt-1 uppercase">{subtext}</p>}
         </div>
     </div>
 );
 
 const KpiCard = ({ metrics, isAdmin, money, navigate, onTriggerClose, isCajeroActive, activeBranchName }) => (
-    <div className={cn("lg:col-span-2 relative overflow-hidden rounded-3xl p-6 text-white shadow-2xl transition-all border border-white/5", isAdmin ? "bg-slate-900" : "bg-brand")}>
+    <div className={cn("lg:col-span-2 relative overflow-hidden rounded-3xl p-6 text-white shadow-xl transition-all border border-white/5", isAdmin ? "bg-slate-900" : "bg-brand")}>
         <div className="absolute top-0 right-0 p-12 opacity-5 pointer-events-none"><Activity size={180} /></div>
         
         <div className="relative z-10 flex flex-col h-full justify-between gap-8">
@@ -323,7 +323,7 @@ const AdminCashAuditPanel = ({ allShifts, loadIntelligence, navigate, resolveNam
     };
 
     return (
-        <Card className="lg:col-span-3 shadow-sm border border-slate-200 bg-white">
+        <Card className="shadow-sm border border-slate-200 bg-white">
              <div className="flex justify-between items-center mb-6">
                 <h3 className="font-bold text-lg text-slate-800 flex items-center gap-2"><FileText size={20} className="text-slate-400"/> Auditoría de Cajas</h3>
                 <Button variant="ghost" size="sm" onClick={() => navigate('cash')} className="text-slate-500 hover:text-brand font-medium text-xs">Ver Historial</Button>
@@ -369,21 +369,6 @@ const AdminCashAuditPanel = ({ allShifts, loadIntelligence, navigate, resolveNam
                             ))}
                         </div>
                     </div>
-                    <div>
-                        <p className="text-[10px] font-bold uppercase text-slate-400 mb-3 flex items-center gap-2 px-1"><History size={12}/> Historial</p>
-                        <div className="space-y-1 max-h-[200px] overflow-y-auto custom-scrollbar pr-1">
-                            {auditedShifts.length === 0 && <p className="text-xs text-slate-400 italic px-1">Vacío.</p>}
-                            {auditedShifts.slice(0, 10).map(shift => ( 
-                                <div key={shift.id} className="flex justify-between items-center text-xs p-2 hover:bg-slate-50 rounded-lg transition-colors group cursor-pointer" onClick={() => handleAction(shift, false)}>
-                                    <div>
-                                        <span className="font-medium text-slate-700 block truncate max-w-[120px]">{resolveName(shift.userId, shift.userName)}</span>
-                                        <span className="text-[9px] text-slate-400">{new Date(shift.closedAt).toLocaleDateString()}</span>
-                                    </div>
-                                    <ArrowRight size={14} className="text-slate-300 group-hover:text-slate-600"/>
-                                </div>
-                            ))}
-                        </div>
-                    </div>
                 </div>
             </div>
             <TicketZModal isOpen={isReportModalOpen} onClose={() => {setIsReportModalOpen(false); setAuditTarget(null);}} reportData={reportData} onConfirmAudit={auditTarget ? handleConfirmAuditAction : undefined} />
@@ -416,39 +401,100 @@ const QuickActionsPanel = ({ navigate, onExpenseClick, onWithdrawalClick, isAdmi
     </div>
 );
 
+// 🔥 VISTA ADMIN: ENTERPRISE COMMAND CENTER (SPRINT 6)
 const AdminDashboardView = ({ metrics, money, navigate, loadIntelligence, handleUpdatePin, allShifts, cloudLoading, activeBranchId, activeBranchName, pendingShifts, handleOpenShift, onTriggerClose, onExpenseClick, onWithdrawalClick, resolveName }) => (
     <div className="space-y-6 pb-20 animate-in fade-in">
+        
+        {/* ROW 1: KPIs Principales (Ventas, Ganancia, Deudas) */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
             <KpiCard metrics={metrics} isAdmin={true} money={money} navigate={navigate} onTriggerClose={onTriggerClose} isCajeroActive={!!metrics.activeShift} activeBranchName={activeBranchName} />
-            <StatCard title="Gastos Operativos" value={`$ ${money(metrics.totalExpenses)}`} subtext="Salidas del día (Incl. Compras)" icon={TrendingDown} colorClass="bg-rose-50 text-rose-600" borderClass="border-slate-200" />
-            <StatCard title="Cajas Activas" value={metrics.activeShiftsCount} subtext="En tiempo real" icon={Monitor} colorClass="bg-blue-50 text-blue-600" borderClass="border-slate-200" />
+            
+            {/* Ganancia Neta & Margen */}
+            <StatCard 
+                title="Ganancia Neta (Hoy)" 
+                value={`$ ${money(metrics.netProfit)}`} 
+                subtext={`Margen Operativo: ${metrics.marginPercentage || '0'}%`} 
+                icon={TrendingUp} 
+                colorClass="bg-emerald-50 text-emerald-600" 
+                borderClass="border-emerald-200" 
+            />
+            
+            {/* Balance de "Calle" (Deudas) */}
+            <div className="p-5 rounded-2xl border border-amber-200 shadow-sm transition-all hover:shadow-md bg-white flex flex-col justify-between">
+                <div className="flex justify-between items-start mb-2">
+                    <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500">Finanzas en Calle</p>
+                    <div className="p-2 rounded-full bg-amber-50 text-amber-600"><Scale size={18} /></div>
+                </div>
+                <div>
+                    <h3 className="text-xl font-black tracking-tight text-emerald-600 truncate" title="Por Cobrar a Clientes">+ $ {money(metrics.clientDebt)}</h3>
+                    <p className="text-[11px] font-bold text-rose-500 mt-1 uppercase truncate" title="Por Pagar a Proveedores">- $ {money(metrics.supplierDebt)} a Proveedores</p>
+                </div>
+            </div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <Card className="p-5 flex items-center justify-between border-l-4 border-l-indigo-500 shadow-sm bg-white">
-                <div><p className="text-[10px] font-bold uppercase text-slate-400 mb-1">Ticket Promedio</p><h3 className="text-xl font-bold text-slate-900">$ {money(metrics.averageTicket)}</h3><p className="text-[9px] text-slate-400">Gasto medio</p></div>
-                <div className="p-3 bg-indigo-50 rounded-full text-indigo-600"><TrendingUp size={20} /></div>
-            </Card>
-            <Card className="col-span-1 md:col-span-2 p-0 overflow-hidden border border-slate-200 shadow-sm bg-white">
-                <div className="p-3 bg-white border-b border-slate-100 flex justify-between items-center"><h4 className="font-bold text-xs text-slate-800 flex items-center gap-2"><Package size={14} className="text-brand"/> Top 5 Más Vendidos (Hoy)</h4></div>
-                <div className="p-3">
+        {/* ROW 2: Listados Rápidos (Top Productos, Stock, Cajas) */}
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+            
+            {/* Top Productos */}
+            <Card className="col-span-1 md:col-span-2 p-0 overflow-hidden border border-slate-200 shadow-sm bg-white flex flex-col h-full">
+                <div className="p-3 bg-slate-50 border-b border-slate-100 flex justify-between items-center">
+                    <h4 className="font-bold text-xs text-slate-800 flex items-center gap-2"><TrendingUp size={14} className="text-brand"/> Top 5 Más Vendidos</h4>
+                </div>
+                <div className="p-4 flex-1 flex flex-col justify-center">
                     {metrics.topProducts?.length > 0 ? (
                         <div className="flex gap-3 overflow-x-auto pb-2 no-scrollbar">
                             {metrics.topProducts.map((p, idx) => (
-                                <div key={idx} className="flex-none w-32 bg-slate-50 border border-slate-100 p-2.5 rounded-xl text-center">
-                                    <div className="w-5 h-5 bg-white text-slate-900 shadow-sm rounded-full flex items-center justify-center mx-auto mb-1.5 text-[10px] font-bold border border-slate-100">#{idx + 1}</div>
+                                <div key={idx} className="flex-none w-28 bg-white border border-slate-100 p-3 rounded-xl text-center shadow-sm">
+                                    <div className="w-6 h-6 bg-slate-900 text-white rounded-full flex items-center justify-center mx-auto mb-2 text-[10px] font-bold">{idx + 1}</div>
                                     <p className="text-[10px] font-bold text-slate-700 truncate" title={p.name}>{p.name}</p>
-                                    <p className="text-[9px] text-slate-400">{p.quantity} un.</p>
+                                    <p className="text-[9px] font-black text-brand mt-1">{p.quantity} un.</p>
                                 </div>
                             ))}
                         </div>
-                    ) : <p className="text-[10px] text-slate-400 text-center py-2">Sin datos de productos.</p>}
+                    ) : <p className="text-xs text-slate-400 text-center italic">Sin datos suficientes.</p>}
+                </div>
+            </Card>
+
+            {/* Alertas de Stock Crítico */}
+            <Card className="col-span-1 p-0 overflow-hidden border border-rose-200 shadow-sm bg-white flex flex-col h-full">
+                <div className="p-3 bg-rose-50 border-b border-rose-100 flex justify-between items-center">
+                    <h4 className="font-bold text-xs text-rose-800 flex items-center gap-2"><BellRing size={14}/> Stock Crítico</h4>
+                    <span className="bg-rose-500 text-white text-[9px] font-black px-2 py-0.5 rounded-full">{metrics.lowStockItems?.length || 0}</span>
+                </div>
+                <div className="p-0 flex-1 overflow-y-auto max-h-[140px] custom-scrollbar">
+                    {metrics.lowStockItems?.length > 0 ? (
+                        <div className="divide-y divide-slate-50">
+                            {metrics.lowStockItems.slice(0, 5).map((item, idx) => (
+                                <div key={idx} className="p-3 flex justify-between items-center hover:bg-slate-50">
+                                    <p className="text-[10px] font-bold text-slate-700 truncate max-w-[120px]" title={item.name}>{item.name}</p>
+                                    <p className="text-[10px] font-black text-rose-600 bg-rose-50 px-1.5 py-0.5 rounded">{item.stock} u.</p>
+                                </div>
+                            ))}
+                        </div>
+                    ) : (
+                        <div className="h-full flex flex-col items-center justify-center p-4 text-emerald-600 opacity-60">
+                            <CheckCircle2 size={24} className="mb-1" />
+                            <p className="text-[10px] font-bold uppercase text-center">Stock Saludable</p>
+                        </div>
+                    )}
+                </div>
+            </Card>
+
+            {/* Cajas Activas Widget */}
+            <Card className="col-span-1 p-0 overflow-hidden border border-slate-200 shadow-sm bg-white flex flex-col h-full">
+                <div className="p-3 bg-slate-50 border-b border-slate-100 flex justify-between items-center">
+                    <h4 className="font-bold text-xs text-slate-800 flex items-center gap-2"><Monitor size={14} className="text-blue-500"/> Cajas Activas</h4>
+                </div>
+                <div className="p-4 flex flex-col items-center justify-center flex-1">
+                    <h3 className="text-4xl font-black text-slate-800">{metrics.activeShiftsCount || 0}</h3>
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mt-1">En Operación</p>
                 </div>
             </Card>
         </div>
         
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <div className="lg:col-span-2 space-y-6">
+        {/* ROW 3: Auditoría y Configuración Rápida */}
+        <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+            <div className="lg:col-span-3 space-y-6">
                  <AdminCashAuditPanel allShifts={allShifts} pendingShifts={pendingShifts} loadIntelligence={loadIntelligence} navigate={navigate} resolveName={resolveName} />
             </div>
             <div className="space-y-6">
@@ -458,13 +504,14 @@ const AdminDashboardView = ({ metrics, money, navigate, loadIntelligence, handle
                         <div className="flex justify-between items-end"><p className="text-sm font-black text-slate-800">GESTIONAR</p><Users className="text-amber-500 opacity-20" size={20}/></div>
                     </Card>
                     <Card className="p-4 border-l-4 border-l-violet-500 cursor-pointer hover:shadow-md transition-all flex flex-col justify-between shadow-sm bg-white" onClick={() => navigate('inventory')}>
-                         <p className="text-[10px] text-slate-400 uppercase font-bold mb-1">Stock</p>
+                         <p className="text-[10px] text-slate-400 uppercase font-bold mb-1">Inventario</p>
                          <div className="flex justify-between items-end"><p className="text-sm font-black text-slate-800">GESTIONAR</p><Package className="text-violet-500 opacity-20" size={20}/></div>
                     </Card>
                 </div>
                 <AdminSecurityPanel onUpdatePin={handleUpdatePin} activeBranchName={activeBranchName} activeBranchId={activeBranchId} />
             </div>
         </div>
+        
         <QuickActionsPanel navigate={navigate} onExpenseClick={onExpenseClick} onWithdrawalClick={onWithdrawalClick} isAdmin={true} />
     </div>
 );
@@ -473,9 +520,7 @@ const AdminDashboardView = ({ metrics, money, navigate, loadIntelligence, handle
 const CajeroDashboardView = ({ metrics, money, handleOpenShift, onTriggerClose, navigate, onExpenseClick, onWithdrawalClick }) => (
     <div className="space-y-6 pb-20 animate-in fade-in max-w-2xl mx-auto">
         <div className="grid grid-cols-1 gap-6">
-            {/* KPI CARD SIMPLIFICADA (SIN MONTOS DE VENTA) */}
             <KpiCard metrics={metrics} isAdmin={false} money={money} navigate={navigate} onTriggerClose={onTriggerClose} isCajeroActive={!!metrics.activeShift} />
-            
             <MyShiftCard metrics={metrics} money={money} handleOpenShift={handleOpenShift} />
         </div>
         <QuickActionsPanel navigate={navigate} onExpenseClick={onExpenseClick} onWithdrawalClick={onWithdrawalClick} isAdmin={false} />
@@ -504,7 +549,6 @@ export const DashboardPage = () => {
     const [dbStatus, setDbStatus] = useState({ checked: false, hasBranches: false });
 
     // 🔥 ROLES: Solo OWNER y ADMIN son "Administradores" del dashboard
-    // Pero el OWNER es el único que ve el selector de Branches
     const isAdminView = user?.role === 'OWNER' || user?.role === 'ADMIN';
     const isOwner = user?.role === 'OWNER';
     
@@ -552,12 +596,10 @@ export const DashboardPage = () => {
             const myActiveShift = allShifts.find(s => s.status === 'OPEN' && s.userId === user.uid);
             
             if (!isAdminView) {
-                // Lógica Cajero: Solo necesito saber si mi turno está abierto y el monto inicial
-                // NO calculo ventas totales aquí para el cierre ciego
                 setMetrics(prev => ({
                     ...prev,
                     activeShift: myActiveShift,
-                    allShifts: [] // Cajero no ve historial global
+                    allShifts: [] 
                 }));
             } else {
                  setMetrics(prev => ({ ...prev, activeShift: myActiveShift, allShifts }));
@@ -568,18 +610,25 @@ export const DashboardPage = () => {
 
     useEffect(() => { if (user) loadIntelligence(); }, [user.name, user.role, activeBranchId]);
 
-    // 4. Fusión de Métricas (Solo si es Admin View)
+    // 4. Fusión de Métricas (Inyectando Placeholders para el Sprint 6 si aún no vienen del hook)
     const finalMetrics = isAdminView ? {
         ...metrics,
-        todaySales: cloudStats.totalSales, 
-        cashInHand: cloudStats.cashTotal,
-        digitalSales: cloudStats.digitalTotal,
+        todaySales: cloudStats.totalSales || 0, 
+        cashInHand: cloudStats.cashTotal || 0,
+        digitalSales: cloudStats.digitalTotal || 0,
         totalExpenses: cloudStats.expenseTotal || 0, 
-        recentSales: cloudStats.recentSales,
+        recentSales: cloudStats.recentSales || [],
         averageTicket: cloudStats.averageTicket || 0,
         topProducts: cloudStats.topProducts || [],
         activeShiftsCount: cloudStats.activeShiftsCount || 0,
-        allShifts: metrics.allShifts 
+        allShifts: metrics.allShifts,
+        
+        // 🔥 NUEVAS MÉTRICAS ENTERPRISE SPRINT 6 (Esperando datos reales del hook)
+        netProfit: cloudStats.netProfit || 0,
+        marginPercentage: cloudStats.marginPercentage || 0,
+        clientDebt: cloudStats.clientDebt || 0,
+        supplierDebt: cloudStats.supplierDebt || 0,
+        lowStockItems: cloudStats.lowStockItems || []
     } : metrics;
 
     // --- MANEJADORES ---
@@ -648,14 +697,14 @@ export const DashboardPage = () => {
     if (!dbStatus.hasBranches && isAdminView) return <NoBranchesSetupView onFix={handleFixBranches} />;
 
     return (
-        <div className="w-full space-y-8 pb-20 max-w-7xl mx-auto">
+        <div className="w-full space-y-8 pb-20 max-w-7xl mx-auto p-4 md:p-6">
             <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
                 <div>
                     <h1 className="text-3xl font-black text-slate-900 tracking-tight flex items-center gap-3">
                         Hola, {user?.name?.split(' ')[0] || 'Usuario'} <span className="text-2xl">👋</span>
                     </h1>
                     <p className="text-slate-500 font-medium text-sm mt-1">
-                        {isAdminView ? "Resumen operativo global." : "Panel de control de caja."}
+                        {isAdminView ? "Resumen operativo y financiero global." : "Panel de control de caja."}
                     </p>
                 </div>
                 {/* 🔥 SOLO EL OWNER VE EL SELECTOR DE SUCURSALES */}

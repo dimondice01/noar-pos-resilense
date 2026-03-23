@@ -137,13 +137,13 @@ export const cashRepository = {
             auditSnapshot: {
                 totalSales: currentAudit.totalSales,
                 salesCount: currentAudit.salesCount,
-                salesByMethod: currentAudit.salesByMethod, // 🔥 DESGLOSE DE MÉTODOS DE PAGO (SOLO VENTAS)
+                salesByMethod: currentAudit.salesByMethod, 
                 
-                manualIn: currentAudit.manualIn,   // 🔥 INGRESOS MANUALES (EFECTIVO)
-                manualOut: currentAudit.manualOut, // 🔥 RETIROS MANUALES
+                manualIn: currentAudit.manualIn,   
+                manualOut: currentAudit.manualOut, 
                 
-                digitalIn: currentAudit.digitalIn, // 🔥 INGRESOS DIGITALES (RECIBOS)
-                digitalInByMethod: currentAudit.digitalInByMethod, // 🔥 DESGLOSE DE RECIBOS DIGITALES
+                digitalIn: currentAudit.digitalIn, 
+                digitalInByMethod: currentAudit.digitalInByMethod, 
                 
                 cashIn: currentAudit.cashIn,
                 cashOut: currentAudit.cashOut,
@@ -316,7 +316,6 @@ export const cashRepository = {
         return await dbLocal.shifts.where('status').equals('OPEN').toArray();
     },
 
-    // 🔥 FIX: Ahora el tipo por defecto es 'IN', lo que garantiza que sume a la caja manual sin duplicar ventas
     async registerIncome(amount, method, description = 'Ingreso Manual') {
         const shift = await this.getCurrentShift();
         if (!shift) throw new Error("⚠️ CAJA CERRADA: Abra turno para cobrar.");
@@ -324,7 +323,7 @@ export const cashRepository = {
         return this.addMovement({
             shiftId: shift.id,
             branchId: shift.branchId, 
-            type: 'IN', // 🔥 ARREGLO CRÍTICO: Ya no es 'SALE', ahora es un ingreso real
+            type: 'IN', 
             method: method, 
             amount: parseFloat(amount),
             description: description
@@ -435,15 +434,11 @@ export const cashRepository = {
     },
 
     // =========================================
-    // ⚖️ BALANCE Y AUDITORÍA (EL CEREBRO DEL CIERRE Z)
+    // ⚖️ BALANCE Y AUDITORÍA (EL CEREBRO DEL CIERRE Z BLINDADO)
     // =========================================
     
     async _calculateShiftState(shift, dbLocal) {
         if (!shift) return null;
-
-        const sales = await dbLocal.sales
-            .filter(s => s.shiftId === shift.id)
-            .toArray();
 
         const movements = await dbLocal.cash_movements
             .filter(m => m.shiftId === shift.id)
@@ -457,109 +452,104 @@ export const cashRepository = {
             salesDigital: 0,
             totalSales: 0,
             salesCount: 0,
-            salesByMethod: { cash: 0, mercadopago: 0, clover: 0, point: 0, manual_card: 0, card: 0, digitalOther: 0, account: 0, transfer: 0, employee_account: 0 },
+            salesByMethod: { 
+                cash: 0, cash_from_account: 0, transfer: 0, transfer_from_account: 0,
+                mercadopago: 0, clover: 0, point: 0, manual_card: 0, card: 0, 
+                digitalOther: 0, account: 0, employee_account: 0 
+            },
             
-            // Movimientos Manuales (Ingresos Extras y Retiros)
-            manualIn: 0, // Recibos en Efectivo
+            // Movimientos Manuales (Dinero Físico Extra)
+            manualIn: 0, 
             manualOut: 0,
 
-            digitalIn: 0, // 🔥 RECIBOS DIGITALES (Transf/MP de deudas)
-            digitalInByMethod: { transfer: 0, mercadopago: 0, clover: 0, point: 0, card: 0, digitalOther: 0 }, // 🔥 Desglose para Ticket Z
+            // Movimientos Digitales Extra (Transferencias, Pagos con código QR)
+            digitalIn: 0, 
+            digitalInByMethod: { transfer: 0, mercadopago: 0, clover: 0, point: 0, card: 0, digitalOther: 0 },
 
-            // Movimientos Internos
-            deposits: 0,
-            expenses: 0,
-            withdrawals: 0,
-            
-            // Totales
-            totalCash: 0,    // Efectivo Teórico Actual
+            // Totales visuales
+            totalCash: 0, 
             totalDigital: 0
         };
 
-        // A. PROCESAR VENTAS 
-        sales.forEach(sale => {
-            if (sale.type === 'INTERNAL' || sale.type === 'BUDGET') return; 
-            if (sale.afip?.status === 'VOIDED' || sale.status === 'CANCELLED' || sale.status === 'REFUNDED') return; 
-
-            state.totalSales += parseFloat(sale.total) || 0;
-            state.salesCount++;
-
-            const payments = Array.isArray(sale.payments) && sale.payments.length > 0 
-                ? sale.payments 
-                : [{ method: sale.payment?.method || sale.paymentMethod || sale.method || 'cash', total: parseFloat(sale.total) || 0 }];
-
-            payments.forEach(p => {
-                const amount = parseFloat(p.total || p.amount) || 0;
-                const methodRaw = String(p.method || 'cash').toLowerCase().trim();
-
-                if (['cash', 'efectivo'].includes(methodRaw)) {
-                    state.salesByMethod.cash += amount;
-                    state.salesCash += amount;
-                } else if (['mercadopago', 'mp', 'qr'].includes(methodRaw)) {
-                    state.salesByMethod.mercadopago += amount;
-                    state.salesDigital += amount;
-                } else if (['clover'].includes(methodRaw)) {
-                    state.salesByMethod.clover += amount;
-                    state.salesDigital += amount;
-                } else if (['point'].includes(methodRaw)) {
-                    state.salesByMethod.point += amount;
-                    state.salesDigital += amount;
-                } else if (['manual_card', 'card', 'tarjeta', 'credit', 'debit'].includes(methodRaw)) {
-                    state.salesByMethod.card += amount;
-                    state.salesDigital += amount;
-                } else if (['transfer', 'transferencia', 'deposito'].includes(methodRaw)) {
-                    state.salesByMethod.transfer += amount;
-                    state.salesDigital += amount;
-                } else if (['current_account', 'cuenta_corriente', 'account'].includes(methodRaw)) {
-                    state.salesByMethod.account += amount;
-                } else if (['employee_account'].includes(methodRaw)) {
-                    state.salesByMethod.employee_account += amount;
-                } else {
-                    state.salesByMethod.digitalOther += amount;
-                    state.salesDigital += amount;
-                }
-            });
-        });
-
-        // B. PROCESAR MOVIMIENTOS CAJA (Incluye cobros de cuenta corriente)
+        // B. PROCESAR MOVIMIENTOS CAJA MATEMÁTICAMENTE PERFECTOS
         movements.forEach(m => {
-            const amount = Number(m.amount) || 0;
-            const methodRaw = String(m.method || 'cash').toLowerCase().trim();
-            const isCash = ['cash', 'efectivo'].includes(methodRaw);
-            
-            if (m.type === 'SALE' || m.subtype === 'SALE' || m.type === 'INTERNAL') return; 
-            if (m.type === 'TREASURY' || m.subtype === 'CLOSING' || m.subtype === 'OPENING') return;
+            // 🔥 FIX 1: Ignoramos el Fondo Inicial (Ya sumado en state.initialAmount)
+            if (m.subtype === 'OPENING' || (m.description && m.description.includes('Fondo Inicial de Caja'))) return;
 
-            // 🔥 INGRESOS EXTRAS (EJ: COBRO DE DEUDA DESDE EL CLIENT DASHBOARD)
-            if (m.type === 'DEPOSIT' || m.type === 'IN') {
-                 state.deposits += amount;
-                 
-                 if (isCash) {
-                     state.manualIn += amount; 
-                     state.salesCash += amount; // Entra a la caja de chapa
-                 } else {
-                     state.totalDigital += amount; // Entra a los bancos/billeteras
-                     state.digitalIn += amount; // Lo guardamos como ingreso digital puro
+            // Ignoramos el retiro del cierre (para no desvirtuar el Teórico de Caja antes de cerrarla)
+            if (m.subtype === 'CLOSING' || (m.description && m.description.toLowerCase().includes('rendición de cierre'))) return;
 
-                     // 🔥 Mapeamos para que aparezca en el resumen del Cierre Z como "Recibos Digitales"
-                     if (['mercadopago', 'mp', 'qr'].includes(methodRaw)) state.digitalInByMethod.mercadopago += amount;
-                     else if (['point'].includes(methodRaw)) state.digitalInByMethod.point += amount;
-                     else if (['clover'].includes(methodRaw)) state.digitalInByMethod.clover += amount;
-                     else if (['transfer', 'transferencia'].includes(methodRaw)) state.digitalInByMethod.transfer += amount;
-                     else if (['manual_card', 'card', 'tarjeta'].includes(methodRaw)) state.digitalInByMethod.card += amount;
-                     else state.digitalInByMethod.digitalOther += amount;
-                 }
-                 
-            } else if (m.type === 'EXPENSE' || m.type === 'WITHDRAWAL' || m.type === 'OUT') {
-                 if (m.type === 'EXPENSE') state.expenses += amount;
-                 if (m.type === 'WITHDRAWAL' || m.type === 'OUT') state.withdrawals += amount;
-                 if (isCash) state.manualOut += amount; 
+            // Ignoramos los movimientos virtuales de "Cobro de Cta Cte" para no duplicar ventas
+            if (m.type === 'IN' && m.description && m.description.toLowerCase().includes('cobro cta cte')) return;
+
+            const isSale = m.type === 'SALE' || m.subtype === 'SALE';
+            const isReceipt = m.type === 'RECEIPT';
+            // 🔥 FIX 2: Ampliamos qué consideramos "Ingreso" y "Egreso"
+            const isIncome = isSale || isReceipt || m.type === 'IN' || m.type === 'DEPOSIT';
+            const isOutcome = m.type === 'EXPENSE' || m.type === 'WITHDRAWAL' || m.type === 'OUT' || m.type === 'PURCHASE';
+
+            if (isSale && Array.isArray(m.payments) && m.payments.length > 0) {
+                state.salesCount++;
+                m.payments.forEach(p => {
+                    const pAmount = Number(p.total || p.amount || 0);
+                    const pMethod = (p.method || 'cash').toLowerCase();
+                    
+                    state.salesByMethod[pMethod] = (state.salesByMethod[pMethod] || 0) + pAmount;
+                    state.totalSales += pAmount;
+
+                    if (pMethod === 'cash') {
+                        state.salesCash += pAmount;
+                    } else if (!['account', 'employee_account', 'budget'].includes(pMethod)) {
+                        state.totalDigital += pAmount;
+                    }
+                });
+            } else {
+                const amount = Number(m.amount) || 0;
+                const methodRaw = String(m.method || 'cash').toLowerCase().trim();
+                const isCash = ['cash', 'efectivo'].includes(methodRaw);
+                
+                if (isSale) {
+                    state.salesCount++;
+                    state.totalSales += amount;
+                    state.salesByMethod[methodRaw] = (state.salesByMethod[methodRaw] || 0) + amount;
+                    
+                    if (isCash) state.salesCash += amount;
+                    else if (!['account', 'employee_account', 'budget'].includes(methodRaw)) state.totalDigital += amount;
+                    
+                } else if (isReceipt) {
+                    if (isCash) {
+                        state.salesByMethod.cash_from_account = (state.salesByMethod.cash_from_account || 0) + amount;
+                        state.salesCash += amount; // Entra a caja física
+                    } else if (!['account', 'employee_account', 'budget'].includes(methodRaw)) {
+                        state.salesByMethod.transfer_from_account = (state.salesByMethod.transfer_from_account || 0) + amount;
+                        state.totalDigital += amount; 
+                    }
+                } else {
+                    // CUALQUIER OTRO MOVIMIENTO (Compras, Gastos, Ingresos manuales)
+                    if (isCash) {
+                        if (isIncome) state.manualIn += amount;
+                        else if (isOutcome) state.manualOut += amount; // 🔥 FIX 3: Capturamos 'PURCHASE' aquí
+                    } else {
+                        if (isIncome) {
+                            state.digitalIn += amount;
+                            if (['mercadopago', 'mp', 'qr'].includes(methodRaw)) state.digitalInByMethod.mercadopago += amount;
+                            else if (['point'].includes(methodRaw)) state.digitalInByMethod.point += amount;
+                            else if (['clover'].includes(methodRaw)) state.digitalInByMethod.clover += amount;
+                            else if (['transfer', 'transferencia'].includes(methodRaw)) state.digitalInByMethod.transfer += amount;
+                            else if (['manual_card', 'card', 'tarjeta'].includes(methodRaw)) state.digitalInByMethod.card += amount;
+                            else state.digitalInByMethod.digitalOther += amount;
+                        }
+                        // NOTA: Si hubiera pagos digitales a proveedores, habría un state.digitalOut
+                    }
+                }
             }
         });
 
-        // C. CÁLCULO FINAL DE CAJA TEÓRICA 🔥
-        state.totalCash = state.initialAmount + state.salesCash - state.expenses - state.withdrawals;
+        // C. CÁLCULO FINAL DE CAJA TEÓRICA 🔥 (AHORA SÍ ES PERFECTO)
+        // Fondo Inicial + Ventas Efectivo + Ingresos Manuales (Efectivo) - Salidas Manuales/Proveedores (Efectivo)
+        state.totalCash = state.initialAmount + state.salesCash + state.manualIn - state.manualOut;
 
+        // Redondeo de seguridad para evitar bugs de coma flotante de JS
         const round = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
         state.totalCash = round(state.totalCash);
         state.totalSales = round(state.totalSales);
@@ -576,10 +566,14 @@ export const cashRepository = {
             if (!shift) return { totalCash: 0, movements: [] };
             
             const state = await this._calculateShiftState(shift, dbLocal);
-            const rawMovements = await dbLocal.cash_movements.filter(m => m.shiftId === shiftId).reverse().toArray();
+            
+            // 🔥 FIX VISUAL: Excluimos el 'Fondo Inicial' de la lista de operaciones para no confundir al usuario (Ya lo ve en el Header)
+            let rawMovements = await dbLocal.cash_movements.filter(m => m.shiftId === shiftId).reverse().toArray();
             
             const cleanMovements = [];
             rawMovements.forEach(m => {
+                if (m.subtype === 'OPENING' || (m.description && m.description.includes('Fondo Inicial de Caja'))) return;
+
                 if (m.type === 'SALE' && Array.isArray(m.payments) && m.payments.length > 0) {
                     m.payments.forEach((p, i) => {
                         cleanMovements.push({
@@ -608,6 +602,7 @@ export const cashRepository = {
         const shift = await dbLocal.shifts.get(shiftId);
         if (!shift) throw new Error("Turno no encontrado");
 
+        // 🔥 Si ya se cerró, DEVOLVEMOS EL SNAPSHOT EXACTO. NO RECALCULAMOS NADA.
         if (shift.status === 'CLOSED' && shift.auditSnapshot) {
             return {
                 shiftId: shift.id,
@@ -621,6 +616,7 @@ export const cashRepository = {
             };
         }
 
+        // Si está ABIERTO, recalculamos en vivo
         return await dbLocal.transaction('r', [dbLocal.cash_movements, dbLocal.shifts, dbLocal.sales], async () => {
             const state = await this._calculateShiftState(shift, dbLocal);
             
@@ -634,22 +630,22 @@ export const cashRepository = {
                 
                 totalSales: state.totalSales,
                 salesCount: state.salesCount,
-                salesByMethod: state.salesByMethod,
+                salesByMethod: state.salesByMethod, 
                 
                 // Desglose para Ticket Z
                 manualIn: state.manualIn,
                 digitalIn: state.digitalIn,
-                digitalInByMethod: state.digitalInByMethod, // 🔥 EXPORTAMOS LOS RECIBOS DIGITALES
-                manualOut: state.manualOut,
+                digitalInByMethod: state.digitalInByMethod, 
+                manualOut: state.manualOut, // 🔥 INCLUYE GASTOS, RETIROS Y PAGOS A PROVEEDORES
                 
-                cashIn: state.deposits + state.salesCash, 
-                cashOut: state.expenses + state.withdrawals, 
+                cashIn: state.manualIn + state.salesCash, 
+                cashOut: state.manualOut, 
                 
-                totalExpenses: state.expenses,
-                totalWithdrawals: state.withdrawals,
+                totalExpenses: 0, // Reemplazado por la suma unificada de manualOut
+                totalWithdrawals: 0,
                 totalDigital: state.totalDigital,
                 
-                expectedCash: state.totalCash, // EL NÚMERO MÁGICO DE CAJA
+                expectedCash: state.totalCash, // 🔥 EL NÚMERO MÁGICO DE CAJA PERFECTO
                 
                 leftInCash: Number(shift.leftInCash) || 0,
                 declaredCash: Number(shift.finalCash) || 0,

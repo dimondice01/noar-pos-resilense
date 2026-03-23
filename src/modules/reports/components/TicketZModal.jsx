@@ -56,15 +56,16 @@ const TicketZContent = React.forwardRef(({ data }, ref) => {
         expectedCash: parseFloat(getVal(snap.expectedCash, data.expectedCash)),
         declaredCash: parseFloat(getVal(snap.declaredCash, data.finalCash, data.declaredCash)),
         leftInCash: parseFloat(getVal(snap.leftInCash, data.leftInCash)),
-        cashIn: parseFloat(getVal(snap.cashIn, data.cashIn)), // Ingresos
-        cashOut: parseFloat(getVal(snap.cashOut, data.cashOut)), // Salidas
+        cashIn: parseFloat(getVal(snap.cashIn, data.cashIn)), 
+        cashOut: parseFloat(getVal(snap.cashOut, data.cashOut)), 
         
         // 🔥 LOS MOVIMIENTOS MANUALES Y DIGITALES EXTRAS LOS LEE TAMBIÉN DEL SNAPSHOT
         manualIn: parseFloat(getVal(snap.manualIn, data.manualIn)),
         manualOut: parseFloat(getVal(snap.manualOut, data.manualOut)),
-        digitalIn: parseFloat(getVal(snap.digitalIn, data.digitalIn)), // Total de ingresos digitales extras
+        digitalIn: parseFloat(getVal(snap.digitalIn, data.digitalIn)), 
         digitalInByMethod: snap.digitalInByMethod || data.digitalInByMethod || {},
 
+        // 🔥 OBTENEMOS LAS VENTAS
         salesByMethod: snap.salesByMethod || data.salesByMethod || { cash: 0 },
         salesCount: getVal(snap.salesCount, data.salesCount),
         totalSales: parseFloat(getVal(snap.totalSales, data.totalSales))
@@ -92,13 +93,16 @@ const TicketZContent = React.forwardRef(({ data }, ref) => {
     const ventasTotales = ventasEfectivo + ventasDigitales;
 
     // 🔥 NUEVO: Cálculo de Cobros de Cta Cte y Otros Ingresos
-    const cobrosEfectivo = source.manualIn;
-    const cobrosTransferencia = parseFloat(source.digitalInByMethod.transfer || 0);
+    // Primero, verificamos si tenemos `cash_from_account` o `transfer_from_account` en `salesByMethod`
+    // que es la nueva estructura del interceptor. Si no, usamos `manualIn` como fallback.
+    const cobrosEfectivo = parseFloat(source.salesByMethod.cash_from_account || 0) + (parseFloat(source.manualIn) > 0 && !source.salesByMethod.cash_from_account ? source.manualIn : 0);
+    
+    const cobrosTransferencia = parseFloat(source.digitalInByMethod.transfer || source.salesByMethod.transfer_from_account || 0);
     const cobrosMercadoPago = parseFloat(source.digitalInByMethod.mercadopago || 0);
     const cobrosTarjetas = parseFloat(source.digitalInByMethod.clover || 0) + parseFloat(source.digitalInByMethod.point || 0) + parseFloat(source.digitalInByMethod.manual_card || 0) + parseFloat(source.digitalInByMethod.card || 0);
     const cobrosOtrosDigitales = parseFloat(source.digitalInByMethod.digitalOther || 0);
     
-    const hasCobrosExtras = cobrosEfectivo > 0 || source.digitalIn > 0;
+    const hasCobrosExtras = cobrosEfectivo > 0 || source.digitalIn > 0 || source.salesByMethod.transfer_from_account > 0;
 
     const retiroNeto = Math.max(0, source.declaredCash - source.leftInCash);
     const desvio = source.declaredCash - source.expectedCash;
@@ -147,11 +151,11 @@ const TicketZContent = React.forwardRef(({ data }, ref) => {
                         <div className="border-solid"></div>
                         <div className="mb-2">
                             <p className="t-header">OTROS MOVIMIENTOS</p>
-                            {cobrosEfectivo > 0 && <div className="row-flex t-normal mt-1"><span>(+) RECIBOS / INGRESOS EFVO:</span><span>{formatMoney(cobrosEfectivo)}</span></div>}
-                            {cobrosTransferencia > 0 && <div className="row-flex t-normal mt-1 text-gray-700"><span>(+) RECIBOS TRANSF:</span><span>{formatMoney(cobrosTransferencia)}</span></div>}
-                            {cobrosMercadoPago > 0 && <div className="row-flex t-normal mt-1 text-gray-700"><span>(+) RECIBOS MP QR:</span><span>{formatMoney(cobrosMercadoPago)}</span></div>}
-                            {cobrosTarjetas > 0 && <div className="row-flex t-normal mt-1 text-gray-700"><span>(+) RECIBOS TARJETAS:</span><span>{formatMoney(cobrosTarjetas)}</span></div>}
-                            {cobrosOtrosDigitales > 0 && <div className="row-flex t-normal mt-1 text-gray-700"><span>(+) OTROS ING. DIGITALES:</span><span>{formatMoney(cobrosOtrosDigitales)}</span></div>}
+                            {cobrosEfectivo > 0 && <div className="row-flex t-normal mt-1"><span>(+) COBROS EFECTIVO:</span><span>{formatMoney(cobrosEfectivo)}</span></div>}
+                            {cobrosTransferencia > 0 && <div className="row-flex t-normal mt-1 text-gray-700"><span>(+) COBROS TRANSF:</span><span>{formatMoney(cobrosTransferencia)}</span></div>}
+                            {cobrosMercadoPago > 0 && <div className="row-flex t-normal mt-1 text-gray-700"><span>(+) COBROS MP QR:</span><span>{formatMoney(cobrosMercadoPago)}</span></div>}
+                            {cobrosTarjetas > 0 && <div className="row-flex t-normal mt-1 text-gray-700"><span>(+) COBROS TARJETAS:</span><span>{formatMoney(cobrosTarjetas)}</span></div>}
+                            {cobrosOtrosDigitales > 0 && <div className="row-flex t-normal mt-1 text-gray-700"><span>(+) OTROS ING. DIG:</span><span>{formatMoney(cobrosOtrosDigitales)}</span></div>}
                             
                             {source.manualOut > 0 && <div className="row-flex t-normal mt-1 text-red-600"><span>(-) GASTOS/RETIROS:</span><span>{formatMoney(source.manualOut)}</span></div>}
                         </div>
@@ -166,7 +170,7 @@ const TicketZContent = React.forwardRef(({ data }, ref) => {
                     <div className="row-flex t-normal mt-1"><span>(+) FONDO INICIAL:</span><span>{formatMoney(source.initialAmount)}</span></div>
                     <div className="row-flex t-normal"><span>(+) VENTAS EFVO:</span><span>{formatMoney(ventasEfectivo)}</span></div>
                     
-                    {cobrosEfectivo > 0 && <div className="row-flex t-normal"><span>(+) OTROS INGRESOS:</span><span>{formatMoney(cobrosEfectivo)}</span></div>}
+                    {cobrosEfectivo > 0 && <div className="row-flex t-normal"><span>(+) COBROS DEUDAS:</span><span>{formatMoney(cobrosEfectivo)}</span></div>}
                     {source.manualOut > 0 && <div className="row-flex t-normal text-red-600"><span>(-) GASTOS/RETIROS:</span><span>{formatMoney(source.manualOut)}</span></div>}
                     
                     <div className="border-dash my-1"></div>
@@ -266,7 +270,7 @@ export const TicketZModal = ({ isOpen, onClose, reportData, onConfirmAudit }) =>
                 </div>
             </div>
 
-            {/* 🔥 CONTENEDOR OCULTO PARA IMPRESIÓN (AQUÍ ESTÁ EL TRUCO) */}
+            {/* 🔥 CONTENEDOR OCULTO PARA IMPRESIÓN */}
             <div style={{ display: 'none' }}>
                 <TicketZContent ref={componentRef} data={reportData} />
             </div>

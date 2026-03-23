@@ -19,7 +19,19 @@ export const useAuthStore = create(
       login: async (email, password) => {
         set({ error: null }); 
         try {
-          await authService.login(email, password);
+          // El authService ahora devuelve el objeto de usuario (master o firebase)
+          const userData = await authService.login(email, password);
+          
+          // Si es el Super Admin forzado, seteamos el estado manualmente aquí también
+          if (userData.uid === "master-admin-nexus") {
+            set({ 
+              user: userData, 
+              isAuthenticated: true, 
+              isLoading: false,
+              activeBranchId: null,
+              activeBranchName: "SaaS Control Center" 
+            });
+          }
           return true;
         } catch (error) {
           set({ error: error.message }); 
@@ -53,7 +65,6 @@ export const useAuthStore = create(
             return; 
         }
 
-        // Guardar también en localStorage puro como respaldo de emergencia
         localStorage.setItem('NOAR_ACTIVE_BRANCH', JSON.stringify({ id: branchId, name: branchName }));
         set({ activeBranchId: branchId, activeBranchName: branchName });
       },
@@ -61,11 +72,16 @@ export const useAuthStore = create(
       initAuthListener: () => {
         console.log("🔌 Inicializando Auth Listener...");
         
-        // 🔥 RED DE SEGURIDAD INMEDIATA (Auto-Repair en memoria)
-        // Si ya tenemos usuario cargado del disco pero perdió la sucursal, la restauramos YA.
+        // 🛡️ BYPASS PARA MASTER ADMIN: Si detectamos el UID maestro en el storage, no dejamos que Firebase lo limpie
         const state = get();
+        if (state.user?.uid === "master-admin-nexus") {
+            console.log("👑 Modo Master Admin detectado, omitiendo listener de Firebase.");
+            set({ isLoading: false, isAuthenticated: true });
+            return () => {}; // Retornamos un unsubscribe vacío
+        }
+
+        // 🔥 RED DE SEGURIDAD INMEDIATA (Auto-Repair en memoria)
         if (state.user?.branchId && !state.activeBranchId) {
-            console.log("🔧 Auto-corrigiendo sucursal perdida para Cajero...");
             set({ activeBranchId: state.user.branchId });
         }
 
@@ -81,31 +97,49 @@ export const useAuthStore = create(
           
           if (firebaseUser) {
             try {
-                // 1. Obtener datos frescos de Firestore
+                // 🛡️ Doble verificación para el Master Admin en el listener
+                if (firebaseUser.uid === "master-admin-nexus") {
+                    set({ isLoading: false, isAuthenticated: true });
+                    return;
+                }
+
+                // 1. Obtener datos frescos de Firestore (incluyendo permisos y sucursal)
                 const userDocRef = doc(db, 'users', firebaseUser.uid);
                 const userSnap = await getDoc(userDocRef);
 
                 if (userSnap.exists()) {
                     const firestoreData = userSnap.data();
                     
-                    // Fusionamos datos
+                    // 2. 🔥 SPRINT SAAS: Traer datos de Suscripción de la Empresa
+                    let saasData = {};
+                    if (firestoreData.companyId) {
+                        const compRef = doc(db, 'companies', firestoreData.companyId);
+                        const compSnap = await getDoc(compRef);
+                        if (compSnap.exists()) {
+                            const c = compSnap.data();
+                            saasData = {
+                                subscriptionStatus: c.subscriptionStatus || 'TRIAL',
+                                expiryDate: c.expiryDate || null
+                            };
+                        }
+                    }
+
+                    // Fusionamos todos los datos (Auth + Firestore Perfil + Firestore Empresa)
                     const fullUserData = {
                         uid: firebaseUser.uid,
                         email: firebaseUser.email,
-                        ...firestoreData 
+                        ...firestoreData,
+                        ...saasData
                     };
 
                     // 🧠 LÓGICA DE ASIGNACIÓN DE SUCURSAL
-                    let targetBranchId = get().activeBranchId; // Intentamos mantener la actual
+                    let targetBranchId = get().activeBranchId;
                     let targetBranchName = get().activeBranchName;
 
-                    // A. Si el usuario es CAJERO (tiene branchId fijo en su perfil)
                     if (firestoreData.branchId) {
                         targetBranchId = firestoreData.branchId;
-                        // Si no tenemos nombre, usamos uno genérico hasta que cargue la config
-                        if (!targetBranchName) targetBranchName = "Mi Sucursal"; 
+                        if (!targetBranchName) targetBranchName = "Sucursal Asignada"; 
                     } 
-                    // B. Si es ADMIN y no tiene sucursal seleccionada (o viene null), buscar en localStorage de respaldo
                     else if (!targetBranchId) {
                         try {
                             const stored = localStorage.getItem('NOAR_ACTIVE_BRANCH');
@@ -125,7 +159,6 @@ export const useAuthStore = create(
                         activeBranchName: targetBranchName
                     });
                 } else {
-                    // Fallback si no existe doc en users (raro, pero posible en demos)
                     set({ 
                         user: { uid: firebaseUser.uid, email: firebaseUser.email },
                         isAuthenticated: true,
@@ -159,7 +192,6 @@ export const useAuthStore = create(
     }),
     {
       name: 'auth-storage', 
-      // 🔥 FIX: PERSISTIMOS TODO LO NECESARIO PARA QUE EL REFRESH NO ROMPA NADA
       partialize: (state) => ({ 
           user: state.user, 
           isAuthenticated: state.isAuthenticated,

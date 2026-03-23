@@ -16,21 +16,20 @@ import { db } from '../../../database/firebase';
 import { getDB } from '../../../database/db'; 
 import { useAuthStore } from '../../auth/store/useAuthStore'; 
 
-// Claves para LocalStorage (Control de Delta Sync)
 const SYNC_KEYS = {
-    PRODUCTS: 'last_sync_products_v4', // Versionado para forzar recarga si cambia estructura
-    INVENTORY_PREFIX: 'last_sync_inv_br_', // Prefijo para stock por sucursal
+    PRODUCTS: 'last_sync_products_v4', 
+    INVENTORY_PREFIX: 'last_sync_inv_br_', 
     GLOBAL_CONFIG: 'last_sync_config',
-    SALES_PREFIX: 'last_sync_sales_br_' // 🔥 Checkpoint de ventas
+    SALES_PREFIX: 'last_sync_sales_br_',
+    PURCHASES_PREFIX: 'last_sync_purchases_br_', // 🔥 NUEVO: Clave para Compras
+    KARDEX_PREFIX: 'last_sync_kardex_br_', 
+    CUSTOMER_LEDGER: 'last_sync_customer_ledger',
+    SUPPLIER_LEDGER: 'last_sync_supplier_ledger'
 };
 
 export const syncService = {
   
   _unsubscribes: [],
-
-  // =================================================================
-  // 🧼 SANITIZADORES (Defensa de Datos & Integridad anti-Firebase)
-  // =================================================================
 
   _deepSanitize(obj) {
     if (obj === undefined || obj === null) return null;
@@ -49,40 +48,31 @@ export const syncService = {
     return obj;
   },
 
-  // 1. PRODUCTOS (Entrada Cloud -> Local)
   _sanitizeCloudProduct(data, id) {
       return {
           id: id, 
           code: data.code ? String(data.code).trim() : 'SIN_CODIGO_' + id.slice(-4),
           barcode: Array.isArray(data.barcode) ? data.barcode : [], 
           name: data.name || 'Producto Sin Nombre',
-          
           price: parseFloat(data.price) || 0,
           cost: parseFloat(data.cost) || 0,
           taxRate: parseFloat(data.taxRate) || 21,
-          
-          // Programación de Precios
           nextPrice: data.nextPrice !== undefined && data.nextPrice !== null ? parseFloat(data.nextPrice) : null,
           nextCost: data.nextCost !== undefined && data.nextCost !== null ? parseFloat(data.nextCost) : null,
           priceActivationDate: data.priceActivationDate || null,
-
           categoryId: data.categoryId || 'uncategorized',
-          category: data.category || '', 
-          brand: data.brand || '',      
+          category: data.category || '',       
           supplier: data.supplier || data.provider || '', 
           suppliers: Array.isArray(data.suppliers) ? data.suppliers : [],
-
           minStock: parseFloat(data.minStock) || 5,
           isWeighable: data.isWeighable === true,
           active: data.active !== false,
           deleted: data.deleted === true,
-          
           updatedAt: data.updatedAt || data.lastUpdated || new Date().toISOString(),
           syncStatus: 'synced' 
       };
   },
 
-  // 2. VENTAS (Blindadas con Identidad y Devoluciones)
   _sanitizeCloudSale(data, id) {
       let rawItems = data.items || data.cart || data.details || [];
       if (typeof rawItems === 'string') { try { rawItems = JSON.parse(rawItems); } catch (e) { rawItems = []; } }
@@ -101,15 +91,11 @@ export const syncService = {
           localId: data.localId || id, 
           firestoreId: id,
           branchId: data.branchId || 'main', 
-          
           number: finalNum || null,
           ticketNumber: finalNum || null,
           invoiceNumber: finalNum || null,
-          
           shiftId: data.shiftId || null, 
           date: data.date || new Date().toISOString(),
-          
-          // 🔥 SPRINT 3 FINANZAS: Montos extendidos
           total: parseFloat(data.total) || 0,
           baseAmount: parseFloat(data.baseAmount) || 0, 
           surcharge: parseFloat(data.surcharge) || 0,
@@ -119,28 +105,21 @@ export const syncService = {
           totalCost: parseFloat(data.totalCost) || 0,
           refundedAmount: parseFloat(data.refundedAmount) || 0,
           notes: data.notes || '',
-          
-          status: data.status || 'COMPLETED', // COMPLETED, VOIDED, REFUNDED, BUDGET
-          type: data.type || 'SALE',          // SALE, RECEIPT, BUDGET, INTERNAL
-          
+          status: data.status || 'COMPLETED',
+          type: data.type || 'SALE',          
           items: Array.isArray(rawItems) ? rawItems.map(item => ({
               ...item,
               price: parseFloat(item.price) || 0,
               cost: parseFloat(item.cost) || 0,
               originalPrice: parseFloat(item.originalPrice) || parseFloat(item.price) || 0,
-              returnedQty: parseFloat(item.returnedQty) || 0 // Para devoluciones parciales
+              returnedQty: parseFloat(item.returnedQty) || 0 
           })) : [],
           itemCount: Array.isArray(rawItems) ? rawItems.length : 0, 
-          
-          // 🔥 SPRINT 3 PAGOS: Multi-pagos soportados
           payment: data.payment || { method: 'cash' },
           payments: Array.isArray(data.payments) ? data.payments : (data.payment ? [data.payment] : [{ method: 'cash' }]),
-          
           userId: data.userId || 'unknown',
           userName: data.userName || 'Vendedor',
           client: data.client || null, 
-          
-          // 🔥 BLINDAJE AFIP: Aseguramos la captura del Neto e IVA desde la nube
           afip: data.afip ? {
               status: data.afip.status || 'PENDING',
               cae: data.afip.cae || null,
@@ -153,31 +132,11 @@ export const syncService = {
               impNeto: data.afip.impNeto || 0, 
               impIVA: data.afip.impIVA || 0    
           } : null,
-          
-          // 🔥 CRÍTICO PARA EL DELTA SYNC: Garantizar updatedAt
           updatedAt: data.updatedAt || data.date || new Date().toISOString(),
           syncStatus: 'synced'
       };
   },
 
-  // 3. MOVIMIENTOS STOCK
-  _sanitizeCloudMovement(data, id) {
-      return {
-          id: id, 
-          productId: data.productId || 'unknown',
-          branchId: data.branchId || 'main', 
-          type: data.type || 'INFO',
-          amount: parseFloat(data.amount) || 0,
-          description: data.description || '',
-          date: data.date || new Date().toISOString(),
-          user: data.user || 'Sistema', 
-          refId: data.refId || null,
-          updatedAt: data.updatedAt || new Date().toISOString(),
-          syncStatus: 'synced'
-      };
-  },
-
-  // 4. CAJAS (SHIFTS) - 🔥 AHORA CON SOPORTE PARA TICKET Z
   _sanitizeCloudShift(data, id) {
       const finalVal = data.finalCash !== undefined ? data.finalCash : (data.finalAmount || 0);
       const systemVal = data.expectedCash !== undefined ? data.expectedCash : (data.systemAmount || 0);
@@ -197,17 +156,14 @@ export const syncService = {
           leftInCash: parseFloat(data.leftInCash || 0), 
           difference: parseFloat(data.difference) || 0,
           expectedDigital: parseFloat(data.expectedDigital || 0),
+          withdrawn: parseFloat(data.withdrawn || 0),
           audited: data.audited === true,
-          
-          // 🔥 AÑADIDO: Si la nube tiene el reporte Z, lo guardamos localmente
           auditSnapshot: data.auditSnapshot || null, 
-          
           updatedAt: data.updatedAt || new Date().toISOString(),
           syncStatus: 'synced'
       };
   },
 
-  // 5. MOVIMIENTOS CAJA
   _sanitizeCloudCashMovement(data, id) {
       return {
           id: id,
@@ -226,9 +182,6 @@ export const syncService = {
       };
   },
 
-  // =================================================================
-  // ⚡ MOTOR DE ACTUALIZACIÓN DE PRECIOS PROGRAMADOS (ROBOT)
-  // =================================================================
   async processScheduledPriceChanges() {
     try {
         const localDb = await getDB();
@@ -239,8 +192,6 @@ export const syncService = {
             .toArray();
 
         if (expiredProducts.length === 0) return;
-
-        console.log(`🚀 [SCHEDULER] Aplicando ${expiredProducts.length} cambios de precio programados...`);
 
         const updates = expiredProducts.map(p => ({
             key: p.id,
@@ -261,16 +212,10 @@ export const syncService = {
         if (companyId) {
             this.syncPendingProducts(companyId, this._getActiveBranchId());
         }
-        
-        console.log("✅ [SCHEDULER] Precios actualizados exitosamente.");
     } catch (e) {
         console.error("❌ Error en el motor de precios programados:", e);
     }
   },
-
-  // =================================================================
-  // ⬇️ BAJADA DE DATOS (CLOUD -> LOCAL) - DELTA SYNC ENGINE
-  // =================================================================
 
   async syncConfig(companyId) {
       if (!companyId) return;
@@ -283,117 +228,76 @@ export const syncService = {
               const configItems = snap.docs.map(doc => {
                   const data = doc.data();
                   const valueToSave = data.value !== undefined ? data.value : data;
-                  return {
-                      key: doc.id,
-                      value: valueToSave,
-                      updatedAt: new Date().toISOString()
-                  };
+                  return { key: doc.id, value: valueToSave, updatedAt: new Date().toISOString() };
               });
               await localDb.config.bulkPut(configItems);
           }
-      } catch (error) {
-          console.error("❌ Error sincronizando configuración:", error);
-      }
+      } catch (error) {}
   },
 
-  // 1. SYNC PRODUCTOS (DELTA)
   async syncProducts(companyId) {
     if (!companyId) return;
-    
-    console.time("⏱️ Sync Productos");
     const localDb = await getDB();
-    
     const productsCount = await localDb.products.count();
     const isDbEmpty = productsCount === 0;
-
     const lastSyncStr = localStorage.getItem(SYNC_KEYS.PRODUCTS);
     const lastSyncDate = lastSyncStr ? new Date(lastSyncStr) : new Date(0); 
 
     const productsRef = collection(db, 'companies', companyId, 'products');
-    let q;
-
-    if (!isDbEmpty && lastSyncStr) {
-        q = query(productsRef, where('updatedAt', '>', Timestamp.fromDate(lastSyncDate)));
-    } else {
-        q = productsRef; 
-    }
+    let q = (!isDbEmpty && lastSyncStr) 
+        ? query(productsRef, where('updatedAt', '>', Timestamp.fromDate(lastSyncDate)))
+        : productsRef; 
 
     try {
         const snapshot = await getDocs(q);
-        
         if (!snapshot.empty) {
             const allDocs = snapshot.docs.map(doc => ({ id: doc.id, data: doc.data() }));
-
             const toDelete = allDocs.filter(d => d.data.deleted === true).map(d => d.id);
             const toUpsert = allDocs.filter(d => d.data.deleted !== true).map(d => this._sanitizeCloudProduct(d.data, d.id));
 
-            if (toDelete.length > 0) {
-                await localDb.products.bulkDelete(toDelete);
-            }
-
-            if (toUpsert.length > 0) {
-                await localDb.products.bulkPut(toUpsert);
-            }
+            if (toDelete.length > 0) await localDb.products.bulkDelete(toDelete);
+            if (toUpsert.length > 0) await localDb.products.bulkPut(toUpsert);
         }
-
         localStorage.setItem(SYNC_KEYS.PRODUCTS, new Date().toISOString());
         await this.processScheduledPriceChanges();
-
     } catch (error) {
         if (error.code === 'failed-precondition') {
-             console.warn("⚠️ [SYNC] Falta índice compuesto. Ejecutando Full Sync de seguridad...");
              const fullQ = query(productsRef);
              const snap = await getDocs(fullQ);
              const allDocs = snap.docs.map(doc => ({ id: doc.id, data: doc.data() }));
              const toUpsert = allDocs.filter(d => !d.data.deleted).map(d => this._sanitizeCloudProduct(d.data, d.id));
-             
              await localDb.products.bulkPut(toUpsert);
              localStorage.setItem(SYNC_KEYS.PRODUCTS, new Date().toISOString());
-             
              await this.processScheduledPriceChanges();
-        } else {
-             console.error("❌ Error en Sync Productos:", error);
         }
-    } finally {
-        console.timeEnd("⏱️ Sync Productos");
     }
   },
 
-  // 2. 🔥 CARGA DE INVENTARIO MULTI-SUCURSAL (PARA OWNERS - DELTA)
   async syncAllInventoryForOwner(companyId, branches) {
       if (!companyId || !branches || branches.length === 0) return;
       await Promise.all(branches.map(branch => this.syncInitialInventory(companyId, branch.id)));
   },
 
-  // 3. SYNC INVENTARIO DE UNA BRANCH (DELTA)
   async syncInitialInventory(companyId, branchId) {
       if (!companyId || !branchId) return;
-      
       const localDb = await getDB();
       const lastSyncKey = SYNC_KEYS.INVENTORY_PREFIX + branchId;
       const lastSyncStr = localStorage.getItem(lastSyncKey);
       const lastSyncDate = lastSyncStr ? new Date(lastSyncStr) : new Date(0); 
 
       const invRef = collection(db, 'companies', companyId, 'branches', branchId, 'inventory');
-      
-      // Check if local inventory is empty for this branch to force a full pull
       const localInventoryCount = await localDb.inventory.where('branchId').equals(branchId).count();
 
-      let q;
-      if (lastSyncStr && localInventoryCount > 0) {
-         q = query(invRef, where('updatedAt', '>', Timestamp.fromDate(lastSyncDate)));
-      } else {
-         q = invRef;
-      }
+      let q = (lastSyncStr && localInventoryCount > 0)
+          ? query(invRef, where('updatedAt', '>', Timestamp.fromDate(lastSyncDate)))
+          : invRef;
       
       try {
           const snapshot = await getDocs(q);
-          
           if (snapshot.empty) {
               localStorage.setItem(lastSyncKey, new Date().toISOString());
               return;
           }
-
           const inventoryItems = snapshot.docs.map(doc => {
               const d = doc.data();
               return {
@@ -405,11 +309,7 @@ export const syncService = {
                   syncStatus: 'synced'
               };
           });
-
-          if (inventoryItems.length > 0) {
-              await localDb.inventory.bulkPut(inventoryItems);
-          }
-          
+          if (inventoryItems.length > 0) await localDb.inventory.bulkPut(inventoryItems);
           localStorage.setItem(lastSyncKey, new Date().toISOString());
       } catch (e) {
           if (e.code === 'failed-precondition') {
@@ -428,36 +328,86 @@ export const syncService = {
       }
   },
 
-  // 4. 🔥 NUEVO: SYNC INICIAL DE VENTAS (Cerrando el agujero)
-  async syncInitialSales(companyId, branchId, role) {
+  async syncInitialMovements(companyId, branchId, role) {
       if (!companyId) return;
-      console.time("⏱️ Sync Ventas");
+      const localDb = await getDB();
+      
+      const keySuffix = (role === 'OWNER' && (!branchId || branchId === 'ALL')) ? 'GLOBAL' : branchId;
+      const lastSyncKey = SYNC_KEYS.KARDEX_PREFIX + keySuffix;
+      const lastSyncStr = localStorage.getItem(lastSyncKey);
+      
+      const movRef = collection(db, 'companies', companyId, 'movements');
+      let q;
+
+      if (lastSyncStr) {
+          const lastSyncDate = new Date(lastSyncStr);
+          if (role === 'OWNER' && (!branchId || branchId === 'ALL')) {
+              q = query(movRef, where('updatedAt', '>', Timestamp.fromDate(lastSyncDate)));
+          } else {
+              q = query(movRef, where('branchId', '==', branchId), where('updatedAt', '>', Timestamp.fromDate(lastSyncDate)));
+          }
+      } else {
+          if (role === 'OWNER' && (!branchId || branchId === 'ALL')) {
+              q = query(movRef, orderBy('date', 'desc'), limit(500));
+          } else {
+              q = query(movRef, where('branchId', '==', branchId), orderBy('date', 'desc'), limit(500));
+          }
+      }
 
       try {
+          const snapshot = await getDocs(q);
+          if (!snapshot.empty) {
+              const pendingIds = await localDb.movements.where('syncStatus').equals('pending').primaryKeys();
+              const pendingSet = new Set(pendingIds);
+              
+              const movsToPut = [];
+              snapshot.docs.forEach(docSnap => {
+                  if (!pendingSet.has(docSnap.id)) {
+                      const d = docSnap.data();
+                      movsToPut.push({
+                          id: docSnap.id,
+                          firestoreId: docSnap.id,
+                          productId: d.productId || 'unknown',
+                          branchId: d.branchId || 'main',
+                          type: d.type || 'INFO',
+                          amount: parseFloat(d.amount) || 0,
+                          description: d.description || '',
+                          date: d.date || new Date().toISOString(),
+                          user: d.user || 'Sistema',
+                          refId: d.refId || null,
+                          updatedAt: d.updatedAt || new Date().toISOString(),
+                          syncStatus: 'synced'
+                      });
+                  }
+              });
+
+              if (movsToPut.length > 0) await localDb.movements.bulkPut(movsToPut);
+          }
+          localStorage.setItem(lastSyncKey, new Date().toISOString());
+      } catch (error) {
+          console.warn("Kardex sync missing index, relying on push only:", error);
+      }
+  },
+
+  async syncInitialSales(companyId, branchId, role) {
+      if (!companyId) return;
+      try {
           const localDb = await getDB();
-          
-          // El Owner que ve "ALL" usa un checkpoint global, la sucursal usa el suyo
           const keySuffix = (role === 'OWNER' && (!branchId || branchId === 'ALL')) ? 'GLOBAL' : branchId;
           const lastSyncKey = SYNC_KEYS.SALES_PREFIX + keySuffix;
-          
           const lastSyncStr = localStorage.getItem(lastSyncKey);
           
-          // Si es la primera vez en este navegador, traemos las últimas 150 para no reventar la RAM
-          // Si ya hubo sync, traemos todo lo modificado desde la última vez (sin límite, porque es delta)
           const salesRef = collection(db, 'companies', companyId, 'sales');
           let q;
 
           if (lastSyncStr) {
               const lastSyncDate = new Date(lastSyncStr);
-              console.log(`🔄 [SYNC VENTAS] Buscando Deltas desde ${lastSyncDate.toLocaleString()}...`);
-              
               if (role === 'OWNER' && (!branchId || branchId === 'ALL')) {
                   q = query(salesRef, where('updatedAt', '>', Timestamp.fromDate(lastSyncDate)));
               } else {
                   q = query(salesRef, where('branchId', '==', branchId), where('updatedAt', '>', Timestamp.fromDate(lastSyncDate)));
               }
           } else {
-              console.log("⬇️ [SYNC VENTAS] Primera Carga (Últimas 150)...");
               if (role === 'OWNER' && (!branchId || branchId === 'ALL')) {
                   q = query(salesRef, orderBy('date', 'desc'), limit(150));
               } else {
@@ -468,7 +418,6 @@ export const syncService = {
           const snapshot = await getDocs(q);
           
           if (!snapshot.empty) {
-              // Filtrar locales que estén 'pending' para no pisarlos con la versión vieja de Firebase
               const pendingIds = await localDb.sales.where('syncStatus').equals('pending').primaryKeys();
               const pendingSet = new Set(pendingIds);
               
@@ -481,37 +430,182 @@ export const syncService = {
 
               if (salesToPut.length > 0) {
                   await localDb.sales.bulkPut(salesToPut);
-                  console.log(`📥 [SYNC VENTAS] ${salesToPut.length} ventas bajadas.`);
               }
           }
+          localStorage.setItem(lastSyncKey, new Date().toISOString());
+
+      } catch (error) {}
+  },
+
+  // 🔥 NUEVO: BAJADA INICIAL DE COMPRAS PARA LOCAL-FIRST ABSOLUTO
+  async syncInitialPurchases(companyId, branchId, role) {
+      if (!companyId) return;
+      try {
+          const localDb = await getDB();
+          const keySuffix = (role === 'OWNER' && (!branchId || branchId === 'ALL')) ? 'GLOBAL' : branchId;
+          const lastSyncKey = SYNC_KEYS.PURCHASES_PREFIX + keySuffix;
+          const lastSyncStr = localStorage.getItem(lastSyncKey);
           
+          const colRef = collection(db, 'companies', companyId, 'purchases');
+          let q;
+
+          if (lastSyncStr) {
+              const lastSyncDate = new Date(lastSyncStr);
+              if (role === 'OWNER' && (!branchId || branchId === 'ALL')) {
+                  q = query(colRef, where('updatedAt', '>', Timestamp.fromDate(lastSyncDate)));
+              } else {
+                  q = query(colRef, where('branchId', '==', branchId), where('updatedAt', '>', Timestamp.fromDate(lastSyncDate)));
+              }
+          } else {
+              if (role === 'OWNER' && (!branchId || branchId === 'ALL')) {
+                  q = query(colRef, orderBy('date', 'desc'), limit(150));
+              } else {
+                  q = query(colRef, where('branchId', '==', branchId), orderBy('date', 'desc'), limit(150));
+              }
+          }
+
+          const snapshot = await getDocs(q);
+          
+          if (!snapshot.empty) {
+              const pendingIds = await localDb.purchases.where('syncStatus').equals('pending').primaryKeys();
+              const pendingSet = new Set(pendingIds);
+              
+              const itemsToPut = [];
+              snapshot.docs.forEach(docSnap => {
+                  if (!pendingSet.has(docSnap.id)) {
+                      itemsToPut.push({ ...docSnap.data(), id: docSnap.id, firestoreId: docSnap.id, syncStatus: 'synced' });
+                  }
+              });
+
+              if (itemsToPut.length > 0) {
+                  await localDb.purchases.bulkPut(itemsToPut);
+              }
+          }
           localStorage.setItem(lastSyncKey, new Date().toISOString());
 
       } catch (error) {
-          if (error.code === 'failed-precondition') {
-               console.warn("⚠️ [SYNC VENTAS] Falta índice. El sistema dependerá del listener en tiempo real.");
-          } else {
-               console.error("❌ Error en Sync Ventas:", error);
-          }
-      } finally {
-          console.timeEnd("⏱️ Sync Ventas");
+          console.warn("Error bajando purchases iniciales:", error);
       }
   },
 
-  // 🔥 MOTOR DE ARRANQUE INTELIGENTE (MODIFICADO)
+  async syncInitialCustomerLedger(companyId) {
+      if (!companyId) return;
+      try {
+          const localDb = await getDB();
+          const lastSyncKey = SYNC_KEYS.CUSTOMER_LEDGER;
+          const lastSyncStr = localStorage.getItem(lastSyncKey);
+          
+          const ledgerRef = collection(db, 'companies', companyId, 'customer_ledger');
+          let q;
+
+          if (lastSyncStr) {
+              const lastSyncDate = new Date(lastSyncStr);
+              q = query(ledgerRef, where('updatedAt', '>', Timestamp.fromDate(lastSyncDate)));
+          } else {
+              q = query(ledgerRef, orderBy('date', 'desc'), limit(500));
+          }
+
+          const snapshot = await getDocs(q);
+          
+          if (!snapshot.empty) {
+              const pendingIds = await localDb.customer_ledger.where('syncStatus').equals('pending').primaryKeys();
+              const pendingSet = new Set(pendingIds);
+              
+              const ledgerToPut = [];
+              snapshot.docs.forEach(docSnap => {
+                  if (!pendingSet.has(docSnap.id)) {
+                      const d = docSnap.data();
+                      ledgerToPut.push({
+                          id: docSnap.id,
+                          firestoreId: docSnap.id,
+                          clientId: d.clientId,
+                          date: d.date || new Date().toISOString(),
+                          type: d.type,
+                          amount: parseFloat(d.amount) || 0,
+                          oldBalance: parseFloat(d.oldBalance) || 0,
+                          newBalance: parseFloat(d.newBalance) || 0,
+                          description: d.description || '',
+                          referenceId: d.referenceId || null,
+                          branchId: d.branchId || 'main',
+                          userId: d.userId || 'unknown',
+                          updatedAt: d.updatedAt || new Date().toISOString(),
+                          syncStatus: 'synced'
+                      });
+                  }
+              });
+
+              if (ledgerToPut.length > 0) {
+                  await localDb.customer_ledger.bulkPut(ledgerToPut);
+              }
+          }
+          localStorage.setItem(lastSyncKey, new Date().toISOString());
+      } catch (error) {
+          console.warn("Error bajando customer_ledger:", error);
+      }
+  },
+
+  async syncInitialSupplierLedger(companyId) {
+      if (!companyId) return;
+      try {
+          const localDb = await getDB();
+          const lastSyncKey = SYNC_KEYS.SUPPLIER_LEDGER;
+          const lastSyncStr = localStorage.getItem(lastSyncKey);
+          
+          const ledgerRef = collection(db, 'companies', companyId, 'supplier_ledger');
+          let q;
+
+          if (lastSyncStr) {
+              const lastSyncDate = new Date(lastSyncStr);
+              q = query(ledgerRef, where('updatedAt', '>', Timestamp.fromDate(lastSyncDate)));
+          } else {
+              q = query(ledgerRef, orderBy('date', 'desc'), limit(500));
+          }
+
+          const snapshot = await getDocs(q);
+          
+          if (!snapshot.empty) {
+              const pendingIds = await localDb.supplier_ledger.where('syncStatus').equals('pending').primaryKeys();
+              const pendingSet = new Set(pendingIds);
+              
+              const ledgerToPut = [];
+              snapshot.docs.forEach(docSnap => {
+                  if (!pendingSet.has(docSnap.id)) {
+                      const d = docSnap.data();
+                      ledgerToPut.push({
+                          ...d,
+                          id: docSnap.id,
+                          firestoreId: docSnap.id,
+                          syncStatus: 'synced'
+                      });
+                  }
+              });
+
+              if (ledgerToPut.length > 0) {
+                  await localDb.supplier_ledger.bulkPut(ledgerToPut);
+              }
+          }
+          localStorage.setItem(lastSyncKey, new Date().toISOString());
+      } catch (error) {
+          console.warn("Error bajando supplier_ledger:", error);
+      }
+  },
+
+  // 🔥 MOTOR DE ARRANQUE INTELIGENTE
   async syncInitialData(user, activeBranchId) {
-      if (!user?.companyId) return;
+      // 🔥 MODO DIOS BYPASS: El superadmin no sincroniza datos de empresa
+      if (!user?.companyId || user.companyId === 'master_admin' || user.superAdmin) return;
 
-      // 1. Configuraciones Globales
       await this.syncConfig(user.companyId);
-
-      // 2. Productos
       await this.syncProducts(user.companyId);
-
-      // 3. Ventas (Cubriendo el agujero)
       await this.syncInitialSales(user.companyId, activeBranchId, user.role);
+      await this.syncInitialMovements(user.companyId, activeBranchId, user.role);
+      
+      await this.syncInitialCustomerLedger(user.companyId);
+      
+      // 🔥 SPRINT 7: Carga Inicial de Compras y Proveedores
+      await this.syncInitialPurchases(user.companyId, activeBranchId, user.role);
+      await this.syncInitialSupplierLedger(user.companyId);
 
-      // 4. Inventario por Rol
       if (user.role === 'OWNER') {
           const dbLocal = await getDB();
           let branches = await dbLocal.branches.toArray();
@@ -521,11 +615,9 @@ export const syncService = {
              branches = bSnap.docs.map(d => ({id: d.id, ...d.data()}));
              await dbLocal.branches.bulkPut(branches);
           }
-
           if (branches.length > 0) {
               await this.syncAllInventoryForOwner(user.companyId, branches);
           }
-
       } else if (activeBranchId && activeBranchId !== 'ALL') {
           await this.syncInitialInventory(user.companyId, activeBranchId);
       }
@@ -570,15 +662,16 @@ export const syncService = {
     this.stopListeners();
 
     const { user } = useAuthStore.getState();
+    // 🔥 MODO DIOS BYPASS: El superadmin no levanta listeners
+    if (user?.superAdmin || user?.companyId === 'master_admin') return; 
+
     const companyId = companyIdArg || this._getCompanyId();
     const activeBranchId = this._getActiveBranchId(); 
 
     if (!companyId) return;
 
-    console.log(`📡 [SYNC] Listeners Secundarios Iniciados.`);
     await this.checkTenantIntegrity(companyId);
 
-    // 1. CONFIGURACIÓN (Actualiza el POS y Finanzas en vivo)
     const configQuery = query(collection(db, 'companies', companyId, 'config'));
     this._unsubscribes.push(onSnapshot(configQuery, async (snapshot) => {
         try {
@@ -595,19 +688,17 @@ export const syncService = {
                     });
                 }
             }
-        } catch (e) { console.error("Config Listener Error:", e); }
+        } catch (e) {}
     }));
 
-    // 2. VENTAS (Inteligente por Rol)
+    // Real-Time Ventas
     try {
         let salesQuery;
         const salesRef = collection(db, 'companies', companyId, 'sales');
 
         if (user?.role === 'OWNER' && (!activeBranchId || activeBranchId === 'ALL')) {
-            // El Owner escucha todas las ventas de la empresa que se estén haciendo AHORA
             salesQuery = query(salesRef, orderBy('date', 'desc'), limit(30));
         } else if (activeBranchId) {
-            // El cajero solo escucha las de su sucursal
             salesQuery = query(salesRef, where('branchId', '==', activeBranchId), orderBy('date', 'desc'), limit(30));
         }
 
@@ -626,7 +717,6 @@ export const syncService = {
                         const hasAfipData = cloudData.afip && (cloudData.afip.status === 'APPROVED' || cloudData.afip.cae);
                         const hasFinalNumber = cloudData.number || cloudData.ticketNumber;
 
-                        // Si la creamos nosotros, no la pisamos a menos que traiga datos de AFIP o de Facturación Final
                         if (!isPendingLocally || hasAfipData || hasFinalNumber) {
                             salesToPut.push(this._sanitizeCloudSale(cloudData, change.doc.id));
                         }
@@ -638,11 +728,41 @@ export const syncService = {
                 }
             }));
         }
-    } catch (e) { 
-        console.warn("Listener Ventas Error:", e); 
-    }
+    } catch (e) { }
 
-    // 3. MAESTROS GLOBALES
+    // 🔥 Real-Time Compras y Devoluciones (Purchases)
+    try {
+        let purchQuery;
+        const purchRef = collection(db, 'companies', companyId, 'purchases');
+
+        if (user?.role === 'OWNER' && (!activeBranchId || activeBranchId === 'ALL')) {
+            purchQuery = query(purchRef, orderBy('date', 'desc'), limit(30));
+        } else if (activeBranchId) {
+            purchQuery = query(purchRef, where('branchId', '==', activeBranchId), orderBy('date', 'desc'), limit(30));
+        }
+
+        if (purchQuery) {
+            this._unsubscribes.push(onSnapshot(purchQuery, async (snapshot) => {
+                const localDb = await getDB();
+                const pendingIds = await localDb.purchases.where('syncStatus').equals('pending').primaryKeys();
+                const pendingSet = new Set(pendingIds);
+                const itemsToPut = [];
+                
+                snapshot.docChanges().forEach(change => {
+                    if (change.type === 'added' || change.type === 'modified') {
+                        if (!pendingSet.has(change.doc.id)) {
+                            itemsToPut.push({ ...change.doc.data(), id: change.doc.id, syncStatus: 'synced' });
+                        }
+                    }
+                });
+                
+                if (itemsToPut.length > 0) {
+                    await localDb.purchases.bulkPut(itemsToPut);
+                }
+            }));
+        }
+    } catch (e) { }
+
     const masterCollections = ['categories', 'brands', 'clients', 'suppliers'];
     masterCollections.forEach(collectionName => {
         const q = query(collection(db, 'companies', companyId, collectionName));
@@ -672,7 +792,7 @@ export const syncService = {
                   await localDb.products.bulkPut(itemsToPut);
               }
           });
-      } catch (err) { console.error("❌ Error FATAL en Sync:", err); }
+      } catch (err) {}
   },
 
   stopListeners() {
@@ -691,15 +811,32 @@ export const syncService = {
     if (!companyId) return { uploaded: 0, errors: 0 };
 
     try {
-        const [salesRes, prodRes, mastersRes, shiftsRes, movsRes] = await Promise.all([
+        const [
+            salesRes, prodRes, mastersRes, shiftsRes, movsRes, 
+            purchasesRes, supplierLedgerRes, kardexRes, customerLedgerRes 
+        ] = await Promise.all([
             this.syncPendingSales(companyId, branchId),
             this.syncPendingProducts(companyId, branchId),
             this.syncPendingMasters(companyId),
-            // 🔥 AHORA SÍ: Ejecutamos las funciones de Cajas y Vales
             this.syncPendingShifts(companyId),
-            this.syncPendingCashMovements(companyId) 
+            this.syncPendingCashMovements(companyId),
+            this.syncPendingPurchases(companyId),       
+            this.syncPendingSupplierLedger(companyId),   
+            this.syncPendingMovements(companyId),
+            this.syncPendingCustomerLedger(companyId)    
         ]);
-        const totalUploaded = (salesRes?.synced || 0) + (prodRes?.synced || 0) + (mastersRes?.synced || 0) + (shiftsRes?.synced || 0) + (movsRes?.synced || 0);
+        
+        const totalUploaded = 
+            (salesRes?.synced || 0) + 
+            (prodRes?.synced || 0) + 
+            (mastersRes?.synced || 0) + 
+            (shiftsRes?.synced || 0) + 
+            (movsRes?.synced || 0) + 
+            (purchasesRes?.synced || 0) + 
+            (supplierLedgerRes?.synced || 0) +
+            (kardexRes?.synced || 0) +
+            (customerLedgerRes?.synced || 0);
+            
         return { uploaded: totalUploaded, errors: 0 };
     } catch (error) {
         console.error("❌ Error Sync Up:", error);
@@ -709,7 +846,8 @@ export const syncService = {
 
   async pushGlobalConfig(key, value) {
       const { user } = useAuthStore.getState();
-      if (!user?.companyId) throw new Error("No hay sesión de empresa activa");
+      // 🔥 Evitar push de config si es el Master Admin
+      if (!user?.companyId || user.companyId === 'master_admin' || user.superAdmin) throw new Error("No hay sesión de empresa activa");
       const configRef = doc(db, `companies/${user.companyId}/config`, key);
       await setDoc(configRef, { key, value, updatedAt: new Date().toISOString() }, { merge: true });
       const localDb = await getDB();
@@ -717,7 +855,6 @@ export const syncService = {
       return true;
   },
 
-  // A. SUBIDA DE PRODUCTOS (Y PROMOS LOCALES) - 🔥 AHORA CON CHUNKING + SLEEP
   async syncPendingProducts(companyId, branchId) {
     const localDb = await getDB();
     const pendingProducts = await localDb.products
@@ -725,16 +862,15 @@ export const syncService = {
         .toArray();
 
     const pendingInventory = await localDb.inventory
-        .filter(i => i.syncStatus === 'pending')
+        .filter(i => i.syncStatus === 'pending' || i.syncStatus === 'pending_stock')
         .toArray();
 
     if (pendingProducts.length === 0 && pendingInventory.length === 0) return { synced: 0 };
 
     let totalSynced = 0;
 
-    // 🔥 1. Subida fraccionada de Productos
     if (pendingProducts.length > 0) {
-        const productChunks = this.chunkArray(pendingProducts, 100); // Lotes de 100 para evitar error 500 de Firestore
+        const productChunks = this.chunkArray(pendingProducts, 100); 
         for (const chunk of productChunks) {
             const batch = writeBatch(db);
             const syncedIds = [];
@@ -757,12 +893,11 @@ export const syncService = {
                     syncedIds.map(id => ({ key: id, changes: { syncStatus: 'synced' } }))
                 );
                 totalSynced += syncedIds.length;
-                await this._sleep(150); // 🟢 Respiro vital para el navegador
+                await this._sleep(150); 
             }
         }
     }
 
-    // 🔥 2. Subida fraccionada de Inventario
     if (pendingInventory.length > 0) {
         const invChunks = this.chunkArray(pendingInventory, 100);
         for (const chunk of invChunks) {
@@ -788,7 +923,7 @@ export const syncService = {
                     }
                 });
                 totalSynced += syncedKeys.length;
-                await this._sleep(150); // 🟢 Respiro vital
+                await this._sleep(150); 
             }
         }
     }
@@ -796,7 +931,6 @@ export const syncService = {
     return { synced: totalSynced };
   },
 
-  // B. SUBIDA DE MAESTROS - 🔥 CON CHUNKING + SLEEP
   async syncPendingMasters(companyId) {
       const localDb = await getDB();
       const masterCollections = ['categories', 'brands', 'suppliers', 'clients'];
@@ -826,21 +960,20 @@ export const syncService = {
                       syncedIds.map(id => ({ key: id, changes: { syncStatus: 'synced' } }))
                   );
                   totalSynced += syncedIds.length;
-                  await this._sleep(100); // 🟢 Respiro
+                  await this._sleep(100); 
               }
-          } catch(e) { console.warn(`Error syncing masters (${collectionName}):`, e); }
+          } catch(e) { }
       }
       return { synced: totalSynced };
   },
 
-  // C. SUBIDA DE VENTAS - 🔥 CON SLEEP INYECTADO
   async syncPendingSales(companyId, branchId) {
     const localDb = await getDB();
     const pendingSales = await localDb.sales.where('syncStatus').equals('pending').toArray();
     
     if (pendingSales.length === 0) return { synced: 0 };
 
-    const chunks = this.chunkArray(pendingSales, 100); // Bajamos a 100 por seguridad
+    const chunks = this.chunkArray(pendingSales, 100); 
     let totalSynced = 0;
 
     for (const batchSales of chunks) {
@@ -868,12 +1001,11 @@ export const syncService = {
              syncedIds.map(id => ({ key: id, changes: { syncStatus: 'synced' } }))
         );
         totalSynced += batchSales.length;
-        await this._sleep(150); // 🟢 Respiro
+        await this._sleep(150); 
     }
     return { synced: totalSynced };
   },
 
-  // 🔥 D. SUBIDA DE TURNOS DE CAJA (SHIFTS) OFFLINE - CON CHUNKING
   async syncPendingShifts(companyId) {
       const localDb = await getDB();
       const pendingShifts = await localDb.shifts.where('syncStatus').equals('pending').toArray();
@@ -891,6 +1023,7 @@ export const syncService = {
           for (const shift of chunk) {
               const safeId = shift.firestoreId || shift.localId || shift.id;
               const docRef = doc(colRef, String(safeId)); 
+              
               const { localId, syncStatus, ...cleanShift } = shift;
 
               batch.set(docRef, this._deepSanitize(cleanShift), { merge: true });
@@ -902,12 +1035,11 @@ export const syncService = {
                syncedIds.map(id => ({ key: id, changes: { syncStatus: 'synced' } }))
           );
           totalSynced += syncedIds.length;
-          await this._sleep(100); // 🟢 Respiro
+          await this._sleep(100); 
       }
       return { synced: totalSynced };
   },
 
-  // 🔥 E. SUBIDA DE MOVIMIENTOS DE CAJA (VALES/ADELANTOS) OFFLINE - CON CHUNKING
   async syncPendingCashMovements(companyId) {
       const localDb = await getDB();
       const pendingMovs = await localDb.cash_movements.where('syncStatus').equals('pending').toArray();
@@ -936,23 +1068,167 @@ export const syncService = {
                syncedIds.map(id => ({ key: id, changes: { syncStatus: 'synced' } }))
           );
           totalSynced += syncedIds.length;
-          await this._sleep(100); // 🟢 Respiro
+          await this._sleep(100); 
       }
       return { synced: totalSynced };
   },
 
-  // =================================================================
-  // ⚙️ HELPERS
-  // =================================================================
+  async syncPendingPurchases(companyId) {
+      const localDb = await getDB();
+      const pendingPurchases = await localDb.purchases.where('syncStatus').equals('pending').toArray();
+      
+      if (pendingPurchases.length === 0) return { synced: 0 };
 
-  // 🔥 NUEVO HELPER: El secreto para destrabar el navegador
+      const chunks = this.chunkArray(pendingPurchases, 100);
+      let totalSynced = 0;
+      const colRef = collection(db, 'companies', companyId, 'purchases');
+
+      for (const chunk of chunks) {
+          const batch = writeBatch(db);
+          const syncedIds = [];
+
+          for (const purchase of chunk) {
+              const safeId = purchase.firestoreId || purchase.id;
+              const docRef = doc(colRef, String(safeId)); 
+              const { syncStatus, ...cleanPurchase } = purchase;
+
+              batch.set(docRef, {
+                  ...this._deepSanitize(cleanPurchase),
+                  syncedAt: serverTimestamp()
+              }, { merge: true });
+              
+              syncedIds.push(purchase.id);
+          }
+
+          await batch.commit();
+          await localDb.purchases.bulkUpdate(
+               syncedIds.map(id => ({ key: id, changes: { syncStatus: 'synced' } }))
+          );
+          totalSynced += syncedIds.length;
+          await this._sleep(100); 
+      }
+      return { synced: totalSynced };
+  },
+
+  async syncPendingSupplierLedger(companyId) {
+      const localDb = await getDB();
+      const pendingLedger = await localDb.supplier_ledger.where('syncStatus').equals('pending').toArray();
+      
+      if (pendingLedger.length === 0) return { synced: 0 };
+
+      const chunks = this.chunkArray(pendingLedger, 100);
+      let totalSynced = 0;
+      const colRef = collection(db, 'companies', companyId, 'supplier_ledger');
+
+      for (const chunk of chunks) {
+          const batch = writeBatch(db);
+          const syncedIds = [];
+
+          for (const mov of chunk) {
+              const safeId = mov.firestoreId || mov.id;
+              const docRef = doc(colRef, String(safeId)); 
+              const { syncStatus, ...cleanMov } = mov;
+
+              batch.set(docRef, {
+                  ...this._deepSanitize(cleanMov),
+                  syncedAt: serverTimestamp()
+              }, { merge: true });
+              
+              syncedIds.push(mov.id);
+          }
+
+          await batch.commit();
+          await localDb.supplier_ledger.bulkUpdate(
+               syncedIds.map(id => ({ key: id, changes: { syncStatus: 'synced' } }))
+          );
+          totalSynced += syncedIds.length;
+          await this._sleep(100); 
+      }
+      return { synced: totalSynced };
+  },
+
+  async syncPendingMovements(companyId) {
+      const localDb = await getDB();
+      const pendingMovs = await localDb.movements.where('syncStatus').equals('pending').toArray();
+      
+      if (pendingMovs.length === 0) return { synced: 0 };
+
+      const chunks = this.chunkArray(pendingMovs, 100);
+      let totalSynced = 0;
+      const colRef = collection(db, 'companies', companyId, 'movements');
+
+      for (const chunk of chunks) {
+          const batch = writeBatch(db);
+          const syncedIds = [];
+
+          for (const mov of chunk) {
+              const safeId = mov.firestoreId || mov.id;
+              const docRef = doc(colRef, String(safeId)); 
+              const { syncStatus, ...cleanMov } = mov;
+
+              batch.set(docRef, {
+                  ...this._deepSanitize(cleanMov),
+                  syncedAt: serverTimestamp()
+              }, { merge: true });
+              
+              syncedIds.push(mov.id);
+          }
+
+          await batch.commit();
+          await localDb.movements.bulkUpdate(
+               syncedIds.map(id => ({ key: id, changes: { syncStatus: 'synced' } }))
+          );
+          totalSynced += syncedIds.length;
+          await this._sleep(100); 
+      }
+      return { synced: totalSynced };
+  },
+
+  async syncPendingCustomerLedger(companyId) {
+      const localDb = await getDB();
+      const pendingLedger = await localDb.customer_ledger.where('syncStatus').equals('pending').toArray();
+      
+      if (pendingLedger.length === 0) return { synced: 0 };
+
+      const chunks = this.chunkArray(pendingLedger, 100);
+      let totalSynced = 0;
+      const colRef = collection(db, 'companies', companyId, 'customer_ledger');
+
+      for (const chunk of chunks) {
+          const batch = writeBatch(db);
+          const syncedIds = [];
+
+          for (const mov of chunk) {
+              const safeId = mov.firestoreId || mov.id;
+              const docRef = doc(colRef, String(safeId)); 
+              const { syncStatus, ...cleanMov } = mov;
+
+              batch.set(docRef, {
+                  ...this._deepSanitize(cleanMov),
+                  syncedAt: serverTimestamp()
+              }, { merge: true });
+              
+              syncedIds.push(mov.id);
+          }
+
+          await batch.commit();
+          await localDb.customer_ledger.bulkUpdate(
+               syncedIds.map(id => ({ key: id, changes: { syncStatus: 'synced' } }))
+          );
+          totalSynced += syncedIds.length;
+          await this._sleep(100); 
+      }
+      return { synced: totalSynced };
+  },
+
   _sleep(ms) {
       return new Promise(resolve => setTimeout(resolve, ms));
   },
 
   _getCompanyId() {
     const { user } = useAuthStore.getState();
-    if (!user || !user.companyId || user.companyId === 'undefined') return null;
+    // 🔥 MODO DIOS BYPASS: El superadmin no tiene un companyId real de negocio
+    if (!user || !user.companyId || user.companyId === 'undefined' || user.companyId === 'master_admin' || user.superAdmin) return null;
     return user.companyId;
   },
 
@@ -990,7 +1266,8 @@ export const syncService = {
                   localDb.inventory.clear(),
                   localDb.purchases.clear(),
                   localDb.purchase_items.clear(),
-                  localDb.supplier_ledger.clear()
+                  localDb.supplier_ledger.clear(),
+                  localDb.customer_ledger.clear()
               ]);
           } catch (error) { console.error(error); }
       }

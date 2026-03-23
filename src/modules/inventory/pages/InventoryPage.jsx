@@ -6,7 +6,7 @@ import {
     Printer, ArrowRightLeft, Calendar, ChevronLeft, ChevronRight,
     Upload, RefreshCw, MoreVertical, Cloud, MapPin, 
     Tag, Percent, Megaphone, MoreHorizontal, LayoutGrid, DollarSign,
-    CalendarClock, Info, Scale, Save, Pencil, Loader2, ArrowDown, ArrowUp, Minus
+    CalendarClock, Info, Scale, Save, Pencil, Loader2, ArrowDown, ArrowUp, Minus, ShieldAlert, Lock
 } from 'lucide-react';
 import toast from 'react-hot-toast'; 
 
@@ -22,8 +22,8 @@ import { ImportMapperModal } from '../components/ImportMapperModal';
 import { cn } from '../../../core/utils/cn';
 import { Button } from '../../../core/ui/Button'; 
 
-import { collection, getDocs, query, where, documentId } from 'firebase/firestore';
-import { db as firestoreDB } from '../../../database/firebase';
+import { collection, getDocs, query, where, documentId, doc, getDoc } from 'firebase/firestore';
+import { db as firestoreDB, db } from '../../../database/firebase';
 import { getDB } from '../../../database/db'; 
 
 // =================================================================
@@ -56,6 +56,101 @@ const getLocalDate = () => {
 };
 
 // =================================================================
+// 🔐 MODAL: AUTORIZACIÓN POR PIN (SUPERVISOR) 🔥
+// =================================================================
+const PinVerificationModal = ({ isOpen, onClose, onSuccess, actionName }) => {
+    const [pin, setPin] = useState('');
+    const [error, setError] = useState(false);
+    const inputRef = useRef(null);
+    const { user, activeBranchId } = useAuthStore();
+
+    useEffect(() => {
+        if (isOpen) {
+            setPin('');
+            setError(false);
+            setTimeout(() => inputRef.current?.focus(), 100);
+        }
+    }, [isOpen]);
+
+    const handleVerify = async (e) => {
+        e.preventDefault();
+        setError(false);
+
+        if (!user?.companyId || !activeBranchId) {
+            toast.error("Error de configuración de sucursal.");
+            return;
+        }
+
+        try {
+            // Buscamos el PIN de la sucursal en Firestore
+            const branchRef = doc(db, 'companies', user.companyId, 'branches', activeBranchId);
+            const branchSnap = await getDoc(branchRef);
+
+            if (branchSnap.exists()) {
+                const branchData = branchSnap.data();
+                // Validamos contra el pin o pinAdmin de la sucursal
+                if (branchData.pin === pin || branchData.adminPin === pin) {
+                    onSuccess();
+                    onClose();
+                } else {
+                    setError(true);
+                    setPin('');
+                    inputRef.current?.focus();
+                }
+            } else {
+                toast.error("No se encontró configuración para esta sucursal.");
+                onClose();
+            }
+        } catch (err) {
+            console.error(err);
+            toast.error("Error de conexión al validar PIN.");
+        }
+    };
+
+    if (!isOpen) return null;
+
+    return (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-sys-900/80 backdrop-blur-sm p-4 animate-in fade-in zoom-in-95">
+            <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden p-6 text-center">
+                <div className="w-16 h-16 bg-red-50 text-red-500 rounded-full flex items-center justify-center mx-auto mb-4 border border-red-100">
+                    <Lock size={32} />
+                </div>
+                <h3 className="text-xl font-black text-sys-900 mb-1">Autorización Requerida</h3>
+                <p className="text-xs text-sys-500 font-bold mb-6 uppercase tracking-wider">
+                    Permiso necesario para: <span className="text-brand">{actionName}</span>
+                </p>
+
+                <form onSubmit={handleVerify} className="space-y-4">
+                    <div>
+                        <input 
+                            ref={inputRef}
+                            type="password" 
+                            maxLength={6}
+                            placeholder="Ingrese PIN del Encargado" 
+                            className={cn(
+                                "w-full text-center text-2xl tracking-[0.5em] font-black p-4 bg-sys-50 border-2 rounded-2xl outline-none transition-all",
+                                error ? "border-red-500 text-red-500 bg-red-50 animate-shake" : "border-sys-200 focus:border-brand"
+                            )}
+                            value={pin}
+                            onChange={(e) => {
+                                setError(false);
+                                setPin(e.target.value.replace(/\D/g, '')); // Solo números
+                            }}
+                        />
+                        {error && <p className="text-xs font-bold text-red-500 mt-2">PIN Incorrecto</p>}
+                    </div>
+                    
+                    <div className="flex gap-2">
+                        <Button variant="secondary" onClick={onClose} type="button" className="flex-1">Cancelar</Button>
+                        <Button type="submit" disabled={pin.length < 4} className="flex-1 bg-sys-900 hover:bg-black text-white shadow-xl">Autorizar</Button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    );
+};
+
+// =================================================================
 // ⌨️ COMPONENTE CELDA EDITABLE (AUDITORÍA RÁPIDA)
 // =================================================================
 const EditableCell = ({ 
@@ -69,7 +164,8 @@ const EditableCell = ({
     disabled = false,
     nextRowId = null,
     prevRowId = null,
-    className
+    className,
+    onRequestAuth // 🔥 Callback si no tiene permisos
 }) => {
     const [isEditing, setIsEditing] = useState(false);
     const [localValue, setLocalValue] = useState(value);
@@ -105,6 +201,19 @@ const EditableCell = ({
         setIsEditing(false);
         if (!disabled && localValue != value) {
             onSave(productId, field, localValue);
+        } else {
+            setLocalValue(value); // Restaura si canceló
+        }
+    };
+
+    const handleClick = () => {
+        if (disabled) return;
+        
+        // Verificamos permisos antes de entrar a edición
+        if (onRequestAuth) {
+            onRequestAuth(productId, field, localValue);
+        } else {
+            setIsEditing(true);
         }
     };
 
@@ -112,7 +221,7 @@ const EditableCell = ({
         return (
             <div 
                 id={`cell-${productId}-${field}`}
-                onClick={() => !disabled && setIsEditing(true)}
+                onClick={handleClick}
                 className={cn(
                     "p-2 rounded transition-colors text-right border border-transparent",
                     !disabled && "cursor-pointer hover:bg-sys-100 hover:border-sys-200",
@@ -147,47 +256,102 @@ const EditableCell = ({
 // =================================================================
 const StockEntryModal = ({ isOpen, onClose, product, onConfirm }) => {
     if (!isOpen || !product) return null;
+    
     const [qty, setQty] = useState('');
+    const [reason, setReason] = useState('Ajuste de Conteo');
+    const [moveType, setMoveType] = useState('STOCK_ADJUST_IN'); // Default: Ingreso Manual
     const inputRef = useRef(null);
 
     useEffect(() => {
-        if (isOpen) setTimeout(() => inputRef.current?.focus(), 100);
+        if (isOpen) {
+            setQty('');
+            setReason('Ajuste de Conteo');
+            setMoveType('STOCK_ADJUST_IN');
+            setTimeout(() => inputRef.current?.focus(), 100);
+        }
     }, [isOpen]);
 
     const handleConfirm = () => {
         const val = parseFloat(qty);
-        if (!val || val === 0) return alert("Ingrese una cantidad válida");
-        onConfirm(product.id, val, "Ingreso Rápido Manual");
-        setQty('');
+        if (!val || val === 0) return toast.error("Ingrese una cantidad válida");
+        
+        let finalQty = val;
+        if (['MERMA', 'STOCK_ADJUST_OUT'].includes(moveType) && finalQty > 0) {
+            finalQty = -finalQty; 
+        } else if (moveType === 'STOCK_ADJUST_IN' && finalQty < 0) {
+            finalQty = Math.abs(finalQty); 
+        }
+
+        onConfirm(product.id, finalQty, reason, moveType);
         onClose();
     };
 
     return (
         <div className="fixed inset-0 z-[90] flex items-center justify-center bg-sys-900/60 backdrop-blur-sm p-4 animate-in fade-in zoom-in-95">
-              <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden">
-                <div className="p-4 bg-brand text-white flex justify-between items-center">
-                    <h3 className="font-bold flex items-center gap-2"><Package size={18}/> Ajuste de Stock</h3>
-                    <button onClick={onClose} className="hover:bg-white/20 p-1 rounded"><X size={18}/></button>
+              <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden">
+                <div className="p-5 bg-sys-900 text-white flex justify-between items-center">
+                    <h3 className="font-bold flex items-center gap-2 text-lg"><Package size={20}/> Ajuste de Inventario</h3>
+                    <button onClick={onClose} className="hover:bg-white/20 p-1.5 rounded-full transition-colors"><X size={20}/></button>
                 </div>
-                <div className="p-6 space-y-4">
-                    <div>
-                        <p className="text-xs text-sys-500 uppercase font-bold mb-1">Producto</p>
-                        <p className="text-lg font-bold text-sys-900 leading-tight">{product.name}</p>
+                <div className="p-6 space-y-6">
+                    <div className="bg-sys-50 p-4 rounded-xl border border-sys-200">
+                        <p className="text-[10px] text-sys-500 uppercase font-black tracking-widest mb-1">Producto a modificar</p>
+                        <p className="text-base font-black text-sys-900 leading-tight uppercase">{product.name}</p>
+                        <p className="text-xs font-bold text-sys-500 mt-1">Stock Actual: <span className="font-mono text-brand">{product.stock || 0}</span></p>
                     </div>
+
+                    <div className="grid grid-cols-2 gap-3">
+                        <button 
+                            onClick={() => { setMoveType('STOCK_ADJUST_IN'); setReason('Ingreso Manual'); }}
+                            className={cn("p-3 rounded-xl border-2 flex flex-col items-center gap-1 transition-all", moveType === 'STOCK_ADJUST_IN' ? "border-green-500 bg-green-50 text-green-700" : "border-sys-200 text-sys-500 hover:border-sys-300")}
+                        >
+                            <Plus size={20} className={moveType === 'STOCK_ADJUST_IN' ? "text-green-500" : "text-sys-400"}/>
+                            <span className="text-xs font-bold uppercase tracking-wide">Ingreso (+)</span>
+                        </button>
+                        <button 
+                            onClick={() => { setMoveType('MERMA'); setReason('Merma / Rotura'); }}
+                            className={cn("p-3 rounded-xl border-2 flex flex-col items-center gap-1 transition-all", moveType === 'MERMA' ? "border-red-500 bg-red-50 text-red-700" : "border-sys-200 text-sys-500 hover:border-sys-300")}
+                        >
+                            <ShieldAlert size={20} className={moveType === 'MERMA' ? "text-red-500" : "text-sys-400"}/>
+                            <span className="text-xs font-bold uppercase tracking-wide">Merma (-)</span>
+                        </button>
+                    </div>
+
                     <div>
-                        <label className="text-xs text-sys-500 uppercase font-bold mb-1 block">Cantidad (+/-)</label>
+                        <label className="text-[10px] text-sys-500 uppercase font-black tracking-widest mb-2 block">Cantidad a modificar</label>
                         <input 
                             ref={inputRef}
                             type="number" 
-                            className="w-full text-2xl font-black p-3 bg-sys-50 border-2 border-brand/20 rounded-xl focus:border-brand outline-none text-center"
+                            className={cn("w-full text-3xl font-black p-4 border-2 rounded-2xl outline-none text-center transition-colors", 
+                                moveType === 'MERMA' ? "bg-red-50 border-red-200 text-red-600 focus:border-red-500" : "bg-green-50 border-green-200 text-green-600 focus:border-green-500"
+                            )}
                             placeholder="0"
                             value={qty}
                             onChange={e => setQty(e.target.value)}
                             onKeyDown={e => e.key === 'Enter' && handleConfirm()}
                         />
-                        <p className="text-[10px] text-sys-400 mt-2 text-center">Use números negativos para restar stock</p>
                     </div>
-                    <Button onClick={handleConfirm} className="w-full py-3 shadow-lg shadow-brand/20">Confirmar Ajuste</Button>
+
+                    <div>
+                        <label className="text-[10px] text-sys-500 uppercase font-black tracking-widest mb-2 block">Detalle / Motivo</label>
+                        <input 
+                            type="text" 
+                            className="w-full text-sm font-bold p-3 bg-white border-2 border-sys-200 rounded-xl focus:border-sys-400 outline-none transition-colors"
+                            value={reason}
+                            onChange={e => setReason(e.target.value)}
+                            placeholder="Ej: Se rompió, Vencido, Conteo a favor..."
+                            onKeyDown={e => e.key === 'Enter' && handleConfirm()}
+                        />
+                    </div>
+
+                    <Button 
+                        onClick={handleConfirm} 
+                        className={cn("w-full py-4 text-base font-black shadow-lg transition-all", 
+                            moveType === 'MERMA' ? "bg-red-600 hover:bg-red-700 shadow-red-200" : "bg-green-600 hover:bg-green-700 shadow-green-200"
+                        )}
+                    >
+                        {moveType === 'MERMA' ? 'RESTAR STOCK' : 'SUMAR STOCK'}
+                    </Button>
                 </div>
               </div>
         </div>
@@ -195,7 +359,7 @@ const StockEntryModal = ({ isOpen, onClose, product, onConfirm }) => {
 };
 
 // =================================================================
-// 2. SCALE EXPORT MODAL (KRETZ / SYSTEL) 🔥
+// 2. SCALE EXPORT MODAL 
 // =================================================================
 const ScaleExportModal = ({ isOpen, onClose, onExport }) => {
     if (!isOpen) return null;
@@ -246,7 +410,7 @@ const ScaleExportModal = ({ isOpen, onClose, onExport }) => {
 };
 
 // =================================================================
-// 3. BULK UPDATE MODAL (Evolucionado para inputs manuales)
+// 3. BULK UPDATE MODAL
 // =================================================================
 const BulkUpdateModal = ({ isOpen, onClose, onConfirm, allProducts, masters, manualSelectionIds }) => {
     if (!isOpen) return null;
@@ -256,14 +420,11 @@ const BulkUpdateModal = ({ isOpen, onClose, onConfirm, allProducts, masters, man
     const [pricePct, setPricePct] = useState(0);
     const [targetList, setTargetList] = useState([]);
     
-    // Estado para programación
     const [activationDate, setActivationDate] = useState('');
     const [isScheduled, setIsScheduled] = useState(false);
 
-    // DICCIONARIO DE PRECIOS INDIVIDUALES (DRAFTS)
     const [draftValues, setDraftValues] = useState({});
 
-    // Carga inicial de la lista
     useEffect(() => {
         let list = [];
         if (activeTab === 'manual') list = allProducts.filter(p => manualSelectionIds.has(p.id));
@@ -272,7 +433,6 @@ const BulkUpdateModal = ({ isOpen, onClose, onConfirm, allProducts, masters, man
         
         setTargetList(list);
 
-        // Inicializamos los inputs manuales con los precios actuales
         setDraftValues(prev => {
             const next = { ...prev };
             list.forEach(p => {
@@ -492,10 +652,15 @@ export const InventoryPage = () => {
     const { companySlug } = useParams();
     const { user, activeBranchId, activeBranchName } = useAuthStore(); 
     
-    // 🔥 CONTROL ESTRICTO DE ROLES
-    const isOwner = user?.role === 'OWNER'; 
-    const canViewAllBranches = isOwner || user?.role === 'SUPER_ADMIN';
-    const isAdmin = user?.role === 'ADMIN' || canViewAllBranches; 
+    // 🔥 CONTROL ESTRICTO DE ROLES & PERMISOS
+    const isSuperUser = user?.role === 'OWNER' || user?.role === 'SUPER_ADMIN' || user?.role === 'ADMIN'; 
+    const canViewAllBranches = user?.role === 'OWNER' || user?.role === 'SUPER_ADMIN';
+    const isAdmin = isSuperUser; 
+
+    const perms = user?.permissions || {};
+    const canAddStock = isSuperUser || perms.canAddStock;
+    const canRemoveStock = isSuperUser || perms.canRemoveStock;
+    const canChangePrices = isSuperUser || perms.canChangePrices;
 
     // Data States
     const [products, setProducts] = useState([]);
@@ -508,11 +673,11 @@ export const InventoryPage = () => {
     const [globalStock, setGlobalStock] = useState({}); 
     const [loadingStock, setLoadingStock] = useState(false);
     
-    // Search, Filter & Sort 🔥
+    // Search, Filter & Sort
     const [inputValue, setInputValue] = useState(''); 
     const [searchTerm, setSearchTerm] = useState('');
     const [filters, setFilters] = useState({ category: '', brand: '' });
-    const [sortConfig, setSortConfig] = useState({ key: 'name', direction: 'asc' }); // 🔥 Estado de ordenamiento
+    const [sortConfig, setSortConfig] = useState({ key: 'name', direction: 'asc' });
     const searchInputRef = useRef(null);
 
     // Selection & View State
@@ -530,6 +695,9 @@ export const InventoryPage = () => {
     
     const [editingProduct, setEditingProduct] = useState(null);
     const [stockEntryProduct, setStockEntryProduct] = useState(null);
+
+    // 🔥 ESTADOS PARA EL MODAL DE AUTORIZACIÓN POR PIN
+    const [pinAuthData, setPinAuthData] = useState(null); // { isOpen, actionName, callback }
 
     const productsRef = useRef([]); 
     useEffect(() => { productsRef.current = products; }, [products]);
@@ -571,6 +739,10 @@ export const InventoryPage = () => {
             setIsProductModalOpen(true);
             toast.success("Producto encontrado: " + product.name);
         } else {
+            if (!canChangePrices) {
+                toast.error("No tienes permisos para crear productos.");
+                return;
+            }
             setEditingProduct({ code: code, barcode: [code], isNew: true }); 
             setIsProductModalOpen(true);
             toast("Nuevo producto detectado", { icon: '✨' });
@@ -578,7 +750,7 @@ export const InventoryPage = () => {
     };
 
     // =================================================================
-    // 🔄 DATA LOADING (CON SILENT MODE) 🔥
+    // 🔄 DATA LOADING 
     // =================================================================
 
     const loadData = async (forceCloud = false, isSilent = false) => {
@@ -586,7 +758,6 @@ export const InventoryPage = () => {
         try {
             const dbLocal = await getDB();
             
-            // 1. Resolver Sucursales Estrictamente por Rol
             if (!isSilent) setLoadingMessage('Verificando Sucursales...');
             let branchesData = [];
             
@@ -603,14 +774,12 @@ export const InventoryPage = () => {
                 setBranches(branchesData);
             }
 
-            // 2. Garantizar que tenemos los datos localmente
             const prodCount = await dbLocal.products.count();
             if (prodCount === 0 || forceCloud) {
                 if (!isSilent) setLoadingMessage('Descargando Catálogo Global...');
                 await syncService.syncProducts(user.companyId);
             }
 
-            // 🔥 AUTO-CURACIÓN
             if (canViewAllBranches) {
                 if (!isSilent) setLoadingMessage('Sincronizando Stock global...');
                 await syncService.syncAllInventoryForOwner(user.companyId, branchesData);
@@ -619,7 +788,6 @@ export const InventoryPage = () => {
                 await syncService.syncInitialInventory(user.companyId, activeBranchId);
             }
 
-            // 3. Leer de Local DB y renderizar
             if (!isSilent) setLoadingMessage('Construyendo matriz...');
             
             const fetchProductsTask = (canViewAllBranches && (!activeBranchId || activeBranchId === 'ALL')) 
@@ -648,7 +816,6 @@ export const InventoryPage = () => {
         }
     };
 
-    // 🔥 CARGA HIPER RÁPIDA DE STOCK GLOBAL
     const loadGlobalStock = async () => {
         try {
             const dbLocal = await getDB();
@@ -667,7 +834,7 @@ export const InventoryPage = () => {
     };
 
     const handleForceSync = async () => {
-        if (!isOwner) return;
+        if (!isSuperUser) return;
         const toastId = toast.loading("Sincronizando inventario global...");
         try {
             await syncService.syncInitialData(user, 'ALL'); 
@@ -698,6 +865,7 @@ export const InventoryPage = () => {
         }
     };
 
+    // 🔥 EL MANEJADOR INLINE AHORA ESTÁ BLINDADO
     const handleInlineSave = async (productId, field, newValue) => {
         try {
             const product = products.find(p => p.id === productId);
@@ -707,7 +875,11 @@ export const InventoryPage = () => {
             let numValue = parseFloat(newValue);
 
             if (field === 'stock') {
-                await productRepository.addStock(productId, numValue - (product.stock || 0), "Ajuste Auditoría Inline", user?.name || "Auditor", activeBranchId);
+                const diff = numValue - (product.stock || 0);
+                if (diff === 0) return;
+
+                const moveType = diff < 0 ? 'STOCK_ADJUST_OUT' : 'STOCK_ADJUST_IN';
+                await productRepository.addStock(productId, diff, "Ajuste Rápido Inline", user?.name || "Cajero", activeBranchId, moveType);
             } else {
                 if (isNaN(numValue)) return;
                 updates[field] = numValue;
@@ -722,8 +894,6 @@ export const InventoryPage = () => {
             }));
             
             toast.success(`${field.toUpperCase()} actualizado`, { position: 'bottom-right', duration: 1000 });
-            
-            // 🔥 SILENT RELOAD
             loadData(false, true);
 
         } catch (e) {
@@ -731,6 +901,44 @@ export const InventoryPage = () => {
             toast.error("Error al guardar cambio");
             loadData(false, true); 
         }
+    };
+
+    // 🔒 INTERCEPTOR DE EDICIÓN: Pide PIN si no hay permisos
+    const handleRequestAuth = (productId, field, currentValue) => {
+        let actionName = '';
+        let hasPermission = false;
+
+        if (field === 'stock') {
+            actionName = 'Ajustar Stock';
+            // Para el modo "Inline" que es un ajuste libre, requiere permiso de "Merma" porque puede restar
+            hasPermission = canRemoveStock && canAddStock; 
+        } else if (field === 'price' || field === 'cost') {
+            actionName = 'Cambiar Precio';
+            hasPermission = canChangePrices;
+        }
+
+        if (hasPermission) {
+            // Si tiene permiso, abrimos la celda para edición disparando un click simulado (HACK REACT)
+            const cell = document.getElementById(`cell-${productId}-${field}`);
+            if(cell) {
+               // Desactivamos el disabled temporalmente forzando el estado del padre no es posible directamente.
+               // Es mejor usar el PinModal y que el callback aplique el cambio
+            }
+            return;
+        }
+
+        // Si NO tiene permiso, lanzamos el Modal de PIN
+        setPinAuthData({
+            isOpen: true,
+            actionName,
+            callback: () => {
+                // Si el PIN es correcto, le pedimos por un Promt Nativo el valor
+                const newVal = prompt(`Ingrese el nuevo ${field.toUpperCase()}:`, currentValue);
+                if (newVal !== null && newVal !== '') {
+                    handleInlineSave(productId, field, newVal);
+                }
+            }
+        });
     };
 
     useEffect(() => { loadData(); }, [user, activeBranchId]);
@@ -744,10 +952,9 @@ export const InventoryPage = () => {
     }, [inputValue]);
 
     // =================================================================
-    // 🔍 FILTERING, SORTING & PAGINATION 🔥 (SPRINT 2)
+    // 🔍 FILTERING, SORTING & PAGINATION
     // =================================================================
 
-    // Función para manejar el clic en el encabezado (Cambio de Sort)
     const handleSort = (key) => {
         let direction = 'asc';
         if (sortConfig.key === key && sortConfig.direction === 'asc') {
@@ -756,7 +963,6 @@ export const InventoryPage = () => {
         setSortConfig({ key, direction });
     };
 
-    // Renderiza el iconito en el encabezado
     const SortIcon = ({ columnKey }) => {
         if (sortConfig.key !== columnKey) return <Minus size={12} className="opacity-20 inline ml-1" />;
         return sortConfig.direction === 'asc' 
@@ -776,12 +982,10 @@ export const InventoryPage = () => {
             return matchesSearch && matchesCat && matchesBrand;
         });
 
-        // Aplicamos el ordenamiento (Sort)
         filtered.sort((a, b) => {
             let aValue = a[sortConfig.key];
             let bValue = b[sortConfig.key];
 
-            // Si es stock y estamos en modo multi-sucursal, ordenamos por el stock local (el de activeBranchId)
             if (sortConfig.key === 'stock') {
                 aValue = parseFloat(a.stock || 0);
                 bValue = parseFloat(b.stock || 0);
@@ -790,7 +994,6 @@ export const InventoryPage = () => {
             if (aValue === undefined || aValue === null) aValue = '';
             if (bValue === undefined || bValue === null) bValue = '';
 
-            // Comparación de strings o números
             if (typeof aValue === 'string') {
                 aValue = aValue.toLowerCase();
                 bValue = bValue.toLowerCase();
@@ -832,7 +1035,7 @@ export const InventoryPage = () => {
     };
 
     // =================================================================
-    // 🚀 HANDLERS MASIVOS
+    // 🚀 HANDLERS MASIVOS Y KARDEX
     // =================================================================
 
     const handleSaveProduct = async (masterPayload, promoPayload) => {
@@ -840,19 +1043,21 @@ export const InventoryPage = () => {
         if (promoPayload) await productRepository.setPromotion(savedProduct.id, promoPayload);
         else if (promoPayload === null && activeBranchId) await productRepository.setPromotion(savedProduct.id, null);
         
-        // 🔥 SILENT RELOAD
         await loadData(false, true);
         setIsProductModalOpen(false);
     };
 
-    const handleQuickStockEntry = async (productId, qty, reason) => {
+    const handleQuickStockEntry = async (productId, qty, reason, moveType) => {
         try {
             const userName = user?.name || user?.email || 'Sistema';
-            await productRepository.addStock(productId, qty, reason, userName, activeBranchId);
+            await productRepository.addStock(productId, qty, reason, userName, activeBranchId, moveType);
             
-            // 🔥 SILENT RELOAD
+            toast.success("Ajuste registrado correctamente en Kardex");
             loadData(false, true);
-        } catch (e) { console.error(e); }
+        } catch (e) { 
+            console.error(e); 
+            toast.error("Error al ajustar stock");
+        }
     };
 
     const executeBulkUpdate = async (targetProducts, draftValues, activationDate = null) => {
@@ -896,7 +1101,6 @@ export const InventoryPage = () => {
             setSelectedIds(new Set());
             setIsBulkUpdateOpen(false);
             
-            // 🔥 SILENT RELOAD
             loadData(false, true);
         } catch (error) { toast.error("Error en proceso masivo", { id: toastId }); }
     };
@@ -929,23 +1133,27 @@ export const InventoryPage = () => {
                     </div>
                     
                     <div className="flex flex-wrap gap-2">
-                        {/* 🔥 BOTÓN PROTEGIDO PARA EL OWNER: ACTIVAR MODO EDICIÓN */}
-                        {isOwner && (
-                            <Button 
-                                variant="secondary" 
-                                onClick={() => setIsEditMode(!isEditMode)} 
-                                className={cn(
-                                    "border transition-all",
-                                    isEditMode ? "bg-brand text-white border-brand shadow-lg" : "bg-white text-sys-500 border-sys-200 hover:border-sys-300"
-                                )}
-                            >
-                                <Pencil size={18} className="mr-2"/> {isEditMode ? 'Terminar Edición' : 'Modo Edición'}
-                            </Button>
-                        )}
+                        
+                        <Button 
+                            variant="secondary" 
+                            onClick={() => {
+                                if (!isEditMode && !canChangePrices && !canAddStock) {
+                                    toast.error("⛔ No tienes permisos para entrar al Modo Edición.", { icon: '🔒' });
+                                    return;
+                                }
+                                setIsEditMode(!isEditMode);
+                            }} 
+                            className={cn(
+                                "border transition-all",
+                                isEditMode ? "bg-brand text-white border-brand shadow-lg" : "bg-white text-sys-500 border-sys-200 hover:border-sys-300"
+                            )}
+                        >
+                            <Pencil size={18} className="mr-2"/> {isEditMode ? 'Terminar Edición' : 'Modo Edición'}
+                        </Button>
 
                         <div className="w-px h-8 bg-sys-200 mx-2 hidden md:block"></div>
 
-                        {isOwner && (
+                        {isSuperUser && (
                             <Button variant="ghost" onClick={handleForceSync} className="text-sys-400 hover:text-brand hover:bg-brand/5 border border-transparent hover:border-brand/20">
                                 <RefreshCw size={18} className={cn("mr-2", loadingStock ? "animate-spin text-brand" : "")}/> Sync Global
                             </Button>
@@ -964,11 +1172,14 @@ export const InventoryPage = () => {
                             <ArrowRightLeft size={18} className="mr-2" /> Kardex
                         </Button>
                         
-                        <div className="w-px h-8 bg-sys-200 mx-2 hidden md:block"></div>
-
-                        <Button variant="secondary" onClick={() => setIsImportModalOpen(true)}>
-                            <Upload size={18} className="mr-2"/> Importar
-                        </Button>
+                        {isSuperUser && (
+                            <>
+                                <div className="w-px h-8 bg-sys-200 mx-2 hidden md:block"></div>
+                                <Button variant="secondary" onClick={() => setIsImportModalOpen(true)}>
+                                    <Upload size={18} className="mr-2"/> Importar
+                                </Button>
+                            </>
+                        )}
                         
                         {selectedIds.size > 0 && (
                             <Button variant="secondary" className="border-orange-200 text-orange-700 bg-orange-50 hover:bg-orange-100 animate-in zoom-in" onClick={() => setIsBulkUpdateOpen(true)}>
@@ -976,7 +1187,14 @@ export const InventoryPage = () => {
                             </Button>
                         )}
                         
-                        <Button onClick={() => { setEditingProduct(null); setIsProductModalOpen(true); }} className="shadow-xl shadow-brand/20 ml-2">
+                        <Button 
+                            onClick={() => { 
+                                if (!canChangePrices) return toast.error("⛔ No tienes permisos para crear productos.", { icon: '🔒' });
+                                setEditingProduct(null); 
+                                setIsProductModalOpen(true); 
+                            }} 
+                            className="shadow-xl shadow-brand/20 ml-2"
+                        >
                             <Plus size={20} className="mr-2"/> Nuevo Producto
                         </Button>
                     </div>
@@ -1069,14 +1287,20 @@ export const InventoryPage = () => {
                                     const currentStock = p.stock; 
                                     const hasPendingPrice = p.priceActivationDate && p.nextPrice !== undefined && p.nextPrice !== null;
                                     
-                                    // IDs para navegación de teclado
                                     const prevRowId = index > 0 ? currentProducts[index - 1].id : null;
                                     const nextRowId = index < currentProducts.length - 1 ? currentProducts[index + 1].id : null;
 
                                     return (
                                         <tr 
                                             key={p.id} 
-                                            onClick={() => { setEditingProduct(p); setIsProductModalOpen(true); }}
+                                            onClick={() => { 
+                                                if (canChangePrices) {
+                                                    setEditingProduct(p); 
+                                                    setIsProductModalOpen(true); 
+                                                } else {
+                                                    toast.error("⛔ No tienes permisos para editar toda la ficha.", { icon: '🔒' });
+                                                }
+                                            }}
                                             className={cn("cursor-pointer transition-all h-[70px]", isSelected ? "bg-brand/5" : "hover:bg-sys-50")}
                                         >
                                             <td className="p-4 text-center" onClick={(e) => e.stopPropagation()}>
@@ -1095,7 +1319,6 @@ export const InventoryPage = () => {
                                                 </div>
                                             </td>
                                             
-                                            {/* STOCK COLUMNS - EDITABLE ONLY FOR ACTIVE BRANCH AND IF EDIT MODE IS ON */}
                                             {branches.map(b => {
                                                 const isCurrentBranch = b.id === activeBranchId && activeBranchId !== 'ALL';
                                                 let stockVal = isCurrentBranch ? currentStock : (globalStock[p.id]?.[b.id] || 0);
@@ -1111,6 +1334,7 @@ export const InventoryPage = () => {
                                                                 onSave={handleInlineSave}
                                                                 type="number"
                                                                 disabled={!isEditMode}
+                                                                onRequestAuth={handleRequestAuth} // 🔥 Pide PIN si no tiene permiso y da click
                                                                 nextRowId={nextRowId}
                                                                 prevRowId={prevRowId}
                                                                 className={cn("mx-auto w-20 text-center font-black rounded-lg", 
@@ -1124,7 +1348,6 @@ export const InventoryPage = () => {
                                                 );
                                             })}
 
-                                            {/* COSTO FINAL - EDITABLE */}
                                             <td className="p-2 text-right border-l border-sys-100 font-mono text-xs font-bold text-sys-500" onClick={e => e.stopPropagation()}>
                                                 <EditableCell 
                                                     value={p.cost} 
@@ -1135,12 +1358,12 @@ export const InventoryPage = () => {
                                                     type="number"
                                                     prefix="$ "
                                                     disabled={!isEditMode}
+                                                    onRequestAuth={handleRequestAuth} // 🔥 Pide PIN
                                                     nextRowId={nextRowId}
                                                     prevRowId={prevRowId}
                                                 />
                                             </td>
 
-                                            {/* PRECIO - EDITABLE */}
                                             <td className="p-2 text-right" onClick={e => e.stopPropagation()}>
                                                 <div className="flex flex-col items-end">
                                                     <div className="flex items-center justify-end w-full gap-1.5">
@@ -1158,6 +1381,7 @@ export const InventoryPage = () => {
                                                             type="number"
                                                             prefix="$ "
                                                             disabled={!isEditMode}
+                                                            onRequestAuth={handleRequestAuth} // 🔥 Pide PIN
                                                             nextRowId={nextRowId}
                                                             prevRowId={prevRowId}
                                                             className={cn("text-base font-black w-24", promo ? "text-purple-600" : "text-sys-900")}
@@ -1169,9 +1393,46 @@ export const InventoryPage = () => {
 
                                             <td className="p-4" onClick={(e) => e.stopPropagation()}>
                                                 <div className="flex justify-center gap-1">
-                                                    <button onClick={() => setStockEntryProduct(p)} className="p-2 rounded-xl text-green-600 hover:bg-green-50 transition-all border border-transparent hover:border-green-100"><Package size={18}/></button>
-                                                    <button onClick={() => { setEditingProduct(p); setIsProductModalOpen(true); }} className="p-2 rounded-xl text-brand hover:bg-brand/5 transition-all"><Edit2 size={18}/></button>
-                                                    {isAdmin && <button onClick={() => { if(window.confirm('¿Eliminar producto?')) productRepository.delete(p.id).then(() => loadData(false, true)); }} className="p-2 rounded-xl text-red-300 hover:text-red-600 hover:bg-red-50 transition-all"><Trash2 size={18}/></button>}
+                                                    <button 
+                                                        onClick={() => {
+                                                            if (canAddStock || canRemoveStock) {
+                                                                setStockEntryProduct(p);
+                                                            } else {
+                                                                setPinAuthData({
+                                                                    isOpen: true,
+                                                                    actionName: 'Ajustar Kardex (Stock)',
+                                                                    callback: () => setStockEntryProduct(p)
+                                                                });
+                                                            }
+                                                        }} 
+                                                        className="p-2 rounded-xl text-green-600 hover:bg-green-50 transition-all border border-transparent hover:border-green-100" 
+                                                        title="Ajuste de Stock Kardex"
+                                                    >
+                                                        <Package size={18}/>
+                                                    </button>
+                                                    <button 
+                                                        onClick={() => { 
+                                                            if (canChangePrices) {
+                                                                setEditingProduct(p); 
+                                                                setIsProductModalOpen(true); 
+                                                            } else {
+                                                                setPinAuthData({
+                                                                    isOpen: true,
+                                                                    actionName: 'Editar Producto',
+                                                                    callback: () => { setEditingProduct(p); setIsProductModalOpen(true); }
+                                                                });
+                                                            }
+                                                        }} 
+                                                        className="p-2 rounded-xl text-brand hover:bg-brand/5 transition-all" 
+                                                        title="Editar Producto"
+                                                    >
+                                                        <Edit2 size={18}/>
+                                                    </button>
+                                                    {isSuperUser && (
+                                                        <button onClick={() => { if(window.confirm('¿Eliminar producto?')) productRepository.delete(p.id).then(() => loadData(false, true)); }} className="p-2 rounded-xl text-red-300 hover:text-red-600 hover:bg-red-50 transition-all" title="Eliminar">
+                                                            <Trash2 size={18}/>
+                                                        </button>
+                                                    )}
                                                 </div>
                                             </td>
                                         </tr>
@@ -1195,6 +1456,13 @@ export const InventoryPage = () => {
             </div>
 
             {/* MODALES */}
+            <PinVerificationModal 
+                isOpen={pinAuthData?.isOpen} 
+                actionName={pinAuthData?.actionName} 
+                onClose={() => setPinAuthData(null)} 
+                onSuccess={() => pinAuthData?.callback && pinAuthData.callback()}
+            />
+            
             <ProductModal 
                 isOpen={isProductModalOpen} 
                 onClose={() => setIsProductModalOpen(false)} 
@@ -1222,6 +1490,13 @@ export const InventoryPage = () => {
                 .filter-select { @apply h-11 px-4 border-2 border-sys-100 rounded-2xl text-xs font-black bg-white min-w-[160px] outline-none focus:border-brand cursor-pointer text-sys-700 hover:border-brand/20 transition-all appearance-none shadow-sm; }
                 .no-scrollbar::-webkit-scrollbar { display: none; }
                 .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+                @keyframes shake {
+                    0%, 100% { transform: translateX(0); }
+                    25% { transform: translateX(-5px); }
+                    50% { transform: translateX(5px); }
+                    75% { transform: translateX(-5px); }
+                }
+                .animate-shake { animation: shake 0.3s ease-in-out; }
             `}</style>
         </div>
     );

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { 
     X, Save, ScanLine, Scale, Package, DollarSign, Tag, Truck, 
     AlertTriangle, Award, ChevronDown, Check, Calendar, Plus, 
-    Trash2, Megaphone, Clock, Barcode, Edit2, Percent, Layers, ShoppingBag, MapPin, Loader2, Info
+    Trash2, Megaphone, Clock, Barcode, Edit2, Percent, Layers, ShoppingBag, MapPin, Loader2, Info, Banknote, CreditCard, QrCode
 } from 'lucide-react';
 import { Button } from '../../../core/ui/Button';
 import { Switch } from '../../../core/ui/Switch';
@@ -136,12 +136,11 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
     brand: '',
     supplier: '',
     
-    // 🔥 SPRINT 2: Campos de Precio Expandidos
-    costNeto: '', // Costo sin IVA
-    cost: '',     // Costo CON IVA (Costo Final)
-    markup: '40', // Margen sobre el costo FINAL
-    price: '',    // PVP
-    taxRate: '21',// IVA (10.5 o 21)
+    costNeto: '', 
+    cost: '',     
+    markup: '40', 
+    price: '',    
+    taxRate: '21',
     
     stock: '', 
     minStock: '5',
@@ -154,7 +153,9 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
     promoDiscount: '',       
     promoPayValue: '',       
     promoStartDate: '',
-    promoEndDate: ''
+    promoEndDate: '',
+    // 🔥 SPRINT 1: Control de Medios de Pago Permitidos (Si está vacío, aplica a todos)
+    promoAllowedMethods: [] 
   });
 
   // Cargar Listas
@@ -183,13 +184,11 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
         let cFinal = productToEdit.cost || '';
         let tax = productToEdit.taxRate || '21';
         
-        // Si hay costo final y tax, calculamos el Neto hacia atrás
         if (cFinal) {
             const taxMult = 1 + (parseFloat(tax) / 100);
             cNeto = (parseFloat(cFinal) / taxMult).toFixed(2);
         }
 
-        // Si no hay markup guardado pero sí costo final y precio, lo calculamos
         if (!calculatedMarkup && cFinal && productToEdit.price) {
            const c = parseFloat(cFinal);
            const p = parseFloat(productToEdit.price);
@@ -215,7 +214,6 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
             stock: productToEdit.stock || '', 
             isWeighable: productToEdit.isWeighable === true,
             
-            // Finanzas
             taxRate: String(tax),
             costNeto: cNeto,
             cost: String(cFinal),
@@ -228,7 +226,8 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
             promoDiscount: hasPromo ? String(promo.discountValue || '') : '',
             promoPayValue: hasPromo ? String(promo.payValue || '') : '',
             promoStartDate: hasPromo ? (promo.startDate || '') : new Date().toISOString().split('T')[0],
-            promoEndDate: hasPromo ? (promo.endDate || '') : ''
+            promoEndDate: hasPromo ? (promo.endDate || '') : '',
+            promoAllowedMethods: hasPromo ? (promo.allowedMethods || []) : [] // Array de strings ['cash', 'card']
         });
       } else {
         setFormData({ 
@@ -238,7 +237,8 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
             isWeighable: false,
             promoActive: false, promoType: 'PERCENTAGE', promoValue: '', promoDiscount: '', promoPayValue: '', 
             promoStartDate: new Date().toISOString().split('T')[0], 
-            promoEndDate: ''
+            promoEndDate: '',
+            promoAllowedMethods: []
         });
       }
       setActiveTab('general');
@@ -247,18 +247,16 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
     }
   }, [isOpen, productToEdit]);
 
-  // 🔥 SPRINT 2: CALCULADORA DE PRECIOS BIDIRECCIONAL
+  // CALCULADORA DE PRECIOS BIDIRECCIONAL
   const handlePriceCalculation = (field, value) => {
     let newData = { ...formData, [field]: value };
     
     const taxMult = 1 + (parseFloat(newData.taxRate) / 100);
     
-    // Si cambia la Tasa de IVA, recalculamos el Costo Final basados en el Costo Neto
     if (field === 'taxRate') {
         if (newData.costNeto) {
             const newCost = parseFloat(newData.costNeto) * taxMult;
             newData.cost = newCost.toFixed(2);
-            // Y arrastramos el cálculo al Precio Final
             if (newData.markup) {
                 const newPrice = newCost * (1 + parseFloat(newData.markup) / 100);
                 newData.price = (Math.ceil(newPrice / 10) * 10).toFixed(2);
@@ -266,7 +264,6 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
         }
     }
 
-    // 1. Si cambian el Costo NETO -> Calculamos Costo Final (+IVA) -> Y Precio de Venta
     if (field === 'costNeto') {
         const cNeto = parseFloat(value) || 0;
         if (cNeto > 0) {
@@ -282,7 +279,6 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
         }
     }
     
-    // 2. Si cambian el Costo FINAL -> Calculamos Costo Neto (-IVA) -> Y Precio de Venta
     else if (field === 'cost') {
         const cFinal = parseFloat(value) || 0;
         if (cFinal > 0) {
@@ -298,7 +294,6 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
         }
     }
     
-    // 3. Si cambian el MARGEN -> Mantenemos Costo Final -> Calculamos Precio
     else if (field === 'markup') {
         const cFinal = parseFloat(newData.cost) || 0;
         const markup = parseFloat(value) || 0;
@@ -308,7 +303,6 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
         }
     }
     
-    // 4. Si cambian el PRECIO FINAL -> Mantenemos Costo Final -> Recalculamos Margen
     else if (field === 'price') {
         const cFinal = parseFloat(newData.cost) || 0;
         const price = parseFloat(value) || 0;
@@ -332,17 +326,28 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
       setFormData(prev => ({ ...prev, barcodes: prev.barcodes.filter(b => b !== code) }));
   };
 
+  // 🔥 SPRINT 1: Función para alternar métodos de pago permitidos en la oferta
+  const togglePromoMethod = (methodId) => {
+      setFormData(prev => {
+          let currentMethods = [...prev.promoAllowedMethods];
+          if (currentMethods.includes(methodId)) {
+              currentMethods = currentMethods.filter(m => m !== methodId);
+          } else {
+              currentMethods.push(methodId);
+          }
+          return { ...prev, promoAllowedMethods: currentMethods };
+      });
+  };
+
   // 💾 GUARDADO MAESTRO CON FEEDBACK INSTANTÁNEO
   const handleSubmit = async (e) => { 
     if (e) e.preventDefault(); 
     
-    // 🛡️ 1. VALIDACIONES ESTRICTAS (SPRINT 2)
     if (!formData.name.trim()) {
         setActiveTab('general');
         return toast.error("⚠️ El nombre del producto es obligatorio");
     }
 
-    // Validación de Código de Barras (Obligatorio si no es balanza)
     if (!formData.isWeighable && (!formData.code.trim() && formData.barcodes.length === 0)) {
         setActiveTab('general');
         return toast.error("⚠️ CRÍTICO: Debe asignar al menos un Código o escanear un Código de Barras para vender este producto.");
@@ -371,7 +376,7 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
         const masterPayload = {
             ...formData, 
             name: formData.name.trim(),
-            code: formData.code.trim() || formData.barcodes[0] || `SKU-${Date.now().toString().slice(-6)}`, // Fallback de seguridad
+            code: formData.code.trim() || formData.barcodes[0] || `SKU-${Date.now().toString().slice(-6)}`, 
             barcode: formData.barcodes, 
             category: formData.category,
             brand: formData.brand,
@@ -385,16 +390,12 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
             user: user?.name || 'Sistema'
         };
 
-        // 🛡️ Forzar Stock Inicial a Numérico Seguro (Evita comas que rompen el parseInt)
         masterPayload.stock = parseFloat(String(formData.stock).replace(',', '.')) || 0;
 
-        // Si estamos EDITANDO un producto existente, borramos el stock del payload
-        // para evitar sobrescribir el inventario actual (Se hace desde Ajustes).
         if (productToEdit && productToEdit.id) {
             delete masterPayload.stock; 
         }
 
-        // Limpieza profunda de los campos de UI temporales
         delete masterPayload.promoActive;
         delete masterPayload.promoType;
         delete masterPayload.promoValue;
@@ -402,10 +403,10 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
         delete masterPayload.promoPayValue;
         delete masterPayload.promoStartDate;
         delete masterPayload.promoEndDate;
+        delete masterPayload.promoAllowedMethods;
         delete masterPayload.promo; 
-        delete masterPayload.costNeto; // Este no va a la DB, calculamos al vuelo el costo final
+        delete masterPayload.costNeto; 
 
-        // Construcción limpia del objeto Promo
         let promoPayload = null;
         if (formData.promoActive) {
             promoPayload = {
@@ -415,6 +416,7 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
                 payValue: parseFloat(String(formData.promoPayValue).replace(',', '.')) || 0,
                 startDate: formData.promoStartDate,
                 endDate: formData.promoEndDate,
+                allowedMethods: formData.promoAllowedMethods || [], // 🔥 Guardamos los métodos permitidos
                 name: 
                     formData.promoType === 'PERCENTAGE' ? `${formData.promoValue}% OFF` :
                     formData.promoType === 'BULK_THRESHOLD' ? `Llevando ${formData.promoValue}+: ${formData.promoDiscount}% OFF` :
@@ -423,7 +425,6 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
             };
         }
 
-        // 3. ENVÍO A LA BASE DE DATOS
         await onSave(masterPayload, promoPayload);
         
         toast.success('¡Producto guardado!', { id: loadingToastId });
@@ -442,6 +443,14 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
       { value: 'BULK_THRESHOLD', label: 'Descuento por Volumen', icon: Layers },
       { value: 'QUANTITY_LIMIT', label: 'Limite de Cantidad', icon: AlertTriangle },
       { value: 'BUNDLE_DEAL', label: 'Combo (Ej: 3x2)', icon: ShoppingBag }
+  ];
+
+  // 🔥 Opciones de métodos de pago para filtrar la oferta
+  const paymentMethodOptions = [
+      { id: 'cash', label: 'Efectivo', icon: Banknote, color: 'emerald' },
+      { id: 'transfer', label: 'Transferencia', icon: CreditCard, color: 'indigo' },
+      { id: 'mercadopago', label: 'MercadoPago QR', icon: QrCode, color: 'blue' },
+      { id: 'card', label: 'Tarjetas (Todas)', icon: CreditCard, color: 'purple' }
   ];
 
   if (!isOpen) return null;
@@ -578,7 +587,6 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
                     <Switch checked={!!formData.isWeighable} onCheckedChange={(c) => setFormData({...formData, isWeighable: c})} disabled={isSaving} />
                 </div>
 
-                {/* Stock Edit Protection */}
                 {productToEdit && productToEdit.id ? (
                     <div className="bg-orange-50 border border-orange-100 p-3 rounded-xl text-xs text-orange-700 flex items-center gap-2">
                         <Package size={16}/>
@@ -599,11 +607,10 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
              </div>
           )}
 
-          {/* --- TAB PRECIOS (SPRINT 2) --- */}
+          {/* --- TAB PRECIOS --- */}
           {activeTab === 'precios' && (
              <div className="space-y-6 animate-in slide-in-from-right-8 duration-300 fade-in">
                 
-                {/* Selector de IVA */}
                 <div className="bg-indigo-50 border border-indigo-100 p-4 rounded-xl flex items-center justify-between">
                     <div>
                         <p className="text-sm font-bold text-indigo-900">Impuesto AFIP (IVA)</p>
@@ -616,7 +623,6 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
                     </div>
                 </div>
 
-                {/* Fila de Costos (Bidireccional) */}
                 <div className="grid grid-cols-2 gap-5 items-start">
                     <PremiumInput 
                         label="Costo Neto (Sin IVA)" type="number" step="0.01" placeholder="0.00"
@@ -637,7 +643,6 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
                     <ChevronDown size={20} />
                 </div>
 
-                {/* Fila de Venta (Margen y PVP) */}
                 <div className="grid grid-cols-2 gap-5 items-end">
                     <PremiumInput 
                         label="Margen de Ganancia (%)" type="number" step="0.1" placeholder="30"
@@ -790,7 +795,38 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
                             )}
                         </div>
 
-                        <div className="grid grid-cols-2 gap-4 pt-2 border-t border-dashed border-sys-100">
+                        {/* 🔥 SPRINT 1: SELECTOR DE MÉTODOS DE PAGO PERMITIDOS */}
+                        <div className="pt-4 border-t border-dashed border-sys-200">
+                            <label className="text-[10px] font-bold text-sys-500 uppercase block mb-2 flex items-center justify-between">
+                                <span>Restricción por Medio de Pago</span>
+                                {formData.promoAllowedMethods.length === 0 && <span className="text-brand bg-brand/10 px-2 py-0.5 rounded">Aplica a Todos</span>}
+                            </label>
+                            
+                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                                {paymentMethodOptions.map((method) => {
+                                    const isSelected = formData.promoAllowedMethods.includes(method.id);
+                                    return (
+                                        <button
+                                            key={method.id}
+                                            type="button"
+                                            onClick={() => togglePromoMethod(method.id)}
+                                            className={cn(
+                                                "p-2 rounded-xl border flex flex-col items-center justify-center gap-1 transition-all text-center h-16",
+                                                isSelected 
+                                                    ? `bg-${method.color}-50 border-${method.color}-300 text-${method.color}-700 shadow-sm ring-2 ring-${method.color}-100` 
+                                                    : "bg-white border-sys-200 text-sys-400 hover:border-sys-300"
+                                            )}
+                                        >
+                                            <method.icon size={16} />
+                                            <span className="text-[9px] font-bold leading-tight">{method.label}</span>
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                            <p className="text-[9px] text-sys-400 mt-2 italic">Si no seleccionas ninguno, la oferta aplicará automáticamente a cualquier método de pago. (Las ofertas nunca aplican a "Pago Combinado" por seguridad).</p>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-4 pt-4 border-t border-dashed border-sys-200">
                             <div>
                                 <label className="text-[10px] font-bold text-sys-500 uppercase block mb-1">Inicio Vigencia</label>
                                 <input 

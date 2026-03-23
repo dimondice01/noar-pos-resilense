@@ -16,35 +16,25 @@ import { useAuthStore } from '../../auth/store/useAuthStore';
 // 🕒 HELPER: ACTIVADOR DE PRECIOS (JIT - TIMEZONE SAFE)
 // ==========================================
 const checkAndActivatePrice = async (product, dbLocal) => {
-    // 🛡️ Blindaje total: Debe tener fecha y precio futuro
     if (!product || !product.priceActivationDate || !product.nextPrice) return product;
 
-    // 🔥 FIX CRÍTICO: Usar hora local del dispositivo, no UTC
     const today = new Date().toLocaleDateString('sv-SE'); 
     const activationDate = product.priceActivationDate;
 
-    // Si llegó el día (o ya pasó)
     if (today >= activationDate) {
-        // 🔥 PROMOCIÓN DE PRECIO
         const updatedProduct = {
             ...product,
-            price: Number(product.nextPrice), // El precio futuro ahora es el actual
-            cost: product.nextCost ? Number(product.nextCost) : product.cost, // Si había costo programado también
-            
-            // Limpiamos la programación
+            price: Number(product.nextPrice), 
+            cost: product.nextCost ? Number(product.nextCost) : product.cost, 
             nextPrice: null,
             nextCost: null,
             priceActivationDate: null,
-            
             updatedAt: new Date().toISOString(),
-            syncStatus: 'pending' // Para que suba a la nube
+            syncStatus: 'pending' 
         };
 
-        // Guardamos en local (Usamos await para asegurar consistencia UI)
         try {
             await dbLocal.products.put(updatedProduct);
-            
-            // Disparamos sync en background
             triggerCloudUpdate(updatedProduct);
         } catch (e) { console.error("Error activating price:", e); }
 
@@ -54,7 +44,6 @@ const checkAndActivatePrice = async (product, dbLocal) => {
     return product;
 };
 
-// Helper para subir cambios silenciosos a la nube
 const triggerCloudUpdate = async (product) => {
     if (!navigator.onLine) return;
     const { user } = useAuthStore.getState();
@@ -81,34 +70,25 @@ const triggerCloudUpdate = async (product) => {
 const _injectBranchData = async (products, branchId, dbLocal) => {
     if (!products || products.length === 0) return [];
     
-    // 🔥 OPTIMIZACIÓN EXTREMA: Traemos todo a RAM de un golpe.
-    // Dexie falla con .anyOf() en claves compuestas. Leer el array completo 
-    // y mapearlo en memoria es mucho más rápido y a prueba de errores.
     const allInventory = await dbLocal.inventory.toArray();
     
-    // 1. Caso: Todas las sucursales (Stock Consolidado para Owner)
     if (!branchId || branchId === 'ALL') {
-        
-        // Diccionario de acceso rápido O(1)
         const globalStockMap = {};
         for (const item of allInventory) {
             if (!globalStockMap[item.productId]) globalStockMap[item.productId] = 0;
             globalStockMap[item.productId] += parseFloat(item.stock) || 0;
         }
 
-        // Mapeamos sumando stocks instantáneamente
         return products.map(p => {
             return {
                 ...p,
                 stock: globalStockMap[p.id] || 0,
-                promo: null, // En vista global no mostramos una promo específica (confuso)
+                promo: null, 
                 isMultiBranch: true
             };
         });
     }
 
-    // 2. Caso: Sucursal Específica (Cajero u Owner filtrando)
-    // Map para acceso O(1) solo con los ítems de esta sucursal
     const invMap = new Map();
     for (const item of allInventory) {
         if (item.branchId === branchId) {
@@ -121,7 +101,6 @@ const _injectBranchData = async (products, branchId, dbLocal) => {
         return {
             ...p,
             stock: branchData ? (parseFloat(branchData.stock) || 0) : 0,
-            // 🔥 Si hay promo local, la usamos.
             promo: branchData?.promo || null, 
             _branchId: branchId
         };
@@ -138,20 +117,14 @@ export const productRepository = {
     async getAll() {
         const dbLocal = await getDB();
         const { activeBranchId } = useAuthStore.getState();
-
-        // 1. Obtener maestros (filtro deleted)
         const products = await dbLocal.products.filter(p => !p.deleted).toArray();
-        
-        // 2. Inyectar Stock/Promo según contexto
         return await _injectBranchData(products, activeBranchId, dbLocal);
     },
 
-    // 🔥 Método blindado con Activación de Precios + PROMOS LOCALES
     async getAllByBranch(branchId) {
         const dbLocal = await getDB();
         let products = await dbLocal.products.filter(p => !p.deleted).toArray();
         
-        // Activación JIT global
         const today = new Date().toLocaleDateString('sv-SE');
         const productsToUpdate = [];
 
@@ -186,15 +159,12 @@ export const productRepository = {
         const { activeBranchId } = useAuthStore.getState();
         const cleanCode = code.trim();
 
-        // 1. Intento Directo
         let product = await dbLocal.products.where('code').equals(cleanCode).first();
         
-        // 2. Intento por Barcode
         if (!product || product.deleted) {
             product = await dbLocal.products.where('barcode').equals(cleanCode).first();
         }
 
-        // 3. Fallback Manual (array scan)
         if (!product || product.deleted) {
             product = await dbLocal.products
                 .filter(p => !p.deleted && Array.isArray(p.barcode) && p.barcode.includes(cleanCode))
@@ -202,10 +172,7 @@ export const productRepository = {
         }
 
         if (product && !product.deleted) {
-            // 🔥 ACTIVACIÓN JIT INDIVIDUAL
             const activeProduct = await checkAndActivatePrice(product, dbLocal);
-            
-            // 🔥 INYECCIÓN DE PROMO LOCAL (CRÍTICO PARA POS)
             const enriched = await _injectBranchData([activeProduct], activeBranchId, dbLocal);
             return enriched[0];
         }
@@ -222,27 +189,20 @@ export const productRepository = {
         let results = await dbLocal.products
             .filter(p => {
                 if (p.deleted) return false;
-                
                 if (p.name.toLowerCase().includes(term)) return true;
                 if (p.code && p.code.toString().toLowerCase().includes(term)) return true;
-
                 if (Array.isArray(p.barcode)) {
                     return p.barcode.some(b => b.includes(term));
                 } else if (p.barcode) {
                     return p.barcode.toString().toLowerCase().includes(term);
                 }
-                
                 if (p.category && typeof p.category === 'string' && p.category.toLowerCase().includes(term)) return true;
-
                 return false;
             })
             .limit(50)
             .toArray();
 
-        // 🔥 ACTIVACIÓN JIT EN RESULTADOS DE BÚSQUEDA
         const processedResults = await Promise.all(results.map(p => checkAndActivatePrice(p, dbLocal)));
-        
-        // 🔥 INYECCIÓN DE DATOS LOCALES
         return await _injectBranchData(processedResults, activeBranchId, dbLocal);
     },
 
@@ -258,45 +218,34 @@ export const productRepository = {
         const productId = product.id || crypto.randomUUID();
         const timestamp = new Date().toISOString();
         
-        // 🛡️ HIDRATACIÓN DE SEGURIDAD
         let existingProduct = {};
         try {
             const current = await dbLocal.products.get(productId);
             if (current) existingProduct = current;
         } catch (e) { console.warn("Nuevo producto"); }
 
-        // --- CONSTRUCCIÓN OBJETO MAESTRO ---
         const masterProduct = {
-            // 1. Mantenemos datos que no se editan en el modal
             ...existingProduct, 
-            
-            // 2. Sobrescribimos con los datos nuevos
             id: productId,
             name: (product.name || existingProduct.name || '').toUpperCase(),
             code: product.code !== undefined ? product.code : (existingProduct.code || ''),
             barcode: Array.isArray(product.barcode) ? product.barcode : (product.barcode ? [product.barcode] : (existingProduct.barcode || [])),
-            
             category: product.category || existingProduct.category || 'GENERAL',
             categoryId: product.categoryId || existingProduct.categoryId || 'general',
-            
             brand: product.brand || existingProduct.brand || 'GENERICO',
             brandId: product.brandId || existingProduct.brandId || null,
-
             unit: product.unit || existingProduct.unit || 'UN',
             isWeighable: product.isWeighable !== undefined ? product.isWeighable : !!existingProduct.isWeighable,
             taxRate: parseFloat(product.taxRate) || existingProduct.taxRate || 21,
             
-            // Precios Globales
             cost: parseFloat(product.cost) || 0,
             price: parseFloat(product.price) || 0,
             minPrice: parseFloat(product.minPrice) || 0,
             
-            // 🔥 CAMPOS DE PROGRAMACIÓN
             nextPrice: product.nextPrice !== undefined ? product.nextPrice : (existingProduct.nextPrice || null),
             nextCost: product.nextCost !== undefined ? product.nextCost : (existingProduct.nextCost || null),
             priceActivationDate: product.priceActivationDate !== undefined ? product.priceActivationDate : (existingProduct.priceActivationDate || null),
 
-            // 🔥 FIX CRÍTICO: Permitimos que el stock pase si viene explícito
             stock: product.stock !== undefined ? Number(product.stock) : (existingProduct.stock || 0),
 
             updatedAt: timestamp,
@@ -304,11 +253,8 @@ export const productRepository = {
             syncStatus: 'pending' 
         };
 
-        // 💾 Persistencia Local Inmediata
         await dbLocal.products.put(masterProduct);
 
-        // 🔥 FIX CRÍTICO 2: Inyectar Stock Inicial en Inventory
-        // Si es un producto NUEVO y tiene stock, disparamos el addStock a la sucursal actual
         if (isNewProduct && masterProduct.stock > 0 && activeBranchId && activeBranchId !== 'ALL') {
             try {
                 await this.addStock(
@@ -316,14 +262,14 @@ export const productRepository = {
                     masterProduct.stock, 
                     'Stock Inicial', 
                     user.name, 
-                    activeBranchId
+                    activeBranchId,
+                    'STOCK_IN'
                 );
             } catch (err) {
                 console.error("Fallo al inyectar stock inicial:", err);
             }
         }
 
-        // ☁️ Persistencia Cloud (Maestro Global)
         if (navigator.onLine) {
             try {
                 const masterRef = doc(db, `companies/${user.companyId}/products`, productId);
@@ -344,10 +290,29 @@ export const productRepository = {
     },
 
     // ==========================================
-    // 📦 GESTIÓN DE STOCK (LOCAL BRANCH)
+    // 📦 GESTIÓN DE STOCK Y KARDEX (NUEVO MOTOR)
     // ==========================================
     
-    async addStock(productId, quantity, description = 'Ingreso', userName = 'Sistema', forcedBranchId = null) {
+    // 🔥 NUEVO: Obtener el Kardex completo de un producto
+    async getProductMovements(productId, branchIdFilter = null) {
+        const dbLocal = await getDB();
+        const { activeBranchId } = useAuthStore.getState();
+        const branch = branchIdFilter || activeBranchId;
+
+        let movements = await dbLocal.movements
+            .where('productId').equals(productId)
+            .reverse()
+            .toArray();
+
+        if (branch && branch !== 'ALL') {
+            movements = movements.filter(m => m.branchId === branch);
+        }
+
+        return movements;
+    },
+    
+    // 🔥 ACTUALIZADO: Soporte para Mermas, Ajustes y Sync Reparado
+    async addStock(productId, quantity, description = 'Ingreso', userName = 'Sistema', forcedBranchId = null, movementType = null) {
         const dbLocal = await getDB();
         const { user, activeBranchId } = useAuthStore.getState();
         const branchId = forcedBranchId || activeBranchId;
@@ -358,6 +323,8 @@ export const productRepository = {
         if (isNaN(qty) || qty === 0) return;
 
         const timestamp = new Date().toISOString();
+        const movId = `mov_${Date.now()}_${crypto.randomUUID().slice(0,5)}`;
+        const type = movementType || (qty > 0 ? 'STOCK_IN' : 'STOCK_OUT');
 
         // 🔄 TRANSACCIÓN LOCAL ATÓMICA
         await dbLocal.transaction('rw', [dbLocal.inventory, dbLocal.movements], async () => {
@@ -365,53 +332,62 @@ export const productRepository = {
             const currentStock = currentInv ? (parseFloat(currentInv.stock) || 0) : 0;
             const newStock = currentStock + qty;
 
-            // Mantenemos la promo si existía
             const currentPromo = currentInv?.promo || null;
 
             await dbLocal.inventory.put({
                 branchId,
                 productId,
                 stock: newStock,
-                promo: currentPromo, // 🔥 Preservamos promo
+                promo: currentPromo, 
                 updatedAt: timestamp,
                 syncStatus: 'pending'
             });
 
             await dbLocal.movements.add({
-                id: `mov_${Date.now()}_${crypto.randomUUID().slice(0,5)}`,
+                id: movId,
                 productId,
                 branchId,
-                type: qty > 0 ? 'IN' : 'OUT',
+                type: type, // Ej: 'MERMA', 'STOCK_IN', 'SALE'
                 amount: Math.abs(qty),
                 description: description || 'Ajuste Manual',
                 user: userName,
                 date: timestamp,
+                refId: null,
                 syncStatus: 'pending'
             });
         });
 
-        // ☁️ ACTUALIZACIÓN CLOUD
+        // ☁️ ACTUALIZACIÓN CLOUD (Alineada con el syncService)
         if (navigator.onLine) {
             try {
                 const batch = writeBatch(db);
+                
+                // 1. Actualizar Inventario Cloud
                 const inventoryRef = doc(db, `companies/${user.companyId}/branches/${branchId}/inventory`, productId);
                 batch.set(inventoryRef, {
                     stock: increment(qty),
                     updatedAt: serverTimestamp()
                 }, { merge: true });
 
-                const logRef = doc(collection(db, `companies/${user.companyId}/stock_movements`));
+                // 2. Registrar Movimiento (Alineado con "movements")
+                const logRef = doc(db, `companies/${user.companyId}/movements`, movId);
                 batch.set(logRef, {
                     productId,
-                    qty,
+                    amount: Math.abs(qty),
                     branchId,
-                    type: qty > 0 ? 'STOCK_IN' : 'STOCK_OUT',
-                    reason: description,
+                    type: type,
+                    description: description,
                     user: userName,
-                    date: serverTimestamp()
+                    date: serverTimestamp(),
+                    refId: null
                 });
 
                 await batch.commit();
+                
+                // Limpiar syncStatus local para no subirlo 2 veces
+                await dbLocal.inventory.update([branchId, productId], {syncStatus: 'synced'});
+                await dbLocal.movements.update(movId, {syncStatus: 'synced'});
+                
             } catch (e) {
                 console.error("Error actualizando stock en nube:", e);
             }
@@ -419,7 +395,7 @@ export const productRepository = {
     },
 
     // ==========================================
-    // 🏷️ MOTOR DE PROMOCIONES (LOCALIZADO POR BRANCH) 🔥
+    // 🏷️ MOTOR DE PROMOCIONES (LOCALIZADO POR BRANCH)
     // ==========================================
     
     async setPromotion(productId, promoRule) {
@@ -430,21 +406,19 @@ export const productRepository = {
 
         const timestamp = new Date().toISOString();
 
-        // 1. Upsert en Inventory Local (Key compuesta [branchId+productId])
         await dbLocal.transaction('rw', [dbLocal.inventory], async () => {
             const currentInv = await dbLocal.inventory.where({ branchId: activeBranchId, productId }).first();
             
             await dbLocal.inventory.put({
                 branchId: activeBranchId,
                 productId,
-                stock: currentInv ? currentInv.stock : 0, // Si no existe, stock 0
-                promo: promoRule, // 🔥 Guardamos la promo AQUÍ
+                stock: currentInv ? currentInv.stock : 0, 
+                promo: promoRule, 
                 updatedAt: timestamp,
                 syncStatus: 'pending'
             });
         });
 
-        // 2. Actualizar en nube (Subcolección de Branch)
         if (navigator.onLine && user?.companyId) {
             try {
                 const invRef = doc(db, `companies/${user.companyId}/branches/${activeBranchId}/inventory`, productId);

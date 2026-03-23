@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { 
     ArrowLeft, User, CreditCard, Calendar, 
-    TrendingDown, DollarSign, FileText, Printer, Search, MapPin, Building2
+    TrendingDown, DollarSign, FileText, Printer, Search, MapPin, Building2, CheckCircle2, Mail
 } from 'lucide-react';
 import { useAuthStore } from '../../auth/store/useAuthStore'; 
 import { clientRepository } from '../repositories/clientRepository';
@@ -62,9 +62,6 @@ export const ClientDashboard = ({ clientId, onBack }) => {
               return;
           }
 
-          // 🔥 FIX: Normalizamos la estructura de datos.
-          // Si es un pago dividido, usamos el array de 'payments'.
-          // Si es pago simple, envolvemos todo el objeto en un array para iterar igual.
           const paymentsToProcess = (Array.isArray(paymentData.payments) && paymentData.payments.length > 0)
                 ? paymentData.payments 
                 : [paymentData];
@@ -75,10 +72,12 @@ export const ClientDashboard = ({ clientId, onBack }) => {
 
           // 1. Registrar Ingresos en Caja por cada método utilizado
           for (const p of paymentsToProcess) {
-              // 🔥 EL FIX ESTÁ AQUÍ: Buscamos las propiedades tanto del formato Simple como del Split
-              const realPaymentAmount = parseFloat(p.baseAmount ?? p.amountPaid ?? p.amount ?? 0); // Lo que baja la deuda
-              const moneyInBox = parseFloat(p.totalSale ?? p.total ?? p.amountPaid ?? p.amount ?? 0); // Lo que entra a la caja (con recargo)
-              const surcharge = parseFloat(p.surcharge ?? 0);
+              // 🔥 FIX CRÍTICO: Primero leemos 'amountPaid' (lo que tipeaste) o 'amount' (si es pago dividido).
+              // Si no existen, recién caemos en el 'baseAmount'.
+              const realPaymentAmount = parseFloat(p.amountPaid || p.amount || p.baseAmount || 0); 
+              
+              const surcharge = parseFloat(p.surcharge || 0);
+              const moneyInBox = realPaymentAmount + surcharge; // Lo que entra a la caja realmente
               const method = p.method || 'cash';
               
               if (realPaymentAmount <= 0) continue;
@@ -108,7 +107,8 @@ export const ClientDashboard = ({ clientId, onBack }) => {
               'PAYMENT',
               totalCapitalPaid, 
               `Pago a cuenta (${uniqueMethods.join(' + ')})`,
-              referenceId 
+              referenceId,
+              methodsUsed.length > 1 ? 'split' : methodsUsed[0] 
           );
 
           // 3. Generar Objeto Recibo para imprimir
@@ -116,15 +116,13 @@ export const ClientDashboard = ({ clientId, onBack }) => {
               localId: referenceId,
               date: new Date().toISOString(),
               client: client,
-              amount: totalMoneyInBox, // En el recibo mostramos lo que pagó realmente con recargos
+              amount: totalMoneyInBox, 
               newBalance: newBalance,
               method: methodsUsed.length > 1 ? 'SPLIT' : methodsUsed[0],
               type: 'RECEIPT',
-              // Guardamos detalle financiero para el ticket
               surcharge: parseFloat(paymentData.surcharge || 0),
               baseAmount: totalCapitalPaid,
               totalSale: totalMoneyInBox,
-              // Snapshot de la sucursal actual para el encabezado del ticket
               companySnapshot: {
                   nombre: activeBranchName || 'Sucursal Central', 
               }
@@ -144,17 +142,19 @@ export const ClientDashboard = ({ clientId, onBack }) => {
 
   // 🖨️ LÓGICA DE REIMPRESIÓN INTELIGENTE
   const handleReprint = async (mov) => {
+      const toastId = toast.loading("Buscando comprobante...");
       try {
           if (mov.type === 'SALE_DEBT' && mov.referenceId) {
               // Si es una venta, buscamos la venta completa
               const sale = await salesRepository.getSaleById(mov.referenceId);
               if (sale) {
                   setTicketData({ sale: sale });
+                  toast.dismiss(toastId);
               } else {
-                  toast.error("⚠️ No se encontró el detalle de la venta original.");
+                  toast.error("El comprobante original de esta venta no está en el dispositivo.", { id: toastId });
               }
           } else {
-              // Si es un pago, reconstruimos el recibo
+              // Si es un pago, reconstruimos el recibo a partir del Ledger
               const receipt = {
                   localId: mov.referenceId || `mov_${mov.id}`,
                   date: mov.date,
@@ -166,10 +166,11 @@ export const ClientDashboard = ({ clientId, onBack }) => {
                   companySnapshot: { nombre: activeBranchName }
               };
               setTicketData({ receipt: receipt });
+              toast.dismiss(toastId);
           }
       } catch (error) {
           console.error("Error al reimprimir:", error);
-          toast.error("Error cargando el comprobante.");
+          toast.error("Error cargando el comprobante.", { id: toastId });
       }
   };
 
@@ -179,21 +180,30 @@ export const ClientDashboard = ({ clientId, onBack }) => {
   const debt = parseFloat(client.balance || 0);
 
   return (
-    <div className="space-y-6 pb-20 animate-in slide-in-from-right duration-300">
+    <div className="space-y-6 pb-20 animate-in slide-in-from-right duration-300 max-w-[1600px] mx-auto p-4 md:p-6">
       
       {/* Header Navegación */}
-      <div className="flex items-center gap-4">
-        <button onClick={onBack} className="p-2 hover:bg-sys-100 rounded-full transition-colors text-sys-500">
+      <div className="flex items-center gap-4 bg-white p-4 rounded-3xl border border-sys-200 shadow-sm">
+        <button onClick={onBack} className="p-2 hover:bg-sys-100 rounded-full transition-colors text-sys-500 hover:text-sys-900 border border-transparent hover:border-sys-200">
             <ArrowLeft size={24} />
         </button>
-        <div>
-            <h2 className="text-2xl font-bold text-sys-900">{client.name}</h2>
-            <div className="flex items-center gap-2 text-xs text-sys-500 mt-1">
-                <span className="font-mono bg-sys-100 px-2 py-0.5 rounded text-sys-600 font-bold border border-sys-200">
-                    {client.docType === '80' ? 'CUIT' : 'DNI'} {client.docNumber}
-                </span>
-                <span>•</span>
-                <span className="uppercase font-bold text-sys-400">{client.fiscalCondition?.replace(/_/g, ' ')}</span>
+        <div className="flex items-center gap-4">
+            <div className="w-12 h-12 rounded-2xl flex items-center justify-center text-white font-black text-xl shadow-sm bg-sys-400">
+                {client.name.charAt(0).toUpperCase()}
+            </div>
+            <div>
+                <h2 className="text-2xl font-black text-sys-900 leading-none uppercase">{client.name}</h2>
+                <div className="flex items-center gap-2 text-xs text-sys-500 mt-1.5">
+                    <span className="font-mono bg-sys-100 px-2 py-0.5 rounded text-sys-600 font-bold border border-sys-200 flex items-center gap-1">
+                        <CreditCard size={12}/> {client.docType === '80' ? 'CUIT' : 'DNI'} {client.docNumber || 'S/N'}
+                    </span>
+                    <span className="font-mono bg-sys-100 px-2 py-0.5 rounded text-sys-600 font-bold border border-sys-200">
+                        ID: {client.sequentialId || 'S/N'}
+                    </span>
+                    <span className="uppercase font-bold text-sys-400 bg-sys-50 px-2 py-0.5 rounded border border-sys-100">
+                        {client.fiscalCondition?.replace(/_/g, ' ') || 'CONSUMIDOR FINAL'}
+                    </span>
+                </div>
             </div>
         </div>
       </div>
@@ -202,43 +212,58 @@ export const ClientDashboard = ({ clientId, onBack }) => {
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
           
           {/* TARJETA DE SALDO */}
-          <Card className={cn("border-l-4 flex flex-col justify-between relative overflow-hidden", debt > 0 ? "border-l-red-500" : "border-l-green-500")}>
-              <div className="z-10">
-                  <p className="text-sm font-bold text-sys-500 uppercase tracking-wider mb-1">Saldo Actual (Deuda)</p>
-                  <p className={cn("text-4xl font-black tracking-tighter", debt > 0 ? "text-red-600" : "text-green-600")}>
-                      {formatCurrency(debt)}
-                  </p>
+          <Card className={cn("border-l-8 flex flex-col justify-between relative overflow-hidden h-40", debt > 0 ? "border-l-red-500 bg-red-50/20" : "border-l-emerald-500 bg-emerald-50/20")}>
+              <div className="z-10 h-full flex flex-col justify-between">
+                  <div>
+                      <p className={cn("text-xs font-black uppercase tracking-wider mb-1 flex items-center gap-1.5", debt > 0 ? "text-red-500" : "text-emerald-600")}>
+                          {debt > 0 ? <TrendingDown size={14}/> : <CheckCircle2 size={14}/>}
+                          Saldo Actual (Deuda)
+                      </p>
+                      <p className={cn("text-4xl font-black tracking-tighter", debt > 0 ? "text-red-600" : "text-emerald-600")}>
+                          {formatCurrency(debt)}
+                      </p>
+                  </div>
+                  <div className="mt-4">
+                      <Button 
+                        variant="secondary" 
+                        className={cn(
+                            "w-full text-sm h-11 font-black transition-all border shadow-sm",
+                            debt > 0 
+                                ? "bg-white border-red-200 hover:bg-red-500 hover:text-white text-red-600 hover:border-red-600" 
+                                : "bg-white border-sys-200 text-sys-400 opacity-50 cursor-not-allowed"
+                        )}
+                        onClick={() => setIsPaymentOpen(true)}
+                        disabled={debt <= 0} 
+                      >
+                          <DollarSign size={18} className="mr-2"/> Registrar Pago
+                      </Button>
+                  </div>
               </div>
-              <div className="mt-4 z-10">
-                  <Button 
-                    variant="secondary" 
-                    className="w-full border-sys-200 hover:bg-sys-50 text-sm h-10 font-bold"
-                    onClick={() => setIsPaymentOpen(true)}
-                    disabled={debt <= 0} 
-                  >
-                      <DollarSign size={16} className="mr-2 text-green-600"/> Registrar Pago
-                  </Button>
-              </div>
-              <div className={cn("absolute -right-4 -bottom-4 opacity-10 transform rotate-12", debt > 0 ? "text-red-500" : "text-green-500")}>
-                  <TrendingDown size={120} />
+              <div className={cn("absolute -right-4 -bottom-4 opacity-10 transform rotate-12", debt > 0 ? "text-red-500" : "text-emerald-500")}>
+                  {debt > 0 ? <TrendingDown size={140} /> : <CheckCircle2 size={140} />}
               </div>
           </Card>
 
           {/* Datos de Contacto */}
-          <Card className="flex flex-col justify-center space-y-4 md:col-span-2">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div className="flex items-center gap-3 text-sys-700">
-                      <div className="w-10 h-10 rounded-full bg-sys-50 border border-sys-100 flex items-center justify-center shrink-0"><User size={18} className="text-sys-400"/></div>
-                      <div className="text-sm">
-                          <p className="font-bold text-[10px] text-sys-400 uppercase">Contacto / Email</p>
-                          <p className="font-medium truncate max-w-[200px]">{client.email || 'Sin registrar'}</p>
+          <Card className="flex flex-col justify-center space-y-4 md:col-span-2 h-40 bg-white">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+                  <div className="flex items-center gap-4 text-sys-700">
+                      <div className="w-12 h-12 rounded-2xl bg-blue-50 border border-blue-100 flex items-center justify-center shrink-0">
+                          <Mail size={20} className="text-blue-500"/>
+                      </div>
+                      <div className="text-sm min-w-0">
+                          <p className="font-black text-[10px] text-sys-400 uppercase tracking-widest">Contacto / Email</p>
+                          <p className="font-bold text-sys-900 truncate" title={client.email}>{client.email || 'Sin registrar'}</p>
+                          {client.phone && <p className="font-medium text-sys-500 text-xs mt-0.5"><Phone size={10} className="inline mr-1"/>{client.phone}</p>}
                       </div>
                   </div>
-                  <div className="flex items-center gap-3 text-sys-700">
-                      <div className="w-10 h-10 rounded-full bg-sys-50 border border-sys-100 flex items-center justify-center shrink-0"><MapPin size={18} className="text-sys-400"/></div>
-                      <div className="text-sm">
-                          <p className="font-bold text-[10px] text-sys-400 uppercase">Dirección Física</p>
-                          <p className="font-medium truncate max-w-[200px]">{client.address || '-'}</p>
+                  <div className="flex items-center gap-4 text-sys-700 border-l border-sys-100 pl-6">
+                      <div className="w-12 h-12 rounded-2xl bg-orange-50 border border-orange-100 flex items-center justify-center shrink-0">
+                          <MapPin size={20} className="text-orange-500"/>
+                      </div>
+                      <div className="text-sm min-w-0">
+                          <p className="font-black text-[10px] text-sys-400 uppercase tracking-widest">Dirección Física</p>
+                          <p className="font-bold text-sys-900 truncate" title={client.address}>{client.address || '-'}</p>
                       </div>
                   </div>
               </div>
@@ -247,40 +272,43 @@ export const ClientDashboard = ({ clientId, onBack }) => {
 
       {/* Historial de Cuenta Corriente (Ledger) */}
       <div>
-          <h3 className="text-lg font-bold text-sys-900 mb-4 flex items-center gap-2">
-              <FileText size={20} className="text-brand"/> Movimientos de Cuenta
+          <h3 className="text-xl font-black text-sys-900 mb-4 flex items-center gap-2">
+              <FileText size={24} className="text-brand"/> Movimientos de Cuenta Corriente
           </h3>
           
-          <Card className="p-0 overflow-hidden border border-sys-200">
+          <Card className="p-0 overflow-hidden border border-sys-200 shadow-sm">
               <div className="overflow-x-auto">
-                  <table className="w-full text-left text-sm">
-                      <thead className="bg-sys-50 text-sys-500 text-[10px] uppercase font-black tracking-widest border-b border-sys-100">
+                  <table className="w-full text-left text-sm border-collapse">
+                      <thead className="bg-sys-50 text-sys-500 text-[10px] uppercase font-black tracking-widest border-b border-sys-200">
                           <tr>
-                              <th className="p-4 w-1/6">Fecha</th>
-                              <th className="p-4 w-1/6 text-center">Sucursal</th>
-                              <th className="p-4 w-2/6">Descripción</th>
-                              <th className="p-4 w-1/6 text-right">Monto</th>
-                              <th className="p-4 w-1/6 text-right">Saldo</th>
-                              <th className="p-4 w-1/12 text-center">Ticket</th>
+                              <th className="p-4 whitespace-nowrap">Fecha / Hora</th>
+                              <th className="p-4 text-center whitespace-nowrap">Sucursal</th>
+                              <th className="p-4 w-full">Descripción del Movimiento</th>
+                              <th className="p-4 text-right whitespace-nowrap">Importe</th>
+                              <th className="p-4 text-right whitespace-nowrap">Saldo (Deuda)</th>
+                              <th className="p-4 text-center whitespace-nowrap">Acciones</th>
                           </tr>
                       </thead>
-                      <tbody className="divide-y divide-sys-100">
+                      <tbody className="divide-y divide-sys-100 bg-white">
                           {ledger.length === 0 ? (
                               <tr>
-                                  <td colSpan="6" className="p-12 text-center text-sys-400 italic">
-                                      <FileText size={32} className="mx-auto mb-2 opacity-50"/>
-                                      Sin movimientos registrados en el libro mayor.
+                                  <td colSpan="6" className="p-12 text-center text-sys-400">
+                                      <div className="flex flex-col items-center justify-center bg-sys-50/50 rounded-2xl border-2 border-dashed border-sys-200 py-10 w-3/4 mx-auto">
+                                          <FileText size={32} className="mb-2 opacity-30 text-sys-500"/>
+                                          <p className="font-bold uppercase tracking-widest text-xs">Sin movimientos en la cuenta</p>
+                                          <p className="text-[10px] text-sys-400 mt-1">El cliente no tiene compras a crédito ni pagos registrados.</p>
+                                      </div>
                                   </td>
                               </tr>
                           ) : (
                               ledger.map((mov, idx) => (
-                                  <tr key={idx} className="hover:bg-sys-50/50 transition-colors group">
-                                      <td className="p-4 font-mono text-sys-600 whitespace-nowrap text-[10px]">
-                                          <div className="font-bold text-sys-800">{new Date(mov.date).toLocaleDateString()}</div>
-                                          <div className="opacity-60">{new Date(mov.date).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</div>
+                                  <tr key={idx} className="hover:bg-sys-50/50 transition-colors group cursor-default">
+                                      <td className="p-4 font-mono text-sys-600 whitespace-nowrap">
+                                          <div className="font-bold text-sys-900 text-xs">{new Date(mov.date).toLocaleDateString()}</div>
+                                          <div className="text-[10px] text-sys-400 mt-0.5">{new Date(mov.date).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</div>
                                       </td>
                                       
-                                      <td className="p-4 text-center">
+                                      <td className="p-4 text-center align-top pt-5">
                                           {mov.branchId === activeBranchId ? (
                                               <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-brand/10 text-brand text-[9px] font-black uppercase tracking-wide border border-brand/20">
                                                   <Building2 size={10} /> Actual
@@ -297,24 +325,24 @@ export const ClientDashboard = ({ clientId, onBack }) => {
                                               <div className={cn("w-1.5 h-1.5 rounded-full shrink-0", mov.type === 'SALE_DEBT' ? "bg-red-500" : "bg-emerald-500")}></div>
                                               <span className="font-bold text-sys-800 text-xs uppercase">{mov.description}</span>
                                           </div>
-                                          {mov.referenceId && <p className="text-[9px] text-sys-400 ml-3.5 font-mono uppercase mt-0.5">Ref: {mov.referenceId.slice(-8)}</p>}
+                                          {mov.referenceId && <p className="text-[9px] text-sys-400 ml-3.5 font-mono uppercase mt-1 bg-sys-50 inline-block px-1.5 py-0.5 rounded border border-sys-100">Ref: {mov.referenceId.slice(-8)}</p>}
                                       </td>
                                       
-                                      <td className={cn("p-4 text-right font-black font-mono text-xs", mov.type === 'SALE_DEBT' ? "text-red-600" : "text-emerald-600")}>
+                                      <td className={cn("p-4 text-right font-black font-mono text-sm whitespace-nowrap align-top pt-4", mov.type === 'SALE_DEBT' ? "text-red-600" : "text-emerald-600")}>
                                           {mov.type === 'SALE_DEBT' ? '+' : '-'} {formatCurrency(mov.amount)}
                                       </td>
                                       
-                                      <td className="p-4 text-right font-mono text-sys-900 text-xs font-black bg-sys-50/30">
+                                      <td className="p-4 text-right font-mono text-sys-900 text-sm font-black bg-sys-50/50 align-top pt-4 border-l border-sys-100">
                                           {formatCurrency(mov.newBalance)}
                                       </td>
                                       
-                                      <td className="p-4 text-center">
+                                      <td className="p-4 text-center align-top pt-3">
                                           <button 
                                             onClick={() => handleReprint(mov)}
-                                            className="p-2 rounded-lg text-sys-400 hover:text-brand hover:bg-brand/10 hover:border-brand/20 border border-transparent transition-all opacity-0 group-hover:opacity-100 mx-auto block"
-                                            title="Imprimir Comprobante"
+                                            className="p-2 rounded-xl text-sys-400 hover:text-brand hover:bg-brand/10 hover:border-brand/20 border border-transparent transition-all opacity-0 group-hover:opacity-100 mx-auto block"
+                                            title={mov.type === 'SALE_DEBT' ? "Ver Ticket de Venta" : "Ver Recibo de Pago"}
                                           >
-                                              <Printer size={16} />
+                                              <Printer size={18} />
                                           </button>
                                       </td>
                                   </tr>

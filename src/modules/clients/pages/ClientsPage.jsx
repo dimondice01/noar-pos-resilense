@@ -1,11 +1,12 @@
 import React, { useEffect, useState } from 'react';
-import { Plus, Search, Edit2, Trash2, Users, CreditCard, Building2, User, ChevronRight, AlertCircle } from 'lucide-react';
+import { Plus, Search, Edit2, Trash2, Users, CreditCard, Building2, ChevronRight, AlertCircle, Phone, Mail, Loader2 } from 'lucide-react';
 import { clientRepository } from '../repositories/clientRepository';
 import { Card } from '../../../core/ui/Card';
 import { Button } from '../../../core/ui/Button';
 import { ClientModal } from '../components/ClientModal';
-import { ClientDashboard } from './ClientDashboard'; // ✅ Dashboard Integrado
+import { ClientDashboard } from './ClientDashboard'; 
 import { cn } from '../../../core/utils/cn';
+import toast from 'react-hot-toast';
 
 export const ClientsPage = () => {
   const [clients, setClients] = useState([]);
@@ -51,21 +52,27 @@ export const ClientsPage = () => {
         await clientRepository.save(clientData);
         loadClients();
         setIsModalOpen(false);
+        toast.success("Cliente guardado correctamente");
     } catch (error) {
-        alert(error.message); // Mostrar error fiscal si falla validación
+        alert(error.message); 
     }
   };
 
   const handleDelete = async (id, e) => {
-    e.stopPropagation(); // Evitar abrir el dashboard
+    e.stopPropagation(); 
     if (confirm("¿Estás seguro de eliminar este cliente? Se perderá su historial.")) {
-        await clientRepository.delete(id);
-        loadClients();
+        try {
+            await clientRepository.delete(id);
+            loadClients();
+            toast.success("Cliente eliminado");
+        } catch (error) {
+            toast.error(error.message);
+        }
     }
   };
 
   const handleEdit = (client, e) => {
-    e.stopPropagation(); // Evitar abrir el dashboard
+    e.stopPropagation(); 
     setEditingClient(client);
     setIsModalOpen(true);
   };
@@ -91,13 +98,16 @@ export const ClientsPage = () => {
   }
 
   return (
-    <div className="space-y-6 pb-20 animate-in fade-in duration-300">
+    <div className="space-y-6 pb-20 animate-in fade-in duration-300 max-w-[1600px] mx-auto p-4 md:p-6">
       
       {/* Header */}
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-4">
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
-          <h2 className="text-2xl font-bold text-sys-900">Cartera de Clientes</h2>
-          <p className="text-sys-500 text-sm">Gestión de contactos y cuentas corrientes</p>
+          <h2 className="text-2xl font-black text-sys-900 flex items-center gap-2">
+              <Users className="text-brand" size={28}/> 
+              Cartera de Clientes
+          </h2>
+          <p className="text-sys-500 text-sm mt-1">Gestión de contactos y cuentas corrientes</p>
         </div>
         <Button onClick={() => { setEditingClient(null); setIsModalOpen(true); }} className="shadow-lg shadow-brand/20">
             <Plus size={20} className="mr-2" /> Nuevo Cliente
@@ -105,90 +115,148 @@ export const ClientsPage = () => {
       </div>
 
       {/* Buscador */}
-      <Card className="p-4 flex items-center gap-4 bg-white shadow-sm border border-sys-100">
-         <Search className="text-sys-400" size={20} />
+      <Card className="p-3 flex items-center gap-4 bg-white shadow-sm border border-sys-200 shrink-0">
+         <Search className="text-sys-400 ml-2" size={20} />
          <input 
             type="text" 
-            placeholder="Buscar por Nombre, CUIT o DNI..." 
-            className="flex-1 bg-transparent outline-none text-sys-800 placeholder:text-sys-400 font-medium"
+            placeholder="Buscar por ID, Nombre, CUIT o DNI..." 
+            className="flex-1 bg-transparent outline-none text-sys-800 placeholder:text-sys-400 font-bold py-1"
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
          />
       </Card>
 
-      {/* Lista de Clientes */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {loading ? (
-            <p className="text-sys-500 col-span-full text-center py-10 text-sm font-bold uppercase tracking-widest animate-pulse">Cargando cartera...</p>
-        ) : clients.length === 0 ? (
-            <div className="col-span-full text-center py-12 text-sys-400 bg-sys-50/50 rounded-2xl border-2 border-dashed border-sys-200">
-                <Users size={48} className="mx-auto mb-3 opacity-50" />
-                <p className="font-medium">No se encontraron clientes.</p>
-            </div>
-        ) : (
-            clients.map(client => (
-                <Card 
-                    key={client.id} 
-                    className="p-0 overflow-hidden hover:shadow-lg hover:-translate-y-1 transition-all duration-300 group border border-sys-200 cursor-pointer relative bg-white"
-                    onClick={() => setSelectedClientId(client.id)}
-                >
-                    <div className="p-5">
-                        <div className="flex justify-between items-start mb-3">
-                            <div className={cn("w-10 h-10 rounded-full flex items-center justify-center text-white font-bold text-lg shadow-sm transition-transform group-hover:scale-110", 
-                                client.docType === '80' ? "bg-brand" : "bg-sys-400"
-                            )}>
-                                {client.name.charAt(0)}
-                            </div>
-                            <span className={cn("px-2 py-1 rounded text-[9px] font-bold uppercase border tracking-tight", getConditionBadge(client.fiscalCondition))}>
-                                {client.fiscalCondition?.replace(/_/g, ' ') || 'CONSUMIDOR FINAL'}
-                            </span>
-                        </div>
-                        
-                        <h3 className="font-bold text-sys-900 truncate pr-6 text-base" title={client.name}>{client.name}</h3>
-                        
-                        <div className="mt-3 space-y-1.5">
-                            <div className="flex items-center gap-2 text-xs text-sys-600">
-                                <CreditCard size={14} className="text-sys-400" />
-                                <span className="font-mono tracking-wide font-medium">{client.docNumber}</span>
-                            </div>
-                            {client.address && client.address !== '-' && (
-                                <div className="flex items-center gap-2 text-xs text-sys-500 truncate">
-                                    <Building2 size={14} className="text-sys-400" />
-                                    {client.address}
+      {/* Tabla de Clientes */}
+      <Card className="p-0 overflow-hidden shadow-soft border-0 flex flex-col flex-1">
+        <div className="overflow-x-auto flex-1">
+            <table className="w-full text-left border-collapse">
+                <thead>
+                    <tr className="bg-sys-50/80 text-sys-500 text-xs uppercase tracking-wider border-b border-sys-100 backdrop-blur-sm sticky top-0 z-10">
+                        <th className="p-4 font-semibold whitespace-nowrap w-24 text-center">ID</th>
+                        <th className="p-4 font-semibold whitespace-nowrap">Cliente / Razón Social</th>
+                        <th className="p-4 font-semibold whitespace-nowrap">Contacto</th>
+                        <th className="p-4 font-semibold whitespace-nowrap text-right">Saldo (Deuda)</th>
+                        <th className="p-4 font-semibold text-right whitespace-nowrap w-32">Acciones</th>
+                    </tr>
+                </thead>
+                <tbody className="divide-y divide-sys-100 bg-white">
+                    {loading ? (
+                        <tr>
+                            <td colSpan="5" className="p-10 text-center">
+                                <div className="flex flex-col items-center justify-center text-sys-400 font-bold animate-pulse">
+                                    <Loader2 size={32} className="animate-spin mb-2 text-brand"/>
+                                    CARGANDO CARTERA...
                                 </div>
-                            )}
-                        </div>
-
-                        {/* Indicador de Deuda (Si existe) */}
-                        {(client.balance && client.balance > 0) ? (
-                            <div className="mt-4 pt-3 border-t border-sys-100 flex justify-between items-center bg-red-50/50 -mx-5 px-5 -mb-5 pb-5">
-                                <span className="text-[10px] font-bold text-red-500 uppercase tracking-wider flex items-center gap-1">
-                                    <AlertCircle size={12}/> Deuda
-                                </span>
-                                <span className="text-sm font-black text-red-600">$ {client.balance.toLocaleString()}</span>
-                            </div>
-                        ) : (
-                            <div className="mt-4 pt-3 border-t border-sys-100 flex justify-end opacity-50 group-hover:opacity-100 transition-opacity">
-                                <span className="text-[10px] font-bold text-green-600 uppercase tracking-wider flex items-center gap-1">
-                                    Al Día <ChevronRight size={12}/>
-                                </span>
-                            </div>
-                        )}
-                    </div>
-
-                    {/* Acciones Rápidas (Hover) */}
-                    <div className="absolute top-3 right-3 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity bg-white/90 backdrop-blur-sm rounded-lg p-1 shadow-sm border border-sys-100">
-                        <button onClick={(e) => handleEdit(client, e)} className="p-1.5 hover:bg-sys-100 rounded text-sys-600 transition-colors" title="Editar">
-                            <Edit2 size={14} />
-                        </button>
-                        <button onClick={(e) => handleDelete(client.id, e)} className="p-1.5 hover:bg-red-50 rounded text-red-500 transition-colors" title="Eliminar">
-                            <Trash2 size={14} />
-                        </button>
-                    </div>
-                </Card>
-            ))
-        )}
-      </div>
+                            </td>
+                        </tr>
+                    ) : clients.length === 0 ? (
+                        <tr>
+                            <td colSpan="5" className="p-12 text-center">
+                                <div className="flex flex-col items-center justify-center text-sys-300">
+                                    <Users size={48} className="mb-4 opacity-20"/>
+                                    <p className="font-bold text-sys-500">No se encontraron clientes.</p>
+                                    <Button variant="link" onClick={() => { setEditingClient(null); setIsModalOpen(true); }} className="text-brand mt-2">
+                                        + Crear el primero
+                                    </Button>
+                                </div>
+                            </td>
+                        </tr>
+                    ) : (
+                        clients.map(client => (
+                            <tr 
+                                key={client.id} 
+                                onClick={() => setSelectedClientId(client.id)} 
+                                className="group hover:bg-sys-50/40 transition-colors cursor-pointer"
+                            >
+                                {/* ID SECUENCIAL */}
+                                <td className="p-4 text-center align-middle">
+                                    <span className="bg-sys-100 text-sys-600 font-mono font-black px-2 py-1 rounded-md text-xs border border-sys-200">
+                                        {client.sequentialId || '---'}
+                                    </span>
+                                </td>
+                                
+                                {/* CLIENTE */}
+                                <td className="p-4 align-middle">
+                                    <div className="flex items-center gap-3">
+                                        <div className={cn("w-10 h-10 rounded-xl flex items-center justify-center text-white font-black border group-hover:scale-105 transition-transform shadow-sm", 
+                                            client.docType === '80' ? "bg-brand border-brand-dark" : "bg-sys-400 border-sys-500"
+                                        )}>
+                                            {client.name.charAt(0).toUpperCase()}
+                                        </div>
+                                        <div className="flex flex-col">
+                                            <span className="font-black text-sys-900 text-sm uppercase group-hover:text-brand transition-colors">{client.name}</span>
+                                            <div className="flex items-center gap-2 mt-1">
+                                                <span className="text-[10px] text-sys-500 font-mono font-bold flex items-center gap-1">
+                                                    <CreditCard size={10}/> {client.docNumber || 'S/DOC'}
+                                                </span>
+                                                <span className={cn("px-1.5 py-0.5 rounded text-[8px] font-black uppercase border tracking-tight", getConditionBadge(client.fiscalCondition))}>
+                                                    {client.fiscalCondition?.replace(/_/g, ' ') || 'CONSUMIDOR FINAL'}
+                                                </span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </td>
+                                
+                                {/* CONTACTO */}
+                                <td className="p-4 align-middle">
+                                    <div className="flex flex-col gap-1 text-xs text-sys-500 font-medium">
+                                        {client.phone ? (
+                                            <span className="flex items-center gap-1.5"><Phone size={12}/> {client.phone}</span>
+                                        ) : (
+                                            <span className="text-[10px] italic text-sys-300">Sin teléfono</span>
+                                        )}
+                                        {client.email && <span className="flex items-center gap-1.5"><Mail size={12}/> {client.email}</span>}
+                                    </div>
+                                </td>
+                                
+                                {/* SALDO (DEUDA) */}
+                                <td className="p-4 text-right align-middle">
+                                    <span className={cn(
+                                        "font-black text-sm",
+                                        (parseFloat(client.balance) || 0) > 0 ? "text-red-500" : "text-sys-400"
+                                    )}>
+                                        $ {(parseFloat(client.balance) || 0).toLocaleString('es-AR', {minimumFractionDigits: 2})}
+                                    </span>
+                                    {parseFloat(client.balance) > 0 && (
+                                        <span className="block text-[9px] font-bold text-red-400 uppercase mt-0.5">A cobrar</span>
+                                    )}
+                                </td>
+                                
+                                {/* ACCIONES */}
+                                <td className="p-4 text-right align-middle">
+                                    <div className="flex justify-end gap-2 opacity-50 group-hover:opacity-100 transition-opacity">
+                                        <Button 
+                                            variant="secondary"
+                                            size="sm" 
+                                            className="bg-white border-sys-200 text-sys-600 hover:text-brand hover:border-brand shadow-none px-2"
+                                            onClick={(e) => handleEdit(client, e)}
+                                            title="Editar Cliente"
+                                        >
+                                            <Edit2 size={14}/>
+                                        </Button>
+                                        <Button 
+                                            size="sm" 
+                                            variant="ghost"
+                                            className="text-red-400 hover:text-red-600 hover:bg-red-50 shadow-none px-2"
+                                            onClick={(e) => handleDelete(client.id, e)}
+                                            title="Eliminar Cliente"
+                                        >
+                                            <Trash2 size={14}/>
+                                        </Button>
+                                    </div>
+                                </td>
+                            </tr>
+                        ))
+                    )}
+                </tbody>
+            </table>
+        </div>
+        
+        {/* Footer Tabla */}
+        <div className="p-3 border-t border-sys-100 bg-sys-50/50 flex justify-between items-center text-xs font-bold text-sys-400">
+            <span>Mostrando {clients.length} clientes</span>
+        </div>
+      </Card>
 
       <ClientModal 
         isOpen={isModalOpen}

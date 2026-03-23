@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { collection, query, where, onSnapshot } from 'firebase/firestore';
 import { db } from '../../../database/firebase';
+import { getDB } from '../../../database/db'; // 🔥 IMPORTANTE: Usamos Dexie para el cruce rápido de Stock
 import { useAuthStore } from '../../auth/store/useAuthStore';
 
 export const useCloudDashboard = () => {
@@ -21,6 +22,14 @@ export const useCloudDashboard = () => {
         topProducts: [],
         pendingShifts: [], 
         activeShiftsCount: 0,
+        
+        // 🔥 SPRINT 6: Nuevas Métricas Enterprise
+        netProfit: 0,
+        marginPercentage: 0,
+        clientDebt: 0,
+        supplierDebt: 0,
+        lowStockItems: [],
+        
         loading: true
     });
 
@@ -44,11 +53,12 @@ export const useCloudDashboard = () => {
         const salesRef = collection(db, companyPath, 'sales');
         const shiftsRef = collection(db, companyPath, 'shifts');
         const movementsRef = collection(db, companyPath, 'cash_movements');
+        const clientsRef = collection(db, companyPath, 'clients');     // 🔥 SPRINT 6
+        const suppliersRef = collection(db, companyPath, 'suppliers'); // 🔥 SPRINT 6
 
         // ==========================================
-        // 1. MONITOR DE VENTAS
+        // 1. MONITOR DE VENTAS Y RENTABILIDAD
         // ==========================================
-        // Consultamos solo por fecha para evitar índices complejos
         const salesQ = query(
             salesRef,
             where('date', '>=', start.toISOString()),
@@ -62,6 +72,7 @@ export const useCloudDashboard = () => {
             let cash = 0;
             let digital = 0;
             let fiscal = 0;
+            let netProfit = 0; // 🔥 SPRINT 6: Ganancia Neta
             let rawSales = [];
             const productMap = {}; 
 
@@ -70,11 +81,13 @@ export const useCloudDashboard = () => {
                 
                 // 🛡️ FILTRO CLIENT-SIDE: Sucursal
                 if (activeBranchId && activeBranchId !== 'ALL' && data.branchId !== activeBranchId) return;
-                
                 if (data.status === 'CANCELLED') return;
 
                 const saleTotal = parseFloat(data.total || 0);
                 total += saleTotal;
+                
+                // 🔥 SPRINT 6: Sumamos la ganancia neta guardada en la venta
+                netProfit += parseFloat(data.netProfit || 0);
 
                 // Soporte Split Payments
                 if (data.payments && Array.isArray(data.payments)) {
@@ -120,6 +133,9 @@ export const useCloudDashboard = () => {
                 .slice(0, 5)
                 .map(([name, quantity]) => ({ name, quantity }));
 
+            // 🔥 SPRINT 6: Cálculo de Margen Operativo (%)
+            const marginPercentage = total > 0 ? Math.round((netProfit / total) * 100) : 0;
+
             setStats(prev => ({
                 ...prev,
                 totalSales: total,
@@ -130,14 +146,15 @@ export const useCloudDashboard = () => {
                 fiscalCount: fiscal,
                 recentSales: recentSales,
                 topProducts: sortedProducts,
+                netProfit: netProfit,               // 🔥 SPRINT 6
+                marginPercentage: marginPercentage, // 🔥 SPRINT 6
                 loading: false
             }));
         }, (err) => console.warn("Sales Sync Error:", err.code));
 
         // ==========================================
-        // 2. MONITOR DE EGRESOS (FIX: failed-precondition)
+        // 2. MONITOR DE EGRESOS OPERATIVOS
         // ==========================================
-        // 🔥 FIX: Quitamos el filtro de branchId de la query de Firestore
         const movementsQ = query(
             movementsRef,
             where('date', '>=', start.toISOString()),
@@ -150,12 +167,11 @@ export const useCloudDashboard = () => {
             
             snapshot.forEach(doc => {
                 const d = doc.data();
-                
-                // 🛡️ FILTRO CLIENT-SIDE: Sucursal (Aquí filtramos manualmente)
                 if (activeBranchId && activeBranchId !== 'ALL' && d.branchId !== activeBranchId) return;
 
-                // Sumamos EXPENSE, WITHDRAWAL y PURCHASE
                 if (d.type === 'EXPENSE' || d.type === 'WITHDRAWAL' || d.type === 'PURCHASE') {
+                    // Ignoramos retiros de cierre para no inflar los "Gastos Operativos" en el Dashboard
+                    if (d.subtype === 'CLOSING' || (d.description && d.description.toLowerCase().includes('rendición de cierre'))) return;
                     expenses += parseFloat(d.amount || 0);
                 }
             });
@@ -175,11 +191,9 @@ export const useCloudDashboard = () => {
         const unsubShifts = onSnapshot(shiftsQ, (snapshot) => {
             if (!isMounted.current) return;
             
-            // Filtramos y ordenamos en memoria
             const pending = snapshot.docs
                 .map(doc => ({ id: doc.id, ...doc.data() }))
                 .filter(doc => {
-                    // 🛡️ FILTRO CLIENT-SIDE
                     if (activeBranchId && activeBranchId !== 'ALL') return doc.branchId === activeBranchId;
                     return true;
                 })
@@ -200,13 +214,73 @@ export const useCloudDashboard = () => {
             let count = 0;
             snapshot.forEach(doc => {
                 const d = doc.data();
-                // 🛡️ FILTRO CLIENT-SIDE
                 if (activeBranchId && activeBranchId !== 'ALL' && d.branchId !== activeBranchId) return;
                 count++;
             });
 
             setStats(prev => ({ ...prev, activeShiftsCount: count }));
         }, (err) => console.warn("Active Shifts Sync Error:", err.code));
+
+        // ==========================================
+        // 5. FINANZAS EN CALLE (CLIENTES Y PROVEEDORES) 🔥 SPRINT 6
+        // ==========================================
+        const unsubClients = onSnapshot(clientsRef, (snapshot) => {
+            if (!isMounted.current) return;
+            let clientDebt = 0;
+            snapshot.forEach(doc => {
+                const bal = parseFloat(doc.data().balance || 0);
+                if (bal > 0) clientDebt += bal;
+            });
+            setStats(prev => ({ ...prev, clientDebt }));
+        }, (err) => console.warn("Clients Sync Error:", err.code));
+
+        const unsubSuppliers = onSnapshot(suppliersRef, (snapshot) => {
+            if (!isMounted.current) return;
+            let supplierDebt = 0;
+            snapshot.forEach(doc => {
+                const bal = parseFloat(doc.data().balance || 0);
+                if (bal > 0) supplierDebt += bal;
+            });
+            setStats(prev => ({ ...prev, supplierDebt }));
+        }, (err) => console.warn("Suppliers Sync Error:", err.code));
+
+        // ==========================================
+        // 6. ALERTAS DE STOCK CRÍTICO (MAGIA LOCAL DEXIE) 🔥 SPRINT 6
+        // ==========================================
+        const checkLowStock = async () => {
+            try {
+                const localDb = await getDB();
+                const products = await localDb.products.filter(p => !p.deleted).toArray();
+                const lowStock = [];
+                
+                for (const p of products) {
+                    let totalStock = 0;
+                    if (activeBranchId && activeBranchId !== 'ALL') {
+                        const inv = await localDb.inventory.get([activeBranchId, p.id]);
+                        totalStock = inv ? parseFloat(inv.stock) : 0;
+                    } else {
+                        const invs = await localDb.inventory.where('productId').equals(p.id).toArray();
+                        totalStock = invs.reduce((acc, curr) => acc + parseFloat(curr.stock || 0), 0);
+                    }
+                    
+                    const minStock = parseFloat(p.minStock || 5); // Por defecto alerta si es menor o igual a 5
+                    if (totalStock <= minStock) {
+                        lowStock.push({ name: p.name, stock: totalStock });
+                    }
+                }
+                
+                lowStock.sort((a, b) => a.stock - b.stock); // Los más críticos primero
+                if (isMounted.current) {
+                    setStats(prev => ({ ...prev, lowStockItems: lowStock.slice(0, 30) })); // Guardamos los 30 más críticos
+                }
+            } catch (e) {
+                console.warn("Error evaluando stock crítico:", e);
+            }
+        };
+
+        checkLowStock();
+        // Refrescar cada 2 minutos por si hay ventas que bajen el stock
+        const stockInterval = setInterval(checkLowStock, 120000);
 
         // 🔥 CLEANUP FUNCTION
         return () => {
@@ -215,6 +289,9 @@ export const useCloudDashboard = () => {
             if (unsubMovements) unsubMovements();
             if (unsubShifts) unsubShifts();
             if (unsubActiveShifts) unsubActiveShifts();
+            if (unsubClients) unsubClients();     // 🔥 SPRINT 6
+            if (unsubSuppliers) unsubSuppliers(); // 🔥 SPRINT 6
+            clearInterval(stockInterval);         // 🔥 SPRINT 6
         };
 
     }, [user?.companyId, activeBranchId]); 

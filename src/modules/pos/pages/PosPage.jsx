@@ -132,7 +132,8 @@ export const PosPage = () => {
       setSearchResults, 
       processSale,
       applyWholesaleToLastItem,
-      processBudget // 🔥 Recibimos la función de presupuestos
+      processBudget,
+      setTabPaymentMethod // 🔥 IMPORTADO DESDE EL HOOK
   } = usePosController();
 
   // Estados Locales
@@ -183,7 +184,7 @@ export const PosPage = () => {
 
   useEffect(() => {
       refocusInput();
-  }, [refocusInput, activeTabId]); // Recuperar foco al cambiar de pestaña en el POS
+  }, [refocusInput, activeTabId]);
 
   // =================================================================
   // ⚖️ LÓGICA DE BALANZAS
@@ -440,7 +441,6 @@ export const PosPage = () => {
     }
   };
 
-  // 🔥 NUEVA FUNCIÓN: Wrapper para Presupuesto
   const handleProcessBudget = async () => {
     const result = await processBudget();
     if (result) {
@@ -732,7 +732,8 @@ export const PosPage = () => {
           onClose={() => { setIsPaymentOpen(false); refocusInput(); }} 
           onConfirm={handleProcessSale} 
           isProcessing={isProcessing} 
-          processBudget={handleProcessBudget} // 🔥 PROP PASADA AQUÍ
+          processBudget={handleProcessBudget} 
+          setTabPaymentMethod={setTabPaymentMethod} // 🔥 PROP AÑADIDA AQUÍ
       />
       
       <CashOperationsModal 

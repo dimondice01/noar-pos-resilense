@@ -25,25 +25,60 @@ import { db as firestoreDB } from '../../../database/firebase';
 const formatCurrency = (amount) => `$ ${Number(amount || 0).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 // ============================================================================
-// 🧠 INTERCEPTOR MATEMÁTICO: SOLUCIÓN A PAGOS COMBINADOS (SPLIT)
+// 🧠 INTERCEPTOR MATEMÁTICO: SOLUCIÓN A PAGOS, DEUDAS Y PROVEEDORES
 // ============================================================================
 const fetchAndCorrectShiftBalance = async (shift) => {
     const bal = await cashRepository.getShiftBalance(shift.id);
     
-    let correctSalesByMethod = { cash: 0, transfer: 0, mercadopago: 0, debit: 0, credit: 0, point: 0, clover: 0, manual_card: 0, card: 0, account: 0, employee_account: 0 };
+    let correctSalesByMethod = { 
+        cash: 0, 
+        cash_from_account: 0, 
+        transfer: 0, 
+        transfer_from_account: 0,
+        mercadopago: 0, 
+        debit: 0, 
+        credit: 0, 
+        point: 0, 
+        clover: 0, 
+        manual_card: 0, 
+        card: 0, 
+        account: 0, 
+        employee_account: 0 
+    };
+    
     let correctTotalCashSales = 0;
     let correctTotalDigital = 0;
+    let manualInCash = 0;
+    let manualOutCash = 0; 
 
     const newMovements = [];
 
     (bal.movements || []).forEach(m => {
+        // 🔥 FIX 1: Ignorar el Fondo Inicial (Ya viene sumado en la variable initialAmount)
+        if (m.subtype === 'OPENING' || (m.description && m.description.toLowerCase().includes('fondo inicial'))) {
+            return;
+        }
+
+        // 🔥 FIX 2: Ignorar retiro de cierre Z para no romper la auditoría previa
+        if (m.subtype === 'CLOSING' || (m.description && m.description.toLowerCase().includes('rendición de cierre'))) {
+            return;
+        }
+
+        // HACK ANTI-DUPLICADOS (Cobros de cta cte)
+        if (m.type === 'IN' && m.description && m.description.toLowerCase().includes('cobro cta cte')) {
+            return; 
+        }
+
         const isSale = m.type === 'SALE' || m.subtype === 'SALE';
-        
-        // 🔥 Si la venta tiene array de pagos (Pago Combinado), desglosamos
+        const isReceipt = m.type === 'RECEIPT';
+        const isIncome = isSale || isReceipt || m.type === 'IN' || m.type === 'DEPOSIT';
+        const isOutcome = m.type === 'EXPENSE' || m.type === 'WITHDRAWAL' || m.type === 'OUT' || m.type === 'PURCHASE'; // 🔥 FIX 3: Capturar PURCHASE como egreso real
+
+        // Si la venta tiene array de pagos (Pago Combinado), desglosamos
         if (isSale && Array.isArray(m.payments) && m.payments.length > 0) {
             m.payments.forEach((p, idx) => {
                 const pAmount = Number(p.total || p.amount || 0);
-                const pMethod = p.method || 'cash';
+                const pMethod = (p.method || 'cash').toLowerCase();
                 
                 correctSalesByMethod[pMethod] = (correctSalesByMethod[pMethod] || 0) + pAmount;
 
@@ -62,64 +97,75 @@ const fetchAndCorrectShiftBalance = async (shift) => {
                 });
             });
         } else {
-            // Venta Simple o Movimiento Manual de Caja
             newMovements.push(m);
+            const mAmount = Number(m.amount || 0);
+            const mMethod = (m.method || 'cash').toLowerCase();
+
             if (isSale) {
-                const mAmount = Number(m.amount || 0);
-                const mMethod = m.method || 'cash';
                 correctSalesByMethod[mMethod] = (correctSalesByMethod[mMethod] || 0) + mAmount;
-                
                 if (mMethod === 'cash') correctTotalCashSales += mAmount;
                 else if (!['account', 'employee_account', 'budget'].includes(mMethod)) correctTotalDigital += mAmount;
+            } else if (isReceipt) {
+                if (mMethod === 'cash') {
+                    correctSalesByMethod.cash_from_account = (correctSalesByMethod.cash_from_account || 0) + mAmount;
+                    correctTotalCashSales += mAmount; 
+                } else if (!['account', 'employee_account', 'budget'].includes(mMethod)) {
+                    correctSalesByMethod.transfer_from_account = (correctSalesByMethod.transfer_from_account || 0) + mAmount;
+                    correctTotalDigital += mAmount; 
+                }
+            } else {
+                // 🔥 OTROS MOVIMIENTOS (AQUÍ CAEN LOS PAGOS A PROVEEDORES)
+                if (mMethod === 'cash') {
+                    if (isIncome) {
+                        manualInCash += mAmount;
+                    } else if (isOutcome) {
+                        manualOutCash += mAmount; // Ahora sí resta el pago al proveedor
+                    }
+                }
             }
         }
     });
 
-    // Reconstruimos el EFECTIVO ESPERADO con exactitud
     const initialAmount = Number(shift.initialAmount || 0);
-    const manualIn = (bal.movements || []).filter(m => m.type === 'IN' || m.type === 'DEPOSIT').reduce((acc, m) => acc + Number(m.amount), 0);
-    const manualOut = (bal.movements || []).filter(m => m.type === 'OUT' || m.type === 'WITHDRAWAL').reduce((acc, m) => acc + Number(m.amount), 0);
     
-    const recalculatedTotalCash = initialAmount + correctTotalCashSales + manualIn - manualOut;
+    // Matemática pura y perfecta (Fondo + Ventas Efectivo + Ingresos Efectivo - Salidas Efectivo)
+    let recalculatedTotalCash = initialAmount + correctTotalCashSales + manualInCash - manualOutCash;
+    
+    // Redondeo bancario de seguridad
+    recalculatedTotalCash = Math.round((recalculatedTotalCash + Number.EPSILON) * 100) / 100;
 
     return {
         ...bal,
         movements: newMovements.sort((a, b) => new Date(b.date || b.createdAt) - new Date(a.date || a.createdAt)),
         salesByMethod: correctSalesByMethod,
         totalCash: recalculatedTotalCash,
-        totalDigital: correctTotalDigital
+        totalDigital: correctTotalDigital,
+        manualInCash,   
+        manualOutCash   
     };
 };
 
 const getShiftValues = (shift, calculatedDetails = null) => {
     if (!shift) return { expected: 0, declared: 0, diff: 0, initial: 0, left: 0 };
     
-    if (shift.auditSnapshot) {
-        const snap = shift.auditSnapshot;
-        const declared = Number(shift.finalCash ?? snap.declaredCash ?? 0);
-        const expected = Number(snap.expectedCash ?? shift.expectedCash ?? 0);
-        const left = Number(shift.leftInCash ?? snap.leftInCash ?? 0);
-        const initial = Number(snap.initialAmount ?? shift.initialAmount ?? 0);
-        const diff = declared - expected;
-        return { expected, declared, diff, initial, left };
-    }
-
+    const snap = shift.auditSnapshot || {};
     const isValid = (val) => val !== undefined && val !== null;
+    
+    // 🔥 FIX CRÍTICO: Siempre priorizar la matemática fresca en vivo
     let expected = 0;
     if (calculatedDetails && isValid(calculatedDetails.totalCash)) {
         expected = Number(calculatedDetails.totalCash);
-    } else if (isValid(shift.expectedCash)) {
-        expected = Number(shift.expectedCash);
+    } else if (isValid(snap.expectedCash)) {
+        expected = Number(snap.expectedCash);
+    } else {
+        expected = Number(shift.expectedCash || 0);
     }
     
-    let declared = 0;
-    if (isValid(shift.finalCash)) {
-        declared = Number(shift.finalCash);
-    }
-    
-    const initial = Number(shift.initialAmount) || 0;
-    const left = Number(shift.leftInCash) || 0; 
+    const declared = Number(shift.finalCash ?? snap.declaredCash ?? 0);
+    const initial = Number(snap.initialAmount ?? shift.initialAmount ?? 0);
+    const left = Number(shift.leftInCash ?? snap.leftInCash ?? 0); 
     const diff = declared - expected;
+    
     return { expected, declared, diff, initial, left };
 };
 
@@ -135,14 +181,13 @@ const getMovementProps = (mov) => {
         };
     }
 
-    const isIncome = mov.type === 'SALE' || mov.type === 'DEPOSIT' || mov.type === 'IN';
+    const isIncome = mov.type === 'SALE' || mov.type === 'DEPOSIT' || mov.type === 'IN' || mov.type === 'RECEIPT';
     const isCash = mov.method === 'cash' || mov.type === 'WITHDRAWAL'; 
     let sign = isIncome ? '+' : '-';
     let color = isIncome ? 'text-green-600' : 'text-red-600';
-    let typeLabel = mov.type === 'SALE' ? 'VENTA' : mov.type === 'DEPOSIT' || mov.type === 'IN' ? 'INGRESO' : 'RETIRO';
-    let methodTag = (mov.method || 'desconocido'); 
+    let typeLabel = mov.type === 'SALE' ? 'VENTA' : mov.type === 'DEPOSIT' || mov.type === 'IN' ? 'INGRESO' : mov.type === 'RECEIPT' ? 'COBRO' : 'RETIRO';
+    let methodTag = (mov.method || 'desconocido').toLowerCase(); 
     
-    // 🔥 TRADUCCIÓN Y MAPEO DE MÉTODOS PARA UI
     if (['cash', 'efectivo'].includes(methodTag)) methodTag = 'Efectivo';
     else if (['transfer', 'transferencia'].includes(methodTag)) methodTag = 'Transferencia';
     else if (['mercadopago', 'mp', 'qr'].includes(methodTag)) methodTag = 'MercadoPago QR';
@@ -174,7 +219,6 @@ const AuditDetailModal = ({ shift, onClose, resolveName, resolveBranchName }) =>
     const [currentPage, setCurrentPage] = useState(1);
     const itemsPerPage = 20;
 
-    // 🔄 Hook 1: Carga de Datos Mejorada con Interceptor
     useEffect(() => {
         if (shift) {
             setLoadingDetails(true);
@@ -194,12 +238,11 @@ const AuditDetailModal = ({ shift, onClose, resolveName, resolveBranchName }) =>
         if (!shift || !details) return [];
         let list = [...(details.movements || [])];
         
-        // Resumen virtual si NO HAY ventas locales (snapshot cerrado)
         if (shift.auditSnapshot) {
             const snap = shift.auditSnapshot;
-            const hasLocalSales = list.some(m => m.type === 'SALE' || m.subtype === 'SALE');
+            const hasDetails = list.some(m => ['SALE', 'RECEIPT'].includes(m.type) || ['SALE'].includes(m.subtype));
 
-            if (!hasLocalSales) {
+            if (!hasDetails) {
                 const methods = snap.salesByMethod || {};
                 if (methods.cash > 0) {
                     list.push({ id: 'v-cash', isVirtual: true, type: 'SALE', method: 'cash', amount: methods.cash, description: 'Ventas Resumidas en Efectivo', date: shift.closedAt || shift.openedAt });
@@ -230,7 +273,10 @@ const AuditDetailModal = ({ shift, onClose, resolveName, resolveBranchName }) =>
     const { expected, declared, diff, initial, left } = getShiftValues(shift, safeDetails);
     const isPerfect = Math.abs(diff) < 50; 
     
-    const paymentMethods = shift.auditSnapshot?.salesByMethod || safeDetails.salesByMethod || {};
+    const paymentMethods = (safeDetails.movements && safeDetails.movements.length > 0)
+        ? safeDetails.salesByMethod 
+        : (shift.auditSnapshot?.salesByMethod || {});
+
     const totalTarjetas = (paymentMethods.clover || 0) + (paymentMethods.point || 0) + (paymentMethods.manual_card || 0) + (paymentMethods.card || 0);
 
     const totalPages = Math.ceil(processedMovements.length / itemsPerPage);
@@ -253,7 +299,6 @@ const AuditDetailModal = ({ shift, onClose, resolveName, resolveBranchName }) =>
 
                 <div className="flex-1 overflow-y-auto p-6 space-y-6 bg-sys-50/30 custom-scrollbar">
                     
-                    {/* 1. Tarjetas de Resumen Global */}
                     <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                         <div className="p-4 bg-white rounded-xl border border-sys-200 text-center shadow-sm">
                             <p className="text-[10px] uppercase font-bold text-sys-400 mb-1">Sistema (Esperado)</p>
@@ -279,55 +324,74 @@ const AuditDetailModal = ({ shift, onClose, resolveName, resolveBranchName }) =>
                         </div>
                     </div>
 
-                    {/* 🔥 2. Desglose de Métodos de Pago */}
                     <div className="bg-white p-4 rounded-xl border border-sys-200 shadow-sm">
                         <h4 className="text-[10px] font-black text-sys-500 uppercase tracking-widest mb-3 flex items-center gap-1.5">
-                            <PieChart size={14} /> Desglose de Ventas (Según Sistema)
+                            <PieChart size={14} /> Desglose de Operaciones (Según Sistema)
                         </h4>
                         <div className="flex flex-wrap gap-3">
-                            <div className="bg-green-50 border border-green-100 px-4 py-2 rounded-lg flex-1 min-w-[120px]">
-                                <p className="text-[9px] text-green-600 font-bold uppercase">Efectivo</p>
+                            <div className="bg-green-50 border border-green-200 px-4 py-2 rounded-lg flex-1 min-w-[120px]">
+                                <p className="text-[9px] text-green-600 font-bold uppercase">Ventas Efectivo</p>
                                 <p className="text-sm font-black text-green-700">{formatCurrency(paymentMethods.cash || 0)}</p>
                             </div>
                             
+                            {(paymentMethods.cash_from_account > 0) && (
+                                <div className="bg-emerald-50 border border-emerald-200 px-4 py-2 rounded-lg flex-1 min-w-[120px]">
+                                    <p className="text-[9px] text-emerald-600 font-bold uppercase" title="Efectivo que entró por pagos de cuentas corrientes">Cobro Deudas (CASH)</p>
+                                    <p className="text-sm font-black text-emerald-700">{formatCurrency(paymentMethods.cash_from_account)}</p>
+                                </div>
+                            )}
+
+                            {(safeDetails.manualOutCash > 0) && (
+                                <div className="bg-red-50 border border-red-200 px-4 py-2 rounded-lg flex-1 min-w-[120px] opacity-90">
+                                    <p className="text-[9px] text-red-600 font-bold uppercase">Pagos Prov. / Retiros (CASH)</p>
+                                    <p className="text-sm font-black text-red-700">- {formatCurrency(safeDetails.manualOutCash)}</p>
+                                </div>
+                            )}
+
                             {(paymentMethods.transfer > 0) && (
-                                <div className="bg-blue-50 border border-blue-100 px-4 py-2 rounded-lg flex-1 min-w-[120px]">
+                                <div className="bg-blue-50 border border-blue-200 px-4 py-2 rounded-lg flex-1 min-w-[120px]">
                                     <p className="text-[9px] text-blue-600 font-bold uppercase">Transferencia</p>
                                     <p className="text-sm font-black text-blue-700">{formatCurrency(paymentMethods.transfer)}</p>
                                 </div>
                             )}
+
+                            {(paymentMethods.transfer_from_account > 0) && (
+                                <div className="bg-cyan-50 border border-cyan-200 px-4 py-2 rounded-lg flex-1 min-w-[120px]">
+                                    <p className="text-[9px] text-cyan-600 font-bold uppercase">Cobro Deudas (TRANSF)</p>
+                                    <p className="text-sm font-black text-cyan-700">{formatCurrency(paymentMethods.transfer_from_account)}</p>
+                                </div>
+                            )}
                             
                             {(paymentMethods.mercadopago > 0) && (
-                                <div className="bg-blue-50 border border-blue-100 px-4 py-2 rounded-lg flex-1 min-w-[120px]">
+                                <div className="bg-blue-50 border border-blue-200 px-4 py-2 rounded-lg flex-1 min-w-[120px]">
                                     <p className="text-[9px] text-blue-600 font-bold uppercase">MercadoPago QR</p>
                                     <p className="text-sm font-black text-blue-700">{formatCurrency(paymentMethods.mercadopago)}</p>
                                 </div>
                             )}
 
                             {totalTarjetas > 0 && (
-                                <div className="bg-purple-50 border border-purple-100 px-4 py-2 rounded-lg flex-1 min-w-[120px]">
+                                <div className="bg-purple-50 border border-purple-200 px-4 py-2 rounded-lg flex-1 min-w-[120px]">
                                     <p className="text-[9px] text-purple-600 font-bold uppercase">Tarjetas</p>
                                     <p className="text-sm font-black text-purple-700">{formatCurrency(totalTarjetas)}</p>
                                 </div>
                             )}
 
                             {(paymentMethods.account > 0) && (
-                                <div className="bg-red-50 border border-red-100 px-4 py-2 rounded-lg flex-1 min-w-[120px]">
-                                    <p className="text-[9px] text-red-600 font-bold uppercase">Cta. Corriente (Fiado)</p>
+                                <div className="bg-red-50 border border-red-200 px-4 py-2 rounded-lg flex-1 min-w-[120px] opacity-80">
+                                    <p className="text-[9px] text-red-600 font-bold uppercase">Fiado (Cta. Cte.)</p>
                                     <p className="text-sm font-black text-red-700">{formatCurrency(paymentMethods.account)}</p>
                                 </div>
                             )}
                             
                             {(paymentMethods.employee_account > 0) && (
-                                <div className="bg-orange-50 border border-orange-100 px-4 py-2 rounded-lg flex-1 min-w-[120px]">
-                                    <p className="text-[9px] text-orange-600 font-bold uppercase">Cta. Empleado</p>
+                                <div className="bg-orange-50 border border-orange-200 px-4 py-2 rounded-lg flex-1 min-w-[120px] opacity-80">
+                                    <p className="text-[9px] text-orange-600 font-bold uppercase">Fiado (Empleado)</p>
                                     <p className="text-sm font-black text-orange-700">{formatCurrency(paymentMethods.employee_account)}</p>
                                 </div>
                             )}
                         </div>
                     </div>
 
-                    {/* 3. Tabla de Movimientos */}
                     <div>
                         <div className="flex justify-between items-center mb-3">
                             <h4 className="font-bold text-sys-800 flex items-center gap-2"><FileText size={16} /> Detalle de Movimientos ({processedMovements.length})</h4>
@@ -409,6 +473,7 @@ export const CashPage = () => {
     const [loading, setLoading] = useState(true);
     const [searchTerm, setSearchTerm] = useState('');
     const [historyPage, setHistoryPage] = useState(1);
+    const [shiftBalances, setShiftBalances] = useState({}); 
     const HISTORY_PAGE_SIZE = 10;
     
     const [selectedShiftForAudit, setSelectedShiftForAudit] = useState(null);
@@ -421,13 +486,8 @@ export const CashPage = () => {
         try {
             const companyPath = `companies/${user.companyId}`;
             
-            // 1. Cargar Usuarios
             const usersPromise = getDocs(query(collection(firestoreDB, 'users'), where('companyId', '==', user.companyId)));
-            
-            // 2. Cargar Sucursales 🔥
             const branchesPromise = getDocs(collection(firestoreDB, companyPath, 'branches'));
-            
-            // 3. Cargar Turnos
             const shiftsPromise = cashRepository.getAllShifts(); 
 
             const [usersSnap, branchesSnap, shifts] = await Promise.all([usersPromise, branchesPromise, shiftsPromise]);
@@ -444,7 +504,6 @@ export const CashPage = () => {
 
     useEffect(() => { if (user?.companyId) loadInitialData(); }, [user?.companyId, activeBranchId]); 
 
-    // 🔥 RESOLVER SUCURSAL
     const resolveBranchName = (id) => {
         const branch = branchesList.find(b => b.id === id);
         return branch ? branch.name : 'Sucursal Desconocida';
@@ -470,16 +529,41 @@ export const CashPage = () => {
     const totalHistoryPages = Math.ceil(closedShifts.length / HISTORY_PAGE_SIZE);
     const paginatedHistory = closedShifts.slice((historyPage - 1) * HISTORY_PAGE_SIZE, historyPage * HISTORY_PAGE_SIZE);
 
+    useEffect(() => {
+        const loadBalances = async () => {
+            const newBalances = { ...shiftBalances };
+            let hasChanges = false;
+            for (const shift of paginatedHistory) {
+                if (!newBalances[shift.id]) {
+                    newBalances[shift.id] = await fetchAndCorrectShiftBalance(shift);
+                    hasChanges = true;
+                }
+            }
+            if (hasChanges) setShiftBalances(newBalances);
+        };
+        if (paginatedHistory.length > 0) loadBalances();
+    }, [paginatedHistory]);
+
     const handleOpenZReport = async (shift) => {
         try {
+            let reportPayload = shift;
+            
             if (shift.status === 'CLOSED') {
-                setZReportData(shift);
-                setIsZReportOpen(true);
+                const freshBal = shiftBalances[shift.id] || await fetchAndCorrectShiftBalance(shift);
+                reportPayload = {
+                    ...shift,
+                    expectedCash: freshBal.totalCash,
+                    manualOutCash: freshBal.manualOutCash,
+                    manualInCash: freshBal.manualInCash,
+                    salesByMethod: freshBal.salesByMethod
+                };
             } else {
                 const auditData = await cashRepository.getShiftAuditData(shift.id);
-                setZReportData(auditData);
-                setIsZReportOpen(true);
+                reportPayload = auditData;
             }
+            
+            setZReportData(reportPayload);
+            setIsZReportOpen(true);
         } catch (e) { alert("Error: " + e.message); }
     };
 
@@ -526,7 +610,6 @@ export const CashPage = () => {
                 </div>
             </div>
 
-            {/* Selector de Pestañas */}
             <div className="flex bg-white p-1.5 rounded-2xl shadow-sm border border-sys-100 w-fit">
                 <button onClick={() => setActiveTab('active')} className={cn("px-6 py-2 text-xs font-black rounded-xl transition-all flex items-center gap-2 uppercase tracking-wider", activeTab === 'active' ? "bg-sys-900 text-white shadow-lg" : "text-sys-400 hover:bg-sys-50")}>
                     <Unlock size={14}/> Activas ({activeShifts.length})
@@ -583,7 +666,7 @@ export const CashPage = () => {
                             </thead>
                             <tbody className="divide-y divide-sys-50">
                                 {paginatedHistory.map(shift => {
-                                    const { expected, declared, diff } = getShiftValues(shift);
+                                    const { expected, declared, diff } = getShiftValues(shift, shiftBalances[shift.id]);
                                     const isPerfect = Math.abs(diff) < 50;
                                     return (
                                         <tr key={shift.id} className="hover:bg-sys-50 transition-colors group">

@@ -2,8 +2,8 @@ import React, { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { 
     Truck, Search, FileText, 
-    ExternalLink, ShoppingBag, Plus, 
-    ArrowRight, Phone, Mail
+    ExternalLink, ShoppingBag, Plus, Loader2,
+    ArrowRight, Phone, Mail, Building2, User
 } from 'lucide-react';
 import { masterRepository } from '../../inventory/repositories/masterRepository'; 
 import { useAuthStore } from '../../auth/store/useAuthStore';
@@ -26,7 +26,12 @@ export const SuppliersPage = () => {
         setLoading(true);
         try {
             const data = await masterRepository.getAll('suppliers');
-            setSuppliers(data);
+            const sortedData = data.sort((a, b) => {
+                const idA = parseInt(a.sequentialId || 0, 10);
+                const idB = parseInt(b.sequentialId || 0, 10);
+                return idB - idA;
+            });
+            setSuppliers(sortedData);
         } catch (error) {
             console.error(error);
         } finally {
@@ -36,13 +41,20 @@ export const SuppliersPage = () => {
 
     useEffect(() => { loadData(); }, []);
 
-    const filteredSuppliers = suppliers.filter(s => s.name.toLowerCase().includes(searchTerm.toLowerCase()));
+    const filteredSuppliers = suppliers.filter(s => 
+        s.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
+        (s.sequentialId && s.sequentialId.includes(searchTerm)) ||
+        (s.docNumber && s.docNumber.includes(searchTerm))
+    );
 
-    // Navegación Inteligente
+    // 🔥 NAVEGACIÓN INTELIGENTE
+    // Ahora hacer click en la fila te lleva al Dashboard del Proveedor
+    const goToDashboard = (supplierId) => {
+        navigate(`/${companySlug}/suppliers/dashboard/${supplierId}`);
+    };
+
     const goToHistory = (supplier = null) => {
         const path = `/${companySlug}/suppliers/purchases`;
-        // Si hay proveedor, pasamos el filtro por state o query param si implementaste eso en el historial
-        // Por ahora, asumimos que el historial puede leer el state para pre-filtrar
         navigate(path, { state: { preFilterSupplierId: supplier?.id } });
     };
 
@@ -60,12 +72,14 @@ export const SuppliersPage = () => {
                 <div>
                     <h1 className="text-2xl font-black text-sys-900 flex items-center gap-2">
                         <Truck className="text-brand" size={28}/> 
-                        Proveedores & Gastos
+                        Directorio de Proveedores
                     </h1>
                     <div className="flex items-center gap-2 mt-1">
                         <span className="text-xs font-bold text-sys-500 uppercase bg-sys-100 px-2 py-0.5 rounded">
                             {activeBranchName}
                         </span>
+                        <span className="text-sys-400 text-xs">|</span>
+                        <p className="text-sys-500 text-xs">Gestión de compras y cuentas corrientes</p>
                     </div>
                 </div>
                 
@@ -92,7 +106,7 @@ export const SuppliersPage = () => {
                     <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-sys-400"/>
                     <input 
                         type="text" 
-                        placeholder="Buscar proveedor por nombre o CUIT..." 
+                        placeholder="Buscar por ID, nombre o CUIT/DNI..." 
                         className="w-full pl-9 pr-3 py-2.5 bg-white border border-sys-200 rounded-lg text-sm font-bold outline-none focus:border-brand transition-all" 
                         value={searchTerm} 
                         onChange={e => setSearchTerm(e.target.value)}
@@ -105,66 +119,125 @@ export const SuppliersPage = () => {
                 </div>
             </Card>
 
-            {/* Grid de Proveedores */}
-            <div className="flex-1 overflow-y-auto pr-2 custom-scrollbar">
-                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 pb-10">
-                    {loading ? (
-                        <div className="col-span-full py-20 text-center text-sys-400 font-bold animate-pulse">CARGANDO PROVEEDORES...</div>
-                    ) : filteredSuppliers.length === 0 ? (
-                        <div className="col-span-full py-20 text-center text-sys-300 flex flex-col items-center">
-                            <Truck size={48} className="mb-4 opacity-20"/>
-                            <p className="font-bold">No se encontraron proveedores</p>
-                            <Button variant="link" onClick={() => setIsMastersModalOpen(true)} className="text-brand mt-2">
-                                + Crear el primero
-                            </Button>
-                        </div>
-                    ) : (
-                        filteredSuppliers.map(sup => (
-                            <Card 
-                                key={sup.id} 
-                                className="group relative overflow-hidden flex flex-col hover:shadow-xl hover:border-brand/30 transition-all cursor-pointer bg-white"
-                                onClick={() => goToHistory(sup)} // Al hacer click en la tarjeta, vamos a SU historial
-                            >
-                                <div className="p-5 pb-0 flex justify-between items-start mb-4">
-                                    <div className="flex items-center gap-4">
-                                        <div className="w-12 h-12 rounded-xl bg-sys-50 flex items-center justify-center text-sys-600 font-black text-xl border border-sys-200 group-hover:bg-brand group-hover:text-white transition-colors shadow-sm">
-                                            {sup.name.charAt(0)}
+            {/* Tabla de Proveedores */}
+            <Card className="p-0 overflow-hidden shadow-soft border-0 flex flex-col flex-1">
+                <div className="overflow-x-auto flex-1">
+                    <table className="w-full text-left border-collapse">
+                        <thead>
+                            <tr className="bg-sys-50/80 text-sys-500 text-xs uppercase tracking-wider border-b border-sys-100 backdrop-blur-sm sticky top-0 z-10">
+                                <th className="p-4 font-semibold whitespace-nowrap w-24 text-center">ID</th>
+                                <th className="p-4 font-semibold whitespace-nowrap">Proveedor</th>
+                                <th className="p-4 font-semibold whitespace-nowrap">Contacto</th>
+                                <th className="p-4 font-semibold whitespace-nowrap text-right">Saldo (Cta Cte)</th>
+                                <th className="p-4 font-semibold text-right whitespace-nowrap w-40">Acciones</th>
+                            </tr>
+                        </thead>
+                        <tbody className="divide-y divide-sys-100 bg-white">
+                            {loading ? (
+                                <tr>
+                                    <td colSpan="5" className="p-10 text-center">
+                                        <div className="flex flex-col items-center justify-center text-sys-400 font-bold animate-pulse">
+                                            <Loader2 size={32} className="animate-spin mb-2 text-brand"/>
+                                            CARGANDO DIRECTORIO...
                                         </div>
-                                        <div>
-                                            <h3 className="font-black text-sys-900 text-lg uppercase truncate max-w-[180px] leading-tight">{sup.name}</h3>
-                                            <p className="text-[10px] text-sys-400 font-mono mt-1 font-bold">{sup.taxId || 'CONSUMIDOR FINAL'}</p>
+                                    </td>
+                                </tr>
+                            ) : filteredSuppliers.length === 0 ? (
+                                <tr>
+                                    <td colSpan="5" className="p-12 text-center">
+                                        <div className="flex flex-col items-center justify-center text-sys-300">
+                                            <Truck size={48} className="mb-4 opacity-20"/>
+                                            <p className="font-bold text-sys-500">No se encontraron proveedores</p>
+                                            <Button variant="link" onClick={() => setIsMastersModalOpen(true)} className="text-brand mt-2">
+                                                + Crear el primero
+                                            </Button>
                                         </div>
-                                    </div>
-                                    <div className="p-2 bg-sys-50 rounded-full group-hover:bg-sys-100 transition-colors">
-                                        <ArrowRight size={16} className="text-sys-400 group-hover:text-brand"/>
-                                    </div>
-                                </div>
-                                
-                                <div className="px-5 mb-4">
-                                    <div className="flex gap-4 text-xs text-sys-500 font-medium">
-                                        {sup.phone && <div className="flex items-center gap-1.5"><Phone size={12}/> {sup.phone}</div>}
-                                        {sup.email && <div className="flex items-center gap-1.5"><Mail size={12}/> {sup.email}</div>}
-                                    </div>
-                                </div>
-
-                                <div className="mt-auto border-t border-sys-100 p-3 bg-sys-50/50 flex justify-between items-center group-hover:bg-brand/5 transition-colors">
-                                    <span className="text-[10px] font-bold text-sys-400 uppercase tracking-wider pl-2">Ver Movimientos</span>
-                                    <Button 
-                                        size="sm" 
-                                        className="bg-white border border-sys-200 text-brand font-black text-xs hover:bg-brand hover:text-white hover:border-brand shadow-sm transition-all"
-                                        onClick={(e) => {
-                                            e.stopPropagation(); 
-                                            goToNewPurchase(sup);
-                                        }}
-                                    >
-                                        <ShoppingBag size={14} className="mr-1.5"/> + COMPRA
-                                    </Button>
-                                </div>
-                            </Card>
-                        ))
-                    )}
+                                    </td>
+                                </tr>
+                            ) : (
+                                filteredSuppliers.map(sup => (
+                                    // 🔥 onClick LLEVA AL DASHBOARD
+                                    <tr key={sup.id} onClick={() => goToDashboard(sup.id)} className="group hover:bg-sys-50/40 transition-colors cursor-pointer">
+                                        
+                                        <td className="p-4 text-center align-middle">
+                                            <span className="bg-sys-100 text-sys-600 font-mono font-black px-2 py-1 rounded-md text-xs border border-sys-200">
+                                                {sup.sequentialId || '---'}
+                                            </span>
+                                        </td>
+                                        
+                                        <td className="p-4 align-middle">
+                                            <div className="flex items-center gap-3">
+                                                <div className="w-10 h-10 rounded-xl bg-sys-50 flex items-center justify-center text-sys-500 font-black border border-sys-200 group-hover:bg-brand/10 group-hover:text-brand group-hover:border-brand/20 transition-colors">
+                                                    {sup.name.charAt(0).toUpperCase()}
+                                                </div>
+                                                <div className="flex flex-col">
+                                                    <span className="font-black text-sys-900 text-sm uppercase group-hover:text-brand transition-colors">{sup.name}</span>
+                                                    <span className="text-[10px] text-sys-400 font-mono mt-0.5 font-bold flex items-center gap-1">
+                                                        <Building2 size={10}/> {sup.docNumber || 'S/CUIT'}
+                                                    </span>
+                                                </div>
+                                            </div>
+                                        </td>
+                                        
+                                        <td className="p-4 align-middle">
+                                            <div className="flex flex-col gap-1 text-xs text-sys-500 font-medium">
+                                                {sup.phone ? (
+                                                    <span className="flex items-center gap-1.5"><Phone size={12}/> {sup.phone}</span>
+                                                ) : (
+                                                    <span className="text-[10px] italic text-sys-300">Sin teléfono</span>
+                                                )}
+                                                {sup.email && <span className="flex items-center gap-1.5"><Mail size={12}/> {sup.email}</span>}
+                                            </div>
+                                        </td>
+                                        
+                                        <td className="p-4 text-right align-middle">
+                                            <span className={cn(
+                                                "font-black text-sm",
+                                                (parseFloat(sup.balance) || 0) > 0 ? "text-red-500" : "text-sys-400"
+                                            )}>
+                                                $ {(parseFloat(sup.balance) || 0).toLocaleString('es-AR', {minimumFractionDigits: 2})}
+                                            </span>
+                                            {parseFloat(sup.balance) > 0 && (
+                                                <span className="block text-[9px] font-bold text-red-400 uppercase mt-0.5">A pagar</span>
+                                            )}
+                                        </td>
+                                        
+                                        <td className="p-4 text-right align-middle">
+                                            <div className="flex justify-end gap-2">
+                                                <Button 
+                                                    variant="secondary"
+                                                    size="sm" 
+                                                    className="bg-white border-sys-200 text-sys-600 hover:text-brand hover:border-brand shadow-none"
+                                                    onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        goToHistory(sup);
+                                                    }}
+                                                >
+                                                    <FileText size={14} className="mr-1.5"/> Historial
+                                                </Button>
+                                                <Button 
+                                                    size="sm" 
+                                                    className="bg-brand/10 text-brand border-none hover:bg-brand hover:text-white shadow-none"
+                                                    onClick={(e) => {
+                                                        e.stopPropagation(); 
+                                                        goToNewPurchase(sup);
+                                                    }}
+                                                >
+                                                    <ShoppingBag size={14}/>
+                                                </Button>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                ))
+                            )}
+                        </tbody>
+                    </table>
                 </div>
-            </div>
+                
+                <div className="p-3 border-t border-sys-100 bg-sys-50/50 flex justify-between items-center text-xs font-bold text-sys-400">
+                    <span>Mostrando {filteredSuppliers.length} proveedores</span>
+                </div>
+            </Card>
             
             <MastersModal isOpen={isMastersModalOpen} onClose={() => { setIsMastersModalOpen(false); loadData(); }} />
         </div>
