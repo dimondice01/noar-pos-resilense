@@ -4,7 +4,7 @@ export const scaleService = {
 
         if (brand === 'KRETZ') {
             return products.map(p => {
-                // 1. PLU: Solo números, máximo 4 o 6 según modelo. 
+                // 1. PLU: Solo números, máximo 6 dígitos según modelo. 
                 const plu = String(p.code).replace(/\D/g, '').slice(-6);
 
                 // 2. NOMBRE: ¡CLAVE! Eliminamos TODO lo que no sea letra o espacio.
@@ -12,7 +12,7 @@ export const scaleService = {
                 const cleanName = p.name
                     .normalize("NFD").replace(/[\u0300-\u036f]/g, "") // Quita acentos
                     .replace(/[^a-zA-Z0-9 ]/g, '') // Quita puntos, comas, #, etc.
-                    .substring(0, 20) // Kretz Report suele truncar a 20 o 24
+                    .substring(0, 36) // Aumentado a 36 caracteres para la Kretz Report NX
                     .trim()
                     .toUpperCase();
 
@@ -21,8 +21,9 @@ export const scaleService = {
                 const rawPrice = parseFloat(p.price) || 0;
                 const price = rawPrice > 0 ? rawPrice.toFixed(2) : "0.01";
 
-                // Formato: PLU,Nombre,Precio,Departamento,Vencimiento
-                return `${plu},${cleanName},${price},1,0`;
+                // 4. FORMATO: PLU, Nombre, Precio, Departamento, Familia
+                // Forzamos Departamento 1 y Familia 1 para evitar bloqueos en iTegra
+                return `${plu},${cleanName},${price},1,1,01`;
             }).join('\r\n');
         }
 
@@ -40,7 +41,7 @@ export const scaleService = {
 
     downloadFile: (content, brand) => {
         if (!content) return;
-        // Nombre de archivo sin espacios para evitar líos en Windows
+        // Nombre de archivo sin espacios para evitar líos en Windows y JDataGate
         const filename = brand === 'KRETZ' ? 'novedades.txt' : 'productos_systel.csv';
         const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
         const url = window.URL.createObjectURL(blob);
