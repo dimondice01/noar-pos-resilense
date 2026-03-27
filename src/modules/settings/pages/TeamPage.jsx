@@ -3,14 +3,15 @@ import {
     Users, UserPlus, Shield, ShieldCheck, Mail, Lock, Info, Building2, Store, 
     Trash2, CreditCard, Percent, PlusCircle, AlertTriangle, Layers, Tag, Save,
     ChevronDown, ChevronUp, CheckCircle2, MonitorSmartphone, Loader2, ArrowUpRight,
-    Wallet, ReceiptText, ArrowRightCircle, X, ShieldAlert, Package
+    Wallet, ReceiptText, ArrowRightCircle, X, ShieldAlert, Package, CloudDownload
 } from 'lucide-react';
 import { Card } from '../../../core/ui/Card';
 import { Button } from '../../../core/ui/Button';
 import { Switch } from '../../../core/ui/Switch'; 
 import { authService } from '../../auth/services/authService';
 import { collection, getDocs, query, where, updateDoc, doc, deleteDoc, getDoc, setDoc } from 'firebase/firestore'; 
-import { db } from '../../../database/firebase';
+import { db as firestoreDB } from '../../../database/firebase'; // 🔥 Renombrado para no chocar con Dexie
+import { getDB } from '../../../database/db'; // 🔥 Traemos Dexie para persistencia
 import { cn } from '../../../core/utils/cn';
 import { useAuthStore } from '../../auth/store/useAuthStore'; 
 import { employeeLedgerRepository } from '../repositories/employeeLedgerRepository'; 
@@ -19,13 +20,16 @@ import toast from 'react-hot-toast';
 const API_URL = import.meta.env.VITE_API_URL || "https://us-central1-salvadorpos1.cloudfunctions.net/api";
 
 // =================================================================================
-// 🧩 MODAL: LIQUIDACIÓN DE EMPLEADO (LEDGER)
+// 🧩 MODAL: LIQUIDACIÓN DE EMPLEADO (LEDGER) - MATEMÁTICA EN VIVO
 // =================================================================================
 const LiquidationModal = ({ isOpen, onClose, employee, onLiquidated }) => {
     const { user: currentUser } = useAuthStore();
     const [history, setHistory] = useState([]);
     const [isLoading, setIsLoading] = useState(true);
     const [isLiquidating, setIsLiquidating] = useState(false);
+    
+    // 🔥 ESTADO PARA EL SALDO CALCULADO EN VIVO
+    const [calculatedDebt, setCalculatedDebt] = useState(0);
 
     useEffect(() => {
         const targetUserId = employee?.uid || employee?.id;
@@ -35,7 +39,24 @@ const LiquidationModal = ({ isOpen, onClose, employee, onLiquidated }) => {
                 setIsLoading(true);
                 try {
                     const records = await employeeLedgerRepository.getEmployeeHistory(currentUser.companyId, targetUserId);
+                    
+                    // Ordenamos para mostrar los más nuevos arriba (Opcional, asumiendo que el repo ya lo hace)
                     setHistory(records);
+
+                    // 🔥 CÁLCULO DE LA VERDAD: Sumamos las deudas (+) y restamos los pagos/liquidaciones (-)
+                    let totalDebt = 0;
+                    records.forEach(record => {
+                        const amount = parseFloat(record.amount) || 0;
+                        if (record.type === 'LIQUIDATION' || record.type === 'PAYMENT') {
+                            totalDebt -= amount; // Resta deuda
+                        } else {
+                            totalDebt += amount; // Suma deuda (Consumos, Adelantos)
+                        }
+                    });
+
+                    // Evitamos saldos negativos por errores de carga
+                    setCalculatedDebt(Math.max(0, totalDebt));
+
                 } catch (e) {
                     console.error("Error cargando historial", e);
                 } finally {
@@ -50,9 +71,11 @@ const LiquidationModal = ({ isOpen, onClose, employee, onLiquidated }) => {
 
     const handleLiquidate = async () => {
         const targetUserId = employee?.uid || employee?.id;
-        if (!employee || !targetUserId || !employee.ledgerDebt || employee.ledgerDebt <= 0) return;
         
-        if (!window.confirm(`¿Confirmas la liquidación de $${employee.ledgerDebt.toLocaleString('es-AR')} para ${employee.name}? Esta acción dejará su deuda en 0.`)) return;
+        // Usamos calculatedDebt en lugar del employee.ledgerDebt
+        if (!employee || !targetUserId || calculatedDebt <= 0) return;
+        
+        if (!window.confirm(`¿Confirmas la liquidación de $${calculatedDebt.toLocaleString('es-AR')} para ${employee.name}? Esta acción dejará su deuda en 0.`)) return;
 
         setIsLiquidating(true);
         const toastId = toast.loading("Liquidando cuenta...");
@@ -62,11 +85,14 @@ const LiquidationModal = ({ isOpen, onClose, employee, onLiquidated }) => {
                 branchId: employee.branchId || 'main',
                 userId: targetUserId,
                 type: 'LIQUIDATION',
-                amount: parseFloat(employee.ledgerDebt),
+                amount: parseFloat(calculatedDebt), // Liquidamos el total calculado
                 description: `Liquidación de cierre de mes.`,
                 operatorName: currentUser.name || 'Admin'
             });
             
+            // Opcional: Podrías forzar la actualización del documento de usuario en Firebase aquí
+            // para que vuelva a decir 0, pero ya no es estrictamente necesario porque siempre calculás.
+
             toast.success(`Cuenta de ${employee.name} liquidada exitosamente.`, { id: toastId });
             onLiquidated(); 
             onClose();
@@ -77,6 +103,85 @@ const LiquidationModal = ({ isOpen, onClose, employee, onLiquidated }) => {
             setIsLiquidating(false);
         }
     };
+
+    if (!isOpen || !employee) return null;
+
+    return (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-sys-900/60 backdrop-blur-sm p-4 animate-in fade-in zoom-in-95">
+            <div className="bg-white rounded-3xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[85vh]">
+                
+                {/* HEADER */}
+                <div className="p-6 border-b border-sys-100 bg-sys-50 flex justify-between items-start">
+                    <div>
+                        <div className="flex items-center gap-2 mb-1">
+                            <Wallet className="text-brand" size={24}/>
+                            <h3 className="font-black text-xl text-sys-900 uppercase tracking-tight">Cuenta Corriente</h3>
+                        </div>
+                        <p className="text-sm font-bold text-sys-600">{employee.name || employee.email}</p>
+                    </div>
+                    <button onClick={onClose} disabled={isLiquidating} className="p-2 hover:bg-sys-200 rounded-full transition-colors">
+                        <X size={20} className="text-sys-400" />
+                    </button>
+                </div>
+
+                {/* SALDO TOTAL (CALCULADO) */}
+                <div className="p-6 bg-red-50 border-b border-red-100 flex items-center justify-between">
+                    <div>
+                        <p className="text-xs font-black text-red-800 uppercase tracking-wider mb-1">Deuda Acumulada</p>
+                        {isLoading ? (
+                             <div className="h-10 flex items-center"><Loader2 className="animate-spin text-red-400" size={24}/></div>
+                        ) : (
+                            <p className="text-4xl font-black text-red-600 tracking-tighter tabular-nums">
+                                $ {calculatedDebt.toLocaleString('es-AR', {minimumFractionDigits: 2})}
+                            </p>
+                        )}
+                    </div>
+                    <Button 
+                        onClick={handleLiquidate}
+                        disabled={isLiquidating || isLoading || calculatedDebt <= 0}
+                        className="bg-red-600 hover:bg-red-700 text-white shadow-xl shadow-red-200 py-3"
+                    >
+                        {isLiquidating ? <Loader2 className="animate-spin" size={18} /> : <CheckCircle2 size={18} className="mr-2"/>}
+                        LIQUIDAR SALDO
+                    </Button>
+                </div>
+
+                {/* HISTORIAL */}
+                <div className="flex-1 overflow-y-auto p-4 bg-sys-50/30 custom-scrollbar">
+                    <h4 className="text-xs font-bold text-sys-400 uppercase tracking-wider mb-3 px-2 flex items-center gap-2">
+                        <ReceiptText size={14}/> Últimos Movimientos
+                    </h4>
+                    
+                    {isLoading ? (
+                        <div className="py-10 flex justify-center"><Loader2 className="animate-spin text-brand" size={30}/></div>
+                    ) : history.length === 0 ? (
+                        <div className="text-center py-10 text-sys-400 text-sm font-medium opacity-60">Sin movimientos registrados.</div>
+                    ) : (
+                        <div className="space-y-2">
+                            {history.map(record => {
+                                const isPayment = record.type === 'LIQUIDATION' || record.type === 'PAYMENT';
+                                return (
+                                    <div key={record.id} className={cn("p-3 rounded-xl border flex justify-between items-center text-sm shadow-sm", isPayment ? "bg-emerald-50 border-emerald-100" : "bg-white border-sys-200")}>
+                                        <div>
+                                            <p className={cn("font-bold", isPayment ? "text-emerald-800" : "text-sys-800")}>
+                                                {record.type === 'ADVANCE' ? 'Vales / Adelantos' : record.type === 'POS_CONSUMPTION' ? 'Consumo Local' : 'Liquidación'}
+                                            </p>
+                                            <p className="text-xs text-sys-500 mt-0.5">{new Date(record.date).toLocaleDateString('es-AR')} - {record.description}</p>
+                                        </div>
+                                        <div className={cn("font-black text-right", isPayment ? "text-emerald-600" : "text-red-600")}>
+                                            {isPayment ? '-' : '+'}$ {parseFloat(record.amount).toLocaleString('es-AR', {minimumFractionDigits: 0})}
+                                        </div>
+                                    </div>
+                                )
+                            })}
+                        </div>
+                    )}
+                </div>
+
+            </div>
+        </div>
+    );
+
 
     if (!isOpen || !employee) return null;
 
@@ -174,11 +279,7 @@ export const TeamPage = () => {
       isWholesaleEnabled: false,
       wholesalePercentage: 10,
       paymentSurcharges: {
-          cash: 0,
-          transfer: 0,
-          mp: 0,
-          card: 0,
-          current_account: 0
+          cash: 0, transfer: 0, mp: 0, card: 0, current_account: 0
       }
   });
   const [savingPosConfig, setSavingPosConfig] = useState(false);
@@ -198,12 +299,10 @@ export const TeamPage = () => {
       role: 'CAJERO',
       branchId: '',
       permissions: {
-          // Permisos de Caja y Ventas
           canApplyDiscount: false, 
           canVoidSales: false,     
           canWithdrawCash: false,  
           canSeeExpectedCash: false,
-          // Permisos de Inventario
           canAddStock: false,
           canRemoveStock: false,
           canChangePrices: false
@@ -218,26 +317,87 @@ export const TeamPage = () => {
     }
   }, [currentUser, activeBranchId]); 
 
+  // =================================================================================
+  // ⚡ DESCARGA FORZADA (CLOUD PULL) - EL BOTÓN DE RESCATE
+  // =================================================================================
+  const handleForceCloudSync = async () => {
+      setLoading(true);
+      const toastId = toast.loading("Sincronizando empleados...");
+      try {
+          if (!currentUser?.companyId) throw new Error("Falta companyId");
+
+          const usersQuery = query(
+              collection(firestoreDB, 'users'), 
+              where('companyId', '==', currentUser.companyId)
+          );
+          
+          const snapshot = await getDocs(usersQuery);
+          const cloudUsers = snapshot.docs.map(doc => ({ 
+              uid: doc.id, // Forzamos unificación de id
+              id: doc.id,
+              ...doc.data() 
+          }));
+
+          // 🔥 Almacenamos los usuarios localmente en Dexie para caché
+          try {
+              const dbLocal = await getDB();
+              await dbLocal.users.bulkPut(cloudUsers);
+          } catch (dexieErr) {
+              console.warn("Fallo guardado de usuarios en Dexie", dexieErr);
+          }
+
+          setUsers(cloudUsers);
+          toast.success("Empleados sincronizados.", { id: toastId });
+      } catch (error) {
+          console.error("Error forzando sync:", error);
+          toast.error(`Error al bajar de la nube: ${error.message}`, { id: toastId });
+      } finally {
+          setLoading(false);
+      }
+  };
+
   const loadData = async () => {
     try {
       setLoading(true);
       
-      const usersQuery = query(
-          collection(db, 'users'), 
-          where('companyId', '==', currentUser.companyId)
-      );
-      
-      const branchesQuery = query(
-          collection(db, 'companies', currentUser.companyId, 'branches')
-      );
-      
-      const [usersSnap, branchesSnap] = await Promise.all([
-          getDocs(usersQuery),
-          getDocs(branchesQuery)
-      ]);
+      const dbLocal = await getDB();
+      let usersToSet = [];
+      let branchesToSet = [];
 
-      setUsers(usersSnap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-      setBranches(branchesSnap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+      // Intentamos cargar de Local primero
+      try {
+          usersToSet = await dbLocal.users.where('companyId').equals(currentUser.companyId).toArray();
+          branchesToSet = await dbLocal.branches.where('companyId').equals(currentUser.companyId).toArray();
+      } catch (e) { console.warn("Dexie error, falling back to cloud"); }
+
+      // Si no hay datos locales, forzamos bajada de nube silenciosa
+      if (usersToSet.length === 0 || branchesToSet.length === 0) {
+          const usersQuery = query(
+              collection(firestoreDB, 'users'), 
+              where('companyId', '==', currentUser.companyId)
+          );
+          
+          const branchesQuery = query(
+              collection(firestoreDB, 'companies', currentUser.companyId, 'branches')
+          );
+          
+          const [usersSnap, branchesSnap] = await Promise.all([
+              getDocs(usersQuery),
+              getDocs(branchesQuery)
+          ]);
+
+          usersToSet = usersSnap.docs.map(doc => ({ uid: doc.id, id: doc.id, ...doc.data() }));
+          branchesToSet = branchesSnap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+
+          // Guardar caché silencioso
+          try {
+              if (usersToSet.length > 0) await dbLocal.users.bulkPut(usersToSet);
+              if (branchesToSet.length > 0) await dbLocal.branches.bulkPut(branchesToSet);
+          } catch (e) { }
+      }
+
+      setUsers(usersToSet);
+      setBranches(branchesToSet);
 
     } catch (error) {
       console.error("Error cargando equipo:", error);
@@ -248,7 +408,7 @@ export const TeamPage = () => {
 
   const loadFinancials = async () => {
       try {
-          const docRef = doc(db, `companies/${currentUser.companyId}/config/financials`);
+          const docRef = doc(firestoreDB, `companies/${currentUser.companyId}/config/financials`);
           const snap = await getDoc(docRef);
           if (snap.exists() && snap.data().methods) {
               setPaymentMethods(snap.data().methods);
@@ -262,7 +422,7 @@ export const TeamPage = () => {
 
   const loadPosConfig = async () => {
       try {
-          const docRef = doc(db, `companies/${currentUser.companyId}/config/pos_settings`);
+          const docRef = doc(firestoreDB, `companies/${currentUser.companyId}/config/pos_settings`);
           const snap = await getDoc(docRef);
           if (snap.exists()) {
               const data = snap.data();
@@ -296,7 +456,12 @@ export const TeamPage = () => {
 
       try {
           setLoading(true);
-          await deleteDoc(doc(db, 'users', userId));
+          await deleteDoc(doc(firestoreDB, 'users', userId));
+
+          try {
+              const dbLocal = await getDB();
+              await dbLocal.users.delete(userId);
+          } catch (e) {}
 
           try {
               const token = await authService.getToken(); 
@@ -357,7 +522,7 @@ export const TeamPage = () => {
       await authService.createUser(newEmployeeData);
       
       const q = query(
-          collection(db, 'users'), 
+          collection(firestoreDB, 'users'), 
           where('email', '==', formData.email),
           where('companyId', '==', currentUser.companyId)
       );
@@ -369,7 +534,7 @@ export const TeamPage = () => {
           await updateDoc(userDoc.ref, {
               branchId: formData.branchId || null,
               role: formData.role,
-              permissions: formData.permissions, // 🔥 GUARDAMOS LOS PERMISOS EN FIREBASE
+              permissions: formData.permissions,
               ledgerDebt: 0
           });
       }
@@ -379,7 +544,10 @@ export const TeamPage = () => {
           name: '', email: '', password: '', role: 'CAJERO', branchId: '',
           permissions: { canApplyDiscount: false, canVoidSales: false, canWithdrawCash: false, canSeeExpectedCash: false, canAddStock: false, canRemoveStock: false, canChangePrices: false }
       }); 
-      loadData(); 
+      
+      // Forzamos actualización visual rápida
+      handleForceCloudSync();
+
     } catch (error) {
       console.error(error);
       toast.error(`Error: ${error.message}`, { id: toastId });
@@ -463,7 +631,7 @@ export const TeamPage = () => {
   const saveFinancials = async (data) => {
       setSavingFinancials(true);
       try {
-          const docRef = doc(db, `companies/${currentUser.companyId}/config/financials`);
+          const docRef = doc(firestoreDB, `companies/${currentUser.companyId}/config/financials`);
           await setDoc(docRef, { methods: data }, { merge: true });
       } catch (error) {
           console.error("Error guardando:", error);
@@ -476,8 +644,14 @@ export const TeamPage = () => {
   const savePosConfig = async () => {
       setSavingPosConfig(true);
       try {
-          const docRef = doc(db, `companies/${currentUser.companyId}/config/pos_settings`);
+          const docRef = doc(firestoreDB, `companies/${currentUser.companyId}/config/pos_settings`);
           await setDoc(docRef, posConfig, { merge: true });
+          
+          try {
+              const dbLocal = await getDB();
+              await dbLocal.config.put({ key: 'pos_settings', value: posConfig, updatedAt: new Date().toISOString() });
+          } catch(e){}
+
           toast.success("Configuración del Punto de Venta guardada correctamente.");
       } catch (error) {
           console.error("Error guardando config POS:", error);
@@ -498,7 +672,7 @@ export const TeamPage = () => {
       }));
   };
 
-  const filteredUsers = activeBranchId 
+  const filteredUsers = activeBranchId && activeBranchId !== 'ALL'
       ? users.filter(u => u.branchId === activeBranchId)
       : users;
 
@@ -513,25 +687,38 @@ export const TeamPage = () => {
             <p className="text-sys-500">Administra usuarios, finanzas y parámetros del sistema.</p>
         </div>
         
-        <div className="bg-sys-100 p-1 rounded-xl flex gap-1 overflow-x-auto">
-            <button 
-                onClick={() => setActiveTab('team')}
-                className={cn("px-4 py-2 rounded-lg text-sm font-bold transition-all whitespace-nowrap", activeTab === 'team' ? "bg-white shadow text-sys-900" : "text-sys-500 hover:bg-sys-200")}
+        <div className="flex gap-4 items-center">
+            {/* 🔥 BOTÓN PARA BAJAR LOS EMPLEADOS DE LA NUBE */}
+            <Button 
+                variant="outline" 
+                onClick={handleForceCloudSync} 
+                className="shadow-sm border-brand/30 text-brand bg-brand/5 hover:bg-brand hover:text-white transition-all h-10 px-3"
+                title="Forzar actualización de empleados"
             >
-                Personal
-            </button>
-            <button 
-                onClick={() => setActiveTab('financials')}
-                className={cn("px-4 py-2 rounded-lg text-sm font-bold transition-all flex items-center gap-2 whitespace-nowrap", activeTab === 'financials' ? "bg-white shadow text-indigo-600" : "text-sys-500 hover:bg-sys-200")}
-            >
-                <CreditCard size={14}/> Planes de Tarjetas
-            </button>
-            <button 
-                onClick={() => setActiveTab('pos')}
-                className={cn("px-4 py-2 rounded-lg text-sm font-bold transition-all flex items-center gap-2 whitespace-nowrap", activeTab === 'pos' ? "bg-white shadow text-orange-600" : "text-sys-500 hover:bg-sys-200")}
-            >
-                <MonitorSmartphone size={14}/> Punto de Venta
-            </button>
+                <CloudDownload size={16} className={loading ? "animate-bounce mr-2" : "mr-2"}/>
+                <span className="hidden sm:inline">Sync Users</span>
+            </Button>
+
+            <div className="bg-sys-100 p-1 rounded-xl flex gap-1 overflow-x-auto h-10 items-center">
+                <button 
+                    onClick={() => setActiveTab('team')}
+                    className={cn("px-4 py-1.5 rounded-lg text-sm font-bold transition-all whitespace-nowrap", activeTab === 'team' ? "bg-white shadow text-sys-900" : "text-sys-500 hover:bg-sys-200")}
+                >
+                    Personal
+                </button>
+                <button 
+                    onClick={() => setActiveTab('financials')}
+                    className={cn("px-4 py-1.5 rounded-lg text-sm font-bold transition-all flex items-center gap-2 whitespace-nowrap", activeTab === 'financials' ? "bg-white shadow text-indigo-600" : "text-sys-500 hover:bg-sys-200")}
+                >
+                    <CreditCard size={14}/> Planes
+                </button>
+                <button 
+                    onClick={() => setActiveTab('pos')}
+                    className={cn("px-4 py-1.5 rounded-lg text-sm font-bold transition-all flex items-center gap-2 whitespace-nowrap", activeTab === 'pos' ? "bg-white shadow text-orange-600" : "text-sys-500 hover:bg-sys-200")}
+                >
+                    <MonitorSmartphone size={14}/> POS
+                </button>
+            </div>
         </div>
       </header>
 
@@ -711,7 +898,7 @@ export const TeamPage = () => {
                 <div className="p-4 border-b border-sys-100 bg-sys-50/50 flex justify-between items-center">
                   <div className="flex flex-col">
                       <h4 className="font-bold text-sys-700 text-sm">Personal Activo ({filteredUsers.length})</h4>
-                      {activeBranchId && <span className="text-[10px] text-brand font-bold uppercase tracking-wider">Filtrado por: {getBranchName(activeBranchId)}</span>}
+                      {activeBranchId && activeBranchId !== 'ALL' && <span className="text-[10px] text-brand font-bold uppercase tracking-wider">Filtrado por: {getBranchName(activeBranchId)}</span>}
                   </div>
                 </div>
                 
@@ -719,7 +906,7 @@ export const TeamPage = () => {
                   {loading ? (
                     <div className="p-10 text-center flex justify-center"><Loader2 className="animate-spin text-brand" size={24} /></div>
                   ) : filteredUsers.length === 0 ? (
-                    <div className="p-8 text-center text-sys-400 italic">No hay usuarios en esta vista.</div>
+                    <div className="p-8 text-center text-sys-400 italic">No hay usuarios en esta vista. Intenta clickear "Sync Users".</div>
                   ) : (
                     filteredUsers.map((u) => {
                         const debt = parseFloat(u.ledgerDebt || 0);
@@ -727,13 +914,13 @@ export const TeamPage = () => {
                         const perms = u.permissions || {};
 
                         return (
-                          <div key={u.id} className="p-4 flex flex-col md:flex-row items-start md:items-center justify-between group hover:bg-sys-50 transition-colors gap-4">
+                          <div key={u.id || u.uid} className="p-4 flex flex-col md:flex-row items-start md:items-center justify-between group hover:bg-sys-50 transition-colors gap-4">
                             <div className="flex items-center gap-4">
                               <div className={cn(
                                 "w-10 h-10 rounded-full flex items-center justify-center text-white shadow-sm font-bold text-sm",
                                 u.role === 'ADMIN' ? "bg-sys-800" : "bg-brand"
                               )}>
-                                {u.name?.charAt(0).toUpperCase()}
+                                {u.name?.charAt(0).toUpperCase() || 'U'}
                               </div>
                               <div>
                                 <p className="font-bold text-sys-900 text-sm flex items-center gap-2">
@@ -771,7 +958,7 @@ export const TeamPage = () => {
                                 </button>
 
                                 <button 
-                                    onClick={() => handleDeleteUser(u.id, u.email, u.role)}
+                                    onClick={() => handleDeleteUser(u.id || u.uid, u.email, u.role)}
                                     className="p-2 text-sys-300 hover:text-red-500 hover:bg-red-50 rounded-full transition-all"
                                     title="Eliminar Usuario"
                                 >

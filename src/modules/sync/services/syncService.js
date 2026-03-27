@@ -21,7 +21,7 @@ const SYNC_KEYS = {
     INVENTORY_PREFIX: 'last_sync_inv_br_', 
     GLOBAL_CONFIG: 'last_sync_config',
     SALES_PREFIX: 'last_sync_sales_br_',
-    PURCHASES_PREFIX: 'last_sync_purchases_br_', // 🔥 NUEVO: Clave para Compras
+    PURCHASES_PREFIX: 'last_sync_purchases_br_', 
     KARDEX_PREFIX: 'last_sync_kardex_br_', 
     CUSTOMER_LEDGER: 'last_sync_customer_ledger',
     SUPPLIER_LEDGER: 'last_sync_supplier_ledger'
@@ -30,6 +30,13 @@ const SYNC_KEYS = {
 export const syncService = {
   
   _unsubscribes: [],
+
+  // 🔥 HELPER SALVAVIDAS: Generador de IDs para evitar colisiones en Firebase
+  _ensureValidCloudId(item, prefix) {
+      if (item.firestoreId && item.firestoreId !== 'undefined') return String(item.firestoreId);
+      if (typeof item.id === 'string' && item.id.length > 8) return item.id;
+      return `${prefix}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+  },
 
   _deepSanitize(obj) {
     if (obj === undefined || obj === null) return null;
@@ -235,6 +242,32 @@ export const syncService = {
       } catch (error) {}
   },
 
+  // 🔥 NUEVO: Forzar bajada de Clientes y Maestros en la carga inicial
+  async syncInitialMasters(companyId) {
+      if (!companyId) return;
+      try {
+          const localDb = await getDB();
+          const masterCollections = ['categories', 'brands', 'suppliers', 'clients'];
+          
+          for (const collectionName of masterCollections) {
+              const colRef = collection(db, 'companies', companyId, collectionName);
+              const snapshot = await getDocs(colRef);
+              const itemsToPut = [];
+              
+              snapshot.docs.forEach(docSnap => {
+                  const data = docSnap.data();
+                  itemsToPut.push({ id: docSnap.id, ...data, syncStatus: 'synced', firestoreId: docSnap.id });
+              });
+
+              if (itemsToPut.length > 0) {
+                  await localDb.table(collectionName).bulkPut(itemsToPut);
+              }
+          }
+      } catch (error) {
+          console.warn("Error descargando catálogos maestros iniciales:", error);
+      }
+  },
+
   async syncProducts(companyId) {
     if (!companyId) return;
     const localDb = await getDB();
@@ -335,11 +368,12 @@ export const syncService = {
       const keySuffix = (role === 'OWNER' && (!branchId || branchId === 'ALL')) ? 'GLOBAL' : branchId;
       const lastSyncKey = SYNC_KEYS.KARDEX_PREFIX + keySuffix;
       const lastSyncStr = localStorage.getItem(lastSyncKey);
+      const countLocal = await localDb.movements.count(); 
       
       const movRef = collection(db, 'companies', companyId, 'movements');
       let q;
 
-      if (lastSyncStr) {
+      if (lastSyncStr && countLocal > 0) {
           const lastSyncDate = new Date(lastSyncStr);
           if (role === 'OWNER' && (!branchId || branchId === 'ALL')) {
               q = query(movRef, where('updatedAt', '>', Timestamp.fromDate(lastSyncDate)));
@@ -348,9 +382,9 @@ export const syncService = {
           }
       } else {
           if (role === 'OWNER' && (!branchId || branchId === 'ALL')) {
-              q = query(movRef, orderBy('date', 'desc'), limit(500));
+              q = query(movRef, orderBy('date', 'desc'), limit(3000));
           } else {
-              q = query(movRef, where('branchId', '==', branchId), orderBy('date', 'desc'), limit(500));
+              q = query(movRef, where('branchId', '==', branchId), orderBy('date', 'desc'), limit(3000));
           }
       }
 
@@ -396,11 +430,12 @@ export const syncService = {
           const keySuffix = (role === 'OWNER' && (!branchId || branchId === 'ALL')) ? 'GLOBAL' : branchId;
           const lastSyncKey = SYNC_KEYS.SALES_PREFIX + keySuffix;
           const lastSyncStr = localStorage.getItem(lastSyncKey);
+          const countLocal = await localDb.sales.count(); 
           
           const salesRef = collection(db, 'companies', companyId, 'sales');
           let q;
 
-          if (lastSyncStr) {
+          if (lastSyncStr && countLocal > 0) {
               const lastSyncDate = new Date(lastSyncStr);
               if (role === 'OWNER' && (!branchId || branchId === 'ALL')) {
                   q = query(salesRef, where('updatedAt', '>', Timestamp.fromDate(lastSyncDate)));
@@ -409,9 +444,9 @@ export const syncService = {
               }
           } else {
               if (role === 'OWNER' && (!branchId || branchId === 'ALL')) {
-                  q = query(salesRef, orderBy('date', 'desc'), limit(150));
+                  q = query(salesRef, orderBy('date', 'desc'), limit(3000));
               } else {
-                  q = query(salesRef, where('branchId', '==', branchId), orderBy('date', 'desc'), limit(150));
+                  q = query(salesRef, where('branchId', '==', branchId), orderBy('date', 'desc'), limit(3000));
               }
           }
 
@@ -437,7 +472,6 @@ export const syncService = {
       } catch (error) {}
   },
 
-  // 🔥 NUEVO: BAJADA INICIAL DE COMPRAS PARA LOCAL-FIRST ABSOLUTO
   async syncInitialPurchases(companyId, branchId, role) {
       if (!companyId) return;
       try {
@@ -445,11 +479,12 @@ export const syncService = {
           const keySuffix = (role === 'OWNER' && (!branchId || branchId === 'ALL')) ? 'GLOBAL' : branchId;
           const lastSyncKey = SYNC_KEYS.PURCHASES_PREFIX + keySuffix;
           const lastSyncStr = localStorage.getItem(lastSyncKey);
+          const countLocal = await localDb.purchases.count(); 
           
           const colRef = collection(db, 'companies', companyId, 'purchases');
           let q;
 
-          if (lastSyncStr) {
+          if (lastSyncStr && countLocal > 0) {
               const lastSyncDate = new Date(lastSyncStr);
               if (role === 'OWNER' && (!branchId || branchId === 'ALL')) {
                   q = query(colRef, where('updatedAt', '>', Timestamp.fromDate(lastSyncDate)));
@@ -458,9 +493,9 @@ export const syncService = {
               }
           } else {
               if (role === 'OWNER' && (!branchId || branchId === 'ALL')) {
-                  q = query(colRef, orderBy('date', 'desc'), limit(150));
+                  q = query(colRef, orderBy('date', 'desc'), limit(1000));
               } else {
-                  q = query(colRef, where('branchId', '==', branchId), orderBy('date', 'desc'), limit(150));
+                  q = query(colRef, where('branchId', '==', branchId), orderBy('date', 'desc'), limit(1000));
               }
           }
 
@@ -494,15 +529,16 @@ export const syncService = {
           const localDb = await getDB();
           const lastSyncKey = SYNC_KEYS.CUSTOMER_LEDGER;
           const lastSyncStr = localStorage.getItem(lastSyncKey);
+          const countLocal = await localDb.customer_ledger.count(); 
           
           const ledgerRef = collection(db, 'companies', companyId, 'customer_ledger');
           let q;
 
-          if (lastSyncStr) {
+          if (lastSyncStr && countLocal > 0) {
               const lastSyncDate = new Date(lastSyncStr);
               q = query(ledgerRef, where('updatedAt', '>', Timestamp.fromDate(lastSyncDate)));
           } else {
-              q = query(ledgerRef, orderBy('date', 'desc'), limit(500));
+              q = query(ledgerRef, orderBy('date', 'desc'), limit(1000)); 
           }
 
           const snapshot = await getDocs(q);
@@ -550,15 +586,16 @@ export const syncService = {
           const localDb = await getDB();
           const lastSyncKey = SYNC_KEYS.SUPPLIER_LEDGER;
           const lastSyncStr = localStorage.getItem(lastSyncKey);
+          const countLocal = await localDb.supplier_ledger.count(); 
           
           const ledgerRef = collection(db, 'companies', companyId, 'supplier_ledger');
           let q;
 
-          if (lastSyncStr) {
+          if (lastSyncStr && countLocal > 0) {
               const lastSyncDate = new Date(lastSyncStr);
               q = query(ledgerRef, where('updatedAt', '>', Timestamp.fromDate(lastSyncDate)));
           } else {
-              q = query(ledgerRef, orderBy('date', 'desc'), limit(500));
+              q = query(ledgerRef, orderBy('date', 'desc'), limit(1000)); 
           }
 
           const snapshot = await getDocs(q);
@@ -590,19 +627,17 @@ export const syncService = {
       }
   },
 
-  // 🔥 MOTOR DE ARRANQUE INTELIGENTE
   async syncInitialData(user, activeBranchId) {
-      // 🔥 MODO DIOS BYPASS: El superadmin no sincroniza datos de empresa
       if (!user?.companyId || user.companyId === 'master_admin' || user.superAdmin) return;
 
       await this.syncConfig(user.companyId);
+      await this.syncInitialMasters(user.companyId); // 🔥 Bajar Clientes y Maestros
       await this.syncProducts(user.companyId);
       await this.syncInitialSales(user.companyId, activeBranchId, user.role);
       await this.syncInitialMovements(user.companyId, activeBranchId, user.role);
       
       await this.syncInitialCustomerLedger(user.companyId);
       
-      // 🔥 SPRINT 7: Carga Inicial de Compras y Proveedores
       await this.syncInitialPurchases(user.companyId, activeBranchId, user.role);
       await this.syncInitialSupplierLedger(user.companyId);
 
@@ -622,10 +657,6 @@ export const syncService = {
           await this.syncInitialInventory(user.companyId, activeBranchId);
       }
   },
-
-  // =================================================================
-  // 📡 REAL-TIME LISTENERS
-  // =================================================================
 
   async startInventoryListener(companyId, branchId) {
     if (!companyId || !branchId) return;
@@ -662,7 +693,6 @@ export const syncService = {
     this.stopListeners();
 
     const { user } = useAuthStore.getState();
-    // 🔥 MODO DIOS BYPASS: El superadmin no levanta listeners
     if (user?.superAdmin || user?.companyId === 'master_admin') return; 
 
     const companyId = companyIdArg || this._getCompanyId();
@@ -691,7 +721,6 @@ export const syncService = {
         } catch (e) {}
     }));
 
-    // Real-Time Ventas
     try {
         let salesQuery;
         const salesRef = collection(db, 'companies', companyId, 'sales');
@@ -705,7 +734,7 @@ export const syncService = {
         if (salesQuery) {
             this._unsubscribes.push(onSnapshot(salesQuery, async (snapshot) => {
                 const localDb = await getDB();
-                const pendingIds = await localDb.sales.where('syncStatus').equals('pending').primaryKeys();
+                const pendingIds = await localDb.sales.filter(s => s.syncStatus !== 'synced').primaryKeys();
                 const pendingSet = new Set(pendingIds);
                 const salesToPut = [];
                 
@@ -730,7 +759,6 @@ export const syncService = {
         }
     } catch (e) { }
 
-    // 🔥 Real-Time Compras y Devoluciones (Purchases)
     try {
         let purchQuery;
         const purchRef = collection(db, 'companies', companyId, 'purchases');
@@ -744,7 +772,7 @@ export const syncService = {
         if (purchQuery) {
             this._unsubscribes.push(onSnapshot(purchQuery, async (snapshot) => {
                 const localDb = await getDB();
-                const pendingIds = await localDb.purchases.where('syncStatus').equals('pending').primaryKeys();
+                const pendingIds = await localDb.purchases.filter(p => p.syncStatus !== 'synced').primaryKeys();
                 const pendingSet = new Set(pendingIds);
                 const itemsToPut = [];
                 
@@ -783,26 +811,10 @@ export const syncService = {
     });
   },
 
-  async _applyProductChangesStrict(itemsToPut, idsToDelete) {
-      const localDb = await getDB();
-      try {
-          await localDb.transaction('rw', localDb.products, async () => {
-              if (idsToDelete.length > 0) await localDb.products.bulkDelete(idsToDelete);
-              if (itemsToPut.length > 0) {
-                  await localDb.products.bulkPut(itemsToPut);
-              }
-          });
-      } catch (err) {}
-  },
-
   stopListeners() {
       this._unsubscribes.forEach(unsub => unsub());
       this._unsubscribes = [];
   },
-
-  // =================================================================
-  // 🚀 SUBIDA (LOCAL -> NUBE)
-  // =================================================================
 
   async syncAll() { 
     if (!navigator.onLine) return { uploaded: 0, errors: 0 };
@@ -846,7 +858,6 @@ export const syncService = {
 
   async pushGlobalConfig(key, value) {
       const { user } = useAuthStore.getState();
-      // 🔥 Evitar push de config si es el Master Admin
       if (!user?.companyId || user.companyId === 'master_admin' || user.superAdmin) throw new Error("No hay sesión de empresa activa");
       const configRef = doc(db, `companies/${user.companyId}/config`, key);
       await setDoc(configRef, { key, value, updatedAt: new Date().toISOString() }, { merge: true });
@@ -855,14 +866,15 @@ export const syncService = {
       return true;
   },
 
+  // 🔥 TÁCTICA DE ASPIRADORA: Usamos filter(x !== 'synced') en lugar de equals('pending')
   async syncPendingProducts(companyId, branchId) {
     const localDb = await getDB();
     const pendingProducts = await localDb.products
-        .filter(p => p.syncStatus === 'pending' || p.syncStatus === 'pending_update')
+        .filter(p => p.syncStatus !== 'synced')
         .toArray();
 
     const pendingInventory = await localDb.inventory
-        .filter(i => i.syncStatus === 'pending' || i.syncStatus === 'pending_stock')
+        .filter(i => i.syncStatus !== 'synced')
         .toArray();
 
     if (pendingProducts.length === 0 && pendingInventory.length === 0) return { synced: 0 };
@@ -879,19 +891,19 @@ export const syncService = {
                 if (!product.id) continue;
                 const docRef = doc(collection(db, 'companies', companyId, 'products'), String(product.id));
                 const { syncStatus, stock, promo, ...masterData } = product; 
+                const nowIso = new Date().toISOString();
 
                 batch.set(docRef, {
                      ...this._deepSanitize(masterData),
-                     lastUpdated: serverTimestamp()
+                     lastUpdated: serverTimestamp(),
+                     updatedAt: nowIso 
                 }, { merge: true }); 
-                syncedIds.push(product.id);
+                syncedIds.push({ key: product.id, changes: { syncStatus: 'synced', updatedAt: nowIso } });
             }
 
             if (syncedIds.length > 0) {
                 await batch.commit();
-                await localDb.products.bulkUpdate(
-                    syncedIds.map(id => ({ key: id, changes: { syncStatus: 'synced' } }))
-                );
+                await localDb.products.bulkUpdate(syncedIds);
                 totalSynced += syncedIds.length;
                 await this._sleep(150); 
             }
@@ -906,20 +918,21 @@ export const syncService = {
             
             for (const inv of chunk) {
                 const stockRef = doc(db, `companies/${companyId}/branches/${inv.branchId}/inventory`, String(inv.productId));
+                const nowIso = new Date().toISOString();
                 batch.set(stockRef, {
                     productId: inv.productId,
                     stock: parseFloat(inv.stock) || 0,
                     promo: inv.promo || null, 
-                    updatedAt: serverTimestamp()
+                    updatedAt: nowIso
                 }, { merge: true });
-                syncedKeys.push([inv.branchId, inv.productId]);
+                syncedKeys.push({ key: [inv.branchId, inv.productId], changes: { syncStatus: 'synced', updatedAt: nowIso } });
             }
 
             if (syncedKeys.length > 0) {
                 await batch.commit();
                 await localDb.transaction('rw', localDb.inventory, async () => {
-                    for (const key of syncedKeys) {
-                        await localDb.inventory.update(key, { syncStatus: 'synced' });
+                    for (const item of syncedKeys) {
+                        await localDb.inventory.update(item.key, item.changes);
                     }
                 });
                 totalSynced += syncedKeys.length;
@@ -931,6 +944,7 @@ export const syncService = {
     return { synced: totalSynced };
   },
 
+  // 🔥 TÁCTICA DE ASPIRADORA: Sube clientes atascados sin etiqueta
   async syncPendingMasters(companyId) {
       const localDb = await getDB();
       const masterCollections = ['categories', 'brands', 'suppliers', 'clients'];
@@ -938,7 +952,7 @@ export const syncService = {
 
       for (const collectionName of masterCollections) {
           try {
-              const pendingItems = await localDb.table(collectionName).where('syncStatus').equals('pending').toArray();
+              const pendingItems = await localDb.table(collectionName).filter(i => i.syncStatus !== 'synced').toArray();
               if (pendingItems.length === 0) continue;
 
               const chunks = this.chunkArray(pendingItems, 100);
@@ -946,30 +960,39 @@ export const syncService = {
 
               for (const chunk of chunks) {
                   const batch = writeBatch(db);
-                  const syncedIds = [];
+                  const syncedUpdates = [];
 
                   for (const item of chunk) {
-                      const docRef = doc(colRef, String(item.id));
-                      const { syncStatus, ...cleanItem } = item;
-                      batch.set(docRef, this._deepSanitize(cleanItem), { merge: true });
-                      syncedIds.push(item.id);
+                      if (!item.id) continue;
+                      const safeId = this._ensureValidCloudId(item, collectionName.slice(0, 3));
+                      const docRef = doc(colRef, safeId);
+                      const { syncStatus, localId, id, ...cleanItem } = item;
+                      const nowIso = new Date().toISOString();
+
+                      batch.set(docRef, {
+                          ...this._deepSanitize(cleanItem),
+                          firestoreId: safeId,
+                          updatedAt: nowIso
+                      }, { merge: true });
+                      
+                      syncedUpdates.push({ key: item.id, changes: { syncStatus: 'synced', firestoreId: safeId, updatedAt: nowIso } });
                   }
 
                   await batch.commit();
-                  await localDb.table(collectionName).bulkUpdate(
-                      syncedIds.map(id => ({ key: id, changes: { syncStatus: 'synced' } }))
-                  );
-                  totalSynced += syncedIds.length;
+                  await localDb.table(collectionName).bulkUpdate(syncedUpdates);
+                  totalSynced += syncedUpdates.length;
                   await this._sleep(100); 
               }
-          } catch(e) { }
+          } catch(e) {
+              console.error(`Error en syncPendingMasters [${collectionName}]:`, e);
+          }
       }
       return { synced: totalSynced };
   },
 
   async syncPendingSales(companyId, branchId) {
     const localDb = await getDB();
-    const pendingSales = await localDb.sales.where('syncStatus').equals('pending').toArray();
+    const pendingSales = await localDb.sales.filter(s => s.syncStatus !== 'synced').toArray();
     
     if (pendingSales.length === 0) return { synced: 0 };
 
@@ -979,27 +1002,32 @@ export const syncService = {
     for (const batchSales of chunks) {
         const batch = writeBatch(db);
         const salesCollection = collection(db, 'companies', companyId, 'sales');
-        const syncedIds = [];
+        const syncedUpdates = [];
 
         for (const sale of batchSales) {
-            const safeId = sale.firestoreId || sale.localId;
-            const docRef = doc(salesCollection, String(safeId)); 
-            const { localId, syncStatus, ...cleanSale } = sale;
+            if (!sale.id) continue;
+            const safeId = this._ensureValidCloudId(sale, 'sale');
+            const docRef = doc(salesCollection, safeId); 
+            const { localId, syncStatus, id, ...cleanSale } = sale;
+            const nowIso = new Date().toISOString();
 
             batch.set(docRef, {
                 ...this._deepSanitize(cleanSale),
+                firestoreId: safeId,
                 branchId: sale.branchId || branchId || 'main',
                 syncedAt: serverTimestamp(),
+                updatedAt: nowIso, 
                 origin: 'POS_WEB' 
             }, { merge: true });
             
-            syncedIds.push(sale.localId || sale.id);
+            syncedUpdates.push({
+                key: sale.id, 
+                changes: { syncStatus: 'synced', firestoreId: safeId, updatedAt: nowIso }
+            });
         }
 
         await batch.commit();
-        await localDb.sales.bulkUpdate(
-             syncedIds.map(id => ({ key: id, changes: { syncStatus: 'synced' } }))
-        );
+        await localDb.sales.bulkUpdate(syncedUpdates);
         totalSynced += batchSales.length;
         await this._sleep(150); 
     }
@@ -1008,7 +1036,7 @@ export const syncService = {
 
   async syncPendingShifts(companyId) {
       const localDb = await getDB();
-      const pendingShifts = await localDb.shifts.where('syncStatus').equals('pending').toArray();
+      const pendingShifts = await localDb.shifts.filter(s => s.syncStatus !== 'synced').toArray();
       
       if (pendingShifts.length === 0) return { synced: 0 };
 
@@ -1018,23 +1046,31 @@ export const syncService = {
 
       for (const chunk of chunks) {
           const batch = writeBatch(db);
-          const syncedIds = [];
+          const syncedUpdates = [];
 
           for (const shift of chunk) {
-              const safeId = shift.firestoreId || shift.localId || shift.id;
-              const docRef = doc(colRef, String(safeId)); 
+              if (!shift.id) continue;
+              const safeId = this._ensureValidCloudId(shift, `shift_${shift.branchId || 'b'}`);
+              const docRef = doc(colRef, safeId); 
               
-              const { localId, syncStatus, ...cleanShift } = shift;
+              const { localId, syncStatus, id, ...cleanShift } = shift;
+              const nowIso = new Date().toISOString();
 
-              batch.set(docRef, this._deepSanitize(cleanShift), { merge: true });
-              syncedIds.push(shift.id); 
+              batch.set(docRef, {
+                  ...this._deepSanitize(cleanShift),
+                  firestoreId: safeId,
+                  updatedAt: nowIso
+              }, { merge: true });
+              
+              syncedUpdates.push({
+                  key: shift.id,
+                  changes: { syncStatus: 'synced', firestoreId: safeId, updatedAt: nowIso }
+              }); 
           }
 
           await batch.commit();
-          await localDb.shifts.bulkUpdate(
-               syncedIds.map(id => ({ key: id, changes: { syncStatus: 'synced' } }))
-          );
-          totalSynced += syncedIds.length;
+          await localDb.shifts.bulkUpdate(syncedUpdates);
+          totalSynced += syncedUpdates.length;
           await this._sleep(100); 
       }
       return { synced: totalSynced };
@@ -1042,7 +1078,7 @@ export const syncService = {
 
   async syncPendingCashMovements(companyId) {
       const localDb = await getDB();
-      const pendingMovs = await localDb.cash_movements.where('syncStatus').equals('pending').toArray();
+      const pendingMovs = await localDb.cash_movements.filter(c => c.syncStatus !== 'synced').toArray();
       
       if (pendingMovs.length === 0) return { synced: 0 };
 
@@ -1052,22 +1088,30 @@ export const syncService = {
 
       for (const chunk of chunks) {
           const batch = writeBatch(db);
-          const syncedIds = [];
+          const syncedUpdates = [];
 
           for (const mov of chunk) {
-              const safeId = mov.firestoreId || mov.id;
-              const docRef = doc(colRef, String(safeId)); 
-              const { syncStatus, ...cleanMov } = mov;
+              if (!mov.id) continue;
+              const safeId = this._ensureValidCloudId(mov, 'cash');
+              const docRef = doc(colRef, safeId); 
+              const { syncStatus, localId, id, ...cleanMov } = mov;
+              const nowIso = new Date().toISOString();
 
-              batch.set(docRef, this._deepSanitize(cleanMov), { merge: true });
-              syncedIds.push(mov.id);
+              batch.set(docRef, {
+                  ...this._deepSanitize(cleanMov),
+                  firestoreId: safeId,
+                  updatedAt: nowIso
+              }, { merge: true });
+              
+              syncedUpdates.push({
+                  key: mov.id,
+                  changes: { syncStatus: 'synced', firestoreId: safeId, updatedAt: nowIso }
+              });
           }
 
           await batch.commit();
-          await localDb.cash_movements.bulkUpdate(
-               syncedIds.map(id => ({ key: id, changes: { syncStatus: 'synced' } }))
-          );
-          totalSynced += syncedIds.length;
+          await localDb.cash_movements.bulkUpdate(syncedUpdates);
+          totalSynced += syncedUpdates.length;
           await this._sleep(100); 
       }
       return { synced: totalSynced };
@@ -1075,7 +1119,7 @@ export const syncService = {
 
   async syncPendingPurchases(companyId) {
       const localDb = await getDB();
-      const pendingPurchases = await localDb.purchases.where('syncStatus').equals('pending').toArray();
+      const pendingPurchases = await localDb.purchases.filter(p => p.syncStatus !== 'synced').toArray();
       
       if (pendingPurchases.length === 0) return { synced: 0 };
 
@@ -1085,26 +1129,31 @@ export const syncService = {
 
       for (const chunk of chunks) {
           const batch = writeBatch(db);
-          const syncedIds = [];
+          const syncedUpdates = [];
 
           for (const purchase of chunk) {
-              const safeId = purchase.firestoreId || purchase.id;
-              const docRef = doc(colRef, String(safeId)); 
-              const { syncStatus, ...cleanPurchase } = purchase;
+              if (!purchase.id) continue;
+              const safeId = this._ensureValidCloudId(purchase, 'purch');
+              const docRef = doc(colRef, safeId); 
+              const { syncStatus, localId, id, ...cleanPurchase } = purchase;
+              const nowIso = new Date().toISOString();
 
               batch.set(docRef, {
                   ...this._deepSanitize(cleanPurchase),
-                  syncedAt: serverTimestamp()
+                  firestoreId: safeId,
+                  syncedAt: serverTimestamp(),
+                  updatedAt: nowIso
               }, { merge: true });
               
-              syncedIds.push(purchase.id);
+              syncedUpdates.push({
+                  key: purchase.id,
+                  changes: { syncStatus: 'synced', firestoreId: safeId, updatedAt: nowIso }
+              });
           }
 
           await batch.commit();
-          await localDb.purchases.bulkUpdate(
-               syncedIds.map(id => ({ key: id, changes: { syncStatus: 'synced' } }))
-          );
-          totalSynced += syncedIds.length;
+          await localDb.purchases.bulkUpdate(syncedUpdates);
+          totalSynced += syncedUpdates.length;
           await this._sleep(100); 
       }
       return { synced: totalSynced };
@@ -1112,7 +1161,7 @@ export const syncService = {
 
   async syncPendingSupplierLedger(companyId) {
       const localDb = await getDB();
-      const pendingLedger = await localDb.supplier_ledger.where('syncStatus').equals('pending').toArray();
+      const pendingLedger = await localDb.supplier_ledger.filter(s => s.syncStatus !== 'synced').toArray();
       
       if (pendingLedger.length === 0) return { synced: 0 };
 
@@ -1122,26 +1171,31 @@ export const syncService = {
 
       for (const chunk of chunks) {
           const batch = writeBatch(db);
-          const syncedIds = [];
+          const syncedUpdates = [];
 
           for (const mov of chunk) {
-              const safeId = mov.firestoreId || mov.id;
-              const docRef = doc(colRef, String(safeId)); 
-              const { syncStatus, ...cleanMov } = mov;
+              if (!mov.id) continue;
+              const safeId = this._ensureValidCloudId(mov, 'sledg');
+              const docRef = doc(colRef, safeId); 
+              const { syncStatus, localId, id, ...cleanMov } = mov;
+              const nowIso = new Date().toISOString();
 
               batch.set(docRef, {
                   ...this._deepSanitize(cleanMov),
-                  syncedAt: serverTimestamp()
+                  firestoreId: safeId,
+                  syncedAt: serverTimestamp(),
+                  updatedAt: nowIso
               }, { merge: true });
               
-              syncedIds.push(mov.id);
+              syncedUpdates.push({
+                  key: mov.id,
+                  changes: { syncStatus: 'synced', firestoreId: safeId, updatedAt: nowIso }
+              });
           }
 
           await batch.commit();
-          await localDb.supplier_ledger.bulkUpdate(
-               syncedIds.map(id => ({ key: id, changes: { syncStatus: 'synced' } }))
-          );
-          totalSynced += syncedIds.length;
+          await localDb.supplier_ledger.bulkUpdate(syncedUpdates);
+          totalSynced += syncedUpdates.length;
           await this._sleep(100); 
       }
       return { synced: totalSynced };
@@ -1149,7 +1203,7 @@ export const syncService = {
 
   async syncPendingMovements(companyId) {
       const localDb = await getDB();
-      const pendingMovs = await localDb.movements.where('syncStatus').equals('pending').toArray();
+      const pendingMovs = await localDb.movements.filter(m => m.syncStatus !== 'synced').toArray();
       
       if (pendingMovs.length === 0) return { synced: 0 };
 
@@ -1159,26 +1213,31 @@ export const syncService = {
 
       for (const chunk of chunks) {
           const batch = writeBatch(db);
-          const syncedIds = [];
+          const syncedUpdates = [];
 
           for (const mov of chunk) {
-              const safeId = mov.firestoreId || mov.id;
-              const docRef = doc(colRef, String(safeId)); 
-              const { syncStatus, ...cleanMov } = mov;
+              if (!mov.id) continue;
+              const safeId = this._ensureValidCloudId(mov, 'mov');
+              const docRef = doc(colRef, safeId); 
+              const { syncStatus, localId, id, ...cleanMov } = mov;
+              const nowIso = new Date().toISOString();
 
               batch.set(docRef, {
                   ...this._deepSanitize(cleanMov),
-                  syncedAt: serverTimestamp()
+                  firestoreId: safeId,
+                  syncedAt: serverTimestamp(),
+                  updatedAt: nowIso
               }, { merge: true });
               
-              syncedIds.push(mov.id);
+              syncedUpdates.push({
+                  key: mov.id,
+                  changes: { syncStatus: 'synced', firestoreId: safeId, updatedAt: nowIso }
+              });
           }
 
           await batch.commit();
-          await localDb.movements.bulkUpdate(
-               syncedIds.map(id => ({ key: id, changes: { syncStatus: 'synced' } }))
-          );
-          totalSynced += syncedIds.length;
+          await localDb.movements.bulkUpdate(syncedUpdates);
+          totalSynced += syncedUpdates.length;
           await this._sleep(100); 
       }
       return { synced: totalSynced };
@@ -1186,7 +1245,7 @@ export const syncService = {
 
   async syncPendingCustomerLedger(companyId) {
       const localDb = await getDB();
-      const pendingLedger = await localDb.customer_ledger.where('syncStatus').equals('pending').toArray();
+      const pendingLedger = await localDb.customer_ledger.filter(c => c.syncStatus !== 'synced').toArray();
       
       if (pendingLedger.length === 0) return { synced: 0 };
 
@@ -1196,26 +1255,31 @@ export const syncService = {
 
       for (const chunk of chunks) {
           const batch = writeBatch(db);
-          const syncedIds = [];
+          const syncedUpdates = [];
 
           for (const mov of chunk) {
-              const safeId = mov.firestoreId || mov.id;
-              const docRef = doc(colRef, String(safeId)); 
-              const { syncStatus, ...cleanMov } = mov;
+              if (!mov.id) continue;
+              const safeId = this._ensureValidCloudId(mov, 'cledg');
+              const docRef = doc(colRef, safeId); 
+              const { syncStatus, localId, id, ...cleanMov } = mov;
+              const nowIso = new Date().toISOString();
 
               batch.set(docRef, {
                   ...this._deepSanitize(cleanMov),
-                  syncedAt: serverTimestamp()
+                  firestoreId: safeId,
+                  syncedAt: serverTimestamp(),
+                  updatedAt: nowIso
               }, { merge: true });
               
-              syncedIds.push(mov.id);
+              syncedUpdates.push({
+                  key: mov.id,
+                  changes: { syncStatus: 'synced', firestoreId: safeId, updatedAt: nowIso }
+              });
           }
 
           await batch.commit();
-          await localDb.customer_ledger.bulkUpdate(
-               syncedIds.map(id => ({ key: id, changes: { syncStatus: 'synced' } }))
-          );
-          totalSynced += syncedIds.length;
+          await localDb.customer_ledger.bulkUpdate(syncedUpdates);
+          totalSynced += syncedUpdates.length;
           await this._sleep(100); 
       }
       return { synced: totalSynced };
@@ -1227,7 +1291,6 @@ export const syncService = {
 
   _getCompanyId() {
     const { user } = useAuthStore.getState();
-    // 🔥 MODO DIOS BYPASS: El superadmin no tiene un companyId real de negocio
     if (!user || !user.companyId || user.companyId === 'undefined' || user.companyId === 'master_admin' || user.superAdmin) return null;
     return user.companyId;
   },

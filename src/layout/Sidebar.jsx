@@ -6,16 +6,14 @@ import {
     Users, Lock, ArrowRight, X, Loader2, Plug, 
     Building, Truck, Unlock, WifiOff
 } from 'lucide-react';
-import { doc, onSnapshot } from 'firebase/firestore'; 
 
-// 🔥 CORRECCIÓN DE RUTAS DE IMPORTACIÓN
 import { cn } from '../core/utils/cn'; 
 import { useAutoSync } from '../core/hooks/useAutoSync';
 import { useAuthStore } from '../modules/auth/store/useAuthStore';
 import { securityService } from '../modules/security/services/securityService';
-import { db } from '../database/firebase'; 
 
-// 🔥 REPOSITORIO DE CAJA
+// 🔥 REPOSITORIOS LOCALES
+import { getDB } from '../database/db'; 
 import { CashClosingModal } from '../modules/cash/components/CashClosingModal'; 
 import { cashRepository } from '../modules/cash/repositories/cashRepository';
 
@@ -89,7 +87,6 @@ const PinRequestModal = ({ isOpen, onClose, onSuccess }) => {
         setError(false);
 
         try {
-            // 🔥 FIX: Usamos verifyPin en lugar de verifyMasterPin para consistencia con el Dashboard
             if (typeof securityService.verifyPin !== 'function') {
                 throw new Error("El servicio de seguridad no está configurado correctamente (verifyPin missing).");
             }
@@ -250,12 +247,12 @@ export const Sidebar = () => {
     const navigate = useNavigate();
     const { companySlug } = useParams(); 
     
-    // 🔥 ROLES DEFINIDOS
+    // ROLES DEFINIDOS
     const isOwner = user?.role === 'OWNER';
     const isAdmin = user?.role === 'ADMIN';
     const canManage = isOwner || isAdmin;
 
-    const [companyInfo, setCompanyInfo] = useState({ name: 'MAXI KIOSCO', logo: defaultLogo });
+    const [companyInfo, setCompanyInfo] = useState({ name: 'MI NEGOCIO', logo: defaultLogo });
 
     const getLink = (path) => {
         const root = companySlug || user?.companyId; 
@@ -298,7 +295,7 @@ export const Sidebar = () => {
         return () => clearInterval(interval);
     }, [user, activeBranchId]); 
 
-    // 🔥 ABRIR CAJA (Respetando Branch Activo)
+    // 🔥 ABRIR CAJA 
     const handleOpenShiftDirectly = async () => {
         if (!activeBranchId && !isOwner) {
             alert("⚠️ Error: No tiene una sucursal asignada.");
@@ -326,20 +323,30 @@ export const Sidebar = () => {
         }
     };
 
-    useEffect(() => {
-        if (user?.companyId) {
-            const unsub = onSnapshot(doc(db, 'companies', user.companyId), (docSnap) => {
-                if (docSnap.exists()) {
-                    const data = docSnap.data();
-                    setCompanyInfo({
-                        name: data.name || 'MI NEGOCIO',
-                        logo: data.logoUrl || defaultLogo
-                    });
-                }
-            });
-            return () => unsub();
+    // 🔥 LECTURA DE LOGO Y NOMBRE LOCAL-FIRST (DEXIE)
+    const loadLocalCompanyInfo = async () => {
+        try {
+            const dbLocal = await getDB();
+            const configData = await dbLocal.config.get('company_info');
+            if (configData && configData.value) {
+                setCompanyInfo({
+                    name: configData.value.name || 'MI NEGOCIO',
+                    logo: configData.value.logoUrl || defaultLogo
+                });
+            }
+        } catch (error) {
+            console.warn("No se pudo cargar la configuración local de la empresa:", error);
         }
-    }, [user]);
+    };
+
+    useEffect(() => {
+        // Carga inicial
+        loadLocalCompanyInfo();
+        
+        // Polling silencioso para actualizar si el dueño cambia el logo en otra pestaña
+        const interval = setInterval(loadLocalCompanyInfo, 5000);
+        return () => clearInterval(interval);
+    }, []);
 
     useEffect(() => {
         const handleStatus = () => setIsOnline(navigator.onLine);
@@ -356,7 +363,6 @@ export const Sidebar = () => {
         if (canManage) {
             navigate(route);
         } else {
-            // Cajero queriendo entrar a inventario -> Pide PIN
             setPendingRoute(route);
             setIsPinModalOpen(true);
         }
@@ -386,7 +392,7 @@ export const Sidebar = () => {
                     </div>
 
                     <div className="flex flex-col gap-0.5 w-full">
-                        <h1 className="text-lg font-black text-sys-900 tracking-tight leading-none uppercase truncate px-2">
+                        <h1 className="text-lg font-black text-sys-900 tracking-tight leading-none uppercase truncate px-2" title={companyInfo.name}>
                             {companyInfo.name}
                         </h1>
                         <p className="text-xs font-bold text-blue-600 font-serif italic tracking-wide">

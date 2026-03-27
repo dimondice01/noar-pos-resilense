@@ -110,6 +110,58 @@ const MiscItemModal = ({ isOpen, onClose, onConfirm }) => {
     );
 };
 
+// =================================================================
+// 🧩 SUB-COMPONENTE: EDITOR DE CANTIDAD INLINE (NUEVO)
+// =================================================================
+const InlineQuantityEditor = ({ currentQty, isWeighable, onUpdate, onCancel }) => {
+    const [val, setVal] = useState(currentQty.toString());
+    const inputRef = useRef(null);
+
+    useEffect(() => {
+        if (inputRef.current) {
+            inputRef.current.focus();
+            inputRef.current.select(); // Selecciona todo para borrar fácil
+        }
+    }, []);
+
+    const handleSave = () => {
+        const num = parseFloat(val);
+        if (!isNaN(num) && num > 0) {
+            onUpdate(num);
+        } else {
+            onCancel(); // Si pone 0 o basura, cancela el cambio
+        }
+    };
+
+    const handleKeyDown = (e) => {
+        e.stopPropagation(); // Evita que se disparen las teclas globales de la caja
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            handleSave();
+        }
+        if (e.key === 'Escape') {
+            e.preventDefault();
+            onCancel();
+        }
+    };
+
+    return (
+        <input 
+            ref={inputRef}
+            type="number"
+            step={isWeighable ? "0.001" : "1"}
+            value={val}
+            onChange={(e) => setVal(e.target.value)}
+            onBlur={handleSave}
+            onKeyDown={handleKeyDown}
+            className="w-full text-center text-lg font-black text-brand bg-brand/10 border-2 border-brand/40 rounded-lg outline-none focus:border-brand py-0.5"
+        />
+    );
+};
+
+// =================================================================
+// 🏭 MAIN: POS PAGE
+// =================================================================
 export const PosPage = () => {
   const { user } = useAuthStore();
   
@@ -126,6 +178,7 @@ export const PosPage = () => {
       switchTab,
       addToCart,
       removeFromCart,
+      updateCartItemQuantity, // 🔥 IMPORTANTE: Necesitás tener esta función en usePosController
       setClient,
       clearCart,
       searchProduct,
@@ -133,7 +186,7 @@ export const PosPage = () => {
       processSale,
       applyWholesaleToLastItem,
       processBudget,
-      setTabPaymentMethod // 🔥 IMPORTADO DESDE EL HOOK
+      setTabPaymentMethod 
   } = usePosController();
 
   // Estados Locales
@@ -147,6 +200,9 @@ export const PosPage = () => {
   const [selectedProduct, setSelectedProduct] = useState(null);
   const [defaultProducts, setDefaultProducts] = useState([]); 
   
+  // Estado para Edición Inline
+  const [editingItemId, setEditingItemId] = useState(null);
+
   // Modales
   const [isPaymentOpen, setIsPaymentOpen] = useState(false);
   const [isClientSelectorOpen, setIsClientSelectorOpen] = useState(false);
@@ -164,11 +220,11 @@ export const PosPage = () => {
   // 🛡️ FOCO PERSISTENTE (Solución de Navegación sin bloqueos)
   // =================================================================
   const refocusInput = useCallback(() => {
-      const anyModalOpen = isPaymentOpen || isClientSelectorOpen || isMiscItemOpen || isCashOpsOpen || !!selectedProduct || !!lastSaleTicket;
+      const anyModalOpen = isPaymentOpen || isClientSelectorOpen || isMiscItemOpen || isCashOpsOpen || !!selectedProduct || !!lastSaleTicket || !!editingItemId;
       if (!anyModalOpen && hasOpenShift && searchInputRef.current) {
           searchInputRef.current.focus();
       }
-  }, [isPaymentOpen, isClientSelectorOpen, isMiscItemOpen, isCashOpsOpen, selectedProduct, lastSaleTicket, hasOpenShift]);
+  }, [isPaymentOpen, isClientSelectorOpen, isMiscItemOpen, isCashOpsOpen, selectedProduct, lastSaleTicket, hasOpenShift, editingItemId]);
 
   const handlePosClick = (e) => {
       const isInteractive = e.target.tagName === 'INPUT' || 
@@ -562,12 +618,42 @@ export const PosPage = () => {
                       <div className="space-y-2">
                           {activeTab.items.map((item) => (
                               <div key={item.id} className={cn("group flex items-center p-3 bg-white border rounded-xl shadow-sm hover:shadow-md transition-all animate-in fade-in slide-in-from-left-2", item.appliedWholesale ? "border-brand border-2 bg-brand/5" : "border-sys-100")}>
-                                  <div className="w-12 text-center mr-2">
-                                      <div className="text-lg font-black text-sys-900 tracking-tighter">
-                                          {formatQuantity(item.quantity, item.isWeighable)}
-                                      </div>
-                                      <div className="text-[9px] uppercase text-sys-400 font-black">{item.isWeighable ? 'KG' : 'UN'}</div>
+                                  
+                                  {/* 🔥 ÁREA EDITABLE DE CANTIDAD */}
+                                  <div 
+                                    className="w-16 text-center mr-2 cursor-pointer rounded-lg hover:bg-sys-100 p-1 transition-colors"
+                                    onClick={(e) => { e.stopPropagation(); setEditingItemId(item.id); }}
+                                    title="Click para editar cantidad"
+                                  >
+                                      {editingItemId === item.id ? (
+                                          <InlineQuantityEditor 
+                                              currentQty={item.quantity} 
+                                              isWeighable={item.isWeighable}
+                                              onUpdate={(newQty) => {
+                                                  // Usamos la función del PosController pero forzando el número directo
+                                                  // Como PosController suma si el item existe, lo mejor es setear directo (requiere función en el hook)
+                                                  // Si no tenés updateCartItemQuantity, lo simulamos removiendo y agregando (hack rápido)
+                                                  if (typeof updateCartItemQuantity === 'function') {
+                                                      updateCartItemQuantity(item.id, newQty);
+                                                  } else {
+                                                      removeFromCart(item.id);
+                                                      setTimeout(() => addToCart(item, newQty), 50);
+                                                  }
+                                                  setEditingItemId(null);
+                                                  refocusInput();
+                                              }}
+                                              onCancel={() => { setEditingItemId(null); refocusInput(); }}
+                                          />
+                                      ) : (
+                                          <>
+                                              <div className="text-lg font-black text-sys-900 tracking-tighter">
+                                                  {formatQuantity(item.quantity, item.isWeighable)}
+                                              </div>
+                                              <div className="text-[9px] uppercase text-sys-400 font-black">{item.isWeighable ? 'KG' : 'UN'}</div>
+                                          </>
+                                      )}
                                   </div>
+
                                   <div className="flex-1 min-w-0">
                                       <div className="text-sm font-black text-sys-800 truncate uppercase tracking-tight">{item.name}</div>
                                       
@@ -595,7 +681,7 @@ export const PosPage = () => {
                                       <div className="text-base font-black text-sys-900 tracking-tight">
                                           ${(Number(item.subtotal) || 0).toLocaleString('es-AR', {minimumFractionDigits: 2})}
                                       </div>
-                                      <button onClick={() => removeFromCart(item.id)} className="text-[10px] text-red-400 font-bold hover:text-red-600 transition-colors">ELIMINAR</button>
+                                      <button onClick={(e) => { e.stopPropagation(); removeFromCart(item.id); }} className="text-[10px] text-red-400 font-bold hover:text-red-600 transition-colors">ELIMINAR</button>
                                   </div>
                               </div>
                           ))}
@@ -733,7 +819,7 @@ export const PosPage = () => {
           onConfirm={handleProcessSale} 
           isProcessing={isProcessing} 
           processBudget={handleProcessBudget} 
-          setTabPaymentMethod={setTabPaymentMethod} // 🔥 PROP AÑADIDA AQUÍ
+          setTabPaymentMethod={setTabPaymentMethod} 
       />
       
       <CashOperationsModal 

@@ -6,8 +6,17 @@ import {
 } from 'firebase/firestore';
 import { useAuthStore } from '../../auth/store/useAuthStore';
 
+// 🔥 GENERADOR DE ID GLOBAL ÚNICO (Blindaje Multi-Caja)
+const generateGlobalId = (prefix) => {
+    const { activeBranchId } = useAuthStore.getState();
+    const branchClean = String(activeBranchId || 'main').substring(0, 4);
+    const ts = Date.now();
+    const rand = Math.random().toString(36).substr(2, 4);
+    return `${prefix}_${branchClean}_${ts}_${rand}`;
+};
+
 // ==========================================
-// ☁️ HELPER: SYNC OPTIMISTA
+// ☁️ HELPER: SYNC OPTIMISTA BLINDADO
 // ==========================================
 const triggerOptimisticSync = async (collectionName, data, isDelete = false) => {
     if (!navigator.onLine) return; 
@@ -17,21 +26,25 @@ const triggerOptimisticSync = async (collectionName, data, isDelete = false) => 
     try {
         const path = `companies/${user.companyId}/${collectionName}`;
         
+        // 🔥 FIX CRÍTICO: Forzamos el ID a String para evitar que Firebase crashee en silencio
+        const cloudId = String(data.firestoreId || data.id);
+
         if (isDelete) {
-            await deleteDoc(doc(db, path, data.id));
+            await deleteDoc(doc(db, path, cloudId));
         } else {
-            const { syncStatus, ...cloudData } = data;
-            await setDoc(doc(db, path, data.id), {
+            const { syncStatus, localId, ...cloudData } = data;
+            await setDoc(doc(db, path, cloudId), {
                 ...cloudData,
-                firestoreId: data.id,
+                firestoreId: cloudId,
                 syncedAt: new Date().toISOString(),
-                syncStatus: 'synced'
+                syncStatus: 'synced',
+                lastUpdatedBy: user.uid 
             }, { merge: true });
         }
 
         const dbLocal = await getDB();
         const table = dbLocal.table(collectionName);
-        if (table && !isDelete) await table.update(data.id, { syncStatus: 'synced' });
+        if (table && !isDelete) await table.update(data.id, { syncStatus: 'synced', firestoreId: cloudId });
         
     } catch (e) { 
         console.warn(`❌ Sync error en ${collectionName}:`, e); 
@@ -41,7 +54,7 @@ const triggerOptimisticSync = async (collectionName, data, isDelete = false) => 
 export const purchaseRepository = {
 
     // ==========================================
-    // 🧠 LÓGICA DE COSTOS (La "Magia" Fiscal que creaste)
+    // 🧠 LÓGICA DE COSTOS 
     // ==========================================
     _calculateLineItem(inputCost, inputPrice, taxRate, isTaxIncluded) {
         let netCost = 0;
@@ -167,7 +180,7 @@ export const purchaseRepository = {
         let totalDebt = 0;
 
         allPurchases.forEach(p => {
-            const pDate = new Date(p.date);
+            const pDate = new Date(p.date || p.createdAt);
             const total = parseFloat(p.total) || 0;
             const remaining = parseFloat(p.remainingBalance) || 0;
 
@@ -198,7 +211,7 @@ export const purchaseRepository = {
 
         if (!header && user?.companyId && navigator.onLine) {
             try {
-                const docRef = doc(db, `companies/${user.companyId}/purchases`, purchaseId);
+                const docRef = doc(db, `companies/${user.companyId}/purchases`, String(purchaseId));
                 const docSnap = await getDoc(docRef);
                 if (docSnap.exists()) {
                     header = { ...docSnap.data(), id: docSnap.id, syncStatus: 'synced' };
@@ -226,7 +239,7 @@ export const purchaseRepository = {
         if (!user) throw new Error("Sin sesión.");
         const branchId = purchaseHeader.branchId || activeBranchId || 'main';
 
-        const purchaseId = purchaseHeader.id || `pur_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
+        const purchaseId = purchaseHeader.id || generateGlobalId('purch');
         const timestamp = new Date().toISOString();
 
         // 1. Preparar Cabecera de Compra
@@ -241,9 +254,8 @@ export const purchaseRepository = {
             totalNet: 0,
             totalTax: 0,
             totalFinal: 0,
-            total: 0, // Añadido para compatibilidad con las stats
+            total: 0, 
             syncStatus: 'pending',
-            
             amountPaid: 0,
             remainingBalance: 0,
             paymentStatus: 'UNPAID' 
@@ -277,7 +289,7 @@ export const purchaseRepository = {
             }
 
             if (!product) {
-                productId = crypto.randomUUID();
+                productId = generateGlobalId('prod');
                 product = {
                     id: productId,
                     code: item.code,
@@ -325,7 +337,7 @@ export const purchaseRepository = {
             }
             
             const newBatch = {
-                id: `batch_${Date.now()}_${Math.random().toString(36).substr(2,3)}`,
+                id: generateGlobalId('batch'),
                 purchaseId: purchaseId,
                 dateAdded: timestamp,
                 quantity: newQty,
@@ -348,7 +360,7 @@ export const purchaseRepository = {
             });
 
             movementsToCreate.push({
-                id: `mov_${crypto.randomUUID()}`,
+                id: generateGlobalId('mov'),
                 productId: productId,
                 type: 'STOCK_IN',
                 description: `Compra Fac ${purchaseHeader.invoiceNumber || ''}`,
@@ -370,7 +382,7 @@ export const purchaseRepository = {
         else if (initialPay > 0) purchase.paymentStatus = 'PARTIAL';
         else purchase.paymentStatus = 'UNPAID';
 
-        purchase.items = items; // Guardamos el detalle de los items en la cabecera
+        purchase.items = items; 
 
         // 3. Transacción ACID Gigante Local
         await dbLocal.transaction('rw', [
@@ -399,7 +411,7 @@ export const purchaseRepository = {
                 // Sumar SIEMPRE el total de la compra como deuda
                 runningBalance += purchase.totalFinal;
                 newLedgerEntry = {
-                    id: `sledger_${crypto.randomUUID()}`,
+                    id: generateGlobalId('sledg'),
                     supplierId: supplier.id,
                     date: timestamp,
                     type: 'PURCHASE', 
@@ -415,7 +427,7 @@ export const purchaseRepository = {
                 if (initialPay > 0 && purchaseHeader.paymentMethod !== 'debt') {
                     runningBalance -= initialPay;
                     paymentLedgerEntry = {
-                        id: `sledger_${crypto.randomUUID()}`,
+                        id: generateGlobalId('sledg_pay'),
                         supplierId: supplier.id,
                         date: timestamp,
                         type: 'PAYMENT', 
@@ -442,7 +454,7 @@ export const purchaseRepository = {
                 
                 if (activeShift) {
                     newCashMovement = {
-                        id: `cm_${crypto.randomUUID()}`,
+                        id: generateGlobalId('cm'),
                         shiftId: activeShift.id,
                         type: 'PURCHASE', 
                         method: purchaseHeader.paymentMethod || 'cash',
@@ -462,13 +474,15 @@ export const purchaseRepository = {
         });
 
         // 4. 🔥 FIREBASE CLOUD: ACTUALIZACIÓN ATÓMICA DE STOCK EN LA NUBE 🔥
-        items.forEach(item => {
-            const stockRef = doc(db, `companies/${user.companyId}/branches/${branchId}/inventory`, item.id || item.productId);
-            setDoc(stockRef, {
-                stock: increment(parseFloat(item.qty)), // Sumamos stock en vivo sin leer
-                updatedAt: serverTimestamp()
-            }, { merge: true }).catch(err => console.error("Error atomic stock increment:", err));
-        });
+        if (navigator.onLine && user?.companyId) {
+            items.forEach(item => {
+                const stockRef = doc(db, `companies/${user.companyId}/branches/${branchId}/inventory`, String(item.id || item.productId));
+                setDoc(stockRef, {
+                    stock: increment(parseFloat(item.qty)), 
+                    updatedAt: serverTimestamp()
+                }, { merge: true }).catch(err => console.error("Error atomic stock increment:", err));
+            });
+        }
 
         // 5. 🔥 SYNC OPTIMISTA BACKGROUND (CUBRIMOS TODO)
         triggerOptimisticSync('purchases', purchase);
@@ -534,7 +548,7 @@ export const purchaseRepository = {
                 await dbLocal.suppliers.update(supplierId, updatedSupplier);
 
                 newLedgerEntry = {
-                    id: `sledger_${crypto.randomUUID()}`,
+                    id: generateGlobalId('sledger'),
                     supplierId: supplierId,
                     date: timestamp,
                     type: 'PAYMENT',
@@ -556,7 +570,7 @@ export const purchaseRepository = {
 
                 if (activeShift) {
                     newCashMovement = {
-                        id: `cm_${crypto.randomUUID()}`,
+                        id: generateGlobalId('cm'),
                         shiftId: activeShift.id,
                         type: 'PURCHASE', 
                         method: method,
@@ -596,6 +610,7 @@ export const purchaseRepository = {
         let updatedSupplier = null;
         let newLedgerEntry = null;
         let productsToUpdate = [];
+        const branchId = purchase.branchId || activeBranchId || 'main';
 
         await dbLocal.transaction('rw', [
             dbLocal.purchases, dbLocal.products, 
@@ -624,7 +639,7 @@ export const purchaseRepository = {
                     await dbLocal.suppliers.update(purchase.supplierId, updatedSupplier);
 
                     newLedgerEntry = {
-                        id: `sledger_${crypto.randomUUID()}`,
+                        id: generateGlobalId('sledg_void'),
                         supplierId: supplier.id,
                         date: new Date().toISOString(),
                         type: 'VOID', 
@@ -648,7 +663,7 @@ export const purchaseRepository = {
                 triggerOptimisticSync('cash_movements', mov, true);
             }
 
-            // 4. Marcar compra como ANULADA (En lugar de borrarla físicamente para auditoría)
+            // 4. Marcar compra como ANULADA
             purchase.status = 'VOIDED';
             purchase.paymentStatus = 'VOIDED';
             purchase.syncStatus = 'pending';
@@ -656,15 +671,16 @@ export const purchaseRepository = {
         });
 
         // 🔥 RESTAURAR STOCK ATÓMICO EN LA NUBE 🔥
-        const branchId = purchase.branchId || activeBranchId || 'main';
-        if (purchase.items && Array.isArray(purchase.items)) {
-            purchase.items.forEach(item => {
-                const stockRef = doc(db, `companies/${user.companyId}/branches/${branchId}/inventory`, item.id || item.productId);
-                setDoc(stockRef, {
-                    stock: increment(-parseFloat(item.qty || item.quantity || 0)), // Restamos lo que habíamos sumado
-                    updatedAt: serverTimestamp()
-                }, { merge: true }).catch(err => console.error("Error atomic stock decrement:", err));
-            });
+        if (navigator.onLine && user?.companyId) {
+            if (purchase.items && Array.isArray(purchase.items)) {
+                purchase.items.forEach(item => {
+                    const stockRef = doc(db, `companies/${user.companyId}/branches/${branchId}/inventory`, String(item.id || item.productId));
+                    setDoc(stockRef, {
+                        stock: increment(-parseFloat(item.qty || item.quantity || 0)), 
+                        updatedAt: serverTimestamp()
+                    }, { merge: true }).catch(err => console.error("Error atomic stock decrement:", err));
+                });
+            }
         }
 
         // 🔥 SYNC OPTIMISTA
@@ -718,13 +734,13 @@ export const purchaseRepository = {
                 productsToUpdate.push({ ...product, stock: newStock, syncStatus: 'pending' });
                 
                 inventoryToUpdate.push({
-                    productId: itemId, branchId, stock: newStock,
+                    productId: String(itemId), branchId, stock: newStock,
                     updatedAt: timestamp, syncStatus: 'pending_stock'
                 });
 
                 movementsToCreate.push({
-                    id: `mov_${crypto.randomUUID()}`,
-                    productId: itemId,
+                    id: generateGlobalId('mov'),
+                    productId: String(itemId),
                     type: 'STOCK_OUT',
                     subtype: 'SUPPLIER_REFUND',
                     description: `Dev. Prov: ${reason}`,
@@ -752,7 +768,7 @@ export const purchaseRepository = {
             if (!activeShift) throw new Error("Debe abrir la caja para ingresar el efectivo devuelto por el proveedor.");
 
             newCashMovement = {
-                id: `cm_${crypto.randomUUID()}`,
+                id: generateGlobalId('cm'),
                 shiftId: activeShift.id,
                 type: 'IN', 
                 subtype: 'SUPPLIER_REFUND',
@@ -777,7 +793,7 @@ export const purchaseRepository = {
                 updatedSupplier = { ...supplier, balance: newSupplierBalance, syncStatus: 'pending' };
                 
                 newLedgerEntry = {
-                    id: `sledger_${crypto.randomUUID()}`,
+                    id: generateGlobalId('sledg'),
                     supplierId: supplier.id,
                     date: timestamp,
                     type: 'REFUND',
@@ -795,7 +811,6 @@ export const purchaseRepository = {
         const newTotal = Math.max(0, oldTotal - refundTotal);
         const refundedAmountTotal = (parseFloat(purchase.refundedAmount || 0)) + refundTotal;
 
-        // Verificar si se devolvió absolutamente todo
         const isFullyRefunded = updatedItems.every(i => (i.returnedQty || 0) >= parseFloat(i.qty || i.quantity || 0));
         const newStatus = isFullyRefunded ? 'REFUNDED' : 'PARTIAL_REFUND';
 
@@ -829,16 +844,18 @@ export const purchaseRepository = {
         });
 
         // 6. 🔥 RESTAR STOCK ATÓMICO EN LA NUBE 🔥
-        Object.keys(returnMap).forEach(itemId => {
-            const qty = returnMap[itemId];
-            if (qty > 0) {
-                const stockRef = doc(db, `companies/${user.companyId}/branches/${branchId}/inventory`, itemId);
-                setDoc(stockRef, {
-                    stock: increment(-parseFloat(qty)), // Restamos stock en Firebase
-                    updatedAt: serverTimestamp()
-                }, { merge: true }).catch(e => console.error("Atomic decrement error", e));
-            }
-        });
+        if (navigator.onLine && user?.companyId) {
+            Object.keys(returnMap).forEach(itemId => {
+                const qty = returnMap[itemId];
+                if (qty > 0) {
+                    const stockRef = doc(db, `companies/${user.companyId}/branches/${branchId}/inventory`, String(itemId));
+                    setDoc(stockRef, {
+                        stock: increment(-parseFloat(qty)), 
+                        updatedAt: serverTimestamp()
+                    }, { merge: true }).catch(e => console.error("Atomic decrement error", e));
+                }
+            });
+        }
 
         // 7. SYNC OPTIMISTA
         triggerOptimisticSync('purchases', updatedPurchase);

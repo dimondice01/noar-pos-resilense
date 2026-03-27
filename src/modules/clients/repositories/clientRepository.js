@@ -3,8 +3,11 @@ import { db } from '../../../database/firebase';
 import { doc, setDoc, deleteDoc } from 'firebase/firestore';
 import { useAuthStore } from '../../auth/store/useAuthStore'; 
 
+// 🔥 HELPER UNIVERSAL: Generador de IDs que funciona en cualquier navegador (reemplaza a crypto.randomUUID)
+const generateId = (prefix) => `${prefix}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+
 // ==========================================
-// ☁️ HELPER: SYNC OPTIMISTA
+// ☁️ HELPER: SYNC OPTIMISTA BLINDADO
 // ==========================================
 const triggerOptimisticSync = async (collectionName, data) => {
   if (!navigator.onLine) return; 
@@ -13,23 +16,28 @@ const triggerOptimisticSync = async (collectionName, data) => {
   if (!user || !user.companyId) return;
 
   try {
-    const { syncStatus, ...cloudData } = data;
+    const { syncStatus, localId, ...cloudData } = data;
     const path = `companies/${user.companyId}/${collectionName}`;
+    
+    // 🔥 FIX CRÍTICO: Firebase crashea si el ID es numérico. Lo forzamos a String.
+    const cloudId = String(data.firestoreId || data.id);
 
-    setDoc(doc(db, path, data.id), {
+    setDoc(doc(db, path, cloudId), {
       ...cloudData,
-      firestoreId: data.id,
+      firestoreId: cloudId,
       syncedAt: new Date().toISOString(),
       syncStatus: 'synced'
     }, { merge: true }).then(async () => {
         try {
             const dbLocal = await getDB();
             const table = dbLocal.table(collectionName);
-            if (table) await table.update(data.id, { syncStatus: 'synced' });
+            // Actualizamos en Dexie usando su ID original (sea número o string)
+            if (table) await table.update(data.id, { syncStatus: 'synced', firestoreId: cloudId });
         } catch (e) { }
-    });
+    }).catch(err => console.warn(`Error Firebase en ${collectionName}:`, err));
+    
   } catch (e) {
-    console.warn(`⚠️ Sync Optimista falló (${collectionName})`);
+    console.warn(`⚠️ Sync Optimista falló (${collectionName})`, e);
   }
 };
 
@@ -87,12 +95,19 @@ export const clientRepository = {
   },
 
   // ==========================================
-  // 🔢 GENERADOR DE ID SECUENCIAL (0001, 0002...)
+  // 🔢 GENERADOR DE ID SECUENCIAL A PRUEBA DE BORRADOS
   // ==========================================
   async generateNextId() {
       const dbLocal = await getDB();
-      const count = await dbLocal.clients.count();
-      return String(count + 1).padStart(4, '0'); // 4 dígitos para clientes
+      try {
+          const lastClient = await dbLocal.clients.orderBy('sequentialId').reverse().first();
+          const lastId = lastClient && lastClient.sequentialId ? parseInt(lastClient.sequentialId, 10) : 0;
+          return String(lastId + 1).padStart(4, '0'); // 4 dígitos para clientes
+      } catch (e) {
+          // Fallback por si el índice sequentialId no está listo
+          const count = await dbLocal.clients.count();
+          return String(count + 1).padStart(4, '0');
+      }
   },
 
   // ==========================================
@@ -106,7 +121,7 @@ export const clientRepository = {
     if (!user) throw new Error("Usuario no autenticado");
 
     let newBalance = 0;
-    const movementId = `ledger_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
+    const movementId = generateId('ledger'); // ID Blindado
     const timestamp = new Date().toISOString();
     const currentBranch = activeBranchId || user.branchId || 'main';
 
@@ -164,7 +179,7 @@ export const clientRepository = {
 
             if (activeShift) {
                 const cashMovement = {
-                    id: `cm_${crypto.randomUUID()}`,
+                    id: generateId('cm'), // 🔥 ID Blindado
                     shiftId: activeShift.id,
                     type: 'RECEIPT', // 🔥 Tipo "RECEIPT" = Cobro de Deuda (Ingreso)
                     method: paymentMethod,
@@ -214,7 +229,8 @@ export const clientRepository = {
     if (!user?.companyId) throw new Error("Sin sesión de empresa.");
 
     const isNew = !client.id;
-    const id = client.id || crypto.randomUUID();
+    // 🔥 Usamos generateId en lugar de crypto.randomUUID()
+    const id = client.id || generateId('cli');
     const sequentialId = isNew ? await this.generateNextId() : client.sequentialId;
 
     const cleanDocNumber = client.docNumber ? client.docNumber.replace(/\D/g, '') : '';
@@ -262,7 +278,8 @@ export const clientRepository = {
     if (navigator.onLine && user?.companyId) {
         try {
             const path = `companies/${user.companyId}/clients`;
-            deleteDoc(doc(db, path, id)).catch(console.error);
+            // 🔥 Aseguramos que el ID de borrado en Firebase sea string
+            deleteDoc(doc(db, path, String(client?.firestoreId || id))).catch(console.error);
         } catch (e) {
             console.error("Error borrando cliente nube:", e);
         }

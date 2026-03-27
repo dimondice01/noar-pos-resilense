@@ -256,7 +256,7 @@ export const MovementsPage = () => {
     const [filterUser, setFilterUser] = useState('ALL'); 
     const [filterCategory, setFilterCategory] = useState('ALL');
 
-    // ===================== CARGA OPTIMIZADA BLINDADA =====================
+    // ===================== CARGA OPTIMIZADA Y AUTO-SANACIÓN =====================
     useEffect(() => {
         const loadData = async () => {
             try {
@@ -274,6 +274,7 @@ export const MovementsPage = () => {
                 
                 let allMovements = [];
 
+                // 1. Carga Local de Dexie
                 if (user?.role === 'OWNER' || user?.role === 'SUPER_ADMIN') {
                     if (activeBranchId && activeBranchId !== 'ALL') {
                         allMovements = await db.movements.where('branchId').equals(activeBranchId).toArray();
@@ -288,6 +289,42 @@ export const MovementsPage = () => {
                     }
                 }
 
+                // 🔥 RUTINA DE AUTO-SANACIÓN (FORZAR SUBIDA DE PENDIENTES)
+                if (navigator.onLine && user?.companyId) {
+                    const pendingLocalMovs = allMovements.filter(m => m.syncStatus === 'pending');
+                    if (pendingLocalMovs.length > 0) {
+                        console.log(`[Auto-Heal] Encontrados ${pendingLocalMovs.length} movimientos locales sin subir. Forzando subida...`);
+                        
+                        // Importamos Firebase dinámicamente para no bloquear la UI
+                        const { doc, setDoc } = await import('firebase/firestore');
+                        const { db: firestoreDB } = await import('../../../database/firebase');
+                        
+                        const batchPromesas = pendingLocalMovs.map(async (mov) => {
+                            try {
+                                const cloudId = mov.firestoreId || mov.id;
+                                const { syncStatus, localId, id, ...cleanMov } = mov;
+                                const docRef = doc(firestoreDB, `companies/${user.companyId}/movements`, cloudId);
+                                
+                                await setDoc(docRef, {
+                                    ...cleanMov,
+                                    firestoreId: cloudId,
+                                    updatedAt: new Date().toISOString(),
+                                    syncStatus: 'synced'
+                                }, { merge: true });
+
+                                // Actualizamos localmente
+                                await db.movements.update(mov.id, { syncStatus: 'synced', firestoreId: cloudId });
+                            } catch (err) {
+                                console.error(`Error forzando subida del mov ${mov.id}`, err);
+                            }
+                        });
+
+                        await Promise.all(batchPromesas);
+                        console.log("[Auto-Heal] Subida forzada completada.");
+                    }
+                }
+
+                // 2. Hidratación de la Nube (si la base local está vacía o el dueño está en casa)
                 if (allMovements.length === 0 && navigator.onLine) {
                     setSyncing(true);
                     try {
@@ -296,13 +333,13 @@ export const MovementsPage = () => {
                         
                         let q;
                         if ((user?.role === 'OWNER' || user?.role === 'SUPER_ADMIN') && (!activeBranchId || activeBranchId === 'ALL')) {
-                            q = query(collection(firestoreDB, `companies/${user.companyId}/movements`), orderBy('date', 'desc'), limit(100));
+                            q = query(collection(firestoreDB, `companies/${user.companyId}/movements`), orderBy('date', 'desc'), limit(500));
                         } else {
-                            q = query(collection(firestoreDB, `companies/${user.companyId}/movements`), where('branchId', '==', activeBranchId), orderBy('date', 'desc'), limit(100));
+                            q = query(collection(firestoreDB, `companies/${user.companyId}/movements`), where('branchId', '==', activeBranchId), orderBy('date', 'desc'), limit(500));
                         }
                         
                         const snapshot = await getDocs(q);
-                        const cloudMovements = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                        const cloudMovements = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data(), syncStatus: 'synced' }));
                         
                         if (cloudMovements.length > 0) {
                             await db.movements.bulkPut(cloudMovements);
@@ -334,7 +371,7 @@ export const MovementsPage = () => {
                         productCode: product ? product.code : '---',
                         categoryName: catName, 
                         priceAtMoment: product ? product.price : 0, 
-                        dateObj: new Date(mov.date)
+                        dateObj: new Date(mov.date || mov.createdAt || Date.now()) // Prevención de Fechas Nulas
                     };
                 }).sort((a, b) => b.dateObj - a.dateObj);
 

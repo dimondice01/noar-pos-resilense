@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { 
     ArrowLeft, User, CreditCard, Calendar, 
-    TrendingDown, DollarSign, FileText, Printer, Search, MapPin, Building2, CheckCircle2, Mail
+    TrendingDown, DollarSign, FileText, Printer, Search, MapPin, Building2, CheckCircle2, Mail, Loader2, CloudDownload
 } from 'lucide-react';
 import { useAuthStore } from '../../auth/store/useAuthStore'; 
 import { clientRepository } from '../repositories/clientRepository';
@@ -16,6 +16,11 @@ import { PaymentModal } from '../../pos/components/PaymentModal';
 import { TicketModal } from '../../sales/components/TicketModal';
 import { toast } from 'react-hot-toast';
 
+// Firebase Imports
+import { collection, query, where, getDocs, limit, orderBy } from 'firebase/firestore';
+import { db as firestoreDB } from '../../../database/firebase';
+import { getDB } from '../../../database/db';
+
 const formatCurrency = (amount) => `$ ${Number(amount || 0).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 export const ClientDashboard = ({ clientId, onBack }) => {
@@ -24,31 +29,87 @@ export const ClientDashboard = ({ clientId, onBack }) => {
   const [client, setClient] = useState(null);
   const [ledger, setLedger] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
+
+  // 🔥 ESTADO DE SALDO CALCULADO EN VIVO
+  const [calculatedDebt, setCalculatedDebt] = useState(0);
   
   // Estados UI
   const [isPaymentOpen, setIsPaymentOpen] = useState(false);
   const [ticketData, setTicketData] = useState(null); 
 
-  const loadData = async () => {
-    setLoading(true);
+  const calculateTotalDebt = (movements) => {
+        let totalDebt = 0;
+        movements.forEach(mov => {
+            const amount = parseFloat(mov.amount) || 0;
+            if (mov.type === 'PAYMENT' || mov.type === 'REFUND' || mov.type === 'LIQUIDATION') {
+                totalDebt -= amount;
+            } else if (mov.type === 'SALE_DEBT') {
+                totalDebt += amount;
+            }
+        });
+        return Math.max(0, totalDebt);
+  };
+
+  const loadData = async (forceCloud = false) => {
+    if (!forceCloud) setLoading(true);
+    else setSyncing(true);
+    
     try {
-        const [c, l] = await Promise.all([
-            clientRepository.getById(clientId),
-            clientRepository.getLedger(clientId)
-        ]);
+        const c = await clientRepository.getById(clientId);
         setClient(c);
-        // Ordenar ledger: más reciente primero
-        setLedger(l.sort((a, b) => new Date(b.date) - new Date(a.date)));
+
+        let movements = await clientRepository.getLedger(clientId);
+
+        // 🔥 AUTO-HIDRATACIÓN SILENCIOSA O FORZADA DE NUBE
+        if ((movements.length === 0 || forceCloud) && navigator.onLine && user?.companyId) {
+            try {
+                const dbLocal = await getDB();
+                const q = query(
+                    collection(firestoreDB, `companies/${user.companyId}/customer_ledger`),
+                    where('clientId', '==', clientId),
+                    orderBy('date', 'desc'),
+                    limit(200)
+                );
+                
+                const snap = await getDocs(q);
+                const cloudMovs = [];
+                snap.docs.forEach(docSnap => {
+                    const data = docSnap.data();
+                    cloudMovs.push({ ...data, id: docSnap.id, firestoreId: docSnap.id, syncStatus: 'synced' });
+                });
+
+                if (cloudMovs.length > 0) {
+                    await dbLocal.customer_ledger.bulkPut(cloudMovs);
+                    movements = await clientRepository.getLedger(clientId);
+                    if (forceCloud) toast.success("Historial actualizado desde la nube.");
+                } else if (forceCloud) {
+                    toast.success("No hay más datos en la nube.");
+                }
+            } catch (e) {
+                console.warn("Fallo hidratación del historial del cliente:", e);
+                if (forceCloud) toast.error("Error al buscar en la nube.");
+            }
+        }
+
+        const sortedLedger = movements.sort((a, b) => new Date(b.date) - new Date(a.date));
+        setLedger(sortedLedger);
+        
+        // Calculamos la deuda real
+        setCalculatedDebt(calculateTotalDebt(sortedLedger));
+
     } catch (error) {
         console.error(error);
         toast.error("Error cargando el estado de cuenta");
     } finally {
         setLoading(false);
+        setSyncing(false);
     }
   };
 
   useEffect(() => {
     if (clientId) loadData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clientId]);
 
   // =================================================================
@@ -72,8 +133,6 @@ export const ClientDashboard = ({ clientId, onBack }) => {
 
           // 1. Registrar Ingresos en Caja por cada método utilizado
           for (const p of paymentsToProcess) {
-              // 🔥 FIX CRÍTICO: Primero leemos 'amountPaid' (lo que tipeaste) o 'amount' (si es pago dividido).
-              // Si no existen, recién caemos en el 'baseAmount'.
               const realPaymentAmount = parseFloat(p.amountPaid || p.amount || p.baseAmount || 0); 
               
               const surcharge = parseFloat(p.surcharge || 0);
@@ -102,7 +161,7 @@ export const ClientDashboard = ({ clientId, onBack }) => {
           const referenceId = `rec_${Date.now()}`;
           const uniqueMethods = [...new Set(methodsUsed)].map(m => m.toUpperCase());
 
-          const newBalance = await clientRepository.registerMovement(
+          await clientRepository.registerMovement(
               client.id,
               'PAYMENT',
               totalCapitalPaid, 
@@ -112,6 +171,8 @@ export const ClientDashboard = ({ clientId, onBack }) => {
           );
 
           // 3. Generar Objeto Recibo para imprimir
+          const newBalance = Math.max(0, calculatedDebt - totalCapitalPaid); // Calculado en memoria para el recibo rápido
+          
           const receiptObj = {
               localId: referenceId,
               date: new Date().toISOString(),
@@ -174,10 +235,8 @@ export const ClientDashboard = ({ clientId, onBack }) => {
       }
   };
 
-  if (loading) return <div className="p-10 text-center text-sys-500 font-bold uppercase tracking-widest animate-pulse">Cargando perfil...</div>;
+  if (loading) return <div className="h-screen flex items-center justify-center text-sys-500 font-bold uppercase tracking-widest animate-pulse"><Loader2 className="animate-spin mb-2 text-brand" size={32}/>Cargando perfil...</div>;
   if (!client) return <div className="p-10 text-center text-red-500 font-bold">Cliente no encontrado</div>;
-
-  const debt = parseFloat(client.balance || 0);
 
   return (
     <div className="space-y-6 pb-20 animate-in slide-in-from-right duration-300 max-w-[1600px] mx-auto p-4 md:p-6">
@@ -187,13 +246,18 @@ export const ClientDashboard = ({ clientId, onBack }) => {
         <button onClick={onBack} className="p-2 hover:bg-sys-100 rounded-full transition-colors text-sys-500 hover:text-sys-900 border border-transparent hover:border-sys-200">
             <ArrowLeft size={24} />
         </button>
-        <div className="flex items-center gap-4">
-            <div className="w-12 h-12 rounded-2xl flex items-center justify-center text-white font-black text-xl shadow-sm bg-sys-400">
+        <div className="flex items-center gap-4 flex-1">
+            <div className="w-12 h-12 rounded-2xl flex items-center justify-center text-white font-black text-xl shadow-sm bg-sys-400 shrink-0">
                 {client.name.charAt(0).toUpperCase()}
             </div>
-            <div>
-                <h2 className="text-2xl font-black text-sys-900 leading-none uppercase">{client.name}</h2>
-                <div className="flex items-center gap-2 text-xs text-sys-500 mt-1.5">
+            <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-3">
+                    <h2 className="text-2xl font-black text-sys-900 leading-none uppercase truncate">{client.name}</h2>
+                    <Button variant="ghost" onClick={() => loadData(true)} disabled={syncing} className="h-6 w-6 p-0 text-brand bg-brand/10 hover:bg-brand hover:text-white rounded-full shrink-0" title="Bajar Nube">
+                        {syncing ? <Loader2 size={12} className="animate-spin"/> : <CloudDownload size={12}/>}
+                    </Button>
+                </div>
+                <div className="flex flex-wrap items-center gap-2 text-xs text-sys-500 mt-1.5">
                     <span className="font-mono bg-sys-100 px-2 py-0.5 rounded text-sys-600 font-bold border border-sys-200 flex items-center gap-1">
                         <CreditCard size={12}/> {client.docType === '80' ? 'CUIT' : 'DNI'} {client.docNumber || 'S/N'}
                     </span>
@@ -211,16 +275,16 @@ export const ClientDashboard = ({ clientId, onBack }) => {
       {/* Tarjetas de Estado */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
           
-          {/* TARJETA DE SALDO */}
-          <Card className={cn("border-l-8 flex flex-col justify-between relative overflow-hidden h-40", debt > 0 ? "border-l-red-500 bg-red-50/20" : "border-l-emerald-500 bg-emerald-50/20")}>
+          {/* TARJETA DE SALDO CALCULADO */}
+          <Card className={cn("border-l-8 flex flex-col justify-between relative overflow-hidden h-40", calculatedDebt > 0.01 ? "border-l-red-500 bg-red-50/20" : "border-l-emerald-500 bg-emerald-50/20")}>
               <div className="z-10 h-full flex flex-col justify-between">
                   <div>
-                      <p className={cn("text-xs font-black uppercase tracking-wider mb-1 flex items-center gap-1.5", debt > 0 ? "text-red-500" : "text-emerald-600")}>
-                          {debt > 0 ? <TrendingDown size={14}/> : <CheckCircle2 size={14}/>}
+                      <p className={cn("text-xs font-black uppercase tracking-wider mb-1 flex items-center gap-1.5", calculatedDebt > 0.01 ? "text-red-500" : "text-emerald-600")}>
+                          {calculatedDebt > 0.01 ? <TrendingDown size={14}/> : <CheckCircle2 size={14}/>}
                           Saldo Actual (Deuda)
                       </p>
-                      <p className={cn("text-4xl font-black tracking-tighter", debt > 0 ? "text-red-600" : "text-emerald-600")}>
-                          {formatCurrency(debt)}
+                      <p className={cn("text-4xl font-black tracking-tighter", calculatedDebt > 0.01 ? "text-red-600" : "text-emerald-600")}>
+                          {formatCurrency(calculatedDebt)}
                       </p>
                   </div>
                   <div className="mt-4">
@@ -228,19 +292,19 @@ export const ClientDashboard = ({ clientId, onBack }) => {
                         variant="secondary" 
                         className={cn(
                             "w-full text-sm h-11 font-black transition-all border shadow-sm",
-                            debt > 0 
+                            calculatedDebt > 0.01 
                                 ? "bg-white border-red-200 hover:bg-red-500 hover:text-white text-red-600 hover:border-red-600" 
                                 : "bg-white border-sys-200 text-sys-400 opacity-50 cursor-not-allowed"
                         )}
                         onClick={() => setIsPaymentOpen(true)}
-                        disabled={debt <= 0} 
+                        disabled={calculatedDebt <= 0.01} 
                       >
                           <DollarSign size={18} className="mr-2"/> Registrar Pago
                       </Button>
                   </div>
               </div>
-              <div className={cn("absolute -right-4 -bottom-4 opacity-10 transform rotate-12", debt > 0 ? "text-red-500" : "text-emerald-500")}>
-                  {debt > 0 ? <TrendingDown size={140} /> : <CheckCircle2 size={140} />}
+              <div className={cn("absolute -right-4 -bottom-4 opacity-10 transform rotate-12", calculatedDebt > 0.01 ? "text-red-500" : "text-emerald-500")}>
+                  {calculatedDebt > 0.01 ? <TrendingDown size={140} /> : <CheckCircle2 size={140} />}
               </div>
           </Card>
 
@@ -359,7 +423,7 @@ export const ClientDashboard = ({ clientId, onBack }) => {
       <PaymentModal 
         isOpen={isPaymentOpen}
         onClose={() => setIsPaymentOpen(false)}
-        total={debt} 
+        total={calculatedDebt} 
         client={client} 
         onConfirm={handlePaymentConfirm}
         disableAfip={true} 

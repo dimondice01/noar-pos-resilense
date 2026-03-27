@@ -164,6 +164,7 @@ export const usePurchaseController = () => {
                 
                 // Datos Financieros (Del Modal)
                 initialPayment: paymentData ? paymentData.amountPaid : 0, 
+                amountPaid: paymentData ? paymentData.amountPaid : 0, // Añadido para compatibilidad explícita
                 paymentMethod: paymentData ? paymentData.method : 'debt', 
                 amountDebt: paymentData ? paymentData.amountDebt : totals,
                 
@@ -178,6 +179,7 @@ export const usePurchaseController = () => {
             // 2. Limpiar Items para el Repositorio (SOPORTE PROGRAMACIÓN PRECIOS)
             const cleanItems = items.map(item => ({
                 id: item.product.id,
+                productId: item.product.id, // Redundancia para evitar problemas de parseo
                 code: item.product.code,
                 name: item.product.name,
                 
@@ -185,6 +187,7 @@ export const usePurchaseController = () => {
                 cost: parseFloat(item.costInput),
                 price: parseFloat(item.newPrice),
                 qty: parseFloat(item.quantity),
+                quantity: parseFloat(item.quantity), // Redundancia
                 
                 // Datos fiscales
                 tax: item.product.taxRate || 0,
@@ -195,7 +198,7 @@ export const usePurchaseController = () => {
                 // Si es null, el cambio es inmediato.
                 activationDate: paymentData?.effectiveDate || null,
                 
-                // 🔥 SPRINT 3: SOPORTE DE VENCIMIENTO POR LOTES
+                // 🔥 SOPORTE DE VENCIMIENTO POR LOTES
                 expiryDate: item.expiryDate || null 
             }));
 

@@ -3,8 +3,17 @@ import { db } from '../../../database/firebase';
 import { doc, setDoc, deleteDoc } from 'firebase/firestore';
 import { useAuthStore } from '../../auth/store/useAuthStore'; 
 
+// 🔥 GENERADOR DE ID GLOBAL ÚNICO (Blindaje Multi-Caja)
+const generateGlobalId = (prefix) => {
+    const { activeBranchId } = useAuthStore.getState();
+    const branchClean = String(activeBranchId || 'main').substring(0, 4);
+    const ts = Date.now();
+    const rand = Math.random().toString(36).substr(2, 4);
+    return `${prefix}_${branchClean}_${ts}_${rand}`;
+};
+
 // ==========================================
-// ☁️ HELPER: SYNC OPTIMISTA
+// ☁️ HELPER: SYNC OPTIMISTA BLINDADO
 // ==========================================
 const triggerOptimisticSync = async (collectionName, data, isDelete = false) => {
     if (!navigator.onLine) return; 
@@ -14,22 +23,28 @@ const triggerOptimisticSync = async (collectionName, data, isDelete = false) => 
     try {
         const path = `companies/${user.companyId}/${collectionName}`;
         
+        // 🔥 FIX CRÍTICO: Forzamos el ID a String para evitar que Firebase crashee en silencio
+        const cloudId = String(data.firestoreId || data.id);
+        
         if (isDelete) {
-            await deleteDoc(doc(db, path, data.id));
+            await deleteDoc(doc(db, path, cloudId));
         } else {
-            const { syncStatus, ...cloudData } = data;
-            await setDoc(doc(db, path, data.id), {
+            const { syncStatus, localId, ...cloudData } = data;
+            await setDoc(doc(db, path, cloudId), {
                 ...cloudData,
-                firestoreId: data.id,
+                firestoreId: cloudId,
                 syncedAt: new Date().toISOString(),
-                syncStatus: 'synced'
+                syncStatus: 'synced',
+                lastUpdatedBy: user.uid
             }, { merge: true });
         }
 
         const dbLocal = await getDB();
         const table = dbLocal.table(collectionName);
-        if (table && !isDelete) await table.update(data.id, { syncStatus: 'synced' });
-    } catch (e) { console.warn(`Sync error ${collectionName}`, e); }
+        if (table && !isDelete) await table.update(data.id, { syncStatus: 'synced', firestoreId: cloudId });
+    } catch (e) { 
+        console.warn(`Sync error ${collectionName}`, e); 
+    }
 };
 
 export const supplierRepository = {
@@ -38,7 +53,13 @@ export const supplierRepository = {
     // ==========================================
     async getAll() {
         const dbLocal = await getDB();
-        return await dbLocal.suppliers.toArray();
+        const suppliers = await dbLocal.suppliers.toArray();
+        // Ordenamos por secuencial
+        return suppliers.sort((a, b) => {
+            const idA = parseInt(a.sequentialId || 0, 10);
+            const idB = parseInt(b.sequentialId || 0, 10);
+            return idB - idA;
+        });
     },
 
     async getById(id) {
@@ -46,7 +67,7 @@ export const supplierRepository = {
         return await dbLocal.suppliers.get(id);
     },
 
-    // 🔥 NUEVO: Obtener historial de Cuenta Corriente (Ledger)
+    // 🔥 Obtener historial de Cuenta Corriente (Ledger)
     async getLedger(supplierId) {
         const dbLocal = await getDB();
         return await dbLocal.supplier_ledger
@@ -57,14 +78,20 @@ export const supplierRepository = {
     },
 
     // ==========================================
-    // 🔢 GENERADOR DE ID SECUENCIAL (001, 002...)
+    // 🔢 GENERADOR DE ID SECUENCIAL A PRUEBA DE BORRADOS
     // ==========================================
     async generateNextId() {
         const dbLocal = await getDB();
-        // Contamos cuántos proveedores existen y sumamos 1
-        const count = await dbLocal.suppliers.count();
-        // Formateamos para que siempre tenga 3 dígitos (Ej: "005")
-        return String(count + 1).padStart(3, '0');
+        try {
+            // Buscamos el ID real más alto en la base
+            const lastSupplier = await dbLocal.suppliers.orderBy('sequentialId').reverse().first();
+            const lastId = lastSupplier && lastSupplier.sequentialId ? parseInt(lastSupplier.sequentialId, 10) : 0;
+            return String(lastId + 1).padStart(3, '0');
+        } catch (e) {
+            // Fallback por si el índice no está listo
+            const count = await dbLocal.suppliers.count();
+            return String(count + 1).padStart(3, '0');
+        }
     },
 
     // ==========================================
@@ -72,9 +99,13 @@ export const supplierRepository = {
     // ==========================================
     async save(supplier) {
         const dbLocal = await getDB();
+        const { user, activeBranchId } = useAuthStore.getState();
+        
+        if (!user?.companyId) throw new Error("Sin sesión de empresa.");
         
         const isNew = !supplier.id;
-        const id = supplier.id || crypto.randomUUID();
+        // 🔥 Usamos generateGlobalId en lugar de crypto.randomUUID()
+        const id = supplier.id || generateGlobalId('sup');
         
         // Si es un proveedor nuevo, generamos su número secuencial
         const sequentialId = isNew ? await this.generateNextId() : supplier.sequentialId;
@@ -83,6 +114,8 @@ export const supplierRepository = {
             ...supplier,
             id,
             sequentialId,
+            companyId: user.companyId,
+            branchId: activeBranchId || 'main', // Trazabilidad de quién lo creó
             balance: parseFloat(supplier.balance || 0),
             syncStatus: 'pending',
             updatedAt: new Date().toISOString()
@@ -113,7 +146,8 @@ export const supplierRepository = {
         }
 
         await dbLocal.suppliers.delete(id);
-        triggerOptimisticSync('suppliers', { id }, true);
+        // Pasamos el firestoreId original o el id local casteado a string para el borrado en nube
+        triggerOptimisticSync('suppliers', { id, firestoreId: supplier.firestoreId || id }, true);
         return true;
     }
 };

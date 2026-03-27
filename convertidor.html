@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Convertidor a CSV</title>
+<style>
+    body { font-family: Arial, sans-serif; padding: 40px; background-color: #f4f4f9; }
+    .container { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); max-width: 500px; margin: auto; }
+    button { background-color: #28a745; color: white; border: none; padding: 10px 20px; cursor: pointer; border-radius: 5px; font-size: 16px; margin-top: 15px;}
+    button:hover { background-color: #218838; }
+</style>
+</head>
+<body>
+    <div class="container">
+        <h2>Convertidor de Lista de Precios a CSV</h2>
+        <p>Selecciona tu archivo <b>listado actualizado.htm</b> para extraer las columnas perfectamente.</p>
+        <input type="file" id="fileInput" accept=".htm, .html" />
+        <br>
+        <button onclick="convertir()">Convertir y Descargar CSV</button>
+    </div>
+
+    <script>
+        function convertir() {
+            const file = document.getElementById('fileInput').files[0];
+            if (!file) { alert("Por favor, selecciona un archivo primero."); return; }
+
+            const reader = new FileReader();
+            // Leemos el archivo respetando el formato original para no perder acentos ni eñes
+            reader.readAsText(file, 'windows-1252'); 
+            reader.onload = function(e) {
+                const parser = new DOMParser();
+                const doc = parser.parseFromString(e.target.result, 'text/html');
+                const rows = doc.querySelectorAll('tr');
+                
+                // Usamos punto y coma (;) que es el estándar para CSV en español
+                let csvContent = "Codigo;Descripcion;Stock;Venta;IVA;Imp_Int;Cod_Barra\n";
+                let currentProduct = null;
+
+                for (let i = 0; i < rows.length; i++) {
+                    const row = rows[i];
+                    const fonts = row.querySelectorAll('font');
+                    
+                    // Identificamos la fila 1 del producto (tiene Código y Descripción)
+                    if (fonts.length === 2 && row.querySelectorAll('hr').length === 0) {
+                        const code = fonts[0].innerText.trim();
+                        const desc = fonts[1].innerText.trim();
+                        
+                        // Verificamos que sea realmente una fila de código (solo números)
+                        if (/^\d+$/.test(code) && code.length >= 3) {
+                            currentProduct = { codigo: code, descripcion: desc };
+                        }
+                    } 
+                    // Identificamos la fila 2 del producto (tiene Stock, Venta, IVA, etc.)
+                    else if (currentProduct && (fonts.length === 4 || fonts.length === 5)) {
+                        const stock = fonts[0].innerText.trim();
+                        // Limpiamos el precio (quitamos el signo $)
+                        let venta = fonts[1].innerText.replace("$", "").trim(); 
+                        const iva = fonts[2].innerText.trim();
+                        const imp = fonts[3].innerText.trim();
+                        // Si el código de barras está vacío, lo dejamos en blanco
+                        const barra = fonts.length === 5 ? fonts[4].innerText.trim() : "";
+                        
+                        // Protegemos la descripción por si tiene comillas
+                        let descEscapada = `"${currentProduct.descripcion.replace(/"/g, '""')}"`;
+                        
+                        // Armamos la línea del CSV
+                        csvContent += `${currentProduct.codigo};${descEscapada};${stock};${venta};${iva};${imp};${barra}\n`;
+                        
+                        // Reseteamos para el próximo producto
+                        currentProduct = null; 
+                    }
+                }
+
+                // Forzamos la descarga del archivo generado
+                const blob = new Blob(["\ufeff" + csvContent], { type: 'text/csv;charset=utf-8;' });
+                const url = URL.createObjectURL(blob);
+                const link = document.createElement("a");
+                link.setAttribute("href", url);
+                link.setAttribute("download", "listado_perfecto.csv");
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+            };
+        }
+    </script>
+</body>
+</html>

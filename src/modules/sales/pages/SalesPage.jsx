@@ -4,7 +4,7 @@ import {
     ArrowDownLeft, ShoppingBag, XCircle, RotateCcw, Calendar, User,
     ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, 
     TrendingUp, Tag, Percent, DollarSign, Store, CreditCard, Banknote,
-    PackageMinus, Save, X, Loader2, PlusCircle, ArrowUpRight, FileArchive, ArrowDownRight, Users
+    PackageMinus, Save, X, Loader2, PlusCircle, ArrowUpRight, FileArchive, ArrowDownRight, Users, CloudDownload
 } from 'lucide-react';
 import { billingService } from '../../billing/services/billingService';
 import { Card } from '../../../core/ui/Card';
@@ -13,10 +13,10 @@ import { Switch } from '../../../core/ui/Switch';
 import { cn } from '../../../core/utils/cn';
 import { salesRepository } from '../repositories/salesRepository'; 
 import { productRepository } from '../../inventory/repositories/productRepository'; 
-import { cashRepository } from '../../cash/repositories/cashRepository'; // 🔥 IMPORTANTE: Agregado para impactar devoluciones
+import { cashRepository } from '../../cash/repositories/cashRepository'; 
 import { TicketModal } from '../components/TicketModal';
 import { useAuthStore } from '../../auth/store/useAuthStore'; 
-import { collection, query, where, getDocs } from 'firebase/firestore';
+import { collection, query, where, getDocs, orderBy, limit } from 'firebase/firestore';
 import { db as firestoreDB } from '../../../database/firebase';
 import toast from 'react-hot-toast';
 
@@ -34,7 +34,7 @@ const RefundModal = ({ isOpen, onClose, sale, onConfirm, isProcessing }) => {
     const [returnMap, setReturnMap] = useState({}); 
     const [refundTotal, setRefundTotal] = useState(0);
     const [reason, setReason] = useState('');
-    const [refundCash, setRefundCash] = useState(true); // Switch para sacar plata de la caja
+    const [refundCash, setRefundCash] = useState(true); 
 
     useEffect(() => {
         if (isOpen) {
@@ -163,10 +163,11 @@ export const SalesPage = () => {
   const [cashiersList, setCashiersList] = useState([]); 
   const [loading, setLoading] = useState(true);
   
-  // 🔥 ESTADOS PARA PAGINACIÓN POR TANDAS (PAGINATION STRATEGY)
-  const [displayLimit, setDisplayLimit] = useState(50);
+  // 🔥 ESTADOS PARA PAGINACIÓN Y TOTALES
+  const [displayLimit, setDisplayLimit] = useState(150); 
   const [hasMore, setHasMore] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [periodTotals, setPeriodTotals] = useState({ gross: 0, netProfit: 0 }); 
   
   const [filterPeriod, setFilterPeriod] = useState('today'); 
   const [customStart, setCustomStart] = useState(toInputDate(new Date()));
@@ -184,7 +185,7 @@ export const SalesPage = () => {
   const [refundData, setRefundData] = useState(null); 
   const [isProcessingRefund, setIsProcessingRefund] = useState(false);
 
-  // 1. CARGAR LISTA DE CAJEROS (FILTRADO ESTRICTO POR SUCURSAL)
+  // 1. CARGAR LISTA DE CAJEROS
   useEffect(() => {
       if (user?.companyId && activeBranchId) {
           const fetchCashiers = async () => {
@@ -196,7 +197,6 @@ export const SalesPage = () => {
                   const snapshot = await getDocs(q);
                   const users = snapshot.docs.map(doc => ({ uid: doc.id, ...doc.data() }));
                   
-                  // 🔥 BRANCH ISOLATION: Filtrar estrictamente por sucursal activa
                   const branchUsers = users.filter(u => {
                       if (u.role === 'OWNER') return true; 
                       return String(u.branchId) === String(activeBranchId);
@@ -208,7 +208,56 @@ export const SalesPage = () => {
       }
   }, [user?.companyId, activeBranchId]); 
 
-  // 2. CARGAR OPERACIONES (OPTIMIZADO POR TANDAS)
+  // =================================================================
+  // ⚡ LA SOLUCIÓN DEFINITIVA: DESCARGA FORZADA DESDE LA NUBE
+  // =================================================================
+  const handleForceCloudSync = async () => {
+      setLoading(true);
+      const toastId = toast.loading("Buscando en Firebase. No cierres la ventana...");
+      try {
+          const forcedCompanyId = user?.companyId || user?.tenantId;
+          if (!forcedCompanyId) throw new Error("Falta companyId");
+
+          const { getDB } = await import('../../../database/db');
+          const dbLocal = await getDB();
+
+          // Ignoramos el cache, pedimos las últimas 1000 ventas de la sucursal directo a la nube
+          let q;
+          if (activeBranchId && activeBranchId !== 'ALL') {
+              q = query(collection(firestoreDB, `companies/${forcedCompanyId}/sales`), where('branchId', '==', activeBranchId), orderBy('date', 'desc'), limit(1000));
+          } else {
+              q = query(collection(firestoreDB, `companies/${forcedCompanyId}/sales`), orderBy('date', 'desc'), limit(1000));
+          }
+
+          const snapshot = await getDocs(q);
+          const cloudSales = [];
+          
+          snapshot.docs.forEach(doc => {
+              const data = doc.data();
+              cloudSales.push({
+                  ...data,
+                  id: doc.id,
+                  firestoreId: doc.id,
+                  localId: data.localId || doc.id,
+                  syncStatus: 'synced'
+              });
+          });
+
+          if (cloudSales.length > 0) {
+              await dbLocal.sales.bulkPut(cloudSales);
+              toast.success(`¡Misterio resuelto! Se bajaron ${cloudSales.length} ventas de la nube.`, { id: toastId });
+          } else {
+              toast.success("No se encontraron ventas en Firebase para esta sucursal.", { id: toastId });
+          }
+      } catch (error) {
+          console.error("Error forzando sync:", error);
+          toast.error(`Error al bajar de la nube: ${error.message}`, { id: toastId });
+      } finally {
+          fetchOperations(); 
+      }
+  };
+
+  // 2. CARGAR OPERACIONES LOCALES (OPTIMIZADO Y A PRUEBA DE FECHAS)
   const fetchOperations = async (append = false) => {
       if (append) setLoadingMore(true);
       else setLoading(true);
@@ -240,51 +289,55 @@ export const SalesPage = () => {
           const { getDB } = await import('../../../database/db');
           const dbLocal = await getDB();
 
-          // 🔥 QUERY OPTIMIZADA CON LÍMITE
-          let rawData = await dbLocal.sales
-              .where('date')
-              .between(start.toISOString(), end.toISOString(), true, true)
-              .reverse() // Las más nuevas primero
-              .limit(displayLimit) // Aplica el límite actual
-              .toArray();
-
-          // Filtro por sucursal a nivel de DB local
+          let rawData = [];
           if (activeBranchId && activeBranchId !== 'ALL') {
-              rawData = rawData.filter(op => String(op.branchId) === String(activeBranchId));
+              rawData = await dbLocal.sales.where('branchId').equals(activeBranchId).reverse().toArray();
+          } else {
+              rawData = await dbLocal.sales.toArray();
           }
 
-          setOperations(rawData || []);
+          const startTime = start.getTime();
+          const endTime = end.getTime();
+          
+          let filteredByDate = rawData.filter(op => {
+              const opDateRaw = op.date || op.createdAt || op.syncedAt || op.updatedAt;
+              if (!opDateRaw) return false;
+              const opTime = new Date(opDateRaw).getTime();
+              return opTime >= startTime && opTime <= endTime;
+          });
+
+          filteredByDate.sort((a, b) => {
+              const timeA = new Date(a.date || a.createdAt || 0).getTime();
+              const timeB = new Date(b.date || b.createdAt || 0).getTime();
+              return timeB - timeA;
+          });
+
+          // 🔥 TOTALES REALES SOBRE TODO EL MES
+          const validForTotals = filteredByDate.filter(op => op.afip?.status !== 'VOIDED' && op.status !== 'REFUNDED' && op.type !== 'BUDGET');
+          const gross = validForTotals.reduce((acc, op) => acc + (parseFloat(op.total) || 0), 0);
+          const netProfit = validForTotals.reduce((acc, op) => acc + (parseFloat(op.netProfit) || 0), 0);
+          setPeriodTotals({ gross, netProfit });
+
+          const finalData = filteredByDate.slice(0, displayLimit);
+
+          setOperations(finalData || []);
           
           if (!append) setCurrentPage(1); 
-          
-          // Si trajo la misma cantidad que el límite, probablemente hay más.
-          setHasMore(rawData.length >= displayLimit); 
+          setHasMore(filteredByDate.length > displayLimit); 
 
       } catch (error) {
           console.error("Error cargando historial:", error);
-          toast.error("Error al cargar las ventas.");
+          toast.error("Error al cargar las ventas locales.");
       } finally {
           setLoading(false);
           setLoadingMore(false);
       }
   };
 
-  // Escuchar cambios en los filtros o en el límite para recargar
   useEffect(() => { 
-      fetchOperations(displayLimit > 50); 
+      fetchOperations(displayLimit > 150); 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filterPeriod, customStart, customEnd, activeBranchId, displayLimit]);
-
-  // Polling silencioso para mantener la lista fresca (cada 30s) sin bloquear la UI
-  useEffect(() => {
-      const interval = setInterval(() => {
-          if (!loading && !loadingMore && currentPage === 1) {
-              fetchOperations(false);
-          }
-      }, 30000);
-      return () => clearInterval(interval);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loading, loadingMore, currentPage, filterPeriod, activeBranchId]);
 
   const resolveCashierName = (op) => {
       const idToCheck = op.userId || op.createdBy || op.operatorId;
@@ -308,16 +361,12 @@ export const SalesPage = () => {
       return `ID:${(op.localId || op.id || '????').slice(-6)}`;
   };
 
-  // 3. FILTRADO LOCAL DE RESULTADOS YA CARGADOS EN MEMORIA
+  // 3. FILTRADO VISUAL EN MEMORIA
   const visibleOperations = useMemo(() => {
       return operations.filter(op => {
-          // Filtro de Sucursal (por seguridad, aunque ya se filtró en DB)
           if (activeBranchId && String(op.branchId) !== String(activeBranchId)) return false;
-          
-          // Filtro de Tipo (Añadido Soporte para Presupuestos BUDGET)
           if (filterType !== 'ALL' && op.type !== filterType) return false;
 
-          // Filtro de Cajero
           if (filterCashier !== 'ALL') {
               const selectedUser = cashiersList.find(u => u.email === filterCashier);
               if (!selectedUser) return false;
@@ -325,7 +374,6 @@ export const SalesPage = () => {
               if (opUserId !== selectedUser.uid && op.createdBy !== selectedUser.email) return false;
           }
 
-          // 🔥 PAYMENT LOGIC CLEANUP: Mapeo correcto de todos los métodos posibles
           if (filterPaymentMethod !== 'ALL') {
               const methodRaw = op.payment?.method || op.paymentMethod || 'cash';
               const method = String(methodRaw).toLowerCase().trim();
@@ -342,16 +390,18 @@ export const SalesPage = () => {
               if (filterPaymentMethod === 'MP') {
                   if (!['mercadopago', 'mp', 'qr', 'point'].includes(method)) return false;
               }
-              // 🔥 FIX Cta Corriente: Agregamos 'account' a las validaciones de búsqueda
+              // 🔥 SEPARAMOS CLIENTES DE EMPLEADOS EN EL BUSCADOR
               if (filterPaymentMethod === 'CURRENT_ACCOUNT') {
-                  if (!['current_account', 'cta_cte', 'cuenta_corriente', 'employee_account', 'account'].includes(method)) return false;
+                  if (!['current_account', 'cta_cte', 'cuenta_corriente', 'account'].includes(method)) return false;
+              }
+              if (filterPaymentMethod === 'EMPLOYEE_ACCOUNT') {
+                  if (method !== 'employee_account') return false;
               }
               if (filterPaymentMethod === 'BUDGET') {
                   if (!['budget', 'presupuesto'].includes(method)) return false;
               }
           }
 
-          // Filtro de Búsqueda de Texto
           if (searchTerm) {
               const search = searchTerm.toLowerCase();
               const clientName = (op.client?.name || '').toLowerCase();
@@ -372,7 +422,7 @@ export const SalesPage = () => {
   }, [visibleOperations, currentPage]);
 
   // =================================================================
-  // 🚀 ACCIONES (FACTURAR, ANULAR, DEVOLVER) - BLINDADAS E INTEGRADAS A CAJA
+  // 🚀 ACCIONES (FACTURAR, ANULAR, DEVOLVER) 
   // =================================================================
 
   const handleFacturar = async (op) => {
@@ -416,7 +466,6 @@ export const SalesPage = () => {
   const handleAnular = async (op) => {
     if (!isAdmin) return;
     
-    // 🔥 NUEVO: Pedir motivo de anulación
     const reason = window.prompt("⚠️ INGRESE EL MOTIVO DE LA ANULACIÓN:\n(El stock se repondrá automáticamente. Si hubo efectivo, se extraerá de la caja).");
     if (!reason) {
         toast.error("Anulación cancelada: Motivo obligatorio.");
@@ -461,14 +510,12 @@ export const SalesPage = () => {
           toast.success("Nota de Crédito generada en AFIP");
       }
       
-      // 🔥 FIX: Repone stock solo si NO ES presupuesto
       if (op.type !== 'BUDGET' && op.items && Array.isArray(op.items)) {
           for (const item of op.items) {
               await productRepository.addStock(item.id, item.quantity, `Anulación #${getDisplayNumber(op)} - ${reason}`, user?.name, op.branchId || activeBranchId);
           }
       }
 
-      // 🔥 FIX: Retirar Efectivo de la Caja si aplica
       let cashPaid = 0;
       if (op.method === 'cash') {
           cashPaid = op.amountPaid || op.total;
@@ -480,7 +527,6 @@ export const SalesPage = () => {
           await cashRepository.registerExpense(cashPaid, `Anulación Ticket #${getDisplayNumber(op)} - Motivo: ${reason}`, op.localId, user?.name);
       }
 
-      // Dejamos registro del motivo en las notas
       op.notes = `${op.notes || ''} | Anulado por: ${reason}`.trim();
 
       await updateOperationStatus(op, notaCreditoData, 'VOIDED'); 
@@ -493,7 +539,6 @@ export const SalesPage = () => {
     }
   };
 
-  // 🔥 NUEVA FIRMA: onConfirm(sale, returnMap, refundTotal, reason, refundCash)
   const handleProcessRefund = async (originalSale, returnMap, refundAmount, reason, refundCash) => {
       setIsProcessingRefund(true);
       const toastId = toast.loading("Procesando devolución...");
@@ -512,7 +557,7 @@ export const SalesPage = () => {
               }
           }
 
-          // 2. Retiro de Efectivo (Si se marcó el switch)
+          // 2. Retiro de Efectivo
           if (refundCash) {
               await cashRepository.registerExpense(refundAmount, `Reintegro Venta #${getDisplayNumber(originalSale)} - Motivo: ${reason}`, originalSale.localId, user?.name);
           }
@@ -553,6 +598,7 @@ export const SalesPage = () => {
           setOperations(prev => prev.map(o => o.localId === originalSale.localId ? updatedSale : o));
           toast.success(`Devolución de $${refundAmount} procesada`, { id: toastId });
           setRefundData(null); 
+          fetchOperations(); 
 
       } catch (error) {
           console.error(error);
@@ -591,16 +637,8 @@ export const SalesPage = () => {
     
     await db.sales.put(ventaActualizada);
     setOperations(prev => prev.map(o => o.localId === op.localId ? ventaActualizada : o));
+    fetchOperations();
   };
-
-  // 🔥 CALCULO DE TOTALES (INCLUYENDO RECARGOS Y EXCLUYENDO PRESUPUESTOS/ANULADOS)
-  const totals = useMemo(() => {
-      const filtered = visibleOperations.filter(op => op.afip?.status !== 'VOIDED' && op.status !== 'REFUNDED' && op.type !== 'BUDGET');
-      return {
-          gross: filtered.reduce((acc, op) => acc + (parseFloat(op.total) || 0), 0),
-          netProfit: filtered.reduce((acc, op) => acc + (parseFloat(op.netProfit) || 0), 0)
-      };
-  }, [visibleOperations]);
 
   return (
     <div className="space-y-6 pb-20 p-4 md:p-6 max-w-[1600px] mx-auto animate-in fade-in duration-500">
@@ -622,25 +660,37 @@ export const SalesPage = () => {
             </div>
             
             <div className="flex items-center gap-3">
-                <Button variant="outline" onClick={() => fetchOperations()} className="h-10 w-10 p-0 rounded-xl border-sys-200 text-sys-500 hover:text-brand hover:bg-sys-50">
+                <Button variant="outline" onClick={() => fetchOperations()} className="h-10 w-10 p-0 rounded-xl border-sys-200 text-sys-500 hover:text-brand hover:bg-sys-50" title="Recargar Local">
                     <RefreshCw size={18} className={loading ? "animate-spin" : ""}/>
                 </Button>
+
+                <Button 
+                    variant="outline" 
+                    onClick={handleForceCloudSync} 
+                    className="h-10 px-4 rounded-xl border-brand/30 text-brand bg-brand/5 hover:bg-brand hover:text-white transition-all flex items-center gap-2 shadow-sm"
+                    title="Forzar descarga de ventas desde Firebase"
+                >
+                    <CloudDownload size={18} className={loading ? "animate-bounce" : ""}/>
+                    <span className="text-xs font-bold hidden md:inline">Bajar Nube</span>
+                </Button>
                 
-                {/* 💳 TARJETA DE TOTALES (SOLO ADMIN/OWNER) */}
+                {/* 💳 TARJETA DE TOTALES REALES (SOLO ADMIN/OWNER) */}
                 {isAdmin && (
                     <Card className="px-5 py-2 bg-white border border-sys-200 shadow-sm flex items-center gap-6 animate-in slide-in-from-right-2">
                         <div>
-                            <p className="text-[10px] text-sys-400 uppercase font-bold tracking-wider">Ventas Brutas</p>
+                            <p className="text-[10px] text-sys-400 uppercase font-bold tracking-wider flex items-center gap-1">
+                                Ventas Brutas
+                            </p>
                             <p className="text-xl font-black text-sys-900">
-                                $ {totals.gross.toLocaleString('es-AR', {minimumFractionDigits: 2})}
+                                $ {periodTotals.gross.toLocaleString('es-AR', {minimumFractionDigits: 2})}
                             </p>
                         </div>
-                        <div className="border-l border-sys-100 pl-6">
+                        <div className="border-l border-sys-100 pl-6 hidden sm:block">
                             <p className="text-[10px] text-emerald-600 uppercase font-bold tracking-wider flex items-center gap-1">
                                 <TrendingUp size={10}/> Utilidad Neta
                             </p>
                             <p className="text-xl font-black text-emerald-600">
-                                $ {totals.netProfit.toLocaleString('es-AR', {minimumFractionDigits: 2})}
+                                $ {periodTotals.netProfit.toLocaleString('es-AR', {minimumFractionDigits: 2})}
                             </p>
                         </div>
                     </Card>
@@ -653,7 +703,7 @@ export const SalesPage = () => {
               
               <div className="flex bg-white rounded-lg border border-sys-200 p-1 shadow-sm w-full xl:w-auto overflow-x-auto no-scrollbar">
                   {[{ id: 'today', label: 'Hoy' }, { id: 'yesterday', label: 'Ayer' }, { id: 'week', label: 'Semana' }, { id: 'month', label: 'Mes' }, { id: 'custom', label: 'Custom', icon: Calendar }].map(p => (
-                      <button key={p.id} onClick={() => { setDisplayLimit(50); setFilterPeriod(p.id); }} className={cn("px-3 py-1.5 rounded-md text-xs font-bold transition-all whitespace-nowrap flex items-center gap-1", filterPeriod === p.id ? "bg-sys-900 text-white shadow-md" : "text-sys-500 hover:bg-sys-50 hover:text-sys-900")}>
+                      <button key={p.id} onClick={() => { setDisplayLimit(150); setFilterPeriod(p.id); }} className={cn("px-3 py-1.5 rounded-md text-xs font-bold transition-all whitespace-nowrap flex items-center gap-1", filterPeriod === p.id ? "bg-sys-900 text-white shadow-md" : "text-sys-500 hover:bg-sys-50 hover:text-sys-900")}>
                           {p.icon && <p.icon size={12}/>} {p.label}
                       </button>
                   ))}
@@ -661,9 +711,9 @@ export const SalesPage = () => {
 
               {filterPeriod === 'custom' && (
                   <div className="flex items-center gap-2 bg-white px-2 py-1 rounded-lg border border-sys-200">
-                      <input type="date" value={customStart} onChange={e => { setDisplayLimit(50); setCustomStart(e.target.value); }} className="text-xs border-none outline-none font-medium text-sys-700"/>
+                      <input type="date" value={customStart} onChange={e => { setDisplayLimit(150); setCustomStart(e.target.value); }} className="text-xs border-none outline-none font-medium text-sys-700"/>
                       <span className="text-sys-300">-</span>
-                      <input type="date" value={customEnd} onChange={e => { setDisplayLimit(50); setCustomEnd(e.target.value); }} className="text-xs border-none outline-none font-medium text-sys-700"/>
+                      <input type="date" value={customEnd} onChange={e => { setDisplayLimit(150); setCustomEnd(e.target.value); }} className="text-xs border-none outline-none font-medium text-sys-700"/>
                   </div>
               )}
 
@@ -705,7 +755,9 @@ export const SalesPage = () => {
                           <option value="CARD">Tarjetas</option>
                           <option value="TRANSFER">Transferencia</option>
                           <option value="MP">MercadoPago</option>
-                          <option value="CURRENT_ACCOUNT">Cta. Corriente</option>
+                          {/* 🔥 FIX: Separamos claramente el fiado de clientes y el consumo de empleados */}
+                          <option value="CURRENT_ACCOUNT">Cta. Corriente (Cliente)</option>
+                          <option value="EMPLOYEE_ACCOUNT">Cta. Personal (Staff)</option>
                           <option value="BUDGET">Presupuesto</option>
                       </select>
                   </div>
@@ -759,7 +811,6 @@ export const SalesPage = () => {
                     const cajeroName = resolveCashierName(op);
                     const hasPromo = !isReceipt && !isBudget && op.items?.some(i => i.appliedPromo || i.promoLabel);
                     
-                    // 🔥 LECTURA DE SURCHARGE
                     const surchargeAmount = parseFloat(op.surcharge || 0);
                     const hasSurcharge = surchargeAmount > 0;
 
@@ -767,10 +818,12 @@ export const SalesPage = () => {
                     const isProfitable = profit > 0;
                     const displayTicketNumber = getDisplayNumber(op);
 
+                    const opDate = new Date(op.date || op.createdAt || op.syncedAt);
+
                     return (
-                      <tr key={op.localId} className={cn("transition-colors group", (isAnulado || isRefunded) ? "bg-red-50/30 opacity-60" : "hover:bg-sys-50/40")}>
+                      <tr key={op.localId || op.id} className={cn("transition-colors group", (isAnulado || isRefunded) ? "bg-red-50/30 opacity-60" : "hover:bg-sys-50/40")}>
                         <td className="p-4 text-sys-600 font-mono text-xs whitespace-nowrap">
-                          <div className="font-bold text-sys-800">{new Date(op.date).toLocaleDateString()} {new Date(op.date).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</div>
+                          <div className="font-bold text-sys-800">{opDate.toLocaleDateString()} {opDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</div>
                           <div className="text-[11px] font-bold text-brand mt-0.5">{displayTicketNumber}</div>
                           <div className="flex items-center gap-1 text-[10px] text-sys-400 mt-0.5">
                               <User size={10}/> {cajeroName}
@@ -787,7 +840,7 @@ export const SalesPage = () => {
                         </td>
                         <td className="p-4 text-sys-800 font-medium">
                           <div className="flex flex-col">
-                            <span className="font-bold truncate max-w-[200px]">{op.client?.name || 'Consumidor Final'}</span>
+                            <span className="font-bold truncate max-w-[200px]">{op.client?.name || op.userName || 'Consumidor Final'}</span>
                             <div className="flex items-center gap-2 mt-0.5">
                                 <span className="text-[10px] text-sys-400 font-normal">
                                     {isReceipt ? "Pago a Cuenta" : `${op.itemCount || (op.items?.length) || 0} items`}
@@ -828,19 +881,22 @@ export const SalesPage = () => {
                         </td>
 
                         <td className="p-4 text-center">
-                          {/* 🔥 FIX: Etiqueta y color para CTA. CORRIENTE */}
+                          {/* 🔥 FIX: Colores y textos separados para empleados vs clientes */}
                           <span className={cn("px-2 py-0.5 rounded text-[10px] font-bold uppercase border inline-block min-w-[60px]", 
                             isBudget ? "bg-sys-100 text-sys-500 border-sys-200" :
                             ['cash', 'efectivo'].includes(paymentMethod) ? "bg-green-50 text-green-700 border-green-100" :
                             ['mercadopago', 'mp', 'qr', 'point'].includes(paymentMethod) ? "bg-blue-50 text-blue-700 border-blue-100" :
                             ['clover', 'card', 'debit', 'credit', 'tarjeta', 'manual_card'].includes(paymentMethod) ? "bg-emerald-50 text-emerald-700 border-emerald-100" :
-                            ['employee_account', 'current_account', 'account'].includes(paymentMethod) ? "bg-red-50 text-red-700 border-red-100" :
+                            paymentMethod === 'employee_account' ? "bg-pink-50 text-pink-700 border-pink-200" :
+                            ['current_account', 'cta_cte', 'account'].includes(paymentMethod) ? "bg-orange-50 text-orange-700 border-orange-200" :
                             "bg-purple-50 text-purple-700 border-purple-100")}>
+                            
                             {['mercadopago', 'mp'].includes(paymentMethod) ? 'MP QR' :
                              ['cash'].includes(paymentMethod) ? 'EFECTIVO' : 
                              ['transfer'].includes(paymentMethod) ? 'TRANSFERENCIA' : 
                              ['card', 'credit', 'debit', 'tarjeta', 'manual_card'].includes(paymentMethod) ? 'TARJETA' :
-                             ['employee_account', 'current_account', 'account'].includes(paymentMethod) ? 'CTA. CORRIENTE' :
+                             paymentMethod === 'employee_account' ? 'CTA. PERSONAL' :
+                             ['current_account', 'cta_cte', 'account'].includes(paymentMethod) ? 'CTA. CORRIENTE' :
                              ['budget'].includes(paymentMethod) ? 'PRESUPUESTO' :
                              paymentMethod.toUpperCase()}
                           </span>

@@ -2,13 +2,15 @@ import React, { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { 
     ArrowLeft, Truck, FileText, 
-    TrendingDown, DollarSign, MapPin, Building2, CreditCard, User, AlertCircle
+    TrendingDown, DollarSign, MapPin, Building2, CreditCard, User, AlertCircle, RefreshCw, CloudDownload
 } from 'lucide-react';
 import { useAuthStore } from '../../auth/store/useAuthStore'; 
 import { supplierRepository } from '../repositories/supplierRepository';
 import { cashRepository } from '../../cash/repositories/cashRepository'; 
 import { purchaseRepository } from '../repositories/purchaseRepository'; 
 import { db as localDb } from '../../../database/db'; 
+import { collection, query, where, getDocs, limit, orderBy } from 'firebase/firestore';
+import { db as firestoreDB } from '../../../database/firebase';
 import { Card } from '../../../core/ui/Card';
 import { Button } from '../../../core/ui/Button';
 import { cn } from '../../../core/utils/cn';
@@ -21,27 +23,18 @@ const formatCurrency = (amount) => `$ ${Number(amount || 0).toLocaleString('es-A
 export const SupplierDashboard = () => {
   const { companySlug, supplierId } = useParams();
   const navigate = useNavigate();
+  const { user } = useAuthStore();
   
   const [supplier, setSupplier] = useState(null);
   const [history, setHistory] = useState([]);
   const [calculatedDebt, setCalculatedDebt] = useState(0); 
   const [monthTotal, setMonthTotal] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
   
   const [isPaymentOpen, setIsPaymentOpen] = useState(false);
 
-  const loadData = async () => {
-    setLoading(true);
-    try {
-        const s = await supplierRepository.getById(supplierId);
-        setSupplier(s);
-
-        // 🔥 MAGIA: LEEMOS DIRECTO DE LAS COMPRAS (Igual que el Historial Perfecto)
-        const purchases = await localDb.purchases
-            .where('supplierId').equals(supplierId)
-            .reverse() // Más nuevas primero
-            .toArray();
-            
+  const calculateTotals = (purchases) => {
         let debt = 0;
         let monthSum = 0;
         const thirtyDaysAgo = new Date();
@@ -60,6 +53,53 @@ export const SupplierDashboard = () => {
 
         setCalculatedDebt(debt);
         setMonthTotal(monthSum);
+  };
+
+  const loadData = async (forceCloud = false) => {
+    if (!forceCloud) setLoading(true);
+    else setSyncing(true);
+    
+    try {
+        const s = await supplierRepository.getById(supplierId);
+        setSupplier(s);
+
+        // 🔥 MAGIA: LEEMOS DIRECTO DE LAS COMPRAS
+        let purchases = await localDb.purchases
+            .where('supplierId').equals(supplierId)
+            .reverse() // Más nuevas primero
+            .toArray();
+
+        // 🔥 AUTO-HIDRATACIÓN SILENCIOSA O FORZADA DE NUBE
+        if ((purchases.length === 0 || forceCloud) && navigator.onLine && user?.companyId) {
+            try {
+                const q = query(
+                    collection(firestoreDB, `companies/${user.companyId}/purchases`),
+                    where('supplierId', '==', supplierId),
+                    orderBy('date', 'desc'),
+                    limit(100)
+                );
+                
+                const snap = await getDocs(q);
+                const cloudPurchases = [];
+                snap.docs.forEach(docSnap => {
+                    const data = docSnap.data();
+                    cloudPurchases.push({ ...data, id: docSnap.id, firestoreId: docSnap.id, syncStatus: 'synced' });
+                });
+
+                if (cloudPurchases.length > 0) {
+                    await localDb.purchases.bulkPut(cloudPurchases);
+                    purchases = await localDb.purchases.where('supplierId').equals(supplierId).reverse().toArray();
+                    if (forceCloud) toast.success("Historial actualizado desde la nube.");
+                } else if (forceCloud) {
+                    toast.success("No hay más datos en la nube.");
+                }
+            } catch (e) {
+                console.warn("Fallo hidratación del historial del proveedor:", e);
+                if (forceCloud) toast.error("Error al buscar en la nube.");
+            }
+        }
+
+        calculateTotals(purchases);
         setHistory(purchases);
 
     } catch (error) {
@@ -67,11 +107,13 @@ export const SupplierDashboard = () => {
         toast.error("Error cargando el historial del proveedor");
     } finally {
         setLoading(false);
+        setSyncing(false);
     }
   };
 
   useEffect(() => {
     if (supplierId) loadData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [supplierId]);
 
   // =================================================================
@@ -138,11 +180,11 @@ export const SupplierDashboard = () => {
       }
   };
 
-  if (loading) return <div className="h-screen flex items-center justify-center text-sys-500 font-bold uppercase tracking-widest animate-pulse">Cargando Historial...</div>;
-  if (!supplier) return <div className="h-screen flex items-center justify-center text-red-500 font-bold">Proveedor no encontrado</div>;
+  if (loading) return <div className="h-[calc(100vh-4rem)] flex flex-col items-center justify-center text-sys-500 font-bold uppercase tracking-widest"><Loader2 className="animate-spin mb-2 text-brand" size={32}/>Cargando Perfil...</div>;
+  if (!supplier) return <div className="h-[calc(100vh-4rem)] flex items-center justify-center text-red-500 font-bold">Proveedor no encontrado</div>;
 
   return (
-    <div className="space-y-6 pb-20 animate-in slide-in-from-right duration-300 max-w-[1600px] mx-auto p-4 md:p-6 h-full flex flex-col">
+    <div className="space-y-6 pb-20 animate-in slide-in-from-right duration-300 max-w-[1600px] mx-auto p-4 md:p-6 h-[calc(100vh-4rem)] flex flex-col">
       
       {/* Header Navegación */}
       <div className="flex flex-col md:flex-row items-start md:items-center gap-4 bg-white p-4 rounded-3xl border border-sys-200 shadow-sm shrink-0">
@@ -154,7 +196,12 @@ export const SupplierDashboard = () => {
                 <Truck size={24} />
             </div>
             <div className="min-w-0 flex-1">
-                <h2 className="text-2xl font-black text-sys-900 leading-none uppercase truncate">{supplier.name}</h2>
+                <div className="flex items-center gap-3">
+                    <h2 className="text-2xl font-black text-sys-900 leading-none uppercase truncate">{supplier.name}</h2>
+                    <Button variant="ghost" onClick={() => loadData(true)} disabled={syncing} className="h-6 w-6 p-0 text-brand bg-brand/10 hover:bg-brand hover:text-white rounded-full shrink-0" title="Bajar Nube">
+                        {syncing ? <Loader2 size={12} className="animate-spin"/> : <CloudDownload size={12}/>}
+                    </Button>
+                </div>
                 <div className="flex flex-wrap items-center gap-2 text-xs text-sys-500 mt-1.5">
                     <span className="font-mono bg-sys-100 px-2 py-0.5 rounded text-sys-600 font-bold border border-sys-200 flex items-center gap-1">
                         <CreditCard size={12}/> {supplier.docType === '80' ? 'CUIT' : 'DNI'} {supplier.docNumber || 'S/N'}
@@ -266,8 +313,8 @@ export const SupplierDashboard = () => {
                                   return (
                                       <tr key={p.id} className={cn("hover:bg-sys-50/50 transition-colors group cursor-default", isAnulado && "opacity-50 bg-red-50/20")}>
                                           <td className="px-6 py-4 font-mono text-sys-600 whitespace-nowrap align-middle">
-                                              <div className="font-bold text-sys-900 text-xs">{new Date(p.date).toLocaleDateString()}</div>
-                                              <div className="text-[10px] mt-0.5">{new Date(p.date).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</div>
+                                              <div className="font-bold text-sys-900 text-xs">{new Date(p.date || p.createdAt).toLocaleDateString()}</div>
+                                              <div className="text-[10px] mt-0.5">{new Date(p.date || p.createdAt).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</div>
                                           </td>
                                           
                                           <td className="px-6 py-4 align-middle">

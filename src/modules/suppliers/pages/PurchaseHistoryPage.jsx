@@ -4,11 +4,13 @@ import {
     Truck, Plus, FileText, Search, 
     DollarSign, Package, ChevronRight, ChevronLeft,
     Filter, AlertCircle, CheckCircle2, Clock, Wallet, X, MapPin,
-    Eye, Trash2, PackageMinus, Printer, Loader2
+    Eye, Trash2, PackageMinus, Printer, Loader2, CloudDownload
 } from 'lucide-react';
 
 // 🔥 REPOSITORIO
 import { purchaseRepository } from '../repositories/purchaseRepository'; 
+import { collection, query, where, getDocs, limit, orderBy } from 'firebase/firestore';
+import { db as firestoreDB } from '../../../database/firebase';
 
 import { useAuthStore } from '../../auth/store/useAuthStore';
 import { Button } from '../../../core/ui/Button';
@@ -54,7 +56,7 @@ const PurchaseTicketModal = ({ isOpen, onClose, purchase }) => {
                             <h2 className="text-lg font-black uppercase mb-1">INGRESO MERCADERÍA</h2>
                             <p>Sucursal: {purchase.branchName || 'Principal'}</p>
                             <p>Usuario: {purchase.userName || 'Admin'}</p>
-                            <p>Fecha: {new Date(purchase.date).toLocaleString('es-AR')}</p>
+                            <p>Fecha: {new Date(purchase.date || purchase.createdAt).toLocaleString('es-AR')}</p>
                         </div>
 
                         <div className="mb-4 border-b border-dashed border-black pb-4 relative z-10">
@@ -326,6 +328,53 @@ export const PurchaseHistoryPage = () => {
         setCurrentPage(1);
     }, [filterStatus, searchTerm, activeSupplierFilter, activeBranchId]);
 
+    // =================================================================
+    // ⚡ DESCARGA FORZADA (CLOUD PULL) - EL BOTÓN DE RESCATE
+    // =================================================================
+    const handleForceCloudSync = async () => {
+        setLoading(true);
+        const toastId = toast.loading("Buscando en Firebase. No cierres la ventana...");
+        try {
+            const forcedCompanyId = user?.companyId || user?.tenantId;
+            if (!forcedCompanyId) throw new Error("Falta companyId");
+
+            const { getDB } = await import('../../../database/db');
+            const dbLocal = await getDB();
+
+            let q;
+            if (activeBranchId && activeBranchId !== 'ALL') {
+                q = query(collection(firestoreDB, `companies/${forcedCompanyId}/purchases`), where('branchId', '==', activeBranchId), orderBy('date', 'desc'), limit(1000));
+            } else {
+                q = query(collection(firestoreDB, `companies/${forcedCompanyId}/purchases`), orderBy('date', 'desc'), limit(1000));
+            }
+
+            const snapshot = await getDocs(q);
+            const cloudPurchases = [];
+            
+            snapshot.docs.forEach(docSnap => {
+                const data = docSnap.data();
+                cloudPurchases.push({
+                    ...data,
+                    id: docSnap.id,
+                    firestoreId: docSnap.id,
+                    syncStatus: 'synced'
+                });
+            });
+
+            if (cloudPurchases.length > 0) {
+                await dbLocal.purchases.bulkPut(cloudPurchases);
+                toast.success(`¡Misterio resuelto! Se bajaron ${cloudPurchases.length} compras de la nube.`, { id: toastId });
+            } else {
+                toast.success("No se encontraron compras en Firebase.", { id: toastId });
+            }
+        } catch (error) {
+            console.error("Error forzando sync:", error);
+            toast.error(`Error al bajar de la nube: ${error.message}`, { id: toastId });
+        } finally {
+            loadData(); 
+        }
+    };
+
     // CORE: Carga de Datos
     const loadData = useCallback(async () => {
         setLoading(true);
@@ -357,6 +406,42 @@ export const PurchaseHistoryPage = () => {
     useEffect(() => {
         loadData();
     }, [loadData]);
+
+    // 🔥 AUTO-RESCATE SILENCIOSO EN SEGUNDO PLANO
+    useEffect(() => {
+        const silentCloudPull = async () => {
+            if (!navigator.onLine || !user?.companyId) return;
+            try {
+                const { getDB } = await import('../../../database/db');
+                const dbLocal = await getDB();
+                
+                let q;
+                if (activeBranchId && activeBranchId !== 'ALL') {
+                    q = query(collection(firestoreDB, `companies/${user.companyId}/purchases`), where('branchId', '==', activeBranchId), orderBy('date', 'desc'), limit(100));
+                } else {
+                    q = query(collection(firestoreDB, `companies/${user.companyId}/purchases`), orderBy('date', 'desc'), limit(100));
+                }
+
+                const snapshot = await getDocs(q);
+                const cloudPurchases = [];
+                
+                snapshot.docs.forEach(docSnap => {
+                    const data = docSnap.data();
+                    cloudPurchases.push({ ...data, id: docSnap.id, firestoreId: docSnap.id, syncStatus: 'synced' });
+                });
+
+                if (cloudPurchases.length > 0) {
+                    await dbLocal.purchases.bulkPut(cloudPurchases);
+                    loadData(); // Recargamos en silencio
+                }
+            } catch (error) {
+                console.warn("Fallo el Auto-Rescate silencioso de Compras:", error);
+            }
+        };
+
+        const timer = setTimeout(() => { silentCloudPull(); }, 2000);
+        return () => clearTimeout(timer);
+    }, [user?.companyId, activeBranchId]);
 
     // ACCIONES
     const handleOpenPayment = (e, purchase) => {
@@ -391,7 +476,7 @@ export const PurchaseHistoryPage = () => {
             return toast.error("⛔ Acción no autorizada para tu perfil.");
         }
 
-        if (!confirm(`⚠️ ¿ANULAR COMPRA #${purchase.invoiceNumber}?\n\nEsta acción:\n1. Restará el stock ingresado.\n2. Revertirá la deuda.\n3. Eliminará los pagos de la caja.`)) {
+        if (!window.confirm(`⚠️ ¿ANULAR COMPRA #${purchase.invoiceNumber}?\n\nEsta acción:\n1. Restará el stock ingresado.\n2. Revertirá la deuda.\n3. Eliminará los pagos de la caja.`)) {
             return;
         }
         try {
@@ -421,7 +506,7 @@ export const PurchaseHistoryPage = () => {
             await purchaseRepository.processRefund(originalSale, returnMap, refundAmount, reason, refundCash);
             toast.success("Devolución procesada correctamente.");
             setRefundData(null); 
-            loadData(); // Refrescamos la UI para ver los nuevos saldos y estados
+            loadData(); 
         } catch (error) {
             console.error(error);
             toast.error("Error: " + error.message);
@@ -484,15 +569,26 @@ export const PurchaseHistoryPage = () => {
                         </div>
                     </div>
                     
-                    {canOperate && (
+                    <div className="flex gap-3">
                         <Button 
-                            onClick={handleNewPurchase} 
-                            className="h-12 px-8 text-lg shadow-xl shadow-brand/20 bg-brand hover:bg-brand-dark transition-all hover:scale-105"
+                            variant="outline" 
+                            onClick={handleForceCloudSync} 
+                            className="shadow-sm border-brand/30 text-brand bg-brand/5 hover:bg-brand hover:text-white transition-all h-12 px-6"
+                            title="Forzar descarga de compras desde Firebase"
                         >
-                            <Plus className="mr-2" strokeWidth={3} />
-                            Nueva Compra
+                            <CloudDownload size={18} className={loading ? "animate-bounce mr-2" : "mr-2"}/>
+                            <span className="font-bold">Bajar Nube</span>
                         </Button>
-                    )}
+                        {canOperate && (
+                            <Button 
+                                onClick={handleNewPurchase} 
+                                className="h-12 px-8 text-lg shadow-xl shadow-brand/20 bg-brand hover:bg-brand-dark transition-all hover:scale-105"
+                            >
+                                <Plus className="mr-2" strokeWidth={3} />
+                                Nueva Compra
+                            </Button>
+                        )}
+                    </div>
                 </div>
 
                 <div className="grid grid-cols-4 gap-4">
@@ -623,7 +719,7 @@ export const PurchaseHistoryPage = () => {
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-sys-100">
-                                {loading ? (
+                                {loading && history.length === 0 ? (
                                     <tr><td colSpan="7" className="p-10 text-center text-sys-400 animate-pulse">Cargando datos financieros...</td></tr>
                                 ) : history.length === 0 ? (
                                     <tr><td colSpan="7" className="p-20 text-center text-sys-400">
@@ -641,8 +737,8 @@ export const PurchaseHistoryPage = () => {
                                         return (
                                             <tr key={purchase.id} onClick={(e) => handleViewDetail(e, purchase)} className={cn("hover:bg-sys-50/40 transition-colors group cursor-pointer", isAnulado && "opacity-50 bg-red-50/20")}>
                                                 <td className="px-6 py-4 text-sm font-medium text-sys-600">
-                                                    {new Date(purchase.date).toLocaleDateString()}
-                                                    <span className="block text-[10px] text-sys-400">{new Date(purchase.date).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
+                                                    {new Date(purchase.date || purchase.createdAt).toLocaleDateString()}
+                                                    <span className="block text-[10px] text-sys-400">{new Date(purchase.date || purchase.createdAt).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
                                                 </td>
                                                 <td className="px-6 py-4">
                                                     <span className="font-bold text-sys-900 text-sm">{purchase.supplierName}</span>
@@ -666,7 +762,7 @@ export const PurchaseHistoryPage = () => {
                                                         </span>
                                                     )}
                                                 </td>
-                                                <td className="px-6 py-4 text-right font-black text-sys-900">${(purchase.total || purchase.totalFinal || 0).toLocaleString('es-AR', {minimumFractionDigits: 2})}</td>
+                                                <td className="px-6 py-4 text-right font-black text-sys-900">${(parseFloat(purchase.total || purchase.totalFinal || 0)).toLocaleString('es-AR', {minimumFractionDigits: 2})}</td>
                                                 <td className="px-6 py-4 text-right">
                                                     {remaining > 0.01 && !isAnulado ? (
                                                         <span className="font-black text-red-600 bg-red-50 px-2 py-1 rounded border border-red-100">${remaining.toLocaleString('es-AR', {minimumFractionDigits: 2})}</span>

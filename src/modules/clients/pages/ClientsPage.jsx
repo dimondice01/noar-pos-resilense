@@ -1,14 +1,16 @@
 import React, { useEffect, useState } from 'react';
-import { Plus, Search, Edit2, Trash2, Users, CreditCard, Building2, ChevronRight, AlertCircle, Phone, Mail, Loader2 } from 'lucide-react';
+import { Plus, Search, Edit2, Trash2, Users, CreditCard, ChevronRight, AlertCircle, Phone, Mail, Loader2, CloudDownload } from 'lucide-react';
 import { clientRepository } from '../repositories/clientRepository';
 import { Card } from '../../../core/ui/Card';
 import { Button } from '../../../core/ui/Button';
 import { ClientModal } from '../components/ClientModal';
 import { ClientDashboard } from './ClientDashboard'; 
 import { cn } from '../../../core/utils/cn';
+import { useAuthStore } from '../../auth/store/useAuthStore'; 
 import toast from 'react-hot-toast';
 
 export const ClientsPage = () => {
+  const { user } = useAuthStore();
   const [clients, setClients] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
@@ -20,10 +22,42 @@ export const ClientsPage = () => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingClient, setEditingClient] = useState(null);
 
-  // Carga Inicial
+  // Carga Inicial & Auto-Sanación
   const loadClients = async () => {
     try {
+      setLoading(true);
       const data = await clientRepository.getAll();
+
+      // 🔥 RUTINA DE AUTO-SANACIÓN SILENCIOSA
+      if (navigator.onLine && user?.companyId) {
+          const pendingClients = data.filter(c => c.syncStatus === 'pending');
+          if (pendingClients.length > 0) {
+              console.log(`[Auto-Heal] Empujando ${pendingClients.length} clientes locales a Firebase...`);
+              const { doc, setDoc } = await import('firebase/firestore');
+              const { db: firestoreDB } = await import('../../../database/firebase');
+              const { getDB } = await import('../../../database/db');
+              const dbLocal = await getDB();
+              
+              const batchPromesas = pendingClients.map(async (client) => {
+                  try {
+                      const cloudId = String(client.firestoreId || client.id);
+                      const { syncStatus, localId, id, ...cleanClient } = client;
+                      const docRef = doc(firestoreDB, `companies/${user.companyId}/clients`, cloudId);
+
+                      await setDoc(docRef, {
+                          ...cleanClient,
+                          firestoreId: cloudId,
+                          updatedAt: new Date().toISOString(),
+                          syncStatus: 'synced'
+                      }, { merge: true });
+
+                      await dbLocal.clients.update(client.id, { syncStatus: 'synced', firestoreId: cloudId });
+                  } catch (err) { console.error("Auto-Heal Client Error:", err); }
+              });
+              Promise.all(batchPromesas); // Background push
+          }
+      }
+
       setClients(data);
     } catch (error) {
       console.error("Error cargando clientes:", error);
@@ -77,6 +111,46 @@ export const ClientsPage = () => {
     setIsModalOpen(true);
   };
 
+  // 🔥 BOTÓN DE RESCATE: Descarga Forzada desde Firebase
+  const handleForceCloudSync = async () => {
+      setLoading(true);
+      const toastId = toast.loading("Buscando clientes en la nube...");
+      try {
+          if (!user?.companyId) throw new Error("Falta companyId");
+
+          const { collection, getDocs } = await import('firebase/firestore');
+          const { db: firestoreDB } = await import('../../../database/firebase');
+          const { getDB } = await import('../../../database/db');
+          const dbLocal = await getDB();
+
+          // Descargamos TODA la lista de clientes de la empresa
+          const snapshot = await getDocs(collection(firestoreDB, `companies/${user.companyId}/clients`));
+          const cloudClients = [];
+          
+          snapshot.docs.forEach(doc => {
+              const data = doc.data();
+              cloudClients.push({
+                  ...data,
+                  id: doc.id,
+                  firestoreId: doc.id,
+                  syncStatus: 'synced'
+              });
+          });
+
+          if (cloudClients.length > 0) {
+              await dbLocal.clients.bulkPut(cloudClients);
+              toast.success(`¡Sincronización completa! Se bajaron ${cloudClients.length} clientes.`, { id: toastId });
+          } else {
+              toast.success("No hay clientes en Firebase.", { id: toastId });
+          }
+      } catch (error) {
+          console.error("Error forzando sync de clientes:", error);
+          toast.error(`Error al descargar: ${error.message}`, { id: toastId });
+      } finally {
+          loadClients(); 
+      }
+  };
+
   const getConditionBadge = (condition) => {
       const styles = {
           'RESPONSABLE_INSCRIPTO': 'bg-purple-100 text-purple-700 border-purple-200',
@@ -109,9 +183,21 @@ export const ClientsPage = () => {
           </h2>
           <p className="text-sys-500 text-sm mt-1">Gestión de contactos y cuentas corrientes</p>
         </div>
-        <Button onClick={() => { setEditingClient(null); setIsModalOpen(true); }} className="shadow-lg shadow-brand/20">
-            <Plus size={20} className="mr-2" /> Nuevo Cliente
-        </Button>
+        
+        <div className="flex items-center gap-3">
+            <Button 
+                variant="outline" 
+                onClick={handleForceCloudSync} 
+                className="shadow-sm border-brand/30 text-brand bg-brand/5 hover:bg-brand hover:text-white transition-all"
+                title="Forzar descarga de clientes desde Firebase"
+            >
+                <CloudDownload size={18} className={loading ? "animate-bounce mr-2" : "mr-2"}/>
+                Bajar Nube
+            </Button>
+            <Button onClick={() => { setEditingClient(null); setIsModalOpen(true); }} className="shadow-lg shadow-brand/20">
+                <Plus size={20} className="mr-2" /> Nuevo Cliente
+            </Button>
+        </div>
       </div>
 
       {/* Buscador */}
@@ -164,7 +250,7 @@ export const ClientsPage = () => {
                     ) : (
                         clients.map(client => (
                             <tr 
-                                key={client.id} 
+                                key={client.localId || client.id} 
                                 onClick={() => setSelectedClientId(client.id)} 
                                 className="group hover:bg-sys-50/40 transition-colors cursor-pointer"
                             >

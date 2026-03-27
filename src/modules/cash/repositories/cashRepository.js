@@ -440,6 +440,12 @@ export const cashRepository = {
     async _calculateShiftState(shift, dbLocal) {
         if (!shift) return null;
 
+        // 1. OBTENEMOS VENTAS REALES (Fuente de Verdad Única para Ingresos por Ventas)
+        const sales = await dbLocal.sales
+            .filter(s => s.shiftId === shift.id && s.status === 'COMPLETED' && s.type !== 'INTERNAL' && s.type !== 'BUDGET')
+            .toArray();
+
+        // 2. OBTENEMOS MOVIMIENTOS DE CAJA (Solo ingresos y egresos manuales. Ignoramos ventas aquí)
         const movements = await dbLocal.cash_movements
             .filter(m => m.shiftId === shift.id)
             .toArray();
@@ -455,7 +461,7 @@ export const cashRepository = {
             salesByMethod: { 
                 cash: 0, cash_from_account: 0, transfer: 0, transfer_from_account: 0,
                 mercadopago: 0, clover: 0, point: 0, manual_card: 0, card: 0, 
-                digitalOther: 0, account: 0, employee_account: 0 
+                digitalOther: 0, account: 0, employee_account: 0, debt: 0
             },
             
             // Movimientos Manuales (Dinero Físico Extra)
@@ -471,77 +477,61 @@ export const cashRepository = {
             totalDigital: 0
         };
 
-        // B. PROCESAR MOVIMIENTOS CAJA MATEMÁTICAMENTE PERFECTOS
-        movements.forEach(m => {
-            // 🔥 FIX 1: Ignoramos el Fondo Inicial (Ya sumado en state.initialAmount)
-            if (m.subtype === 'OPENING' || (m.description && m.description.includes('Fondo Inicial de Caja'))) return;
+        // A. PROCESAR VENTAS PERFECTAMENTE (Evita la duplicación)
+        sales.forEach(sale => {
+            state.salesCount++;
+            
+            // Reconstruimos los pagos, si es mixto o único
+            const payments = Array.isArray(sale.payments) && sale.payments.length > 0 
+                ? sale.payments 
+                : [{ method: sale.method || 'cash', amount: sale.total, total: sale.total }];
 
-            // Ignoramos el retiro del cierre (para no desvirtuar el Teórico de Caja antes de cerrarla)
-            if (m.subtype === 'CLOSING' || (m.description && m.description.toLowerCase().includes('rendición de cierre'))) return;
-
-            // Ignoramos los movimientos virtuales de "Cobro de Cta Cte" para no duplicar ventas
-            if (m.type === 'IN' && m.description && m.description.toLowerCase().includes('cobro cta cte')) return;
-
-            const isSale = m.type === 'SALE' || m.subtype === 'SALE';
-            const isReceipt = m.type === 'RECEIPT';
-            // 🔥 FIX 2: Ampliamos qué consideramos "Ingreso" y "Egreso"
-            const isIncome = isSale || isReceipt || m.type === 'IN' || m.type === 'DEPOSIT';
-            const isOutcome = m.type === 'EXPENSE' || m.type === 'WITHDRAWAL' || m.type === 'OUT' || m.type === 'PURCHASE';
-
-            if (isSale && Array.isArray(m.payments) && m.payments.length > 0) {
-                state.salesCount++;
-                m.payments.forEach(p => {
-                    const pAmount = Number(p.total || p.amount || 0);
-                    const pMethod = (p.method || 'cash').toLowerCase();
-                    
-                    state.salesByMethod[pMethod] = (state.salesByMethod[pMethod] || 0) + pAmount;
-                    state.totalSales += pAmount;
-
-                    if (pMethod === 'cash') {
-                        state.salesCash += pAmount;
-                    } else if (!['account', 'employee_account', 'budget'].includes(pMethod)) {
-                        state.totalDigital += pAmount;
-                    }
-                });
-            } else {
-                const amount = Number(m.amount) || 0;
-                const methodRaw = String(m.method || 'cash').toLowerCase().trim();
-                const isCash = ['cash', 'efectivo'].includes(methodRaw);
+            payments.forEach(p => {
+                const pAmount = Number(p.total || p.amount || 0);
+                const pMethod = String(p.method || 'cash').toLowerCase().trim();
                 
-                if (isSale) {
-                    state.salesCount++;
-                    state.totalSales += amount;
-                    state.salesByMethod[methodRaw] = (state.salesByMethod[methodRaw] || 0) + amount;
-                    
-                    if (isCash) state.salesCash += amount;
-                    else if (!['account', 'employee_account', 'budget'].includes(methodRaw)) state.totalDigital += amount;
-                    
-                } else if (isReceipt) {
-                    if (isCash) {
-                        state.salesByMethod.cash_from_account = (state.salesByMethod.cash_from_account || 0) + amount;
-                        state.salesCash += amount; // Entra a caja física
-                    } else if (!['account', 'employee_account', 'budget'].includes(methodRaw)) {
-                        state.salesByMethod.transfer_from_account = (state.salesByMethod.transfer_from_account || 0) + amount;
-                        state.totalDigital += amount; 
-                    }
-                } else {
-                    // CUALQUIER OTRO MOVIMIENTO (Compras, Gastos, Ingresos manuales)
-                    if (isCash) {
-                        if (isIncome) state.manualIn += amount;
-                        else if (isOutcome) state.manualOut += amount; // 🔥 FIX 3: Capturamos 'PURCHASE' aquí
-                    } else {
-                        if (isIncome) {
-                            state.digitalIn += amount;
-                            if (['mercadopago', 'mp', 'qr'].includes(methodRaw)) state.digitalInByMethod.mercadopago += amount;
-                            else if (['point'].includes(methodRaw)) state.digitalInByMethod.point += amount;
-                            else if (['clover'].includes(methodRaw)) state.digitalInByMethod.clover += amount;
-                            else if (['transfer', 'transferencia'].includes(methodRaw)) state.digitalInByMethod.transfer += amount;
-                            else if (['manual_card', 'card', 'tarjeta'].includes(methodRaw)) state.digitalInByMethod.card += amount;
-                            else state.digitalInByMethod.digitalOther += amount;
-                        }
-                        // NOTA: Si hubiera pagos digitales a proveedores, habría un state.digitalOut
-                    }
+                state.totalSales += pAmount;
+                state.salesByMethod[pMethod] = (state.salesByMethod[pMethod] || 0) + pAmount;
+
+                if (['cash', 'efectivo'].includes(pMethod)) {
+                    state.salesCash += pAmount;
+                } else if (!['account', 'employee_account', 'budget', 'debt'].includes(pMethod)) {
+                    state.totalDigital += pAmount;
                 }
+            });
+        });
+
+        // B. PROCESAR MOVIMIENTOS MANUALES (Blindaje total contra colisiones)
+        movements.forEach(m => {
+            // 🔥 LA REGLA DE ORO: Si es una venta o dice venta, LO IGNORAMOS.
+            // Las ventas ya se sumaron arriba de forma perfecta.
+            if (m.type === 'SALE' || m.subtype === 'SALE' || m.description?.toLowerCase().includes('venta')) return;
+            
+            // Ignoramos aperturas y cierres en el balance corriente (la apertura ya está en initialAmount)
+            if (m.subtype === 'OPENING' || m.description?.includes('Fondo Inicial')) return;
+            if (m.subtype === 'CLOSING' || m.description?.toLowerCase().includes('rendición de cierre')) return;
+            
+            // Ignoramos "Cobro Cta Cte" si tu sistema virtualiza ese pago, para no inflar la caja.
+            if (m.type === 'IN' && m.description?.toLowerCase().includes('cobro cta cte')) return; 
+
+            const amount = Number(m.amount) || 0;
+            const methodRaw = String(m.method || 'cash').toLowerCase().trim();
+            const isCash = ['cash', 'efectivo'].includes(methodRaw);
+            
+            const isIncome = m.type === 'IN' || m.type === 'DEPOSIT' || m.type === 'RECEIPT';
+            const isOutcome = m.type === 'OUT' || m.type === 'EXPENSE' || m.type === 'WITHDRAWAL' || m.type === 'PURCHASE';
+
+            if (isIncome) {
+                if (isCash) state.manualIn += amount;
+                else {
+                    state.digitalIn += amount;
+                    // Opcional: Desglose de ingresos manuales digitales
+                    if (['mercadopago', 'mp', 'qr'].includes(methodRaw)) state.digitalInByMethod.mercadopago += amount;
+                    else if (['transfer', 'transferencia'].includes(methodRaw)) state.digitalInByMethod.transfer += amount;
+                    else state.digitalInByMethod.digitalOther += amount;
+                }
+            } else if (isOutcome) {
+                if (isCash) state.manualOut += amount;
             }
         });
 
@@ -567,31 +557,32 @@ export const cashRepository = {
             
             const state = await this._calculateShiftState(shift, dbLocal);
             
-            // 🔥 FIX VISUAL: Excluimos el 'Fondo Inicial' de la lista de operaciones para no confundir al usuario (Ya lo ve en el Header)
-            let rawMovements = await dbLocal.cash_movements.filter(m => m.shiftId === shiftId).reverse().toArray();
+            // 🔥 UNIFICAMOS VISUALMENTE VENTAS Y MOVIMIENTOS PARA EL DASHBOARD
+            const sales = await dbLocal.sales.filter(s => s.shiftId === shiftId && s.status === 'COMPLETED').toArray();
+            const movements = await dbLocal.cash_movements.filter(m => m.shiftId === shiftId && m.type !== 'SALE').toArray();
             
-            const cleanMovements = [];
-            rawMovements.forEach(m => {
-                if (m.subtype === 'OPENING' || (m.description && m.description.includes('Fondo Inicial de Caja'))) return;
-
-                if (m.type === 'SALE' && Array.isArray(m.payments) && m.payments.length > 0) {
-                    m.payments.forEach((p, i) => {
-                        cleanMovements.push({
-                            ...m,
-                            id: `${m.id}-p${i}`,
-                            method: p.method,
-                            amount: p.total || p.amount,
-                            description: m.payments.length > 1 ? `${m.description} (Mix)` : m.description
-                        });
-                    });
-                } else {
-                    cleanMovements.push(m);
-                }
+            let allOperations = [];
+            
+            sales.forEach(s => {
+                const method = s.payment?.method || s.method || 'cash';
+                allOperations.push({
+                    id: s.id, type: 'SALE', method: method, amount: s.total,
+                    description: `Venta ${s.ticketNumber || s.number || ''}`,
+                    date: s.date || s.createdAt
+                });
             });
+            
+            movements.forEach(m => {
+                if (m.subtype === 'OPENING' || m.description?.includes('Fondo Inicial')) return;
+                allOperations.push(m);
+            });
+
+            // Ordenamos todo por fecha descendente
+            allOperations.sort((a, b) => new Date(b.date) - new Date(a.date));
 
             return {
                 ...state,
-                movements: cleanMovements
+                movements: allOperations
             };
         });
     },

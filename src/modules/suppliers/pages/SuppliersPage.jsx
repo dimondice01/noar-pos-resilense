@@ -3,7 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { 
     Truck, Search, FileText, 
     ExternalLink, ShoppingBag, Plus, Loader2,
-    ArrowRight, Phone, Mail, Building2, User
+    ArrowRight, Phone, Mail, Building2, User, CloudDownload
 } from 'lucide-react';
 import { masterRepository } from '../../inventory/repositories/masterRepository'; 
 import { useAuthStore } from '../../auth/store/useAuthStore';
@@ -11,20 +11,90 @@ import { Card } from '../../../core/ui/Card';
 import { Button } from '../../../core/ui/Button';
 import { cn } from '../../../core/utils/cn';
 import { MastersModal } from '../../inventory/components/MastersModal'; 
+import { collection, getDocs } from 'firebase/firestore';
+import { db as firestoreDB } from '../../../database/firebase';
+import { getDB } from '../../../database/db';
+import toast from 'react-hot-toast';
 
 export const SuppliersPage = () => {
     const navigate = useNavigate();
     const { companySlug } = useParams();
-    const { activeBranchName } = useAuthStore();
+    const { activeBranchName, user } = useAuthStore();
     
     const [suppliers, setSuppliers] = useState([]);
     const [loading, setLoading] = useState(true);
     const [searchTerm, setSearchTerm] = useState('');
     const [isMastersModalOpen, setIsMastersModalOpen] = useState(false);
 
+    // =================================================================
+    // ⚡ DESCARGA FORZADA (CLOUD PULL) - EL BOTÓN DE RESCATE
+    // =================================================================
+    const handleForceCloudSync = async () => {
+        setLoading(true);
+        const toastId = toast.loading("Buscando proveedores en la nube...");
+        try {
+            if (!user?.companyId) throw new Error("Falta companyId");
+
+            const dbLocal = await getDB();
+            const snapshot = await getDocs(collection(firestoreDB, `companies/${user.companyId}/suppliers`));
+            const cloudSuppliers = [];
+            
+            snapshot.docs.forEach(docSnap => {
+                const data = docSnap.data();
+                cloudSuppliers.push({
+                    ...data,
+                    id: docSnap.id,
+                    firestoreId: docSnap.id,
+                    syncStatus: 'synced'
+                });
+            });
+
+            if (cloudSuppliers.length > 0) {
+                await dbLocal.suppliers.bulkPut(cloudSuppliers);
+                toast.success(`¡Sincronización completa! Se bajaron ${cloudSuppliers.length} proveedores.`, { id: toastId });
+            } else {
+                toast.success("No hay proveedores en Firebase.", { id: toastId });
+            }
+        } catch (error) {
+            console.error("Error forzando sync de proveedores:", error);
+            toast.error(`Error al descargar: ${error.message}`, { id: toastId });
+        } finally {
+            loadData(); 
+        }
+    };
+
     const loadData = async () => {
         setLoading(true);
         try {
+            // 🔥 RUTINA DE AUTO-SANACIÓN SILENCIOSA
+            if (navigator.onLine && user?.companyId) {
+                const dbLocal = await getDB();
+                const pendingSuppliers = await dbLocal.suppliers.filter(s => s.syncStatus !== 'synced').toArray();
+                
+                if (pendingSuppliers.length > 0) {
+                    console.log(`[Auto-Heal] Empujando ${pendingSuppliers.length} proveedores locales a Firebase...`);
+                    const { doc, setDoc } = await import('firebase/firestore');
+                    
+                    const batchPromesas = pendingSuppliers.map(async (sup) => {
+                        try {
+                            const cloudId = String(sup.firestoreId || sup.id);
+                            const { syncStatus, localId, id, ...cleanSup } = sup;
+                            const docRef = doc(firestoreDB, `companies/${user.companyId}/suppliers`, cloudId);
+
+                            await setDoc(docRef, {
+                                ...cleanSup,
+                                firestoreId: cloudId,
+                                updatedAt: new Date().toISOString(),
+                                syncStatus: 'synced'
+                            }, { merge: true });
+
+                            await dbLocal.suppliers.update(sup.id, { syncStatus: 'synced', firestoreId: cloudId });
+                        } catch (err) { console.error("Auto-Heal Supplier Error:", err); }
+                    });
+                    Promise.all(batchPromesas); // Background push
+                }
+            }
+
             const data = await masterRepository.getAll('suppliers');
             const sortedData = data.sort((a, b) => {
                 const idA = parseInt(a.sequentialId || 0, 10);
@@ -83,7 +153,16 @@ export const SuppliersPage = () => {
                     </div>
                 </div>
                 
-                <div className="flex gap-3">
+                <div className="flex flex-wrap gap-3">
+                    <Button 
+                        variant="outline" 
+                        onClick={handleForceCloudSync} 
+                        className="shadow-sm border-brand/30 text-brand bg-brand/5 hover:bg-brand hover:text-white transition-all"
+                        title="Forzar descarga de proveedores desde Firebase"
+                    >
+                        <CloudDownload size={18} className={loading ? "animate-bounce mr-2" : "mr-2"}/>
+                        Bajar Nube
+                    </Button>
                     <Button 
                         variant="ghost" 
                         onClick={() => goToHistory()} 
@@ -156,7 +235,6 @@ export const SuppliersPage = () => {
                                 </tr>
                             ) : (
                                 filteredSuppliers.map(sup => (
-                                    // 🔥 onClick LLEVA AL DASHBOARD
                                     <tr key={sup.id} onClick={() => goToDashboard(sup.id)} className="group hover:bg-sys-50/40 transition-colors cursor-pointer">
                                         
                                         <td className="p-4 text-center align-middle">

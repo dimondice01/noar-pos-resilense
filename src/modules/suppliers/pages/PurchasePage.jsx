@@ -56,26 +56,35 @@ export const PurchasePage = () => {
     // 1. Carga Inicial
     useEffect(() => {
         const loadMasters = async () => {
-            const data = await masterRepository.getAll('suppliers');
-            setSuppliersList(data);
-            if (navState?.selectedSupplier) {
-                const preSelected = data.find(s => s.id === navState.selectedSupplier.id);
-                if (preSelected) setSupplier(preSelected);
+            try {
+                const data = await masterRepository.getAll('suppliers');
+                setSuppliersList(data);
+                if (navState?.selectedSupplier) {
+                    const preSelected = data.find(s => s.id === navState.selectedSupplier.id);
+                    if (preSelected) setSupplier(preSelected);
+                }
+            } catch (error) {
+                console.error("Error loading suppliers:", error);
             }
         };
         loadMasters();
         // Foco inicial al buscador
         setTimeout(() => searchInputRef.current?.focus(), 100);
-    }, [navState]);
+    }, [navState, setSupplier]);
 
     // 2. Buscador con Debounce
     useEffect(() => {
         const timer = setTimeout(async () => {
             if (searchTerm.length > 2) {
                 setSearchLoading(true);
-                const results = await productRepository.search(searchTerm);
-                setSearchResults(results);
-                setSearchLoading(false);
+                try {
+                    const results = await productRepository.search(searchTerm);
+                    setSearchResults(results);
+                } catch (error) {
+                    console.error("Error searching products:", error);
+                } finally {
+                    setSearchLoading(false);
+                }
             } else {
                 setSearchResults([]);
             }
@@ -92,7 +101,7 @@ export const PurchasePage = () => {
             if (targetRef) {
                 setTimeout(() => {
                     targetRef.focus();
-                    targetRef.select(); // Selecciona el "1" para sobrescribirlo al tipear
+                    if (typeof targetRef.select === 'function') targetRef.select(); // Selecciona el "1" para sobrescribirlo al tipear
                 }, 50);
             }
         }
@@ -140,10 +149,12 @@ export const PurchasePage = () => {
 
             // Enfocar el siguiente elemento calculado
             const nextItem = items[nextIndex];
-            const targetRef = rowRefs.current[`${nextItem.product.id}-${nextField}`];
-            if (targetRef) {
-                targetRef.focus();
-                if (targetRef.select) targetRef.select();
+            if (nextItem && nextItem.product) {
+                const targetRef = rowRefs.current[`${nextItem.product.id}-${nextField}`];
+                if (targetRef) {
+                    targetRef.focus();
+                    if (typeof targetRef.select === 'function') targetRef.select();
+                }
             }
         }
     };
@@ -208,7 +219,7 @@ export const PurchasePage = () => {
     const handleBack = () => {
         const targetPath = `/${companySlug}/suppliers`;
         if (items.length > 0) {
-            if (confirm("¿Salir sin guardar la compra? Se perderán los datos ingresados.")) {
+            if (window.confirm("¿Salir sin guardar la compra? Se perderán los datos ingresados.")) {
                 navigate(targetPath);
             }
         } else {
@@ -219,20 +230,25 @@ export const PurchasePage = () => {
     const handleSearchKeyDown = async (e) => {
         if (e.key === 'Enter' && searchTerm) {
             e.preventDefault();
-            const exactProduct = await productRepository.findByCode(searchTerm);
-            if (exactProduct) {
-                addItem(exactProduct);
-                setSearchTerm(''); 
-                setSearchResults([]);
-                toast.success("Producto agregado");
-            } else if (searchResults.length === 1) {
-                addItem(searchResults[0]);
-                setSearchTerm('');
-            } else if (searchResults.length === 0) {
-                if (confirm(`El producto "${searchTerm}" no existe. ¿Deseas crearlo ahora?`)) {
-                    setNewProductBarcode(searchTerm);
-                    setIsNewProductModalOpen(true);
+            try {
+                const exactProduct = await productRepository.findByCode(searchTerm);
+                if (exactProduct) {
+                    addItem(exactProduct);
+                    setSearchTerm(''); 
+                    setSearchResults([]);
+                    toast.success("Producto agregado");
+                } else if (searchResults.length === 1) {
+                    addItem(searchResults[0]);
+                    setSearchTerm('');
+                    setSearchResults([]);
+                } else if (searchResults.length === 0) {
+                    if (window.confirm(`El producto "${searchTerm}" no existe. ¿Deseas crearlo ahora?`)) {
+                        setNewProductBarcode(searchTerm);
+                        setIsNewProductModalOpen(true);
+                    }
                 }
+            } catch (error) {
+                console.error("Error searching product on enter:", error);
             }
         }
     };
@@ -471,7 +487,7 @@ export const PurchasePage = () => {
                             <input 
                                 ref={searchInputRef}
                                 type="text" 
-                                className="w-full pl-11 pr-4 py-3.5 bg-white border border-sys-200 rounded-2xl outline-none focus:border-brand focus:ring-4 focus:ring-brand/10 transition-all font-bold text-sys-900 shadow-sm placeholder:text-sys-300"
+                                className="w-full pl-11 pr-4 py-3.5 bg-white border border-sys-200 rounded-2xl outline-none focus:border-brand focus:ring-4 focus:ring-brand/10 transition-all font-bold text-sys-900 shadow-sm placeholder:text-sys-300 uppercase"
                                 placeholder="Escanear o buscar..."
                                 value={searchTerm}
                                 onChange={(e) => setSearchTerm(e.target.value)}
@@ -553,7 +569,7 @@ export const PurchasePage = () => {
             <SupplierPaymentModal 
                 isOpen={isPaymentModalOpen}
                 onClose={() => setIsPaymentModalOpen(false)}
-                total={totals}
+                total={totals.totalFinal} // 🔥 FIX: Le pasamos el totalFinal (que incluye todo lo ajustado)
                 supplierName={supplier?.name || "Proveedor"}
                 hasPriceChanges={priceChangesCount > 0} 
                 onConfirm={handleConfirmPayment}
