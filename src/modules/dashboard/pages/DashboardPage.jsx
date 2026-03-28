@@ -1,4 +1,5 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { 
     TrendingUp, Users, Package, AlertTriangle, 
     Wallet, RefreshCw, DollarSign, Scale,
@@ -7,12 +8,10 @@ import {
     Activity, Building2, Plus, ArrowRight, MapPin,
     BarChart3, PieChart, LineChart, BellRing
 } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
 
 // Stores & Repositorios
 import { useAuthStore } from '../../auth/store/useAuthStore'; 
 import { cashRepository } from '../../cash/repositories/cashRepository';
-import { salesRepository } from '../../sales/repositories/salesRepository';
 
 // Servicios & Hooks
 import { securityService } from '../../security/services/securityService';
@@ -55,6 +54,7 @@ const getShiftValues = (shift, calculatedDetails = null) => {
     const isValid = (val) => val !== undefined && val !== null;
     let expected = 0;
     
+    // 🔥 AHORA SÍ CONFIAMOS CIEGAMENTE EN LA MATEMÁTICA DEL REPOSITORIO
     if (calculatedDetails && isValid(calculatedDetails.totalCash)) {
         expected = Number(calculatedDetails.totalCash);
     } else if (isValid(shift.expectedCash)) {
@@ -278,6 +278,8 @@ const AdminCashAuditPanel = ({ allShifts, loadIntelligence, navigate, resolveNam
 
     const prepareReportData = async (shift) => {
         if (shift.auditSnapshot && shift.status === 'CLOSED') return shift;
+        
+        // 🔥 EL REPOSITORIO AHORA HACE LA MATEMÁTICA PESADA
         const balance = await cashRepository.getShiftBalance(shift.id);
         const { expected, declared, diff, initial } = getShiftValues(shift, balance);
         
@@ -290,11 +292,11 @@ const AdminCashAuditPanel = ({ allShifts, loadIntelligence, navigate, resolveNam
             leftInCash: Number(shift.leftInCash) || 0,
             deviation: diff, 
             initialAmount: initial,
-            salesCount: balance.movements.filter(m => m.type === 'SALE').length,
-            totalSales: balance.salesCash + balance.salesDigital,
-            cashIn: balance.deposits, 
-            cashOut: balance.withdrawals + balance.expenses,
-            salesByMethod: { cash: balance.salesCash, digital: balance.salesDigital },
+            salesCount: balance.movements?.filter(m => m.type === 'SALE').length || 0,
+            totalSales: balance.totalSales || 0,
+            cashIn: balance.manualInCash + balance.salesCash, 
+            cashOut: balance.manualOutCash,
+            salesByMethod: balance.salesByMethod || { cash: 0, digital: 0 },
             closeTime: shift.closedAt || new Date().toISOString(),
             audited: shift.audited
         };
@@ -623,7 +625,7 @@ export const DashboardPage = () => {
         activeShiftsCount: cloudStats.activeShiftsCount || 0,
         allShifts: metrics.allShifts,
         
-        // 🔥 NUEVAS MÉTRICAS ENTERPRISE SPRINT 6 (Esperando datos reales del hook)
+        // 🔥 NUEVAS MÉTRICAS ENTERPRISE SPRINT 6
         netProfit: cloudStats.netProfit || 0,
         marginPercentage: cloudStats.marginPercentage || 0,
         clientDebt: cloudStats.clientDebt || 0,
@@ -707,7 +709,6 @@ export const DashboardPage = () => {
                         {isAdminView ? "Resumen operativo y financiero global." : "Panel de control de caja."}
                     </p>
                 </div>
-                {/* 🔥 SOLO EL OWNER VE EL SELECTOR DE SUCURSALES */}
                 {isOwner && <BranchSelector allowAll={true} />}
             </div>
 

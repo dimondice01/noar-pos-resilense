@@ -1,10 +1,16 @@
 import { getDB } from '../../../database/db';
 import { db } from '../../../database/firebase';
-import { doc, setDoc, collection, query, where, getDocs, orderBy, limit } from 'firebase/firestore';
+import { doc, setDoc, collection, query, where, getDocs, limit, orderBy } from 'firebase/firestore';
 import { useAuthStore } from '../../auth/store/useAuthStore'; 
 
-// Helper para IDs únicos consistentes
-const generateId = (prefix) => `${prefix}_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
+// 🔥 GENERADOR DE ID GLOBAL ÚNICO (Blindaje Multi-Caja)
+const generateGlobalId = (prefix) => {
+    const { activeBranchId } = useAuthStore.getState();
+    const branchClean = String(activeBranchId || 'main').substring(0, 4);
+    const ts = Date.now();
+    const rand = Math.random().toString(36).substr(2, 4);
+    return `${prefix}_${branchClean}_${ts}_${rand}`;
+};
 
 export const cashRepository = {
     
@@ -25,7 +31,7 @@ export const cashRepository = {
     async openShift(initialAmount, userName) {
         const { user, branchId } = this._getContext();
         
-        if (!branchId) throw new Error("Error Crítico: No se ha seleccionado una sucursal válida.");
+        if (!branchId || branchId === 'ALL') throw new Error("Error Crítico: No se ha seleccionado una sucursal válida para abrir caja.");
 
         const dbLocal = await getDB();
         
@@ -41,7 +47,7 @@ export const cashRepository = {
         }
 
         const shift = {
-            id: generateId('shift'),
+            id: generateGlobalId('shift'),
             userId: user.uid,
             userEmail: user.email,
             userName: userName || user.name || 'Cajero',
@@ -64,7 +70,7 @@ export const cashRepository = {
 
         // Movimiento inicial de "Fondo de Caja"
         const initialMovement = {
-            id: generateId('mov'),
+            id: generateGlobalId('mov'),
             shiftId: shift.id,
             type: 'DEPOSIT', 
             method: 'cash',
@@ -101,7 +107,6 @@ export const cashRepository = {
 
         const { user } = useAuthStore.getState();
         
-        // Validación de permisos básica
         if (shift.userId !== user?.uid && user?.role !== 'ADMIN' && user?.role !== 'OWNER') {
              throw new Error("No tienes permisos para cerrar esta caja.");
         }
@@ -169,7 +174,7 @@ export const cashRepository = {
         let withdrawalMovement = null;
         if (withdrawn > 0) {
             withdrawalMovement = {
-                id: generateId('mov'),
+                id: generateGlobalId('mov'),
                 shiftId: shift.id,
                 
                 type: 'TREASURY', 
@@ -212,7 +217,7 @@ export const cashRepository = {
         if (!shift) {
             const { user } = useAuthStore.getState();
             if (user?.companyId) {
-                await setDoc(doc(db, `companies/${user.companyId}/shifts`, shiftId), { 
+                await setDoc(doc(db, `companies/${user.companyId}/shifts`, String(shiftId)), { 
                     audited: true,
                     auditedAt: new Date().toISOString()
                 }, { merge: true });
@@ -242,15 +247,22 @@ export const cashRepository = {
         if (!user || !user.companyId) return;
 
         try {
-            const { syncStatus, ...cloudData } = data;
+            const { syncStatus, localId, ...cloudData } = data;
             const path = `companies/${user.companyId}/${collectionName}`;
+            
+            // Forzamos String para evitar bugs de Firebase
+            const cloudId = String(data.firestoreId || data.id);
 
-            setDoc(doc(db, path, data.id), {
+            setDoc(doc(db, path, cloudId), {
                 ...cloudData,
-                firestoreId: data.id,
+                firestoreId: cloudId,
                 syncedAt: new Date().toISOString(),
-                syncStatus: 'synced'
+                syncStatus: 'synced',
+                lastUpdatedBy: user.uid
             }, { merge: true }).catch(err => console.warn("Background Sync Error:", err));
+
+            const dbLocal = await getDB();
+            await dbLocal.table(collectionName).update(data.id, { syncStatus: 'synced', firestoreId: cloudId });
 
         } catch (e) { 
             console.warn(`Sync start error ${collectionName}:`, e); 
@@ -298,7 +310,7 @@ export const cashRepository = {
         const dbLocal = await getDB();
         
         const newMov = {
-            id: generateId('mov'),
+            id: generateGlobalId('mov'),
             ...movement,
             userId: user?.uid,
             companyId: user?.companyId,
@@ -341,7 +353,7 @@ export const cashRepository = {
             method: 'cash', 
             amount: parseFloat(amount),
             description: description,
-            reference: reference,
+            referenceId: reference,
             user: user
         });
     },
@@ -357,7 +369,7 @@ export const cashRepository = {
             method: 'cash', 
             amount: parseFloat(amount),
             description: description,
-            reference: reference, 
+            referenceId: reference, 
             user: user
         });
     },
@@ -382,7 +394,7 @@ export const cashRepository = {
         let filteredShifts = [];
 
         if (user.role === 'ADMIN' || user.role === 'OWNER') {
-            if (branchId && branchId !== 'main') {
+            if (branchId && branchId !== 'main' && branchId !== 'ALL') {
                 filteredShifts = shifts.filter(s => s.branchId === branchId);
             } else {
                 filteredShifts = shifts;
@@ -405,7 +417,7 @@ export const cashRepository = {
             let q;
 
             if (user.role === 'ADMIN' || user.role === 'OWNER') {
-                if (branchId && branchId !== 'main') {
+                if (branchId && branchId !== 'main' && branchId !== 'ALL') {
                     q = query(shiftsRef, where('branchId', '==', branchId), orderBy('openedAt', 'desc'), limit(50));
                 } else {
                     q = query(shiftsRef, orderBy('openedAt', 'desc'), limit(50));
@@ -415,17 +427,17 @@ export const cashRepository = {
             }
 
             const snapshot = await getDocs(q);
-            const pendingIds = await dbLocal.shifts.where('syncStatus').equals('pending').primaryKeys();
-            const pendingSet = new Set(pendingIds);
-
-            const cloudShifts = snapshot.docs
-                .map(d => ({ 
+            const cloudShifts = [];
+            
+            snapshot.docs.forEach(d => {
+                cloudShifts.push({ 
                     ...d.data(), 
                     id: d.id, 
+                    firestoreId: d.id,
                     syncStatus: 'synced',
                     branchId: d.data().branchId || 'main' 
-                }))
-                .filter(cloudItem => !pendingSet.has(cloudItem.id));
+                });
+            });
 
             if (cloudShifts.length > 0) {
                 await dbLocal.shifts.bulkPut(cloudShifts);
@@ -445,7 +457,10 @@ export const cashRepository = {
             .filter(s => s.shiftId === shift.id && s.status === 'COMPLETED' && s.type !== 'INTERNAL' && s.type !== 'BUDGET')
             .toArray();
 
-        // 2. OBTENEMOS MOVIMIENTOS DE CAJA (Solo ingresos y egresos manuales. Ignoramos ventas aquí)
+        // 🔥 EL ESCUDO ANTI-DUPLICACIÓN: Guardamos los IDs de todas las ventas contadas
+        const countedSalesIds = new Set(sales.map(s => s.id));
+
+        // 2. OBTENEMOS MOVIMIENTOS DE CAJA
         const movements = await dbLocal.cash_movements
             .filter(m => m.shiftId === shift.id)
             .toArray();
@@ -484,7 +499,7 @@ export const cashRepository = {
             // Reconstruimos los pagos, si es mixto o único
             const payments = Array.isArray(sale.payments) && sale.payments.length > 0 
                 ? sale.payments 
-                : [{ method: sale.method || 'cash', amount: sale.total, total: sale.total }];
+                : [{ method: sale.method || sale.paymentMethod || 'cash', amount: sale.total, total: sale.total }];
 
             payments.forEach(p => {
                 const pAmount = Number(p.total || p.amount || 0);
@@ -495,7 +510,7 @@ export const cashRepository = {
 
                 if (['cash', 'efectivo'].includes(pMethod)) {
                     state.salesCash += pAmount;
-                } else if (!['account', 'employee_account', 'budget', 'debt'].includes(pMethod)) {
+                } else if (!['account', 'employee_account', 'budget', 'debt', 'current_account'].includes(pMethod)) {
                     state.totalDigital += pAmount;
                 }
             });
@@ -503,29 +518,25 @@ export const cashRepository = {
 
         // B. PROCESAR MOVIMIENTOS MANUALES (Blindaje total contra colisiones)
         movements.forEach(m => {
-            // 🔥 LA REGLA DE ORO: Si es una venta o dice venta, LO IGNORAMOS.
-            // Las ventas ya se sumaron arriba de forma perfecta.
-            if (m.type === 'SALE' || m.subtype === 'SALE' || m.description?.toLowerCase().includes('venta')) return;
-            
-            // Ignoramos aperturas y cierres en el balance corriente (la apertura ya está en initialAmount)
+            // 1. Ignorar aperturas y cierres (la apertura ya está en initialAmount)
             if (m.subtype === 'OPENING' || m.description?.includes('Fondo Inicial')) return;
             if (m.subtype === 'CLOSING' || m.description?.toLowerCase().includes('rendición de cierre')) return;
             
-            // Ignoramos "Cobro Cta Cte" si tu sistema virtualiza ese pago, para no inflar la caja.
-            if (m.type === 'IN' && m.description?.toLowerCase().includes('cobro cta cte')) return; 
+            // 2. 🔥 REGLA ANTI-DUPLICACIÓN: 
+            // Si este movimiento tiene como referencia una venta que ya sumamos arriba, LO IGNORAMOS.
+            if (m.type === 'SALE' || m.subtype === 'SALE' || countedSalesIds.has(m.referenceId)) return;
 
             const amount = Number(m.amount) || 0;
             const methodRaw = String(m.method || 'cash').toLowerCase().trim();
             const isCash = ['cash', 'efectivo'].includes(methodRaw);
             
             const isIncome = m.type === 'IN' || m.type === 'DEPOSIT' || m.type === 'RECEIPT';
-            const isOutcome = m.type === 'OUT' || m.type === 'EXPENSE' || m.type === 'WITHDRAWAL' || m.type === 'PURCHASE';
+            const isOutcome = m.type === 'OUT' || m.type === 'EXPENSE' || m.type === 'WITHDRAWAL' || m.type === 'PURCHASE' || m.type === 'REFUND';
 
             if (isIncome) {
                 if (isCash) state.manualIn += amount;
                 else {
                     state.digitalIn += amount;
-                    // Opcional: Desglose de ingresos manuales digitales
                     if (['mercadopago', 'mp', 'qr'].includes(methodRaw)) state.digitalInByMethod.mercadopago += amount;
                     else if (['transfer', 'transferencia'].includes(methodRaw)) state.digitalInByMethod.transfer += amount;
                     else state.digitalInByMethod.digitalOther += amount;
@@ -543,6 +554,7 @@ export const cashRepository = {
         const round = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
         state.totalCash = round(state.totalCash);
         state.totalSales = round(state.totalSales);
+        state.totalDigital = round(state.totalDigital + state.digitalIn);
         
         return state;
     },
@@ -559,12 +571,14 @@ export const cashRepository = {
             
             // 🔥 UNIFICAMOS VISUALMENTE VENTAS Y MOVIMIENTOS PARA EL DASHBOARD
             const sales = await dbLocal.sales.filter(s => s.shiftId === shiftId && s.status === 'COMPLETED').toArray();
-            const movements = await dbLocal.cash_movements.filter(m => m.shiftId === shiftId && m.type !== 'SALE').toArray();
+            const countedSalesIds = new Set(sales.map(s => s.id));
+            
+            const movements = await dbLocal.cash_movements.filter(m => m.shiftId === shiftId).toArray();
             
             let allOperations = [];
             
             sales.forEach(s => {
-                const method = s.payment?.method || s.method || 'cash';
+                const method = s.payment?.method || s.method || s.paymentMethod || 'cash';
                 allOperations.push({
                     id: s.id, type: 'SALE', method: method, amount: s.total,
                     description: `Venta ${s.ticketNumber || s.number || ''}`,
@@ -574,6 +588,8 @@ export const cashRepository = {
             
             movements.forEach(m => {
                 if (m.subtype === 'OPENING' || m.description?.includes('Fondo Inicial')) return;
+                // No mostrar movimientos duplicados de ventas en el listado visual
+                if (m.type === 'SALE' || m.subtype === 'SALE' || countedSalesIds.has(m.referenceId)) return;
                 allOperations.push(m);
             });
 

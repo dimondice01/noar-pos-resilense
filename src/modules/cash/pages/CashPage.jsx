@@ -1,14 +1,15 @@
-import React, { useEffect, useState, useMemo, useRef } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { 
     Wallet, Lock, Unlock, FileText, AlertTriangle, Search, Eye, 
     ArrowRight, ShieldCheck, User, RefreshCw, ChevronLeft, ChevronRight,
     Printer, CheckCircle, Filter, Hash, TrendingUp,
-    History as HistoryIcon, Banknote, CreditCard, Building2, PieChart
+    History as HistoryIcon, Banknote, CreditCard, Building2, PieChart, CloudDownload
 } from 'lucide-react';
 
-// 🔥 REPOSITORIO ÚNICO DE VERDAD
+// 🔥 REPOSITORIO ÚNICO DE VERDAD (Ahora hace toda la matemática)
 import { cashRepository } from '../../cash/repositories/cashRepository'; 
+import { getDB } from '../../../database/db';
 
 // Stores & UI
 import { useAuthStore } from '../../auth/store/useAuthStore';
@@ -21,129 +22,13 @@ import { TicketZModal } from '../../reports/components/TicketZModal';
 // Firebase
 import { collection, query, where, getDocs } from 'firebase/firestore';
 import { db as firestoreDB } from '../../../database/firebase';
+import toast from 'react-hot-toast';
 
 const formatCurrency = (amount) => `$ ${Number(amount || 0).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 // ============================================================================
-// 🧠 INTERCEPTOR MATEMÁTICO: SOLUCIÓN A PAGOS, DEUDAS Y PROVEEDORES
+// 🧠 HELPERS DE VISUALIZACIÓN
 // ============================================================================
-const fetchAndCorrectShiftBalance = async (shift) => {
-    const bal = await cashRepository.getShiftBalance(shift.id);
-    
-    let correctSalesByMethod = { 
-        cash: 0, 
-        cash_from_account: 0, 
-        transfer: 0, 
-        transfer_from_account: 0,
-        mercadopago: 0, 
-        debit: 0, 
-        credit: 0, 
-        point: 0, 
-        clover: 0, 
-        manual_card: 0, 
-        card: 0, 
-        account: 0, 
-        employee_account: 0 
-    };
-    
-    let correctTotalCashSales = 0;
-    let correctTotalDigital = 0;
-    let manualInCash = 0;
-    let manualOutCash = 0; 
-
-    const newMovements = [];
-
-    (bal.movements || []).forEach(m => {
-        // 🔥 FIX 1: Ignorar el Fondo Inicial (Ya viene sumado en la variable initialAmount)
-        if (m.subtype === 'OPENING' || (m.description && m.description.toLowerCase().includes('fondo inicial'))) {
-            return;
-        }
-
-        // 🔥 FIX 2: Ignorar retiro de cierre Z para no romper la auditoría previa
-        if (m.subtype === 'CLOSING' || (m.description && m.description.toLowerCase().includes('rendición de cierre'))) {
-            return;
-        }
-
-        // HACK ANTI-DUPLICADOS (Cobros de cta cte)
-        if (m.type === 'IN' && m.description && m.description.toLowerCase().includes('cobro cta cte')) {
-            return; 
-        }
-
-        const isSale = m.type === 'SALE' || m.subtype === 'SALE';
-        const isReceipt = m.type === 'RECEIPT';
-        const isIncome = isSale || isReceipt || m.type === 'IN' || m.type === 'DEPOSIT';
-        const isOutcome = m.type === 'EXPENSE' || m.type === 'WITHDRAWAL' || m.type === 'OUT' || m.type === 'PURCHASE'; // 🔥 FIX 3: Capturar PURCHASE como egreso real
-
-        // Si la venta tiene array de pagos (Pago Combinado), desglosamos
-        if (isSale && Array.isArray(m.payments) && m.payments.length > 0) {
-            m.payments.forEach((p, idx) => {
-                const pAmount = Number(p.total || p.amount || 0);
-                const pMethod = (p.method || 'cash').toLowerCase();
-                
-                correctSalesByMethod[pMethod] = (correctSalesByMethod[pMethod] || 0) + pAmount;
-
-                if (pMethod === 'cash') {
-                    correctTotalCashSales += pAmount;
-                } else if (!['account', 'employee_account', 'budget'].includes(pMethod)) {
-                    correctTotalDigital += pAmount;
-                }
-
-                newMovements.push({
-                    ...m,
-                    id: `${m.id}-p${idx}`,
-                    method: pMethod,
-                    amount: pAmount,
-                    description: m.payments.length > 1 ? `${m.description || 'Venta'} (Mix: ${pMethod.toUpperCase()})` : m.description
-                });
-            });
-        } else {
-            newMovements.push(m);
-            const mAmount = Number(m.amount || 0);
-            const mMethod = (m.method || 'cash').toLowerCase();
-
-            if (isSale) {
-                correctSalesByMethod[mMethod] = (correctSalesByMethod[mMethod] || 0) + mAmount;
-                if (mMethod === 'cash') correctTotalCashSales += mAmount;
-                else if (!['account', 'employee_account', 'budget'].includes(mMethod)) correctTotalDigital += mAmount;
-            } else if (isReceipt) {
-                if (mMethod === 'cash') {
-                    correctSalesByMethod.cash_from_account = (correctSalesByMethod.cash_from_account || 0) + mAmount;
-                    correctTotalCashSales += mAmount; 
-                } else if (!['account', 'employee_account', 'budget'].includes(mMethod)) {
-                    correctSalesByMethod.transfer_from_account = (correctSalesByMethod.transfer_from_account || 0) + mAmount;
-                    correctTotalDigital += mAmount; 
-                }
-            } else {
-                // 🔥 OTROS MOVIMIENTOS (AQUÍ CAEN LOS PAGOS A PROVEEDORES)
-                if (mMethod === 'cash') {
-                    if (isIncome) {
-                        manualInCash += mAmount;
-                    } else if (isOutcome) {
-                        manualOutCash += mAmount; // Ahora sí resta el pago al proveedor
-                    }
-                }
-            }
-        }
-    });
-
-    const initialAmount = Number(shift.initialAmount || 0);
-    
-    // Matemática pura y perfecta (Fondo + Ventas Efectivo + Ingresos Efectivo - Salidas Efectivo)
-    let recalculatedTotalCash = initialAmount + correctTotalCashSales + manualInCash - manualOutCash;
-    
-    // Redondeo bancario de seguridad
-    recalculatedTotalCash = Math.round((recalculatedTotalCash + Number.EPSILON) * 100) / 100;
-
-    return {
-        ...bal,
-        movements: newMovements.sort((a, b) => new Date(b.date || b.createdAt) - new Date(a.date || a.createdAt)),
-        salesByMethod: correctSalesByMethod,
-        totalCash: recalculatedTotalCash,
-        totalDigital: correctTotalDigital,
-        manualInCash,   
-        manualOutCash   
-    };
-};
 
 const getShiftValues = (shift, calculatedDetails = null) => {
     if (!shift) return { expected: 0, declared: 0, diff: 0, initial: 0, left: 0 };
@@ -151,7 +36,7 @@ const getShiftValues = (shift, calculatedDetails = null) => {
     const snap = shift.auditSnapshot || {};
     const isValid = (val) => val !== undefined && val !== null;
     
-    // 🔥 FIX CRÍTICO: Siempre priorizar la matemática fresca en vivo
+    // 🔥 Ahora siempre priorizamos la matemática fresca en vivo que viene del Repositorio
     let expected = 0;
     if (calculatedDetails && isValid(calculatedDetails.totalCash)) {
         expected = Number(calculatedDetails.totalCash);
@@ -223,7 +108,8 @@ const AuditDetailModal = ({ shift, onClose, resolveName, resolveBranchName }) =>
         if (shift) {
             setLoadingDetails(true);
             setCurrentPage(1); 
-            fetchAndCorrectShiftBalance(shift).then(bal => {
+            // 🔥 LEEMOS DIRECTAMENTE DEL REPOSITORIO (Ya no hay matemática en la UI)
+            cashRepository.getShiftBalance(shift.id).then(bal => {
                 setDetails(bal);
             }).catch(err => {
                 console.error("Error balance:", err);
@@ -471,6 +357,7 @@ export const CashPage = () => {
     const [cashiersList, setCashiersList] = useState([]); 
     const [branchesList, setBranchesList] = useState([]); 
     const [loading, setLoading] = useState(true);
+    const [syncing, setSyncing] = useState(false);
     const [searchTerm, setSearchTerm] = useState('');
     const [historyPage, setHistoryPage] = useState(1);
     const [shiftBalances, setShiftBalances] = useState({}); 
@@ -480,6 +367,24 @@ export const CashPage = () => {
     const [shiftToClose, setShiftToClose] = useState(null);
     const [isZReportOpen, setIsZReportOpen] = useState(false);
     const [zReportData, setZReportData] = useState(null);
+
+    // 🔥 DESCARGA FORZADA
+    const handleForceCloudSync = async () => {
+        setSyncing(true);
+        const toastId = toast.loading("Buscando en la nube...");
+        try {
+            const dbLocal = await getDB();
+            // Llama a la función oculta en el repo que sincroniza en base al usuario actual
+            await cashRepository._fetchHistoryFromCloud(dbLocal, user);
+            await loadInitialData();
+            toast.success("Turnos y Caja Sincronizados", { id: toastId });
+        } catch (error) {
+            console.error(error);
+            toast.error("Error de sincronización", { id: toastId });
+        } finally {
+            setSyncing(false);
+        }
+    };
 
     const loadInitialData = async () => {
         setLoading(true);
@@ -535,7 +440,8 @@ export const CashPage = () => {
             let hasChanges = false;
             for (const shift of paginatedHistory) {
                 if (!newBalances[shift.id]) {
-                    newBalances[shift.id] = await fetchAndCorrectShiftBalance(shift);
+                    // 🔥 EL REPOSITORIO HACE LA MATEMÁTICA AHORA
+                    newBalances[shift.id] = await cashRepository.getShiftBalance(shift.id);
                     hasChanges = true;
                 }
             }
@@ -549,7 +455,7 @@ export const CashPage = () => {
             let reportPayload = shift;
             
             if (shift.status === 'CLOSED') {
-                const freshBal = shiftBalances[shift.id] || await fetchAndCorrectShiftBalance(shift);
+                const freshBal = shiftBalances[shift.id] || await cashRepository.getShiftBalance(shift.id);
                 reportPayload = {
                     ...shift,
                     expectedCash: freshBal.totalCash,
@@ -575,7 +481,7 @@ export const CashPage = () => {
             await cashRepository.confirmShiftAudit(id);
             setIsZReportOpen(false);
             loadInitialData();
-            alert("✅ Turno auditado con éxito.");
+            toast.success("✅ Turno auditado con éxito.");
         } catch (e) { alert(e.message); }
     };
 
@@ -584,7 +490,7 @@ export const CashPage = () => {
             await cashRepository.closeShift(shiftToClose.id, closingData);
             setShiftToClose(null);
             loadInitialData();
-            alert("✅ Caja cerrada con éxito.");
+            toast.success("✅ Caja cerrada con éxito.");
         } catch (e) { alert(e.message); }
     };
 
@@ -604,9 +510,20 @@ export const CashPage = () => {
                     </h2>
                     <p className="text-sys-500 text-sm font-medium mt-1">Control multi-sucursal e integridad de flujos remotos.</p>
                 </div>
-                <div className="relative w-full md:w-80">
-                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-sys-400" size={18} />
-                    <input type="text" placeholder="Buscar cajero, sucursal o ID..." className="w-full pl-10 pr-4 py-2.5 bg-white border border-sys-200 rounded-2xl outline-none focus:border-brand shadow-sm transition-all text-sm font-medium" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
+                <div className="flex items-center gap-3 w-full md:w-auto">
+                    <Button 
+                        variant="outline" 
+                        onClick={handleForceCloudSync} 
+                        className="shadow-sm border-brand/30 text-brand bg-brand/5 hover:bg-brand hover:text-white transition-all h-11 px-4"
+                        title="Forzar descarga de turnos y movimientos"
+                    >
+                        <CloudDownload size={18} className={syncing ? "animate-bounce mr-2" : "mr-2"}/>
+                        <span className="font-bold">Bajar Nube</span>
+                    </Button>
+                    <div className="relative flex-1 md:w-80">
+                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-sys-400" size={18} />
+                        <input type="text" placeholder="Buscar cajero, sucursal o ID..." className="w-full pl-10 pr-4 py-2.5 bg-white border border-sys-200 rounded-xl outline-none focus:border-brand shadow-sm transition-all text-sm font-medium" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
+                    </div>
                 </div>
             </div>
 
@@ -728,7 +645,8 @@ const CashClosingModalWrapper = ({ shift, onClose, onConfirm }) => {
     const [totals, setTotals] = useState(null);
     useEffect(() => {
         let mounted = true;
-        fetchAndCorrectShiftBalance(shift).then(bal => {
+        // 🔥 LEEMOS DIRECTAMENTE DEL REPOSITORIO
+        cashRepository.getShiftBalance(shift.id).then(bal => {
             if (mounted) {
                 setTotals(bal);
             }
