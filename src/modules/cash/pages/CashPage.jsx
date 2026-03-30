@@ -31,27 +31,32 @@ const formatCurrency = (amount) => `$ ${Number(amount || 0).toLocaleString('es-A
 // ============================================================================
 
 const getShiftValues = (shift, calculatedDetails = null) => {
-    if (!shift) return { expected: 0, declared: 0, diff: 0, initial: 0, left: 0 };
+    if (!shift) return { expected: 0, declared: 0, diff: 0, initial: 0, left: 0, out: 0 };
     
     const snap = shift.auditSnapshot || {};
-    const isValid = (val) => val !== undefined && val !== null;
+    const isValid = (val) => val !== undefined && val !== null && !isNaN(val);
     
     // 🔥 Ahora siempre priorizamos la matemática fresca en vivo que viene del Repositorio
     let expected = 0;
+    let out = 0; // 🔥 Variable para almacenar los gastos/retiros físicos
+    let left = 0;
+
     if (calculatedDetails && isValid(calculatedDetails.totalCash)) {
         expected = Number(calculatedDetails.totalCash);
+        out = Number(calculatedDetails.manualOutCash || 0);
     } else if (isValid(snap.expectedCash)) {
         expected = Number(snap.expectedCash);
+        out = Number(snap.manualOut || snap.cashOut || 0); // Leemos el snapshot si existe
     } else {
         expected = Number(shift.expectedCash || 0);
     }
     
     const declared = Number(shift.finalCash ?? snap.declaredCash ?? 0);
     const initial = Number(snap.initialAmount ?? shift.initialAmount ?? 0);
-    const left = Number(shift.leftInCash ?? snap.leftInCash ?? 0); 
+    left = Number(shift.leftInCash ?? snap.leftInCash ?? 0); 
     const diff = declared - expected;
     
-    return { expected, declared, diff, initial, left };
+    return { expected, declared, diff, initial, left, out };
 };
 
 const getMovementProps = (mov) => {
@@ -108,7 +113,7 @@ const AuditDetailModal = ({ shift, onClose, resolveName, resolveBranchName }) =>
         if (shift) {
             setLoadingDetails(true);
             setCurrentPage(1); 
-            // 🔥 LEEMOS DIRECTAMENTE DEL REPOSITORIO (Ya no hay matemática en la UI)
+            // 🔥 LEEMOS DIRECTAMENTE DEL REPOSITORIO
             cashRepository.getShiftBalance(shift.id).then(bal => {
                 setDetails(bal);
             }).catch(err => {
@@ -156,7 +161,7 @@ const AuditDetailModal = ({ shift, onClose, resolveName, resolveBranchName }) =>
     }
     
     const safeDetails = details || { totalCash: 0, movements: [], totalDigital: 0 };
-    const { expected, declared, diff, initial, left } = getShiftValues(shift, safeDetails);
+    const { expected, declared, diff, initial, left, out } = getShiftValues(shift, safeDetails);
     const isPerfect = Math.abs(diff) < 50; 
     
     const paymentMethods = (safeDetails.movements && safeDetails.movements.length > 0)
@@ -186,10 +191,16 @@ const AuditDetailModal = ({ shift, onClose, resolveName, resolveBranchName }) =>
                 <div className="flex-1 overflow-y-auto p-6 space-y-6 bg-sys-50/30 custom-scrollbar">
                     
                     <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                        <div className="p-4 bg-white rounded-xl border border-sys-200 text-center shadow-sm">
+                        <div className="p-4 bg-white rounded-xl border border-sys-200 text-center shadow-sm relative">
                             <p className="text-[10px] uppercase font-bold text-sys-400 mb-1">Sistema (Esperado)</p>
                             <p className="text-xl font-black text-sys-800">{formatCurrency(expected)}</p>
                             <p className="text-[10px] text-sys-400 mt-1">Fondo: {formatCurrency(initial)}</p>
+                            {/* 🔥 MOSTRAR GASTOS PARA QUE LA MATEMÁTICA SEA TRANSPARENTE EN LA UI */}
+                            {out > 0 && (
+                                <div className="absolute top-2 right-2 flex items-center justify-center w-5 h-5 bg-red-100 rounded-full" title={`Se descontaron ${formatCurrency(out)} en Gastos/Retiros`}>
+                                    <AlertTriangle size={10} className="text-red-600" />
+                                </div>
+                            )}
                         </div>
                         <div className="p-4 bg-white rounded-xl border border-sys-200 text-center shadow-sm">
                             <p className="text-[10px] uppercase font-bold text-sys-400 mb-1">Cajero (Declarado)</p>
@@ -227,10 +238,11 @@ const AuditDetailModal = ({ shift, onClose, resolveName, resolveBranchName }) =>
                                 </div>
                             )}
 
-                            {(safeDetails.manualOutCash > 0) && (
+                            {/* 🔥 LEEMOS EL GASTO REAL DEL SNAPSHOT O DEL DETALLE EN VIVO */}
+                            {(out > 0) && (
                                 <div className="bg-red-50 border border-red-200 px-4 py-2 rounded-lg flex-1 min-w-[120px] opacity-90">
                                     <p className="text-[9px] text-red-600 font-bold uppercase">Pagos Prov. / Retiros (CASH)</p>
-                                    <p className="text-sm font-black text-red-700">- {formatCurrency(safeDetails.manualOutCash)}</p>
+                                    <p className="text-sm font-black text-red-700">- {formatCurrency(out)}</p>
                                 </div>
                             )}
 
