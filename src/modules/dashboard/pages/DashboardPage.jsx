@@ -277,28 +277,46 @@ const AdminCashAuditPanel = ({ allShifts, loadIntelligence, navigate, resolveNam
     const auditedShifts = allShifts.filter(s => s.status === 'CLOSED' && s.audited).sort((a, b) => new Date(b.closedAt) - new Date(a.closedAt));
 
     const prepareReportData = async (shift) => {
-        if (shift.auditSnapshot && shift.status === 'CLOSED') return shift;
-        
-        // 🔥 EL REPOSITORIO AHORA HACE LA MATEMÁTICA PESADA
+        // 🔥 Para turnos cerrados: el auditSnapshot ya tiene los datos pero lo enriquecemos con el balance fresco
         const balance = await cashRepository.getShiftBalance(shift.id);
-        const { expected, declared, diff, initial } = getShiftValues(shift, balance);
+        
+        const snap = shift.auditSnapshot || {};
         
         return {
+            // Identificación
+            id: shift.id,
+            shiftId: shift.id,
             shiftName: resolveName(shift.userId, shift.userName),
             userName: resolveName(shift.userId, shift.userName),
-            shiftId: shift.id,
-            expectedCash: expected, 
-            declaredCash: declared,
-            leftInCash: Number(shift.leftInCash) || 0,
-            deviation: diff, 
-            initialAmount: initial,
-            salesCount: balance.movements?.filter(m => m.type === 'SALE').length || 0,
-            totalSales: balance.totalSales || 0,
-            cashIn: balance.manualInCash + balance.salesCash, 
-            cashOut: balance.manualOutCash,
-            salesByMethod: balance.salesByMethod || { cash: 0, digital: 0 },
+            status: shift.status,
+            audited: shift.audited,
+            
+            // Tiempos
+            startTime: shift.openedAt,
             closeTime: shift.closedAt || new Date().toISOString(),
-            audited: shift.audited
+            closedAt: shift.closedAt,
+            
+            // Preservamos el auditSnapshot para que TicketZContent lo lea directamente
+            auditSnapshot: shift.auditSnapshot,
+            
+            // Datos de ventas (balance fresco como primera fuente, snapshot como fallback)
+            initialAmount: balance.initialAmount ?? snap.initialAmount ?? shift.initialAmount ?? 0,
+            expectedCash: balance.totalCash ?? snap.expectedCash ?? shift.expectedCash ?? 0,
+            totalSales: balance.totalSales ?? snap.totalSales ?? 0,
+            salesCount: balance.salesCount ?? snap.salesCount ?? 0,
+            salesByMethod: balance.salesByMethod ?? snap.salesByMethod ?? { cash: 0 },
+            
+            // 🔥 CLAVE: campos con los nombres CORRECTOS que lee el TicketZContent
+            manualOut: balance.manualOut ?? snap.manualOut ?? 0,
+            manualIn: balance.manualIn ?? snap.manualIn ?? 0,
+            digitalIn: balance.digitalIn ?? snap.digitalIn ?? 0,
+            digitalInByMethod: balance.digitalInByMethod ?? snap.digitalInByMethod ?? {},
+            totalDigital: balance.totalDigital ?? snap.totalDigital ?? 0,
+            
+            // Arqueo físico
+            finalCash: shift.finalCash ?? snap.declaredCash ?? 0,
+            declaredCash: shift.finalCash ?? snap.declaredCash ?? 0,
+            leftInCash: shift.leftInCash ?? snap.leftInCash ?? 0,
         };
     };
 

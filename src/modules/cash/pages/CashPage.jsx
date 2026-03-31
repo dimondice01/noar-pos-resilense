@@ -75,7 +75,16 @@ const getMovementProps = (mov) => {
     const isCash = mov.method === 'cash' || mov.type === 'WITHDRAWAL'; 
     let sign = isIncome ? '+' : '-';
     let color = isIncome ? 'text-green-600' : 'text-red-600';
-    let typeLabel = mov.type === 'SALE' ? 'VENTA' : mov.type === 'DEPOSIT' || mov.type === 'IN' ? 'INGRESO' : mov.type === 'RECEIPT' ? 'COBRO' : 'RETIRO';
+    // 🔥 Etiquetas claras por tipo de movimiento
+    let typeLabel = 
+        mov.type === 'SALE' ? 'VENTA' : 
+        mov.type === 'DEPOSIT' || mov.type === 'IN' ? 'INGRESO' : 
+        mov.type === 'RECEIPT' ? 'COBRO' : 
+        mov.type === 'EXPENSE' ? 'GASTO' :       // ← antes decía RETIRO
+        mov.type === 'PURCHASE' ? 'COMPRA' :     // ← pago a proveedor
+        mov.type === 'REFUND' ? 'DEVOLUC.' :
+        mov.type === 'TREASURY' ? 'CIERRE' :     // ← rendición de cierre
+        'RETIRO';  // WITHDRAWAL
     let methodTag = (mov.method || 'desconocido').toLowerCase(); 
     
     if (['cash', 'efectivo'].includes(methodTag)) methodTag = 'Efectivo';
@@ -467,13 +476,21 @@ export const CashPage = () => {
             let reportPayload = shift;
             
             if (shift.status === 'CLOSED') {
+                // 🔥 Para turnos cerrados: usamos el auditSnapshot congelado como fuente de verdad
+                // pero enriquecemos con el balance fresco para tener los gastos actualizados
                 const freshBal = shiftBalances[shift.id] || await cashRepository.getShiftBalance(shift.id);
                 reportPayload = {
                     ...shift,
+                    // Datos frescos del balance (para consistencia)
                     expectedCash: freshBal.totalCash,
-                    manualOutCash: freshBal.manualOutCash,
-                    manualInCash: freshBal.manualInCash,
-                    salesByMethod: freshBal.salesByMethod
+                    // 🔥 CLAVE: campo correcto para gastos/retiros
+                    manualOut: freshBal.manualOut ?? shift.auditSnapshot?.manualOut ?? 0,
+                    manualIn: freshBal.manualIn ?? shift.auditSnapshot?.manualIn ?? 0,
+                    digitalIn: freshBal.digitalIn ?? shift.auditSnapshot?.digitalIn ?? 0,
+                    digitalInByMethod: freshBal.digitalInByMethod ?? shift.auditSnapshot?.digitalInByMethod ?? {},
+                    salesByMethod: freshBal.salesByMethod ?? shift.auditSnapshot?.salesByMethod ?? {},
+                    salesCount: freshBal.salesCount ?? shift.auditSnapshot?.salesCount ?? 0,
+                    totalSales: freshBal.totalSales ?? shift.auditSnapshot?.totalSales ?? 0,
                 };
             } else {
                 const auditData = await cashRepository.getShiftAuditData(shift.id);
@@ -645,7 +662,7 @@ export const CashPage = () => {
             )}
 
             {/* Modales */}
-            <AuditDetailModal shift={selectedShiftForAudit} onClose={() => setSelectedShiftForAudit(null)} resolveName={resolveCashierName} resolveBranchName={resolveBranchName} />
+            <AuditDetailModal key={selectedShiftForAudit?.id || 'none'} shift={selectedShiftForAudit} onClose={() => setSelectedShiftForAudit(null)} resolveName={resolveCashierName} resolveBranchName={resolveBranchName} />
             {isZReportOpen && <TicketZModal isOpen={isZReportOpen} onClose={() => setIsZReportOpen(false)} reportData={zReportData} onConfirmAudit={!zReportData?.audited ? handleConfirmAudit : null} />}
             {shiftToClose && <CashClosingModalWrapper shift={shiftToClose} onClose={() => setShiftToClose(null)} onConfirm={handleCloseShift} />}
         </div>

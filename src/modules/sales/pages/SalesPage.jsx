@@ -16,6 +16,7 @@ import { productRepository } from '../../inventory/repositories/productRepositor
 import { cashRepository } from '../../cash/repositories/cashRepository'; 
 import { TicketModal } from '../components/TicketModal';
 import { useAuthStore } from '../../auth/store/useAuthStore'; 
+import { useCloudDashboard } from '../../dashboard/hooks/useCloudDashboard'; // 🔥 SINIESTROS MONITOR
 import { collection, query, where, getDocs, orderBy, limit } from 'firebase/firestore';
 import { db as firestoreDB } from '../../../database/firebase';
 import toast from 'react-hot-toast';
@@ -153,11 +154,85 @@ const RefundModal = ({ isOpen, onClose, sale, onConfirm, isProcessing }) => {
 };
 
 // =================================================================
+// 🚨 MODAL DE SINIESTROS (AUDITORÍA DE ABANDONOS)
+// =================================================================
+const SiniestrosModal = ({ isOpen, onClose, siniestros }) => {
+    if (!isOpen) return null;
+
+    return (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-sys-900/40 backdrop-blur-md p-4 animate-in fade-in duration-300">
+            <div className="bg-white rounded-3xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[85vh] border border-sys-100">
+                <div className="p-6 border-b border-sys-100 bg-red-50/50 flex justify-between items-center">
+                    <div className="flex items-center gap-4">
+                        <div className="w-12 h-12 rounded-2xl bg-red-100 flex items-center justify-center text-red-600 shadow-sm">
+                            <AlertCircle size={24} />
+                        </div>
+                        <div>
+                            <h3 className="font-black text-xl text-sys-900 tracking-tight">Auditoría de Siniestros</h3>
+                            <p className="text-xs text-sys-500 font-bold uppercase tracking-widest mt-0.5">Carritos vaciados hoy</p>
+                        </div>
+                    </div>
+                    <button onClick={onClose} className="p-2.5 hover:bg-white hover:shadow-md rounded-xl transition-all text-sys-400 hover:text-sys-900"><X size={20}/></button>
+                </div>
+                
+                <div className="flex-1 overflow-y-auto p-6 space-y-4 custom-scrollbar">
+                    {siniestros.length === 0 ? (
+                        <div className="text-center py-10 opacity-40">
+                            <CheckCircle size={48} className="mx-auto text-emerald-500 mb-4 opacity-20" />
+                            <p className="text-sys-500 font-bold">No se detectaron siniestros hoy.</p>
+                        </div>
+                    ) : (
+                        siniestros.map(item => (
+                            <div key={item.id} className="p-4 rounded-2xl border border-sys-100 bg-sys-50/30 hover:bg-white hover:shadow-xl hover:shadow-sys-200/50 transition-all duration-300">
+                                <div className="flex justify-between items-start mb-3">
+                                    <div className="flex gap-3">
+                                        <div className="w-10 h-10 rounded-xl bg-white border border-sys-100 flex items-center justify-center text-sys-400">
+                                            <User size={18} />
+                                        </div>
+                                        <div>
+                                            <p className="font-black text-sys-900 leading-tight">{item.userName}</p>
+                                            <p className="text-[10px] text-sys-400 font-bold uppercase tracking-tighter">
+                                                {new Date(item.date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })} • {item.tabName || 'Caja'}
+                                            </p>
+                                        </div>
+                                    </div>
+                                    <div className="text-right">
+                                        <p className="text-xs font-black text-red-600 bg-red-50 px-2.5 py-1 rounded-lg border border-red-100 inline-block shadow-sm">
+                                            $ {parseFloat(item.total).toLocaleString('es-AR', { minimumFractionDigits: 2 })}
+                                        </p>
+                                    </div>
+                                </div>
+                                <div className="space-y-1.5 pl-1.5 border-l-2 border-red-100 ml-4.5">
+                                    {item.items.map((prod, idx) => (
+                                        <div key={idx} className="flex justify-between text-[11px] font-medium text-sys-500">
+                                            <span>{prod.quantity}x {prod.name}</span>
+                                            <span className="font-bold text-sys-400">$ {(prod.price * prod.quantity).toLocaleString()}</span>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        ))
+                    )}
+                </div>
+
+                <div className="p-6 border-t border-sys-100 bg-sys-50/50 text-center">
+                    <p className="text-[10px] text-sys-400 font-bold uppercase tracking-[0.2em]">Registro de Blindaje Nexus Core • Auditoría Privada</p>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+// =================================================================
 // 🏭 SALES PAGE (MAIN)
 // =================================================================
 export const SalesPage = () => {
   const { user, activeBranchId, activeBranchName } = useAuthStore(); 
   const isAdmin = user?.role === 'ADMIN' || user?.role === 'OWNER'; 
+
+  // 🔥 MONITOR DE SINIESTROS NEXUS
+  const { abandonedCount, abandonedSales } = useCloudDashboard();
+  const [showSiniestros, setShowSiniestros] = useState(false);
 
   const [operations, setOperations] = useState([]); 
   const [cashiersList, setCashiersList] = useState([]); 
@@ -207,6 +282,14 @@ export const SalesPage = () => {
           fetchCashiers();
       }
   }, [user?.companyId, activeBranchId]); 
+
+  // 🔥 AUTO-REFRESH: SalesPage escucha cuando el POS termina una venta
+  useEffect(() => {
+      const handler = () => setTimeout(() => fetchOperations(), 300);
+      window.addEventListener('noar:sale-created', handler);
+      return () => window.removeEventListener('noar:sale-created', handler);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // =================================================================
   // ⚡ LA SOLUCIÓN DEFINITIVA: DESCARGA FORZADA DESDE LA NUBE
@@ -312,8 +395,13 @@ export const SalesPage = () => {
               return timeB - timeA;
           });
 
-          // 🔥 TOTALES REALES SOBRE TODO EL MES
-          const validForTotals = filteredByDate.filter(op => op.afip?.status !== 'VOIDED' && op.status !== 'REFUNDED' && op.type !== 'BUDGET');
+          // 🔥 TOTALES REALES: Excluimos anulados, devueltos, presupuestos y SINIESTROS
+          const validForTotals = filteredByDate.filter(op => 
+              op.afip?.status !== 'VOIDED' && 
+              op.status !== 'REFUNDED' && 
+              op.status !== 'ABANDONED' && 
+              op.type !== 'BUDGET'
+          );
           const gross = validForTotals.reduce((acc, op) => acc + (parseFloat(op.total) || 0), 0);
           const netProfit = validForTotals.reduce((acc, op) => acc + (parseFloat(op.netProfit) || 0), 0);
           setPeriodTotals({ gross, netProfit });
@@ -365,7 +453,17 @@ export const SalesPage = () => {
   const visibleOperations = useMemo(() => {
       return operations.filter(op => {
           if (activeBranchId && String(op.branchId) !== String(activeBranchId)) return false;
-          if (filterType !== 'ALL' && op.type !== filterType) return false;
+          if (filterType === 'ALL') {
+              // 🔥 MONITOR NEXUS: Por defecto ocultamos los abandonos de la vista general
+              if (op.status === 'ABANDONED' || op.type === 'ABANDONED_CART') return false;
+          } else {
+              // 🔥 FILTRO ESPECÍFICO
+              if (filterType === 'ABANDONED') {
+                  if (op.status !== 'ABANDONED' && op.type !== 'ABANDONED_CART') return false;
+              } else if (op.type !== filterType) {
+                  return false;
+              }
+          }
 
           if (filterCashier !== 'ALL') {
               const selectedUser = cashiersList.find(u => u.email === filterCashier);
@@ -375,7 +473,9 @@ export const SalesPage = () => {
           }
 
           if (filterPaymentMethod !== 'ALL') {
-              const methodRaw = op.payment?.method || op.paymentMethod || 'cash';
+              // 🔥 CLAVE: Usamos op.method (el global, guardado por el repo) primero.
+              // op.payment?.method solo apunta al PRIMER pago del desglose (puede ser efectivo en un split).
+              const methodRaw = op.method || op.payment?.method || op.paymentMethod || 'cash';
               const method = String(methodRaw).toLowerCase().trim();
               
               if (filterPaymentMethod === 'CASH') {
@@ -390,7 +490,6 @@ export const SalesPage = () => {
               if (filterPaymentMethod === 'MP') {
                   if (!['mercadopago', 'mp', 'qr', 'point'].includes(method)) return false;
               }
-              // 🔥 SEPARAMOS CLIENTES DE EMPLEADOS EN EL BUSCADOR
               if (filterPaymentMethod === 'CURRENT_ACCOUNT') {
                   if (!['current_account', 'cta_cte', 'cuenta_corriente', 'account'].includes(method)) return false;
               }
@@ -398,7 +497,11 @@ export const SalesPage = () => {
                   if (method !== 'employee_account') return false;
               }
               if (filterPaymentMethod === 'BUDGET') {
-                  if (!['budget', 'presupuesto'].includes(method)) return false;
+                  if (!['budget', 'presupuesto', 'budget'].includes(method)) return false;
+              }
+              if (filterPaymentMethod === 'SPLIT') {
+                  // Acepta tanto 'split' como 'SPLIT' (el repo guarda 'SPLIT' en mayusculas desde usePosController)
+                  if (!['split'].includes(method)) return false;
               }
           }
 
@@ -660,6 +763,24 @@ export const SalesPage = () => {
             </div>
             
             <div className="flex items-center gap-3">
+                {/* 🔥 BOTÓN DE NOTIFICACIÓN DE SINIESTROS */}
+                {isAdmin && (
+                    <Button 
+                        onClick={() => setShowSiniestros(true)}
+                        className={cn(
+                            "h-10 px-4 rounded-xl flex items-center gap-3 transition-all duration-500 border-none",
+                            abandonedCount > 0 
+                                ? "bg-red-500 text-white shadow-lg shadow-red-200 hover:bg-red-600 animate-pulse" 
+                                : "bg-sys-100 text-sys-400 hover:bg-sys-200"
+                        )}
+                    >
+                        <AlertCircle size={18} className={abandonedCount > 0 ? "animate-bounce" : ""} />
+                        <span className="text-xs font-black uppercase tracking-tight">
+                            {abandonedCount > 0 ? `Detectados ${abandonedCount} Siniestros` : "Sin Siniestros"}
+                        </span>
+                    </Button>
+                )}
+
                 <Button variant="outline" onClick={() => fetchOperations()} className="h-10 w-10 p-0 rounded-xl border-sys-200 text-sys-500 hover:text-brand hover:bg-sys-50" title="Recargar Local">
                     <RefreshCw size={18} className={loading ? "animate-spin" : ""}/>
                 </Button>
@@ -741,6 +862,7 @@ export const SalesPage = () => {
                       <option value="SALE">Ventas</option>
                       <option value="RECEIPT">Cobros</option>
                       <option value="BUDGET">Presupuestos</option>
+                      {isAdmin && <option value="ABANDONED">🛒 Abandonos</option>}
                   </select>
 
                   <div className="relative min-w-[120px]">
@@ -755,9 +877,9 @@ export const SalesPage = () => {
                           <option value="CARD">Tarjetas</option>
                           <option value="TRANSFER">Transferencia</option>
                           <option value="MP">MercadoPago</option>
-                          {/* 🔥 FIX: Separamos claramente el fiado de clientes y el consumo de empleados */}
                           <option value="CURRENT_ACCOUNT">Cta. Corriente (Cliente)</option>
                           <option value="EMPLOYEE_ACCOUNT">Cta. Personal (Staff)</option>
+                          <option value="SPLIT">🔄 Pago Combinado</option>
                           <option value="BUDGET">Presupuesto</option>
                       </select>
                   </div>
@@ -804,9 +926,13 @@ export const SalesPage = () => {
                     const isFacturado = op.afip?.status === 'APPROVED';
                     const isAnulado = op.afip?.status === 'VOIDED'; 
                     const isRefunded = op.status === 'REFUNDED' || op.status === 'PARTIAL_REFUND';
+                    const isAbandoned = op.status === 'ABANDONED'; // 🔥 NEXUS SINIESTRO
                     
                     const isLoading = loadingMap[op.localId];
-                    const paymentMethod = op.payment?.method || op.paymentMethod || 'cash';
+                    // 🔥 CLAVE: op.method es el campo global (guardado en repo), no op.payment.method (primer pago)
+                    const opMethodGlobal = (op.method || '').toLowerCase();
+                    const paymentMethodRaw = opMethodGlobal === 'split' ? 'split' : (opMethodGlobal || op.payment?.method || op.paymentMethod || (isAbandoned ? 'abandoned' : 'cash'));
+                    const paymentMethod = String(paymentMethodRaw).toLowerCase();
                     
                     const cajeroName = resolveCashierName(op);
                     const hasPromo = !isReceipt && !isBudget && op.items?.some(i => i.appliedPromo || i.promoLabel);
@@ -821,7 +947,10 @@ export const SalesPage = () => {
                     const opDate = new Date(op.date || op.createdAt || op.syncedAt);
 
                     return (
-                      <tr key={op.localId || op.id} className={cn("transition-colors group", (isAnulado || isRefunded) ? "bg-red-50/30 opacity-60" : "hover:bg-sys-50/40")}>
+                      <tr key={op.localId || op.id} className={cn("transition-colors group", 
+                        (isAnulado || isRefunded) ? "bg-red-50/30 opacity-60" : 
+                        isAbandoned ? "bg-red-50/20 border-l-4 border-red-500 opacity-70" :
+                        "hover:bg-sys-50/40")}>
                         <td className="p-4 text-sys-600 font-mono text-xs whitespace-nowrap">
                           <div className="font-bold text-sys-800">{opDate.toLocaleDateString()} {opDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</div>
                           <div className="text-[11px] font-bold text-brand mt-0.5">{displayTicketNumber}</div>
@@ -834,6 +963,8 @@ export const SalesPage = () => {
                                 <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-blue-50 text-blue-700 text-[10px] font-bold uppercase border border-blue-100"><ArrowDownLeft size={12}/> Cobro</span>
                             ) : isBudget ? (
                                 <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-sys-100 text-sys-600 text-[10px] font-bold uppercase border border-sys-300"><FileArchive size={12}/> Presupuesto</span>
+                            ) : isAbandoned ? (
+                                <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-red-600 text-white text-[10px] font-bold uppercase border border-red-700 shadow-sm"><XCircle size={12}/> Abandono</span>
                             ) : (
                                 <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-emerald-50 text-emerald-700 text-[10px] font-bold uppercase border border-emerald-100"><ShoppingBag size={12}/> Venta</span>
                             )}
@@ -861,17 +992,20 @@ export const SalesPage = () => {
                         
                         <td className="p-4 text-right">
                           <div className="flex flex-col items-end">
-                              <span className={cn("font-bold whitespace-nowrap text-sm", (isAnulado || isRefunded) ? "text-red-400 line-through decoration-red-400" : isBudget ? "text-sys-500" : "text-sys-900")}>
+                          <span className={cn("font-bold whitespace-nowrap text-sm", 
+                            (isAnulado || isRefunded || isAbandoned) ? "text-red-400 line-through decoration-red-400" : 
+                            isBudget ? "text-sys-500" : "text-sys-900")}>
                                 $ {(parseFloat(op.total) || 0).toLocaleString('es-AR', {minimumFractionDigits: 2})}
-                              </span>
+                          </span>
                               
                               {hasSurcharge && !isAnulado && !isRefunded && !isBudget && (
                                   <span className="text-[9px] font-bold text-indigo-600 bg-indigo-50 px-1.5 rounded border border-indigo-100 flex items-center gap-0.5 mt-0.5" title={`Incluye $${surchargeAmount} de recargo`}>
                                       <ArrowUpRight size={8}/> Recargo
                                   </span>
                               )}
-
-                              {isAdmin && !isReceipt && !isAnulado && !isRefunded && !hasSurcharge && !isBudget && (
+                              
+                              {/* Jamás mostrar utilidades en siniestros */}
+                              {isAdmin && !isReceipt && !isAnulado && !isRefunded && !isAbandoned && !hasSurcharge && !isBudget && (
                                   <span className={cn("text-[9px] font-bold flex items-center gap-1 mt-0.5", isProfitable ? "text-emerald-600" : "text-red-500")}>
                                       <TrendingUp size={8}/> 
                                       ${profit.toLocaleString('es-AR', {minimumFractionDigits: 0, maximumFractionDigits: 0})}
@@ -881,28 +1015,32 @@ export const SalesPage = () => {
                         </td>
 
                         <td className="p-4 text-center">
-                          {/* 🔥 FIX: Colores y textos separados para empleados vs clientes */}
                           <span className={cn("px-2 py-0.5 rounded text-[10px] font-bold uppercase border inline-block min-w-[60px]", 
+                            isAbandoned ? "bg-red-600 text-white border-red-600 shadow-sm" :
                             isBudget ? "bg-sys-100 text-sys-500 border-sys-200" :
                             ['cash', 'efectivo'].includes(paymentMethod) ? "bg-green-50 text-green-700 border-green-100" :
                             ['mercadopago', 'mp', 'qr', 'point'].includes(paymentMethod) ? "bg-blue-50 text-blue-700 border-blue-100" :
                             ['clover', 'card', 'debit', 'credit', 'tarjeta', 'manual_card'].includes(paymentMethod) ? "bg-emerald-50 text-emerald-700 border-emerald-100" :
                             paymentMethod === 'employee_account' ? "bg-pink-50 text-pink-700 border-pink-200" :
                             ['current_account', 'cta_cte', 'account'].includes(paymentMethod) ? "bg-orange-50 text-orange-700 border-orange-200" :
+                            paymentMethod === 'split' ? "bg-indigo-50 text-indigo-700 border-indigo-200 shadow-sm" :
                             "bg-purple-50 text-purple-700 border-purple-100")}>
                             
-                            {['mercadopago', 'mp'].includes(paymentMethod) ? 'MP QR' :
+                            {isAbandoned ? 'ABANDONO' :
+                             ['mercadopago', 'mp'].includes(paymentMethod) ? 'MP QR' :
                              ['cash'].includes(paymentMethod) ? 'EFECTIVO' : 
                              ['transfer'].includes(paymentMethod) ? 'TRANSFERENCIA' : 
                              ['card', 'credit', 'debit', 'tarjeta', 'manual_card'].includes(paymentMethod) ? 'TARJETA' :
                              paymentMethod === 'employee_account' ? 'CTA. PERSONAL' :
                              ['current_account', 'cta_cte', 'account'].includes(paymentMethod) ? 'CTA. CORRIENTE' :
+                             paymentMethod === 'split' ? 'COMBINADO' : 
                              ['budget'].includes(paymentMethod) ? 'PRESUPUESTO' :
                              paymentMethod.toUpperCase()}
                           </span>
                         </td>
                         <td className="p-4 text-center">
                           {isReceipt || isBudget ? (<span className="text-[10px] text-sys-300">-</span>) 
+                          : isAbandoned ? (<span className="text-[10px] font-black text-red-600 bg-red-100 px-2 py-0.5 rounded border border-red-200">SINIESTRO</span>)
                           : (isAnulado || isRefunded) ? (<span className="text-[10px] font-bold text-red-500 bg-red-50 px-2 py-0.5 rounded border border-red-100">ANULADO</span>) 
                           : isFacturado ? (
                             <div className="inline-flex items-center gap-1 text-green-600 bg-green-50 px-2 py-0.5 rounded border border-green-100 cursor-help" title={`CAE: ${op.afip?.cae}`}>
@@ -991,6 +1129,15 @@ export const SalesPage = () => {
               isProcessing={isProcessingRefund} 
               onClose={() => setRefundData(null)}
               onConfirm={handleProcessRefund}
+          />
+      )}
+
+      {/* 🔥 VISTA DE SINIESTROS */}
+      {isAdmin && (
+          <SiniestrosModal 
+              isOpen={showSiniestros}
+              onClose={() => setShowSiniestros(false)}
+              siniestros={abandonedSales}
           />
       )}
     </div>

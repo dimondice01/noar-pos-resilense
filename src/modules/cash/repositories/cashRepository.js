@@ -112,6 +112,20 @@ export const cashRepository = {
         }
 
         // 1. 🔥 CÁLCULO DE LA VERDAD (Expected Cash)
+        // Antes de calcular, si hay internet, intentamos bajar lo último para asegurar multi-PC
+        if (navigator.onLine && user?.companyId) {
+            try {
+                const branchId = shift.branchId || 'main';
+                await Promise.all([
+                    syncService.syncInitialSales(user.companyId, branchId, user.role),
+                    syncService.syncInitialMovements(user.companyId, branchId, user.role),
+                    // También bajamos cash_movements específicos si existiera una función dedicada 
+                    // (syncInitialMovements ya baja kardex, bajamos cash_movements por si acaso)
+                    this.getCurrentShift() // Esto ayuda a refrescar estado local
+                ]);
+            } catch (syncErr) { console.warn("Sync preventivo falló, usando datos locales:", syncErr); }
+        }
+
         const currentAudit = await this.getShiftAuditData(shiftId);
 
         // 2. Datos declarados por el humano (lo que contaron)
@@ -136,6 +150,9 @@ export const cashRepository = {
             expectedDigital: parseFloat(closingData.expectedDigital || 0), // Referencia digital
             difference: difference,   // El veredicto del arqueo
             
+            // 🔥 MARCADOR DE DISCREPANCIA (RESILIENCIA)
+            discrepancyStatus: difference > 0 ? 'SURPLUS' : (difference < 0 ? 'SHORTAGE' : 'MATCH'),
+
             audited: false, 
             
             // 🔥🔥 SNAPSHOT CONGELADO (Evidence Locker) 🔥🔥
@@ -145,7 +162,10 @@ export const cashRepository = {
                 salesByMethod: currentAudit.salesByMethod, 
                 
                 manualIn: currentAudit.manualIn,   
-                manualOut: currentAudit.manualOut, 
+                manualOut: currentAudit.manualOut,
+                // 🔥 DETALLES INDIVIDUALES para Ticket Z
+                manualInItems: currentAudit.manualInItems || [],
+                manualOutItems: currentAudit.manualOutItems || [],
                 
                 digitalIn: currentAudit.digitalIn, 
                 digitalInByMethod: currentAudit.digitalInByMethod, 
@@ -198,7 +218,21 @@ export const cashRepository = {
             }
         });
 
-        // Sync Background
+        // 4. 🔥 BLINDAJE DE CIERRE: Sincronización Mandatoria de Pendientes
+        try {
+            const pendingMovs = await dbLocal.cash_movements
+                .where('syncStatus').equals('pending')
+                .filter(m => m.shiftId === shiftId)
+                .toArray();
+            
+            for (const mov of pendingMovs) {
+                await this._syncToCloud('cash_movements', mov);
+            }
+        } catch (e) {
+            console.warn("⚠️ Error en sync forzado previo al cierre:", e);
+        }
+
+        // Sync Background del turno cerrado
         this._syncToCloud('shifts', closedShift);
         if (withdrawalMovement) {
             this._syncToCloud('cash_movements', withdrawalMovement);
@@ -454,7 +488,7 @@ export const cashRepository = {
 
         // 1. OBTENEMOS VENTAS REALES (Fuente de Verdad Única para Ingresos por Ventas)
         const sales = await dbLocal.sales
-            .filter(s => s.shiftId === shift.id && s.status === 'COMPLETED' && s.type !== 'INTERNAL' && s.type !== 'BUDGET')
+            .filter(s => s.shiftId === shift.id && s.status === 'COMPLETED' && s.status !== 'ABANDONED' && s.type !== 'INTERNAL' && s.type !== 'BUDGET')
             .toArray();
 
         // 🔥 EL ESCUDO ANTI-DUPLICACIÓN: Guardamos los IDs de todas las ventas contadas
@@ -482,6 +516,9 @@ export const cashRepository = {
             // Movimientos Manuales (Dinero Físico Extra)
             manualIn: 0, 
             manualOut: 0,
+            // 🔥 LISTAS DETALLADAS para el Ticket Z
+            manualInItems: [],   // [{ description, amount, type }]
+            manualOutItems: [],  // [{ description, amount, type }]
 
             // Movimientos Digitales Extra (Transferencias, Pagos con código QR)
             digitalIn: 0, 
@@ -534,15 +571,34 @@ export const cashRepository = {
             const isOutcome = m.type === 'OUT' || m.type === 'EXPENSE' || m.type === 'WITHDRAWAL' || m.type === 'PURCHASE' || m.type === 'REFUND';
 
             if (isIncome) {
-                if (isCash) state.manualIn += amount;
-                else {
+                if (isCash) {
+                    state.manualIn += amount;
+                    // 🔥 Guardamos el item individual para el Ticket Z
+                    state.manualInItems.push({
+                        id: m.id,
+                        description: m.description || 'Ingreso Efectivo',
+                        amount,
+                        type: m.type,
+                        date: m.date
+                    });
+                } else {
                     state.digitalIn += amount;
                     if (['mercadopago', 'mp', 'qr'].includes(methodRaw)) state.digitalInByMethod.mercadopago += amount;
                     else if (['transfer', 'transferencia'].includes(methodRaw)) state.digitalInByMethod.transfer += amount;
                     else state.digitalInByMethod.digitalOther += amount;
                 }
             } else if (isOutcome) {
-                if (isCash) state.manualOut += amount;
+                if (isCash) {
+                    state.manualOut += amount;
+                    // 🔥 Guardamos el item individual para el Ticket Z
+                    state.manualOutItems.push({
+                        id: m.id,
+                        description: m.description || 'Gasto / Retiro',
+                        amount,
+                        type: m.type,
+                        date: m.date
+                    });
+                }
             }
         });
 
@@ -570,28 +626,81 @@ export const cashRepository = {
             const state = await this._calculateShiftState(shift, dbLocal);
             
             // 🔥 UNIFICAMOS VISUALMENTE VENTAS Y MOVIMIENTOS PARA EL DASHBOARD
-            const sales = await dbLocal.sales.filter(s => s.shiftId === shiftId && s.status === 'COMPLETED').toArray();
+            const sales = await dbLocal.sales.filter(s => 
+                s.shiftId === shiftId && 
+                s.status === 'COMPLETED' &&
+                s.type !== 'BUDGET' &&    // Excluir presupuestos del listado visual
+                s.type !== 'INTERNAL'    // Excluir internos
+            ).toArray();
             const countedSalesIds = new Set(sales.map(s => s.id));
             
             const movements = await dbLocal.cash_movements.filter(m => m.shiftId === shiftId).toArray();
             
             let allOperations = [];
-            
-            sales.forEach(s => {
-                const method = s.payment?.method || s.method || s.paymentMethod || 'cash';
+
+            // 🔥 PASO 1: FONDO INICIAL — aparece primero como ingreso para que la matemática sea visible
+            const fondoMov = movements.find(m => m.subtype === 'OPENING' || m.description?.includes('Fondo Inicial'));
+            if (fondoMov) {
                 allOperations.push({
-                    id: s.id, type: 'SALE', method: method, amount: s.total,
-                    description: `Venta ${s.ticketNumber || s.number || ''}`,
-                    date: s.date || s.createdAt
+                    ...fondoMov,
+                    type: 'DEPOSIT',           // Se renderiza como INGRESO en el componente
+                    subtype: 'OPENING_SHOW',   // Marcador para que no se filtre
+                    description: 'Fondo Inicial de Caja',
+                    _isOpening: true
                 });
+            } else if (state.initialAmount > 0) {
+                // Fallback: si el movimiento no se guardó, lo reconstruimos
+                allOperations.push({
+                    id: `${shiftId}_opening_virtual`,
+                    type: 'DEPOSIT',
+                    method: 'cash',
+                    amount: state.initialAmount,
+                    description: 'Fondo Inicial de Caja',
+                    date: shift.openedAt,
+                    _isOpening: true
+                });
+            }
+
+            // PASO 2: Ventas (sin BUDGET ni INTERNAL)
+            sales.forEach(s => {
+                // 🔥 SPLIT: Mostrar cada método de pago como línea separada
+                const isSplit = s.method === 'SPLIT' || (Array.isArray(s.payments) && s.payments.length > 1);
+                if (isSplit && Array.isArray(s.payments) && s.payments.length > 1) {
+                    s.payments.forEach((p, idx) => {
+                        allOperations.push({
+                            id: `${s.id}_p${idx}`,
+                            type: 'SALE',
+                            method: p.method || 'cash',
+                            amount: Number(p.total || p.amount || 0),
+                            description: `Venta ${s.ticketNumber || s.number || ''} (Combinado ${idx + 1}/${s.payments.length})`,
+                            date: s.date || s.createdAt
+                        });
+                    });
+                } else {
+                    const method = s.payment?.method || s.method || s.paymentMethod || 'cash';
+                    allOperations.push({
+                        id: s.id, type: 'SALE', method: method, amount: s.total,
+                        description: `Venta ${s.ticketNumber || s.number || ''}`,
+                        date: s.date || s.createdAt
+                    });
+                }
             });
-            
+
+            // PASO 3: Movimientos manuales (gastos, retiros, ingresos, etc.)
+            // Excluimos OPENING (ya lo mostramos arriba) y duplicados de ventas
             movements.forEach(m => {
+                // Ya mostramos el fondo arriba
                 if (m.subtype === 'OPENING' || m.description?.includes('Fondo Inicial')) return;
-                // No mostrar movimientos duplicados de ventas en el listado visual
+                // No duplicar ventas
                 if (m.type === 'SALE' || m.subtype === 'SALE' || countedSalesIds.has(m.referenceId)) return;
+                // La Rendición de Cierre la mostramos al final con tipo especial
+                if (m.subtype === 'CLOSING' || m.description?.toLowerCase().includes('rendición de cierre')) {
+                    allOperations.push({ ...m, type: 'TREASURY', _isClosing: true });
+                    return;
+                }
                 allOperations.push(m);
             });
+
 
             // Ordenamos todo por fecha descendente
             allOperations.sort((a, b) => new Date(b.date) - new Date(a.date));
@@ -641,9 +750,13 @@ export const cashRepository = {
                 
                 // Desglose para Ticket Z
                 manualIn: state.manualIn,
+                manualOut: state.manualOut,
+                // 🔥 LISTAS DETALLADAS — FALTABAN AQUÍ (bug corregido)
+                manualInItems: state.manualInItems || [],
+                manualOutItems: state.manualOutItems || [],
+
                 digitalIn: state.digitalIn,
                 digitalInByMethod: state.digitalInByMethod, 
-                manualOut: state.manualOut, // 🔥 INCLUYE GASTOS, RETIROS Y PAGOS A PROVEEDORES
                 
                 cashIn: state.manualIn + state.salesCash, 
                 cashOut: state.manualOut, 

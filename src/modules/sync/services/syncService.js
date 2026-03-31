@@ -16,16 +16,7 @@ import { db } from '../../../database/firebase';
 import { getDB } from '../../../database/db'; 
 import { useAuthStore } from '../../auth/store/useAuthStore'; 
 
-const SYNC_KEYS = {
-    PRODUCTS: 'last_sync_products_v4', 
-    INVENTORY_PREFIX: 'last_sync_inv_br_', 
-    GLOBAL_CONFIG: 'last_sync_config',
-    SALES_PREFIX: 'last_sync_sales_br_',
-    PURCHASES_PREFIX: 'last_sync_purchases_br_', 
-    KARDEX_PREFIX: 'last_sync_kardex_br_', 
-    CUSTOMER_LEDGER: 'last_sync_customer_ledger',
-    SUPPLIER_LEDGER: 'last_sync_supplier_ledger'
-};
+const SYNC_KEYS = {}; // Deprecated: Usamos Dexie como fuente de verdad del estado de sync.
 
 export const syncService = {
   
@@ -127,6 +118,8 @@ export const syncService = {
           userId: data.userId || 'unknown',
           userName: data.userName || 'Vendedor',
           client: data.client || null, 
+          // 🔥 CLAVE: Preservamos el método global de la venta (SPLIT, cash, etc.)
+          method: data.method || (Array.isArray(data.payments) && data.payments.length > 1 ? 'SPLIT' : (data.payment?.method || 'cash')),
           afip: data.afip ? {
               status: data.afip.status || 'PENDING',
               cae: data.afip.cae || null,
@@ -271,15 +264,13 @@ export const syncService = {
   async syncProducts(companyId) {
     if (!companyId) return;
     const localDb = await getDB();
-    const productsCount = await localDb.products.count();
-    const isDbEmpty = productsCount === 0;
-    const lastSyncStr = localStorage.getItem(SYNC_KEYS.PRODUCTS);
-    const lastSyncDate = lastSyncStr ? new Date(lastSyncStr) : new Date(0); 
+    
+    // 🔥 ANTI-LAGUNAS: Punto de partida desde Dexie
+    const lastLocal = await localDb.products.orderBy('updatedAt').last();
+    const lastSyncDate = lastLocal ? new Date(lastLocal.updatedAt) : new Date(0); 
 
     const productsRef = collection(db, 'companies', companyId, 'products');
-    let q = (!isDbEmpty && lastSyncStr) 
-        ? query(productsRef, where('updatedAt', '>', Timestamp.fromDate(lastSyncDate)))
-        : productsRef; 
+    let q = query(productsRef, where('updatedAt', '>', Timestamp.fromDate(lastSyncDate)));
 
     try {
         const snapshot = await getDocs(q);
@@ -291,7 +282,6 @@ export const syncService = {
             if (toDelete.length > 0) await localDb.products.bulkDelete(toDelete);
             if (toUpsert.length > 0) await localDb.products.bulkPut(toUpsert);
         }
-        localStorage.setItem(SYNC_KEYS.PRODUCTS, new Date().toISOString());
         await this.processScheduledPriceChanges();
     } catch (error) {
         if (error.code === 'failed-precondition') {
@@ -300,7 +290,6 @@ export const syncService = {
              const allDocs = snap.docs.map(doc => ({ id: doc.id, data: doc.data() }));
              const toUpsert = allDocs.filter(d => !d.data.deleted).map(d => this._sanitizeCloudProduct(d.data, d.id));
              await localDb.products.bulkPut(toUpsert);
-             localStorage.setItem(SYNC_KEYS.PRODUCTS, new Date().toISOString());
              await this.processScheduledPriceChanges();
         }
     }
@@ -314,23 +303,18 @@ export const syncService = {
   async syncInitialInventory(companyId, branchId) {
       if (!companyId || !branchId) return;
       const localDb = await getDB();
-      const lastSyncKey = SYNC_KEYS.INVENTORY_PREFIX + branchId;
-      const lastSyncStr = localStorage.getItem(lastSyncKey);
-      const lastSyncDate = lastSyncStr ? new Date(lastSyncStr) : new Date(0); 
+      
+      const lastLocal = await localDb.inventory.where('branchId').equals(branchId).sortBy('updatedAt');
+      const lastItem = lastLocal.length > 0 ? lastLocal[lastLocal.length - 1] : null;
+      const lastSyncDate = lastItem ? new Date(lastItem.updatedAt) : new Date(0); 
 
       const invRef = collection(db, 'companies', companyId, 'branches', branchId, 'inventory');
-      const localInventoryCount = await localDb.inventory.where('branchId').equals(branchId).count();
-
-      let q = (lastSyncStr && localInventoryCount > 0)
-          ? query(invRef, where('updatedAt', '>', Timestamp.fromDate(lastSyncDate)))
-          : invRef;
+      let q = query(invRef, where('updatedAt', '>', Timestamp.fromDate(lastSyncDate)));
       
       try {
           const snapshot = await getDocs(q);
-          if (snapshot.empty) {
-              localStorage.setItem(lastSyncKey, new Date().toISOString());
-              return;
-          }
+          if (snapshot.empty) return;
+
           const inventoryItems = snapshot.docs.map(doc => {
               const d = doc.data();
               return {
@@ -343,7 +327,6 @@ export const syncService = {
               };
           });
           if (inventoryItems.length > 0) await localDb.inventory.bulkPut(inventoryItems);
-          localStorage.setItem(lastSyncKey, new Date().toISOString());
       } catch (e) {
           if (e.code === 'failed-precondition') {
                const fullSnap = await getDocs(collection(db, 'companies', companyId, 'branches', branchId, 'inventory'));
@@ -356,7 +339,6 @@ export const syncService = {
                   syncStatus: 'synced'
                }));
                await localDb.inventory.bulkPut(allItems);
-               localStorage.setItem(lastSyncKey, new Date().toISOString());
           }
       }
   },
@@ -365,27 +347,14 @@ export const syncService = {
       if (!companyId) return;
       const localDb = await getDB();
       
-      const keySuffix = (role === 'OWNER' && (!branchId || branchId === 'ALL')) ? 'GLOBAL' : branchId;
-      const lastSyncKey = SYNC_KEYS.KARDEX_PREFIX + keySuffix;
-      const lastSyncStr = localStorage.getItem(lastSyncKey);
-      const countLocal = await localDb.movements.count(); 
+      const lastLocal = await localDb.movements.orderBy('updatedAt').last();
+      const lastSyncDate = lastLocal ? new Date(lastLocal.updatedAt) : new Date(0); 
       
       const movRef = collection(db, 'companies', companyId, 'movements');
-      let q;
+      let q = query(movRef, where('updatedAt', '>', Timestamp.fromDate(lastSyncDate)));
 
-      if (lastSyncStr && countLocal > 0) {
-          const lastSyncDate = new Date(lastSyncStr);
-          if (role === 'OWNER' && (!branchId || branchId === 'ALL')) {
-              q = query(movRef, where('updatedAt', '>', Timestamp.fromDate(lastSyncDate)));
-          } else {
-              q = query(movRef, where('branchId', '==', branchId), where('updatedAt', '>', Timestamp.fromDate(lastSyncDate)));
-          }
-      } else {
-          if (role === 'OWNER' && (!branchId || branchId === 'ALL')) {
-              q = query(movRef, orderBy('date', 'desc'), limit(3000));
-          } else {
-              q = query(movRef, where('branchId', '==', branchId), orderBy('date', 'desc'), limit(3000));
-          }
+      if (role !== 'OWNER' || branchId !== 'ALL') {
+          q = query(movRef, where('branchId', '==', branchId), where('updatedAt', '>', Timestamp.fromDate(lastSyncDate)));
       }
 
       try {
@@ -417,7 +386,6 @@ export const syncService = {
 
               if (movsToPut.length > 0) await localDb.movements.bulkPut(movsToPut);
           }
-          localStorage.setItem(lastSyncKey, new Date().toISOString());
       } catch (error) {
           console.warn("Kardex sync missing index, relying on push only:", error);
       }
@@ -427,48 +395,21 @@ export const syncService = {
       if (!companyId) return;
       try {
           const localDb = await getDB();
-          const keySuffix = (role === 'OWNER' && (!branchId || branchId === 'ALL')) ? 'GLOBAL' : branchId;
-          const lastSyncKey = SYNC_KEYS.SALES_PREFIX + keySuffix;
-          const lastSyncStr = localStorage.getItem(lastSyncKey);
-          const countLocal = await localDb.sales.count(); 
+          const lastLocal = await localDb.sales.orderBy('updatedAt').last();
+          const lastSyncDate = lastLocal ? new Date(lastLocal.updatedAt) : new Date(0);
           
           const salesRef = collection(db, 'companies', companyId, 'sales');
-          let q;
+          let q = query(salesRef, where('updatedAt', '>', Timestamp.fromDate(lastSyncDate)));
 
-          if (lastSyncStr && countLocal > 0) {
-              const lastSyncDate = new Date(lastSyncStr);
-              if (role === 'OWNER' && (!branchId || branchId === 'ALL')) {
-                  q = query(salesRef, where('updatedAt', '>', Timestamp.fromDate(lastSyncDate)));
-              } else {
-                  q = query(salesRef, where('branchId', '==', branchId), where('updatedAt', '>', Timestamp.fromDate(lastSyncDate)));
-              }
-          } else {
-              if (role === 'OWNER' && (!branchId || branchId === 'ALL')) {
-                  q = query(salesRef, orderBy('date', 'desc'), limit(3000));
-              } else {
-                  q = query(salesRef, where('branchId', '==', branchId), orderBy('date', 'desc'), limit(3000));
-              }
+          if (role !== 'OWNER' || branchId !== 'ALL') {
+              q = query(salesRef, where('branchId', '==', branchId), where('updatedAt', '>', Timestamp.fromDate(lastSyncDate)));
           }
 
           const snapshot = await getDocs(q);
-          
           if (!snapshot.empty) {
-              const pendingIds = await localDb.sales.where('syncStatus').equals('pending').primaryKeys();
-              const pendingSet = new Set(pendingIds);
-              
-              const salesToPut = [];
-              snapshot.docs.forEach(docSnap => {
-                  if (!pendingSet.has(docSnap.id)) {
-                      salesToPut.push(this._sanitizeCloudSale(docSnap.data(), docSnap.id));
-                  }
-              });
-
-              if (salesToPut.length > 0) {
-                  await localDb.sales.bulkPut(salesToPut);
-              }
+              const salesToPut = snapshot.docs.map(docSnap => this._sanitizeCloudSale(docSnap.data(), docSnap.id));
+              if (salesToPut.length > 0) await localDb.sales.bulkPut(salesToPut);
           }
-          localStorage.setItem(lastSyncKey, new Date().toISOString());
-
       } catch (error) {}
   },
 
@@ -809,6 +750,63 @@ export const syncService = {
             if (itemsToPut.length > 0) try { await localDb.table(collectionName).bulkPut(itemsToPut); } catch(e){}
         }));
     });
+
+    // 🔥 LISTENER DE SHIFTS (TURNOS)
+    try {
+        const shiftsQuery = query(
+            collection(db, 'companies', companyId, 'shifts'),
+            orderBy('updatedAt', 'desc'), 
+            limit(20)
+        );
+        this._unsubscribes.push(onSnapshot(shiftsQuery, async (snapshot) => {
+            const localDb = await getDB();
+            const pendingIds = await localDb.shifts.filter(s => s.syncStatus !== 'synced').primaryKeys();
+            const pendingSet = new Set(pendingIds);
+            const toPut = [];
+            
+            snapshot.docChanges().forEach(change => {
+                if (change.type === 'added' || change.type === 'modified') {
+                    if (!pendingSet.has(change.doc.id)) {
+                        toPut.push(this._sanitizeCloudShift(change.doc.data(), change.doc.id));
+                    }
+                }
+            });
+            if (toPut.length > 0) await localDb.shifts.bulkPut(toPut);
+        }));
+    } catch (e) { console.warn("Error en listener de shifts:", e); }
+
+    // 🔥 LISTENER DE CASH MOVEMENTS (GASTOS/INGRESOS)
+    try {
+        const movsQuery = query(
+            collection(db, 'companies', companyId, 'cash_movements'),
+            orderBy('date', 'desc'), 
+            limit(50)
+        );
+        this._unsubscribes.push(onSnapshot(movsQuery, async (snapshot) => {
+            const localDb = await getDB();
+            const pendingIds = await localDb.cash_movements.filter(m => m.syncStatus !== 'synced').primaryKeys();
+            const pendingSet = new Set(pendingIds);
+            const toPut = [];
+            
+            snapshot.docChanges().forEach(change => {
+                if (change.type === 'added' || change.type === 'modified') {
+                    if (!pendingSet.has(change.doc.id)) {
+                        toPut.push(this._sanitizeCloudCashMovement(change.doc.data(), change.doc.id));
+                    }
+                }
+            });
+            if (toPut.length > 0) await localDb.cash_movements.bulkPut(toPut);
+        }));
+    } catch (e) { console.warn("Error en listener de cash_movements:", e); }
+
+    // 🔥 AUTO-SYNC AL VOLVER A ESTAR ONLINE
+    if (typeof window !== 'undefined' && !window._noar_online_init) {
+        window.addEventListener('online', () => {
+            console.log("🌐 Internet restaurado. Sincronizando pendientes...");
+            this.syncAll();
+        });
+        window._noar_online_init = true;
+    }
   },
 
   stopListeners() {
@@ -882,61 +880,50 @@ export const syncService = {
     let totalSynced = 0;
 
     if (pendingProducts.length > 0) {
-        const productChunks = this.chunkArray(pendingProducts, 100); 
-        for (const chunk of productChunks) {
-            const batch = writeBatch(db);
-            const syncedIds = [];
-            
-            for (const product of chunk) {
+        for (const product of pendingProducts) {
+            try {
                 if (!product.id) continue;
                 const docRef = doc(collection(db, 'companies', companyId, 'products'), String(product.id));
                 const { syncStatus, stock, promo, ...masterData } = product; 
                 const nowIso = new Date().toISOString();
 
-                batch.set(docRef, {
+                await setDoc(docRef, {
                      ...this._deepSanitize(masterData),
                      lastUpdated: serverTimestamp(),
                      updatedAt: nowIso 
-                }, { merge: true }); 
-                syncedIds.push({ key: product.id, changes: { syncStatus: 'synced', updatedAt: nowIso } });
-            }
+                }, { merge: true });
 
-            if (syncedIds.length > 0) {
-                await batch.commit();
-                await localDb.products.bulkUpdate(syncedIds);
-                totalSynced += syncedIds.length;
-                await this._sleep(150); 
+                await localDb.products.update(product.id, { 
+                    syncStatus: 'synced', 
+                    updatedAt: nowIso 
+                });
+                totalSynced++;
+            } catch (err) {
+                console.warn(`❌ Error sinc. producto ${product.id || '?'}:`, err);
             }
         }
     }
 
     if (pendingInventory.length > 0) {
-        const invChunks = this.chunkArray(pendingInventory, 100);
-        for (const chunk of invChunks) {
-            const batch = writeBatch(db);
-            const syncedKeys = [];
-            
-            for (const inv of chunk) {
+        for (const inv of pendingInventory) {
+            try {
                 const stockRef = doc(db, `companies/${companyId}/branches/${inv.branchId}/inventory`, String(inv.productId));
                 const nowIso = new Date().toISOString();
-                batch.set(stockRef, {
+                
+                await setDoc(stockRef, {
                     productId: inv.productId,
                     stock: parseFloat(inv.stock) || 0,
                     promo: inv.promo || null, 
                     updatedAt: nowIso
                 }, { merge: true });
-                syncedKeys.push({ key: [inv.branchId, inv.productId], changes: { syncStatus: 'synced', updatedAt: nowIso } });
-            }
 
-            if (syncedKeys.length > 0) {
-                await batch.commit();
-                await localDb.transaction('rw', localDb.inventory, async () => {
-                    for (const item of syncedKeys) {
-                        await localDb.inventory.update(item.key, item.changes);
-                    }
+                await localDb.inventory.update([inv.branchId, inv.productId], { 
+                    syncStatus: 'synced', 
+                    updatedAt: nowIso 
                 });
-                totalSynced += syncedKeys.length;
-                await this._sleep(150); 
+                totalSynced++;
+            } catch (err) {
+                console.warn(`❌ Error sinc. inventario ${inv.productId || '?'}:`, err);
             }
         }
     }
@@ -955,33 +942,29 @@ export const syncService = {
               const pendingItems = await localDb.table(collectionName).filter(i => i.syncStatus !== 'synced').toArray();
               if (pendingItems.length === 0) continue;
 
-              const chunks = this.chunkArray(pendingItems, 100);
-              const colRef = collection(db, 'companies', companyId, collectionName);
-
-              for (const chunk of chunks) {
-                  const batch = writeBatch(db);
-                  const syncedUpdates = [];
-
-                  for (const item of chunk) {
+              for (const item of pendingItems) {
+                  try {
                       if (!item.id) continue;
                       const safeId = this._ensureValidCloudId(item, collectionName.slice(0, 3));
-                      const docRef = doc(colRef, safeId);
+                      const docRef = doc(collection(db, 'companies', companyId, collectionName), safeId);
                       const { syncStatus, localId, id, ...cleanItem } = item;
                       const nowIso = new Date().toISOString();
 
-                      batch.set(docRef, {
+                      await setDoc(docRef, {
                           ...this._deepSanitize(cleanItem),
                           firestoreId: safeId,
                           updatedAt: nowIso
                       }, { merge: true });
-                      
-                      syncedUpdates.push({ key: item.id, changes: { syncStatus: 'synced', firestoreId: safeId, updatedAt: nowIso } });
-                  }
 
-                  await batch.commit();
-                  await localDb.table(collectionName).bulkUpdate(syncedUpdates);
-                  totalSynced += syncedUpdates.length;
-                  await this._sleep(100); 
+                      await localDb.table(collectionName).update(item.id, { 
+                          syncStatus: 'synced', 
+                          firestoreId: safeId, 
+                          updatedAt: nowIso 
+                      });
+                      totalSynced++;
+                  } catch (itemErr) {
+                      console.warn(`❌ Error sinc. maestro [${collectionName}] ${item.id}:`, itemErr);
+                  }
               }
           } catch(e) {
               console.error(`Error en syncPendingMasters [${collectionName}]:`, e);
@@ -996,22 +979,18 @@ export const syncService = {
     
     if (pendingSales.length === 0) return { synced: 0 };
 
-    const chunks = this.chunkArray(pendingSales, 100); 
     let totalSynced = 0;
+    const salesCollection = collection(db, 'companies', companyId, 'sales');
 
-    for (const batchSales of chunks) {
-        const batch = writeBatch(db);
-        const salesCollection = collection(db, 'companies', companyId, 'sales');
-        const syncedUpdates = [];
-
-        for (const sale of batchSales) {
+    for (const sale of pendingSales) {
+        try {
             if (!sale.id) continue;
             const safeId = this._ensureValidCloudId(sale, 'sale');
             const docRef = doc(salesCollection, safeId); 
             const { localId, syncStatus, id, ...cleanSale } = sale;
             const nowIso = new Date().toISOString();
 
-            batch.set(docRef, {
+            await setDoc(docRef, {
                 ...this._deepSanitize(cleanSale),
                 firestoreId: safeId,
                 branchId: sale.branchId || branchId || 'main',
@@ -1019,17 +998,16 @@ export const syncService = {
                 updatedAt: nowIso, 
                 origin: 'POS_WEB' 
             }, { merge: true });
-            
-            syncedUpdates.push({
-                key: sale.id, 
-                changes: { syncStatus: 'synced', firestoreId: safeId, updatedAt: nowIso }
-            });
-        }
 
-        await batch.commit();
-        await localDb.sales.bulkUpdate(syncedUpdates);
-        totalSynced += batchSales.length;
-        await this._sleep(150); 
+            await localDb.sales.update(sale.id, { 
+                syncStatus: 'synced', 
+                firestoreId: safeId, 
+                updatedAt: nowIso 
+            });
+            totalSynced++;
+        } catch (err) {
+            console.error(`❌ Error sincronizando venta ${sale.id}:`, err);
+        }
     }
     return { synced: totalSynced };
   },
@@ -1040,15 +1018,11 @@ export const syncService = {
       
       if (pendingShifts.length === 0) return { synced: 0 };
 
-      const chunks = this.chunkArray(pendingShifts, 100);
       let totalSynced = 0;
       const colRef = collection(db, 'companies', companyId, 'shifts');
 
-      for (const chunk of chunks) {
-          const batch = writeBatch(db);
-          const syncedUpdates = [];
-
-          for (const shift of chunk) {
+      for (const shift of pendingShifts) {
+          try {
               if (!shift.id) continue;
               const safeId = this._ensureValidCloudId(shift, `shift_${shift.branchId || 'b'}`);
               const docRef = doc(colRef, safeId); 
@@ -1056,22 +1030,21 @@ export const syncService = {
               const { localId, syncStatus, id, ...cleanShift } = shift;
               const nowIso = new Date().toISOString();
 
-              batch.set(docRef, {
+              await setDoc(docRef, {
                   ...this._deepSanitize(cleanShift),
                   firestoreId: safeId,
                   updatedAt: nowIso
               }, { merge: true });
-              
-              syncedUpdates.push({
-                  key: shift.id,
-                  changes: { syncStatus: 'synced', firestoreId: safeId, updatedAt: nowIso }
-              }); 
-          }
 
-          await batch.commit();
-          await localDb.shifts.bulkUpdate(syncedUpdates);
-          totalSynced += syncedUpdates.length;
-          await this._sleep(100); 
+              await localDb.shifts.update(shift.id, { 
+                  syncStatus: 'synced', 
+                  firestoreId: safeId, 
+                  updatedAt: nowIso 
+              });
+              totalSynced++;
+          } catch (err) {
+              console.warn(`❌ Error sinc. turno ${shift.id}:`, err);
+          }
       }
       return { synced: totalSynced };
   },
@@ -1082,37 +1055,32 @@ export const syncService = {
       
       if (pendingMovs.length === 0) return { synced: 0 };
 
-      const chunks = this.chunkArray(pendingMovs, 100);
       let totalSynced = 0;
       const colRef = collection(db, 'companies', companyId, 'cash_movements');
 
-      for (const chunk of chunks) {
-          const batch = writeBatch(db);
-          const syncedUpdates = [];
-
-          for (const mov of chunk) {
+      for (const mov of pendingMovs) {
+          try {
               if (!mov.id) continue;
               const safeId = this._ensureValidCloudId(mov, 'cash');
               const docRef = doc(colRef, safeId); 
               const { syncStatus, localId, id, ...cleanMov } = mov;
               const nowIso = new Date().toISOString();
 
-              batch.set(docRef, {
+              await setDoc(docRef, {
                   ...this._deepSanitize(cleanMov),
                   firestoreId: safeId,
                   updatedAt: nowIso
               }, { merge: true });
-              
-              syncedUpdates.push({
-                  key: mov.id,
-                  changes: { syncStatus: 'synced', firestoreId: safeId, updatedAt: nowIso }
-              });
-          }
 
-          await batch.commit();
-          await localDb.cash_movements.bulkUpdate(syncedUpdates);
-          totalSynced += syncedUpdates.length;
-          await this._sleep(100); 
+              await localDb.cash_movements.update(mov.id, { 
+                  syncStatus: 'synced', 
+                  firestoreId: safeId, 
+                  updatedAt: nowIso 
+              });
+              totalSynced++;
+          } catch (err) {
+              console.warn(`❌ Error sinc. mov. caja ${mov.id}:`, err);
+          }
       }
       return { synced: totalSynced };
   },
@@ -1123,38 +1091,33 @@ export const syncService = {
       
       if (pendingPurchases.length === 0) return { synced: 0 };
 
-      const chunks = this.chunkArray(pendingPurchases, 100);
       let totalSynced = 0;
       const colRef = collection(db, 'companies', companyId, 'purchases');
 
-      for (const chunk of chunks) {
-          const batch = writeBatch(db);
-          const syncedUpdates = [];
-
-          for (const purchase of chunk) {
+      for (const purchase of pendingPurchases) {
+          try {
               if (!purchase.id) continue;
               const safeId = this._ensureValidCloudId(purchase, 'purch');
               const docRef = doc(colRef, safeId); 
               const { syncStatus, localId, id, ...cleanPurchase } = purchase;
               const nowIso = new Date().toISOString();
 
-              batch.set(docRef, {
+              await setDoc(docRef, {
                   ...this._deepSanitize(cleanPurchase),
                   firestoreId: safeId,
                   syncedAt: serverTimestamp(),
                   updatedAt: nowIso
               }, { merge: true });
-              
-              syncedUpdates.push({
-                  key: purchase.id,
-                  changes: { syncStatus: 'synced', firestoreId: safeId, updatedAt: nowIso }
-              });
-          }
 
-          await batch.commit();
-          await localDb.purchases.bulkUpdate(syncedUpdates);
-          totalSynced += syncedUpdates.length;
-          await this._sleep(100); 
+              await localDb.purchases.update(purchase.id, { 
+                  syncStatus: 'synced', 
+                  firestoreId: safeId, 
+                  updatedAt: nowIso 
+              });
+              totalSynced++;
+          } catch (err) {
+              console.warn(`❌ Error sinc. compra ${purchase.id}:`, err);
+          }
       }
       return { synced: totalSynced };
   },
@@ -1165,38 +1128,33 @@ export const syncService = {
       
       if (pendingLedger.length === 0) return { synced: 0 };
 
-      const chunks = this.chunkArray(pendingLedger, 100);
       let totalSynced = 0;
       const colRef = collection(db, 'companies', companyId, 'supplier_ledger');
 
-      for (const chunk of chunks) {
-          const batch = writeBatch(db);
-          const syncedUpdates = [];
-
-          for (const mov of chunk) {
+      for (const mov of pendingLedger) {
+          try {
               if (!mov.id) continue;
               const safeId = this._ensureValidCloudId(mov, 'sledg');
               const docRef = doc(colRef, safeId); 
               const { syncStatus, localId, id, ...cleanMov } = mov;
               const nowIso = new Date().toISOString();
 
-              batch.set(docRef, {
+              await setDoc(docRef, {
                   ...this._deepSanitize(cleanMov),
                   firestoreId: safeId,
                   syncedAt: serverTimestamp(),
                   updatedAt: nowIso
               }, { merge: true });
-              
-              syncedUpdates.push({
-                  key: mov.id,
-                  changes: { syncStatus: 'synced', firestoreId: safeId, updatedAt: nowIso }
-              });
-          }
 
-          await batch.commit();
-          await localDb.supplier_ledger.bulkUpdate(syncedUpdates);
-          totalSynced += syncedUpdates.length;
-          await this._sleep(100); 
+              await localDb.supplier_ledger.update(mov.id, { 
+                  syncStatus: 'synced', 
+                  firestoreId: safeId, 
+                  updatedAt: nowIso 
+              });
+              totalSynced++;
+          } catch (err) {
+              console.warn(`❌ Error sinc. ledger proveedor ${mov.id}:`, err);
+          }
       }
       return { synced: totalSynced };
   },
@@ -1207,38 +1165,33 @@ export const syncService = {
       
       if (pendingMovs.length === 0) return { synced: 0 };
 
-      const chunks = this.chunkArray(pendingMovs, 100);
       let totalSynced = 0;
       const colRef = collection(db, 'companies', companyId, 'movements');
 
-      for (const chunk of chunks) {
-          const batch = writeBatch(db);
-          const syncedUpdates = [];
-
-          for (const mov of chunk) {
+      for (const mov of pendingMovs) {
+          try {
               if (!mov.id) continue;
               const safeId = this._ensureValidCloudId(mov, 'mov');
               const docRef = doc(colRef, safeId); 
               const { syncStatus, localId, id, ...cleanMov } = mov;
               const nowIso = new Date().toISOString();
 
-              batch.set(docRef, {
+              await setDoc(docRef, {
                   ...this._deepSanitize(cleanMov),
                   firestoreId: safeId,
                   syncedAt: serverTimestamp(),
                   updatedAt: nowIso
               }, { merge: true });
-              
-              syncedUpdates.push({
-                  key: mov.id,
-                  changes: { syncStatus: 'synced', firestoreId: safeId, updatedAt: nowIso }
-              });
-          }
 
-          await batch.commit();
-          await localDb.movements.bulkUpdate(syncedUpdates);
-          totalSynced += syncedUpdates.length;
-          await this._sleep(100); 
+              await localDb.movements.update(mov.id, { 
+                  syncStatus: 'synced', 
+                  firestoreId: safeId, 
+                  updatedAt: nowIso 
+              });
+              totalSynced++;
+          } catch (err) {
+              console.warn(`❌ Error sinc. kardex ${mov.id}:`, err);
+          }
       }
       return { synced: totalSynced };
   },
@@ -1249,38 +1202,33 @@ export const syncService = {
       
       if (pendingLedger.length === 0) return { synced: 0 };
 
-      const chunks = this.chunkArray(pendingLedger, 100);
       let totalSynced = 0;
       const colRef = collection(db, 'companies', companyId, 'customer_ledger');
 
-      for (const chunk of chunks) {
-          const batch = writeBatch(db);
-          const syncedUpdates = [];
-
-          for (const mov of chunk) {
+      for (const mov of pendingLedger) {
+          try {
               if (!mov.id) continue;
               const safeId = this._ensureValidCloudId(mov, 'cledg');
               const docRef = doc(colRef, safeId); 
               const { syncStatus, localId, id, ...cleanMov } = mov;
               const nowIso = new Date().toISOString();
 
-              batch.set(docRef, {
+              await setDoc(docRef, {
                   ...this._deepSanitize(cleanMov),
                   firestoreId: safeId,
                   syncedAt: serverTimestamp(),
                   updatedAt: nowIso
               }, { merge: true });
-              
-              syncedUpdates.push({
-                  key: mov.id,
-                  changes: { syncStatus: 'synced', firestoreId: safeId, updatedAt: nowIso }
-              });
-          }
 
-          await batch.commit();
-          await localDb.customer_ledger.bulkUpdate(syncedUpdates);
-          totalSynced += syncedUpdates.length;
-          await this._sleep(100); 
+              await localDb.customer_ledger.update(mov.id, { 
+                  syncStatus: 'synced', 
+                  firestoreId: safeId, 
+                  updatedAt: nowIso 
+              });
+              totalSynced++;
+          } catch (err) {
+              console.warn(`❌ Error sinc. ledger cliente ${mov.id}:`, err);
+          }
       }
       return { synced: totalSynced };
   },

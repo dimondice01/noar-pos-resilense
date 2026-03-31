@@ -47,6 +47,7 @@ import { SuperAdminPage } from './modules/admin/pages/SuperAdminPage';
 import { CashPage } from './modules/cash/pages/CashPage'; 
 import { ClientsPage } from './modules/clients/pages/ClientsPage';
 import { CompanySettingsPage } from './modules/admin/pages/CompanySettingsPage';
+import { QATestPage } from './modules/qa/QATestPage'; // 🧪 QA TEMPORAL
 
 function App() {
     const { user, initAuthListener, isLoading } = useAuthStore();
@@ -122,6 +123,7 @@ function App() {
                 <Route path="/login/:companySlug" element={<LoginPage />} />
                 
                 <Route path="/plan-expired" element={<PaymentRequiredPage />} />
+                <Route path="/qa-test" element={<QATestPage />} /> {/* 🧪 QA TEMPORAL */}
 
                 {/* === ZONA PRIVADA === */}
                 <Route element={<ProtectedRoute />}>

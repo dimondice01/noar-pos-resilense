@@ -3,12 +3,15 @@ import { collection, query, where, onSnapshot } from 'firebase/firestore';
 import { db } from '../../../database/firebase';
 import { getDB } from '../../../database/db'; // 🔥 IMPORTANTE: Usamos Dexie para el cruce rápido de Stock
 import { useAuthStore } from '../../auth/store/useAuthStore';
+import { salesRepository } from '../../sales/repositories/salesRepository'; // 🔥 SINCRONIZADOR DE BAJADA
 
 export const useCloudDashboard = () => {
     const { user, activeBranchId } = useAuthStore();
     
     // Referencia para evitar actualizaciones en componente desmontado
     const isMounted = useRef(true);
+    const syncBuffer = useRef([]);
+    const syncTimeout = useRef(null);
 
     const [stats, setStats] = useState({
         totalSales: 0,
@@ -29,6 +32,10 @@ export const useCloudDashboard = () => {
         clientDebt: 0,
         supplierDebt: 0,
         lowStockItems: [],
+        
+        // 🔥 AUDITORÍA NEXUS
+        abandonedSales: [],
+        abandonedCount: 0,
         
         loading: true
     });
@@ -81,7 +88,7 @@ export const useCloudDashboard = () => {
                 
                 // 🛡️ FILTRO CLIENT-SIDE: Sucursal
                 if (activeBranchId && activeBranchId !== 'ALL' && data.branchId !== activeBranchId) return;
-                if (data.status === 'CANCELLED') return;
+                if (data.status === 'CANCELLED' || data.status === 'ABANDONED') return;
 
                 const saleTotal = parseFloat(data.total || 0);
                 total += saleTotal;
@@ -113,7 +120,8 @@ export const useCloudDashboard = () => {
                     date: data.date,
                     time: new Date(data.date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
                     total: saleTotal,
-                    method: data.payments ? 'COMBINADO' : (data.payment?.method || data.method || 'CASH').toUpperCase(),
+                    // 🔥 Leer data.method directamente, no inferir por la existencia de payments[]
+                    method: (data.method === 'SPLIT' ? 'COMBINADO' : (data.method || data.payment?.method || 'CASH')).toUpperCase(),
                     branchId: data.branchId
                 });
 
@@ -136,6 +144,24 @@ export const useCloudDashboard = () => {
             // 🔥 SPRINT 6: Cálculo de Margen Operativo (%)
             const marginPercentage = total > 0 ? Math.round((netProfit / total) * 100) : 0;
 
+            // 🔥 SINCRONIZACIÓN DE BAJADA DEBENZED (CLOUD -> LOCAL)
+            snapshot.docChanges().forEach(change => {
+                if (change.type === 'added' || change.type === 'modified') {
+                    syncBuffer.current.push({ id: change.doc.id, ...change.doc.data() });
+                }
+            });
+
+            if (syncTimeout.current) clearTimeout(syncTimeout.current);
+            syncTimeout.current = setTimeout(async () => {
+                if (syncBuffer.current.length > 0) {
+                    const batch = [...syncBuffer.current];
+                    syncBuffer.current = [];
+                    for (const sale of batch) {
+                        await salesRepository.saveFromCloud(sale);
+                    }
+                }
+            }, 2000);
+
             setStats(prev => ({
                 ...prev,
                 totalSales: total,
@@ -151,6 +177,35 @@ export const useCloudDashboard = () => {
                 loading: false
             }));
         }, (err) => console.warn("Sales Sync Error:", err.code));
+
+        // ==========================================
+        // 1.1 MONITOR DE SINIESTROS (SOLO ADMIN/OWNER) 🚨
+        // ==========================================
+        let unsubAbandoned = null;
+        if (user.role === 'ADMIN' || user.role === 'OWNER') {
+            const abandonedQ = query(
+                salesRef,
+                where('status', '==', 'ABANDONED'),
+                where('date', '>=', start.toISOString())
+            );
+
+            unsubAbandoned = onSnapshot(abandonedQ, (snapshot) => {
+                if (!isMounted.current) return;
+                const abandoned = snapshot.docs
+                    .map(doc => ({ id: doc.id, ...doc.data() }))
+                    .filter(d => {
+                        if (activeBranchId && activeBranchId !== 'ALL') return d.branchId === activeBranchId;
+                        return true;
+                    })
+                    .sort((a, b) => new Date(b.date) - new Date(a.date));
+
+                setStats(prev => ({ 
+                    ...prev, 
+                    abandonedSales: abandoned,
+                    abandonedCount: abandoned.length 
+                }));
+            });
+        }
 
         // ==========================================
         // 2. MONITOR DE EGRESOS OPERATIVOS
@@ -291,6 +346,7 @@ export const useCloudDashboard = () => {
             if (unsubActiveShifts) unsubActiveShifts();
             if (unsubClients) unsubClients();     // 🔥 SPRINT 6
             if (unsubSuppliers) unsubSuppliers(); // 🔥 SPRINT 6
+            if (unsubAbandoned) unsubAbandoned(); // 🔥 SINIESTROS
             clearInterval(stockInterval);         // 🔥 SPRINT 6
         };
 

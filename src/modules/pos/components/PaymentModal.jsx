@@ -38,11 +38,15 @@ export const PaymentModal = ({
     isProcessing = false,
     posConfig,
     processBudget,
-    setTabPaymentMethod // 🔥 PROP PARA RECALCULAR PROMOS EN VIVO
+    setTabPaymentMethod 
 }) => {
     
     // ==========================================
     // 1. ESTADOS Y CONFIGURACIÓN
+    // ==========================================
+    const { user, activeBranchId, activeBranchName } = useAuthStore(); 
+    const [withAfip, setWithAfip] = useState(false);
+
     // ==========================================
     
     // Modo Split (Combinado)
@@ -77,8 +81,6 @@ export const PaymentModal = ({
     const withAfipRef = useRef(false);
 
     // Hooks
-    const { user, activeBranchId, activeBranchName } = useAuthStore(); 
-    const [withAfip, setWithAfip] = useState(false);
 
     const ACCOUNT_DATA = {
         alias: "MAXIKIOSCO.ESQUINA",
@@ -88,6 +90,19 @@ export const PaymentModal = ({
     // ==========================================
     // 2. CÁLCULOS MATEMÁTICOS (HÍBRIDOS & RECARGOS)
     // ==========================================
+    const methodsData = {
+        cash: { icon: Banknote, label: 'Efectivo', color: 'brand' },
+        transfer: { icon: Landmark, label: 'Transf.', color: 'purple-600' },
+        mercadopago: { icon: QrCode, label: 'QR MP', color: 'blue-500' },
+        point: { icon: CreditCard, label: 'Point', color: 'blue-600' },
+        manual_card: { icon: Calculator, label: 'Tarjeta', color: 'indigo-600' },
+        employee_account: { icon: User, label: 'Personal', color: 'orange-500' },
+        account: { icon: Users, label: 'Cta. Cte.', color: 'red-500' }, 
+        budget: { icon: FileArchive, label: 'Presup.', color: 'sys-600' }
+    };
+
+    const currentMethodInfo = methodsData[method] || methodsData.cash;
+    const CurrentIcon = currentMethodInfo.icon;
     
     const methodSurchargePercentage = posConfig?.paymentSurcharges?.[method] || 0;
     
@@ -192,7 +207,7 @@ export const PaymentModal = ({
         if (isSplitMode && !selectedRate && !isFullyPaid && !isBudgetMode) {
             setAmountToPay(remainingBase.toFixed(2));
         }
-    }, [remainingBase, isSplitMode, selectedRate, isFullyPaid, isBudgetMode]);
+    }, [remainingBase, isSplitMode, selectedRate, isFullyPaid, isBudgetMode, method]);
 
     // ==========================================
     // 4. DATA FETCHING
@@ -268,8 +283,8 @@ export const PaymentModal = ({
             surcharge: interestAmount, 
             total: amount + interestAmount, 
             reference: method === 'employee_account' ? `A cuenta: ${employees.find(e => e.uid === selectedEmployeeId)?.name}` : (reference || (selectedRate ? `${selectedBrand?.brand} ${selectedRate.qty} ctes` : '')),
-            brand: selectedBrand?.brand,
-            employeeId: method === 'employee_account' ? selectedEmployeeId : null
+            brand: selectedBrand?.brand || null,
+            employeeId: method === 'employee_account' ? (selectedEmployeeId || null) : null
         };
 
         setPayments([...payments, paymentObj]);
@@ -388,8 +403,19 @@ export const PaymentModal = ({
         if (isProcessing) return;
 
         if (isSplitMode) {
-            if (!isFullyPaid) handleAddSplitPayment();
-            else handleFinalizeSplit();
+            if (isFullyPaid) {
+                // Todos los pagos están cubiertos → finalizar la venta
+                handleFinalizeSplit();
+            } else if (method === 'point' && digitalState === 'idle') {
+                // 🔥 EN SPLIT: Point también necesita trigger de terminal PRIMERO
+                triggerPointTransaction();
+            } else if (method === 'mercadopago' && digitalState === 'idle') {
+                // 🔥 EN SPLIT: QR también necesita trigger de terminal PRIMERO  
+                triggerQrTransaction();
+            } else if (['idle', 'approved'].includes(digitalState) || !['point', 'mercadopago'].includes(method)) {
+                // Efectivo, transferencia, tarjeta manual, etc. → agregar directo
+                handleAddSplitPayment();
+            }
         } else {
             if (method === 'point' && digitalState === 'idle') {
                 triggerPointTransaction();
@@ -646,7 +672,7 @@ export const PaymentModal = ({
                             </div>
                         )}
 
-                        {isSplitMode ? (
+                        {isSplitMode && (
                             <div className="bg-white p-3 rounded-xl border border-sys-200">
                                 <div className="flex justify-between text-xs mb-1">
                                     <span className="text-sys-500 font-bold">PAGADO:</span>
@@ -657,38 +683,41 @@ export const PaymentModal = ({
                                     <span className={remainingBase > 0 ? "text-orange-600" : "text-sys-400"}>$ {Math.max(0, remainingBase).toLocaleString()}</span>
                                 </div>
                             </div>
-                        ) : (
-                            <div className={cn("p-4 rounded-xl border-2 transition-all duration-300", 
-                                isBudgetMode ? "bg-sys-100 border-sys-300 opacity-50 pointer-events-none" :
-                                isPartialPayment ? "bg-orange-50 border-orange-200" : 
-                                changeValue > 0 ? "bg-green-50 border-green-200" : "bg-white border-sys-200",
-                                (currentInterestRate > 0 || method === 'employee_account' || digitalState === 'waiting') && !isBudgetMode && "opacity-90 grayscale-[0.5]"
-                            )}>
-                                <p className={cn("text-[10px] uppercase font-bold mb-1 flex justify-between", isPartialPayment ? "text-orange-700" : "text-sys-500")}>
-                                    <span>Monto que entrega / fía</span>
-                                    {(currentInterestRate > 0 || method === 'employee_account' || method === 'point') && !isBudgetMode && !isAccountMode && <span className="text-[9px] bg-sys-200 px-1 rounded text-sys-600">AUTO</span>}
-                                </p>
-                                <div className="flex items-center relative">
-                                    <span className="text-lg font-bold text-sys-400 mr-1">$</span>
-                                    <input 
-                                        ref={cashInputRef}
-                                        type="number" 
-                                        className={cn(
-                                            "w-full bg-transparent text-2xl font-black outline-none text-sys-900 placeholder-sys-300 transition-colors",
-                                            (currentInterestRate > 0 || method === 'employee_account' || method === 'point' || isBudgetMode) && "cursor-not-allowed text-sys-600"
-                                        )}
-                                        value={amountToPay} 
-                                        onChange={e => currentInterestRate === 0 && !isBudgetMode && setAmountToPay(e.target.value)}
-                                        onKeyDown={handleKeyDown}
-                                        readOnly={currentInterestRate > 0 || method === 'employee_account' || isProcessing || method === 'point' || isBudgetMode}
-                                        disabled={isProcessing || isBudgetMode}
-                                        placeholder={Math.round(total).toString()}
-                                    />
-                                </div>
-                                {changeValue > 0 && !isBudgetMode && !isAccountMode && <p className="text-right text-xs font-bold text-green-600 mt-1">Vuelto: $ {changeValue.toLocaleString('es-AR')}</p>}
-                                {debtValue > 0 && !isBudgetMode && !isAccountMode && <p className="text-right text-xs font-bold text-orange-600 mt-1">Falta: $ {debtValue.toLocaleString('es-AR')}</p>}
-                            </div>
                         )}
+
+                        <div className={cn("p-4 rounded-xl border-2 transition-all duration-300", 
+                            isBudgetMode ? "bg-sys-100 border-sys-300 opacity-50 pointer-events-none" :
+                            isPartialPayment && !isSplitMode ? "bg-orange-50 border-orange-200" : 
+                            changeValue > 0 && !isSplitMode ? "bg-green-50 border-green-200" : "bg-white border-sys-200",
+                            ((currentInterestRate > 0 && !isSplitMode) || method === 'employee_account' || (digitalState === 'waiting' && !isSplitMode)) && !isBudgetMode && "opacity-90 grayscale-[0.5]"
+                        )}>
+                            <p className={cn("text-[10px] uppercase font-bold mb-1 flex justify-between items-center", isPartialPayment && !isSplitMode ? "text-orange-700" : "text-sys-500")}>
+                                <span className="flex items-center gap-1.5">
+                                    {isSplitMode && <CurrentIcon size={12} className={cn(`text-${currentMethodInfo.color}`)}/>}
+                                    {isSplitMode ? `Monto para ${currentMethodInfo.label.toUpperCase()}` : "Monto que entrega / fía"}
+                                </span>
+                                {((currentInterestRate > 0 && !isSplitMode) || method === 'employee_account' || (method === 'point' && !isSplitMode)) && !isBudgetMode && !isAccountMode && <span className="text-[9px] bg-sys-200 px-1 rounded text-sys-600 uppercase font-black">Input Auto</span>}
+                            </p>
+                            <div className="flex items-center relative">
+                                <span className="text-lg font-bold text-sys-400 mr-1">$</span>
+                                <input 
+                                    ref={cashInputRef}
+                                    type="number" 
+                                    className={cn(
+                                        "w-full bg-transparent text-2xl font-black outline-none text-sys-900 placeholder-sys-300 transition-colors",
+                                        ((currentInterestRate > 0 && !isSplitMode) || method === 'employee_account' || (method === 'point' && !isSplitMode) || isBudgetMode) && "cursor-not-allowed text-sys-600"
+                                    )}
+                                    value={amountToPay} 
+                                    onChange={e => (currentInterestRate === 0 || isSplitMode) && !isBudgetMode && setAmountToPay(e.target.value)}
+                                    onKeyDown={handleKeyDown}
+                                    readOnly={((currentInterestRate > 0 && !isSplitMode) || method === 'employee_account' || isProcessing || (method === 'point' && !isSplitMode) || isBudgetMode)}
+                                    disabled={isProcessing || isBudgetMode}
+                                    placeholder={isSplitMode ? remainingBase.toFixed(0) : Math.round(total).toString()}
+                                />
+                            </div>
+                            {changeValue > 0 && !isBudgetMode && !isAccountMode && !isSplitMode && <p className="text-right text-xs font-bold text-green-600 mt-1">Vuelto: $ {changeValue.toLocaleString('es-AR')}</p>}
+                            {debtValue > 0 && !isBudgetMode && !isAccountMode && !isSplitMode && <p className="text-right text-xs font-bold text-orange-600 mt-1">Falta: $ {debtValue.toLocaleString('es-AR')}</p>}
+                        </div>
                         
                         <div className="mt-2 text-center">
                             <p className="text-[9px] text-sys-300 font-mono">REF: {reference || paymentReference || '---'}</p>
@@ -709,34 +738,25 @@ export const PaymentModal = ({
                     </div>
 
                     <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-8 gap-2 mb-6">
-                        {[
-                            {id:'cash', icon: Banknote, label:'Efectivo', color:'brand'},
-                            {id:'transfer', icon: Landmark, label:'Transf.', color:'purple-600'},
-                            {id:'mercadopago', icon: QrCode, label:'QR MP', color:'blue-500'},
-                            {id:'point', icon: CreditCard, label:'Point', color:'blue-600'},
-                            {id:'manual_card', icon: Calculator, label:'Tarjeta', color:'indigo-600'},
-                            {id:'employee_account', icon: User, label:'Personal', color:'orange-500'},
-                            {id:'account', icon: Users, label:'Cta. Cte.', color:'red-500'}, 
-                            {id:'budget', icon: FileArchive, label:'Presup.', color:'sys-600'} 
-                        ].map(opt => (
+                        {Object.entries(methodsData).map(([id, opt]) => (
                             <button 
-                                key={opt.id}
+                                key={id}
                                 onClick={() => {
-                                    if (opt.id === 'account' && !isClientRegistered) {
+                                    if (id === 'account' && !isClientRegistered) {
                                         toast.error("Debe asignar un Cliente (F3) antes de enviarlo a Cta Cte.");
                                         return;
                                     }
 
-                                    setMethod(opt.id);
-                                    if (opt.id === 'budget') setIsSplitMode(false); 
-                                    if (opt.id !== 'manual_card') { setSelectedBrand(null); setSelectedRate(null); }
-                                    if (opt.id !== 'employee_account') setSelectedEmployeeId('');
+                                    setMethod(id);
+                                    if (id === 'budget') setIsSplitMode(false); 
+                                    if (id !== 'manual_card') { setSelectedBrand(null); setSelectedRate(null); }
+                                    if (id !== 'employee_account') setSelectedEmployeeId('');
                                     setDigitalState('idle'); 
                                     
                                     // 🔥 MAGIA AQUÍ: Recalcula promos al vuelo y mapea las tarjetas al estándar 'card'
                                     if (setTabPaymentMethod && !isSplitMode) {
-                                        let mappedMethod = opt.id;
-                                        if (['manual_card', 'point', 'clover'].includes(opt.id)) mappedMethod = 'card';
+                                        let mappedMethod = id;
+                                        if (['manual_card', 'point', 'clover'].includes(id)) mappedMethod = 'card';
                                         setTabPaymentMethod(mappedMethod);
                                     }
                                 }} 
@@ -745,21 +765,21 @@ export const PaymentModal = ({
                                     digitalState === 'waiting' || 
                                     digitalState === 'approved' || 
                                     isProcessing || 
-                                    (isSplitMode && (isFullyPaid || opt.id === 'budget')) ||
-                                    (opt.id === 'account' && !isClientRegistered) 
+                                    (isSplitMode && (isFullyPaid || id === 'budget')) ||
+                                    (id === 'account' && !isClientRegistered) 
                                 } 
                                 className={cn(
                                     "flex flex-col items-center justify-center p-2 rounded-xl border-2 transition-all duration-200 h-24 relative overflow-hidden active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed group", 
-                                    method === opt.id ? `bg-sys-50 border-${opt.color} shadow-md` : "bg-white border-sys-100 hover:border-sys-300 text-sys-500"
+                                    method === id ? `bg-sys-50 border-${opt.color} shadow-md` : "bg-white border-sys-100 hover:border-sys-300 text-sys-500"
                                 )}
                             >
-                                <opt.icon size={26} className={cn("mb-1 transition-colors", method === opt.id ? `text-${opt.color}` : "text-sys-400")} />
-                                <span className={cn("font-semibold text-[10px] leading-tight text-center", method === opt.id ? "text-sys-900" : "")}>{opt.label}</span>
-                                {method === opt.id && <div className={`absolute top-2 right-2 w-2 h-2 rounded-full bg-${opt.color}`}></div>}
+                                <opt.icon size={26} className={cn("mb-1 transition-colors", method === id ? `text-${opt.color}` : "text-sys-400")} />
+                                <span className={cn("font-semibold text-[10px] leading-tight text-center", method === id ? "text-sys-900" : "")}>{opt.label}</span>
+                                {method === id && <div className={`absolute top-2 right-2 w-2 h-2 rounded-full bg-${opt.color}`}></div>}
                                 
-                                {posConfig?.paymentSurcharges?.[opt.id] > 0 && !['manual_card', 'employee_account', 'budget', 'account'].includes(opt.id) && (
+                                {posConfig?.paymentSurcharges?.[id] > 0 && !['manual_card', 'employee_account', 'budget', 'account'].includes(id) && (
                                     <div className="absolute bottom-0 left-0 right-0 bg-orange-100 text-orange-700 text-[8px] font-black text-center py-0.5">
-                                        +{posConfig.paymentSurcharges[opt.id]}%
+                                        +{posConfig.paymentSurcharges[id]}%
                                     </div>
                                 )}
                             </button>

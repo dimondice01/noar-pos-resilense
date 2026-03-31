@@ -492,7 +492,7 @@ export const PosPage = () => {
         setIsPaymentOpen(false);
         setSearchTerm('');
         const activeIndex = tabs.findIndex(t => t.id === activeTabId);
-        if (tabs.length > 1 && activeIndex !== 0) removeTab(activeTabId);
+        if (tabs.length > 1 && activeIndex !== 0) removeTab(activeTabId, true);
         setTimeout(refocusInput, 100);
     }
   };
@@ -508,7 +508,7 @@ export const PosPage = () => {
         setIsPaymentOpen(false);
         setSearchTerm('');
         const activeIndex = tabs.findIndex(t => t.id === activeTabId);
-        if (tabs.length > 1 && activeIndex !== 0) removeTab(activeTabId);
+        if (tabs.length > 1 && activeIndex !== 0) removeTab(activeTabId, true);
         setTimeout(refocusInput, 100);
         return true;
     }

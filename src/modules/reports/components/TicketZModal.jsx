@@ -65,6 +65,10 @@ const TicketZContent = React.forwardRef(({ data }, ref) => {
         digitalIn: parseFloat(getVal(snap.digitalIn, data.digitalIn)), 
         digitalInByMethod: snap.digitalInByMethod || data.digitalInByMethod || {},
 
+        // 🔥 DETALLES INDIVIDUALES DE GASTOS/RETIROS E INGRESOS (si están disponibles)
+        manualOutItems: snap.manualOutItems || data.manualOutItems || [],
+        manualInItems: snap.manualInItems || data.manualInItems || [],
+
         // 🔥 OBTENEMOS LAS VENTAS
         salesByMethod: snap.salesByMethod || data.salesByMethod || { cash: 0 },
         salesCount: getVal(snap.salesCount, data.salesCount),
@@ -145,19 +149,57 @@ const TicketZContent = React.forwardRef(({ data }, ref) => {
                     <div className="row-flex t-small mt-0.5"><span>CANTIDAD OPS:</span><span>{source.salesCount}</span></div>
                 </div>
 
-                {/* 🔥 SECCIÓN DE COBROS Y PAGOS EXTRAS */}
-                {(hasCobrosExtras || source.manualOut > 0) && (
+                {/* 🔥 SECCIÓN DE COBROS Y PAGOS EXTRAS CON DESGLOSE */}
+                {(hasCobrosExtras || source.manualOut > 0 || source.manualIn > 0) && (
                     <>
                         <div className="border-solid"></div>
                         <div className="mb-2">
                             <p className="t-header">OTROS MOVIMIENTOS</p>
-                            {cobrosEfectivo > 0 && <div className="row-flex t-normal mt-1"><span>(+) COBROS EFECTIVO:</span><span>{formatMoney(cobrosEfectivo)}</span></div>}
+
+                            {/* INGRESOS MANUALES EN EFECTIVO */}
+                            {source.manualInItems.length > 0 ? (
+                                source.manualInItems.map((item, i) => (
+                                    <div key={i} className="row-flex t-normal mt-1">
+                                        <span style={{maxWidth:'65%', overflow:'hidden', textOverflow:'ellipsis'}}>(+) {item.description || 'INGRESO'}</span>
+                                        <span>{formatMoney(item.amount)}</span>
+                                    </div>
+                                ))
+                            ) : cobrosEfectivo > 0 ? (
+                                <div className="row-flex t-normal mt-1"><span>(+) COBROS EFECTIVO:</span><span>{formatMoney(cobrosEfectivo)}</span></div>
+                            ) : null}
+
                             {cobrosTransferencia > 0 && <div className="row-flex t-normal mt-1 text-gray-700"><span>(+) COBROS TRANSF:</span><span>{formatMoney(cobrosTransferencia)}</span></div>}
                             {cobrosMercadoPago > 0 && <div className="row-flex t-normal mt-1 text-gray-700"><span>(+) COBROS MP QR:</span><span>{formatMoney(cobrosMercadoPago)}</span></div>}
                             {cobrosTarjetas > 0 && <div className="row-flex t-normal mt-1 text-gray-700"><span>(+) COBROS TARJETAS:</span><span>{formatMoney(cobrosTarjetas)}</span></div>}
                             {cobrosOtrosDigitales > 0 && <div className="row-flex t-normal mt-1 text-gray-700"><span>(+) OTROS ING. DIG:</span><span>{formatMoney(cobrosOtrosDigitales)}</span></div>}
-                            
-                            {source.manualOut > 0 && <div className="row-flex t-normal mt-1 text-red-600"><span>(-) GASTOS/RETIROS:</span><span>{formatMoney(source.manualOut)}</span></div>}
+
+                            {/* GASTOS Y RETIROS: Detalle individual si está disponible */}
+                            {source.manualOut > 0 && (
+                                source.manualOutItems.length > 0 ? (
+                                    <>
+                                        <div className="border-dash mt-1"></div>
+                                        {source.manualOutItems.map((item, i) => (
+                                            <div key={i} className="row-flex t-normal mt-0.5" style={{color:'#dc2626'}}>
+                                                <span style={{maxWidth:'65%', overflow:'hidden', textOverflow:'ellipsis'}}
+                                                    title={item.description}>
+                                                    (-) {(item.description || 'GASTO').substring(0, 22)}
+                                                </span>
+                                                <span>{formatMoney(item.amount)}</span>
+                                            </div>
+                                        ))}
+                                        <div className="border-dash mt-0.5"></div>
+                                        <div className="row-flex t-normal" style={{color:'#dc2626', fontWeight:900}}>
+                                            <span>= TOTAL GASTOS/RET:</span>
+                                            <span>{formatMoney(source.manualOut)}</span>
+                                        </div>
+                                    </>
+                                ) : (
+                                    <div className="row-flex t-normal mt-1" style={{color:'#dc2626'}}>
+                                        <span>(-) GASTOS/RETIROS:</span>
+                                        <span>{formatMoney(source.manualOut)}</span>
+                                    </div>
+                                )
+                            )}
                         </div>
                     </>
                 )}

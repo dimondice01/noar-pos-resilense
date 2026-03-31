@@ -16,15 +16,29 @@ import { cashRepository } from '../../cash/repositories/cashRepository';
 // ☁️ HELPER: SYNC OPTIMISTA NEXUS CORE
 // ==========================================
 const triggerOptimisticSync = async (collectionName, data, companyId) => {
-    if (!navigator.onLine || !companyId) return;
+    if (!navigator.onLine || !companyId || !data) return;
+
+    // 🔥 Sanitización recursiva: Elimina campos 'undefined' que rompen Firestore
+    const sanitize = (obj) => {
+        if (Array.isArray(obj)) return obj.map(sanitize);
+        if (obj !== null && typeof obj === 'object') {
+            return Object.fromEntries(
+                Object.entries(obj)
+                    .filter(([_, v]) => v !== undefined)
+                    .map(([k, v]) => [k, sanitize(v)])
+            );
+        }
+        return obj;
+    };
 
     // 🔥 Fire and forget: No esperamos respuesta para no trabar la UI.
     try {
         const docId = data.id || data.localId;
+        const cleanData = sanitize(data);
         
         // Operación no bloqueante (sin await en el flujo principal)
         setDoc(doc(db, `companies/${companyId}/${collectionName}`, docId), {
-            ...data,
+            ...cleanData,
             firestoreId: docId,
             syncedAt: new Date().toISOString(),
             origin: 'POS_WEB',
@@ -183,6 +197,7 @@ export const salesRepository = {
       client: saleData.client || null,
       
       // Pagos
+      method: saleData.method || (isBudget ? 'budget' : 'cash'),
       payments: saleData.payments || (saleData.payment ? [saleData.payment] : [{ method: isBudget ? 'budget' : 'cash', total: saleData.total }]),
       payment: saleData.payment || { method: isBudget ? 'budget' : 'cash' },
 
@@ -355,5 +370,118 @@ export const salesRepository = {
     const end = new Date();
     end.setHours(23,59,59,999);
     return this.getOperationsByDateRange(start, end);
+  },
+
+  // ==========================================
+  // 🚨 AUDITORÍA DE SINIESTROS (ABANDONOS)
+  // ==========================================
+  async logAbandonedSale(saleData) {
+    if (!saleData.items || saleData.items.length === 0) return null;
+    
+    const { user, activeBranchId } = useAuthStore.getState();
+    if (!user?.companyId) return null;
+
+    const saleId = `abnd_${crypto.randomUUID()}`;
+    const timestamp = new Date().toISOString();
+    const abndNumber = `ABND-${Date.now().toString().slice(-6)}`;
+
+    const abandonedSale = {
+      ...saleData,
+      id: saleId,
+      localId: saleId,
+      number: abndNumber,
+      ticketNumber: abndNumber,
+      status: 'ABANDONED',
+      type: 'ABANDONED',
+      createdAt: timestamp,
+      date: timestamp,
+      companyId: user.companyId,
+      branchId: activeBranchId || user.branchId || 'main',
+      userId: user.uid,
+      userName: user.name || 'Vendedor',
+      syncStatus: 'pending'
+    };
+
+    try {
+      const dbLocal = await getDB();
+      await dbLocal.sales.put(abandonedSale);
+      triggerOptimisticSync('sales', abandonedSale, user.companyId);
+      return abandonedSale;
+    } catch (e) {
+      console.error("Error logging abandoned sale:", e);
+      return null;
+    }
+  },
+
+  // ==========================================
+  // 🚨 AUDITORÍA DE SINIESTROS (REIMPL.)
+  // ==========================================
+  async registerAbandonedCart(saleData, reason = 'clear_cart') {
+    if (!saleData.items || saleData.items.length === 0) return null;
+    
+    const { user, activeBranchId } = useAuthStore.getState();
+    if (!user?.companyId) return null;
+
+    const saleId = `abnd_${crypto.randomUUID()}`;
+    const timestamp = new Date().toISOString();
+    const abndNumber = `ABND-${Date.now().toString().slice(-6)}`;
+
+    const abandonedSale = {
+      ...saleData,
+      id: saleId,
+      localId: saleId,
+      number: abndNumber,
+      ticketNumber: abndNumber,
+      status: 'ABANDONED',
+      type: 'ABANDONED_CART',
+      reason: reason,
+      createdAt: timestamp,
+      date: timestamp,
+      companyId: user.companyId,
+      branchId: activeBranchId || user.activeBranchId || user.branchId || 'main',
+      userId: user.uid,
+      userName: user.name || 'Vendedor',
+      syncStatus: 'pending'
+    };
+
+    try {
+      const dbLocal = await getDB();
+      await dbLocal.sales.put(abandonedSale);
+      triggerOptimisticSync('sales', abandonedSale, user.companyId);
+      return abandonedSale;
+    } catch (e) {
+      console.error("Error logging abandoned sale:", e);
+      return null;
+    }
+  },
+
+  // ==========================================
+  // 📥 SINCRONIZACIÓN DE BAJADA (CLOUD -> LOCAL)
+  // ==========================================
+  async saveFromCloud(saleData) {
+    if (!saleData || !saleData.id) return null;
+    
+    try {
+      const dbLocal = await getDB();
+      
+      // Verificamos si ya existe para no pisar estados locales 'pending' si el cloud es viejo
+      const existing = await dbLocal.sales.get(saleData.id);
+      if (existing && existing.syncStatus === 'pending') {
+          // Si el local está pendiente, respetamos el local (el cloud se actualizará luego)
+          return existing;
+      }
+
+      const saleToSave = {
+          ...saleData,
+          syncStatus: 'synced', // Marcamos como sincronizado ya que viene de la nube
+          updatedAt: saleData.updatedAt || new Date().toISOString()
+      };
+
+      await dbLocal.sales.put(saleToSave);
+      return saleToSave;
+    } catch (e) {
+      console.warn("Error saving sale from cloud:", e);
+      return null;
+    }
   }
 };

@@ -222,12 +222,62 @@ export const usePosController = () => {
         setActiveTabId(newId);
     }, []);
 
-    const removeTab = useCallback((tabId) => {
-        if (tabs.length === 1) return clearCart(tabId);
+    // =================================================================
+    // 🛒 LÓGICA DEL CARRITO (Movida arriba para evitar ReferenceError)
+    // =================================================================
+    
+    // 1. Eliminar un item específico
+    const removeFromCart = useCallback((productId) => {
+        updateActiveTab(tab => ({
+            ...tab,
+            items: tab.items.filter(i => i.id !== productId)
+        }));
+    }, [activeTabId]);
+
+    // 2. Limpiar todo el carrito (Auditoría Nexus)
+    const clearCart = useCallback((targetTabId = activeTabId, reason = 'clear_cart', skipAudit = false) => {
+        const tabToClear = tabs.find(t => t.id === targetTabId);
+        
+        // 🔥 AUDITORÍA NEXUS: Solo registramos si no es una venta finalizada (skipAudit)
+        if (!skipAudit && tabToClear && tabToClear.items.length > 0) {
+            const subtotal = tabToClear.items.reduce((acc, item) => acc + item.subtotal, 0);
+            salesRepository.registerAbandonedCart({
+                items: tabToClear.items,
+                total: subtotal,
+                subtotal: subtotal,
+                client: tabToClear.client,
+                tabName: tabToClear.name || 'Caja'
+            }, reason);
+        }
+
+        setTabs(prev => prev.map(tab => {
+            if (tab.id === targetTabId) return { ...NEW_TAB_TEMPLATE, id: targetTabId, name: tab.name };
+            return tab;
+        }));
+    }, [tabs, activeTabId]);
+
+    // 3. Remover una pestaña (Auditada)
+    const removeTab = useCallback((tabId, skipAudit = false) => {
+        const tabToDelete = tabs.find(t => t.id === tabId);
+        
+        // 🔥 AUDITORÍA NEXUS: Solo registramos si no es una venta finalizada (skipAudit)
+        if (!skipAudit && tabToDelete && tabToDelete.items.length > 0) {
+            const subtotal = tabToDelete.items.reduce((acc, item) => acc + item.subtotal, 0);
+            salesRepository.registerAbandonedCart({
+                items: tabToDelete.items,
+                total: subtotal,
+                subtotal: subtotal,
+                client: tabToDelete.client,
+                tabName: tabToDelete.name || 'Caja'
+            }, 'tab_removed');
+        }
+
+        if (tabs.length === 1) return clearCart(tabId, 'clear_cart', skipAudit);
+        
         const newTabs = tabs.filter(t => t.id !== tabId);
         setTabs(newTabs);
         if (activeTabId === tabId) setActiveTabId(newTabs[newTabs.length - 1].id);
-    }, [tabs, activeTabId]);
+    }, [tabs, activeTabId, clearCart]);
 
     const switchTab = (tabId) => setActiveTabId(tabId);
 
@@ -377,20 +427,6 @@ export const usePosController = () => {
         });
     };
 
-    const removeFromCart = (productId) => {
-        updateActiveTab(tab => ({
-            ...tab,
-            items: tab.items.filter(i => i.id !== productId)
-        }));
-    };
-
-    const clearCart = (targetTabId = activeTabId) => {
-        setTabs(prev => prev.map(tab => {
-            if (tab.id === targetTabId) return { ...NEW_TAB_TEMPLATE, id: targetTabId, name: tab.name };
-            return tab;
-        }));
-    };
-
     // 🔥 APLICAR DESCUENTO MAYORISTA (ATAJO F6) CON LECTURA DE CONFIGURACIÓN
     const applyWholesaleToLastItem = useCallback(() => {
         if (!activeTab || activeTab.items.length === 0) {
@@ -522,7 +558,7 @@ export const usePosController = () => {
             });
 
             toast.success(`Presupuesto generado`, { id: toastId });
-            clearCart();
+            clearCart(activeTabId, 'clear_cart', true);
             return budgetResult;
 
         } catch (error) {
@@ -650,6 +686,15 @@ export const usePosController = () => {
             }
 
             // 2. Construcción del Payload
+            const computedMethod = paymentData.method === 'SPLIT' ? 'SPLIT' : (finalPayments.length > 1 ? 'SPLIT' : (finalPayments[0]?.method || 'cash'));
+            console.log('🔍 [PAY DEBUG]', {
+                'paymentData.method': paymentData.method,
+                'paymentData.payments': paymentData.payments,
+                'finalPayments.length': finalPayments.length,
+                'computedMethod': computedMethod,
+                'finalPayments[0].method': finalPayments[0]?.method
+            });
+
             const basePayload = {
                 items: activeTab.items.map(i => ({
                     id: i.id, code: i.code, name: i.name, 
@@ -666,7 +711,7 @@ export const usePosController = () => {
                 
                 payments: finalPayments,
                 payment: finalPayments[0], 
-                method: finalPayments.length > 1 ? 'SPLIT' : finalPayments[0].method,
+                method: computedMethod,
                 
                 // 🔥 CRÍTICO PARA EL HISTORIAL Y DASHBOARD
                 amountPaid: totalPaidInCash, 
@@ -756,7 +801,9 @@ export const usePosController = () => {
                 console.error("No se pudo registrar el consumo del empleado:", ledgerError);
             }
 
-            clearCart();
+            clearCart(activeTabId, 'sale_completed', true);
+            // 🔥 Notificar a SalesPage para que refresque sin importar si está montado
+            window.dispatchEvent(new CustomEvent('noar:sale-created'));
             return saleResult;
 
         } catch (error) {
@@ -804,7 +851,7 @@ export const usePosController = () => {
             });
 
             toast.success("Consumo interno registrado");
-            clearCart();
+            clearCart(activeTabId, 'internal_completed', true);
             return true;
         } catch (error) {
             toast.error(error.message);
@@ -888,7 +935,7 @@ export const usePosController = () => {
     // 🔥 EXPORTAMOS LAS FUNCIONES Y EL ESTADO (Incluye setTabPaymentMethod)
     return { 
         tabs, activeTab, activeTabId, totals, searchResults, isProcessing, posConfig,
-        addTab, removeTab, switchTab, addToCart, removeFromCart, updateItemQuantity, setClient, clearCart, searchProduct, 
+        addTab, removeTab, switchTab, addToCart, removeFromCart, updateCartItemQuantity: updateItemQuantity, setClient, clearCart, searchProduct, 
         setSearchResults, processSale, processInternalSale, applyWholesaleToLastItem, processBudget,
         setTabPaymentMethod // 🔥 EXPONEMOS LA FUNCIÓN DE RECÁLCULO PARA EL MODAL
     };
