@@ -6,7 +6,7 @@ import {
     Lock, Unlock, Monitor, FileText, CheckCircle2, History,
     ShoppingBag, Banknote, Shield, TrendingDown,
     Activity, Building2, Plus, ArrowRight, MapPin,
-    BarChart3, PieChart, LineChart, BellRing
+    BarChart3, PieChart, LineChart, BellRing, Info
 } from 'lucide-react';
 
 // Stores & Repositorios
@@ -220,23 +220,52 @@ const KpiCard = ({ metrics, isAdmin, money, navigate, onTriggerClose, isCajeroAc
     </div>
 );
 
-const MyShiftCard = ({ metrics, money, handleOpenShift }) => {
+const MyShiftCard = ({ metrics, money, handleOpenShift, activeBranchId, activeBranchName, onTriggerClose }) => {
     const isCajeroActive = !!metrics.activeShift;
+    const isMismatchedBranch = isCajeroActive && metrics.activeShift.branchId !== activeBranchId && activeBranchId !== 'ALL' && metrics.activeShift.branchId !== 'main';
+
     return (
-        <div className={cn("p-5 border-l-4 transition-all shadow-sm hover:shadow-md relative overflow-hidden group bg-white rounded-2xl border border-slate-100", isCajeroActive ? "border-l-emerald-500" : "border-l-rose-500")}>
+        <div className={cn("p-5 border-l-4 transition-all shadow-sm hover:shadow-md relative overflow-hidden group bg-white rounded-2xl border border-slate-100", 
+            isCajeroActive ? (isMismatchedBranch ? "border-l-amber-500" : "border-l-emerald-500") : "border-l-rose-500")}>
+            
             <div className="flex justify-between items-center mb-4">
                 <div className="flex items-center gap-3">
-                    <div className={cn("p-2.5 rounded-full shadow-sm", isCajeroActive ? "bg-emerald-50 text-emerald-600" : "bg-rose-50 text-rose-600")}>
-                        {isCajeroActive ? <Unlock size={20}/> : <Lock size={20}/>}
+                    <div className={cn("p-2.5 rounded-full shadow-sm", 
+                        isCajeroActive ? (isMismatchedBranch ? "bg-amber-50 text-amber-600" : "bg-emerald-50 text-emerald-600") : "bg-rose-50 text-rose-600")}>
+                        {isCajeroActive ? (isMismatchedBranch ? <AlertTriangle size={20}/> : <Unlock size={20}/> ) : <Lock size={20}/>}
                     </div>
                     <div>
                         <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Estado de Caja</p>
-                        <h4 className={cn("text-base font-black leading-none mt-0.5", isCajeroActive ? "text-emerald-700" : "text-rose-700")}>
-                            {isCajeroActive ? "TURNO ABIERTO" : "TURNO CERRADO"}
+                        <h4 className={cn("text-base font-black leading-none mt-0.5", 
+                            isCajeroActive ? (isMismatchedBranch ? "text-amber-700" : "text-emerald-700") : "text-rose-700")}>
+                            {isCajeroActive ? (isMismatchedBranch ? "TURNO EN OTRA SEDE" : "TURNO ABIERTO") : "TURNO CERRADO"}
                         </h4>
                     </div>
                 </div>
             </div>
+
+            {isMismatchedBranch && (
+                <div className="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-xl flex flex-col gap-3">
+                    <div className="flex items-start gap-2">
+                        <Info size={16} className="text-amber-600 mt-0.5 shrink-0" />
+                        <p className="text-xs text-amber-900 font-bold leading-tight">
+                            Atención: Este turno pertenece a otra sucursal.
+                        </p>
+                    </div>
+                    <p className="text-[10px] text-amber-700 font-medium">
+                        Para poder vender en la sucursal actual ({activeBranchName}), primero debes cerrar la caja abierta en la sede anterior.
+                    </p>
+                    <Button 
+                        size="sm" 
+                        variant="secondary" 
+                        className="bg-amber-600 hover:bg-amber-700 text-white border-none h-8 text-[10px] font-black w-full shadow-sm"
+                        onClick={onTriggerClose || (() => {})}
+                    >
+                        CERRAR TURNO EXTERNO
+                    </Button>
+                </div>
+            )}
+
             {!isCajeroActive ? (
                 <div className="mt-2">
                     <p className="text-xs text-slate-500 mb-4 font-medium">La caja está cerrada. Inicie turno para operar.</p>
@@ -529,6 +558,7 @@ const AdminDashboardView = ({ metrics, money, navigate, loadIntelligence, handle
                     </Card>
                 </div>
                 <AdminSecurityPanel onUpdatePin={handleUpdatePin} activeBranchName={activeBranchName} activeBranchId={activeBranchId} />
+                <MyShiftCard metrics={metrics} money={money} handleOpenShift={handleOpenShift} activeBranchId={activeBranchId} activeBranchName={activeBranchName} onTriggerClose={onTriggerClose} />
             </div>
         </div>
         
@@ -537,11 +567,11 @@ const AdminDashboardView = ({ metrics, money, navigate, loadIntelligence, handle
 );
 
 // 🔥 VISTA CAJERO: LIMPIA, CIEGA Y OPERATIVA
-const CajeroDashboardView = ({ metrics, money, handleOpenShift, onTriggerClose, navigate, onExpenseClick, onWithdrawalClick }) => (
+const CajeroDashboardView = ({ metrics, money, handleOpenShift, onTriggerClose, navigate, onExpenseClick, onWithdrawalClick, activeBranchId }) => (
     <div className="space-y-6 pb-20 animate-in fade-in max-w-2xl mx-auto">
         <div className="grid grid-cols-1 gap-6">
             <KpiCard metrics={metrics} isAdmin={false} money={money} navigate={navigate} onTriggerClose={onTriggerClose} isCajeroActive={!!metrics.activeShift} />
-            <MyShiftCard metrics={metrics} money={money} handleOpenShift={handleOpenShift} />
+            <MyShiftCard metrics={metrics} money={money} handleOpenShift={handleOpenShift} activeBranchId={activeBranchId} />
         </div>
         <QuickActionsPanel navigate={navigate} onExpenseClick={onExpenseClick} onWithdrawalClick={onWithdrawalClick} isAdmin={false} />
     </div>
@@ -701,15 +731,16 @@ export const DashboardPage = () => {
 
     const handleFixBranches = async () => {
         try {
-            const defaults = [{ name: 'Casa Central', address: 'Main', type: 'physical' }];
-            const batchPromises = defaults.map(async (b) => {
-                const docRef = await addDoc(collection(firestoreDB, 'companies', user.companyId, 'branches'), { ...b, active: true, createdAt: serverTimestamp() });
-                return { id: docRef.id, ...b, active: true };
-            });
-            await Promise.all(batchPromises);
-            await localDb.branches.bulkPut(await Promise.all(batchPromises));
+            const defaults = [{ id: 'suc-01', name: 'Casa Central', address: '', type: 'physical', active: true }];
+            const results = await Promise.all(defaults.map(async (b) => {
+                const branchRef = doc(firestoreDB, 'companies', user.companyId, 'branches', b.id);
+                await setDoc(branchRef, { ...b, createdAt: serverTimestamp() }, { merge: true });
+                return b;
+            }));
+            
+            await localDb.branches.bulkPut(results);
             window.location.reload();
-        } catch (error) { alert(error.message); }
+        } catch (error) { alert("Error al configurar sucursal: " + error.message); }
     };
 
     if (!user) return <div className="p-10 text-center text-slate-500">Error: Usuario no autenticado.</div>;
@@ -727,7 +758,7 @@ export const DashboardPage = () => {
                         {isAdminView ? "Resumen operativo y financiero global." : "Panel de control de caja."}
                     </p>
                 </div>
-                {isOwner && <BranchSelector allowAll={true} />}
+                {isAdminView && <BranchSelector allowAll={true} />}
             </div>
 
             {isAdminView ? (

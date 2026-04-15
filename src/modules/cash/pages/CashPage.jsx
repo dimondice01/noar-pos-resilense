@@ -36,17 +36,19 @@ const getShiftValues = (shift, calculatedDetails = null) => {
     const snap = shift.auditSnapshot || {};
     const isValid = (val) => val !== undefined && val !== null && !isNaN(val);
     
-    // 🔥 Ahora siempre priorizamos la matemática fresca en vivo que viene del Repositorio
     let expected = 0;
-    let out = 0; // 🔥 Variable para almacenar los gastos/retiros físicos
+    let out = 0; 
     let left = 0;
 
-    if (calculatedDetails && isValid(calculatedDetails.totalCash)) {
+    // 🔥 SI ESTÁ CERRADO: La verdad absoluta es el snapshot inmutable del cierre.
+    // Solo recalculamos "en vivo" si el turno está abierto o no tiene snapshot.
+    if (shift.status === 'CLOSED' && isValid(snap.expectedCash)) {
+        expected = Number(snap.expectedCash);
+        out = Number(snap.manualOut || snap.cashOut || 0);
+    } else if (calculatedDetails && isValid(calculatedDetails.totalCash)) {
+        // Recálculo en vivo para turnos abiertos
         expected = Number(calculatedDetails.totalCash);
         out = Number(calculatedDetails.manualOutCash || 0);
-    } else if (isValid(snap.expectedCash)) {
-        expected = Number(snap.expectedCash);
-        out = Number(snap.manualOut || snap.cashOut || 0); // Leemos el snapshot si existe
     } else {
         expected = Number(shift.expectedCash || 0);
     }
@@ -173,7 +175,8 @@ const AuditDetailModal = ({ shift, onClose, resolveName, resolveBranchName }) =>
     const { expected, declared, diff, initial, left, out } = getShiftValues(shift, safeDetails);
     const isPerfect = Math.abs(diff) < 50; 
     
-    const paymentMethods = (safeDetails.movements && safeDetails.movements.length > 0)
+    // 🔥 SI NO TENEMOS VENTAS EN MEMORIA (salesCount === 0), fallamos al Snapshot del cierre
+    const paymentMethods = (safeDetails.salesCount > 0)
         ? safeDetails.salesByMethod 
         : (shift.auditSnapshot?.salesByMethod || {});
 

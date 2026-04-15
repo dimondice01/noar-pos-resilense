@@ -21,6 +21,11 @@ const SYNC_KEYS = {}; // Deprecated: Usamos Dexie como fuente de verdad del esta
 export const syncService = {
   
   _unsubscribes: [],
+  _isSyncingData: false,
+  _isSyncingProducts: false,
+  _isSyncingInventory: false,
+  _listenerSessionId: 0, // 🔥 Guardián de concurrencia para evitar "Failed to obtain primary lease"
+  _startListenersTimer: null, // 🔥 Debounce timer para absorber llamadas rápidas de StrictMode/SubscriptionGuard
 
   // 🔥 HELPER SALVAVIDAS: Generador de IDs para evitar colisiones en Firebase
   _ensureValidCloudId(item, prefix) {
@@ -66,7 +71,7 @@ export const syncService = {
           isWeighable: data.isWeighable === true,
           active: data.active !== false,
           deleted: data.deleted === true,
-          updatedAt: data.updatedAt || data.lastUpdated || new Date().toISOString(),
+          updatedAt: data.updatedAt?.toDate ? data.updatedAt.toDate().toISOString() : (data.updatedAt || data.lastUpdated || new Date().toISOString()),
           syncStatus: 'synced' 
       };
   },
@@ -132,7 +137,7 @@ export const syncService = {
               impNeto: data.afip.impNeto || 0, 
               impIVA: data.afip.impIVA || 0    
           } : null,
-          updatedAt: data.updatedAt || data.date || new Date().toISOString(),
+          updatedAt: data.updatedAt?.toDate ? data.updatedAt.toDate().toISOString() : (data.updatedAt || data.date || new Date().toISOString()),
           syncStatus: 'synced'
       };
   },
@@ -159,7 +164,7 @@ export const syncService = {
           withdrawn: parseFloat(data.withdrawn || 0),
           audited: data.audited === true,
           auditSnapshot: data.auditSnapshot || null, 
-          updatedAt: data.updatedAt || new Date().toISOString(),
+          updatedAt: data.updatedAt?.toDate ? data.updatedAt.toDate().toISOString() : (data.updatedAt || new Date().toISOString()),
           syncStatus: 'synced'
       };
   },
@@ -177,7 +182,7 @@ export const syncService = {
           method: data.method || 'cash',
           userId: data.userId, 
           userName: data.userName,
-          updatedAt: data.updatedAt || new Date().toISOString(),
+          updatedAt: data.updatedAt?.toDate ? data.updatedAt.toDate().toISOString() : (data.updatedAt || new Date().toISOString()),
           syncStatus: 'synced'
       };
   },
@@ -235,7 +240,7 @@ export const syncService = {
       } catch (error) {}
   },
 
-  // 🔥 NUEVO: Forzar bajada de Clientes y Maestros en la carga inicial
+  // 🔥 OPTIMIZADO: Sincronización Delta de Maestros (Clientes, Catálogos, etc.)
   async syncInitialMasters(companyId) {
       if (!companyId) return;
       try {
@@ -243,55 +248,105 @@ export const syncService = {
           const masterCollections = ['categories', 'brands', 'suppliers', 'clients'];
           
           for (const collectionName of masterCollections) {
-              const colRef = collection(db, 'companies', companyId, collectionName);
-              const snapshot = await getDocs(colRef);
-              const itemsToPut = [];
+              const table = localDb.table(collectionName);
               
-              snapshot.docs.forEach(docSnap => {
-                  const data = docSnap.data();
-                  itemsToPut.push({ id: docSnap.id, ...data, syncStatus: 'synced', firestoreId: docSnap.id });
-              });
-
-              if (itemsToPut.length > 0) {
-                  await localDb.table(collectionName).bulkPut(itemsToPut);
+              // 1. Buscamos el último registro sincronizado localmente
+              const lastLocal = await table.orderBy('updatedAt').last();
+              const lastSyncDate = lastLocal ? new Date(lastLocal.updatedAt) : new Date(0);
+              
+              // 2. Pedimos solo lo que se actualizó DESPUÉS de nuestro último dato
+              // 🔥 FIX DEFINITIVO: Usar Firebase Timestamp para todas las queries Delta
+              const safetyMarginDate = new Date(lastSyncDate.getTime() - (60 * 1000));
+              const firestoreSafetyMargin = Timestamp.fromDate(safetyMarginDate);
+              
+              const colRef = collection(db, 'companies', companyId, collectionName);
+              const q = query(colRef, where('updatedAt', '>', firestoreSafetyMargin));
+              
+              const snapshot = await getDocs(q);
+              
+              if (!snapshot.empty) {
+                  const itemsToPut = snapshot.docs.map(docSnap => {
+                      const data = docSnap.data();
+                      return { 
+                          ...data, 
+                          id: docSnap.id, 
+                          firestoreId: docSnap.id,
+                          syncStatus: 'synced',
+                          updatedAt: data.updatedAt?.toDate ? data.updatedAt.toDate().toISOString() : (data.updatedAt || new Date().toISOString())
+                      };
+                  });
+                  await table.bulkPut(itemsToPut);
+                  console.log(`☁️ [Sync] ${itemsToPut.length} ${collectionName} actualizados.`);
               }
           }
       } catch (error) {
-          console.warn("Error descargando catálogos maestros iniciales:", error);
+          if (error.code === 'failed-precondition') {
+              console.warn("⚠️ [Sync Masters] Falta índice compuesto. El sistema usará caché local.");
+          } else {
+              console.warn("Error en Delta Sync de Maestros:", error);
+          }
       }
   },
 
   async syncProducts(companyId) {
     if (!companyId) return;
-    const localDb = await getDB();
+    if (this._isSyncingProducts) return;
     
-    // 🔥 ANTI-LAGUNAS: Punto de partida desde Dexie
-    const lastLocal = await localDb.products.orderBy('updatedAt').last();
-    const lastSyncDate = lastLocal ? new Date(lastLocal.updatedAt) : new Date(0); 
-
-    const productsRef = collection(db, 'companies', companyId, 'products');
-    let q = query(productsRef, where('updatedAt', '>', Timestamp.fromDate(lastSyncDate)));
-
+    this._isSyncingProducts = true;
     try {
+        const localDb = await getDB();
+        const isFirstTime = !(await localDb.config.get('products_full_synced'));
+        const lastLocal = await localDb.products.orderBy('updatedAt').last();
+        let lastSyncDate = new Date(0);
+        
+        if (lastLocal?.updatedAt && !isFirstTime) {
+            lastSyncDate = new Date(lastLocal.updatedAt);
+            if (isNaN(lastSyncDate.getTime())) lastSyncDate = new Date(0);
+        }
+
+        // 🔥 FIX DEFINITIVO: Firestore guarda updatedAt como un objeto Timestamp.
+        // Compararlo con un String ISO (safetyMargin) SIEMPRE devuelve 0 resultados.
+        // Debemos convertir la fecha local de vuelta a un Firebase Timestamp para la consulta.
+        const safetyMarginDate = new Date(lastSyncDate.getTime() - (60 * 1000));
+        const firestoreSafetyMargin = Timestamp.fromDate(safetyMarginDate);
+        
+        console.log(`🔍 [Sync-Audit] Delta Sync Productos desde firestoreSafetyMargin:`, safetyMarginDate.toISOString());
+
+        const productsRef = collection(db, 'companies', companyId, 'products');
+        let q = query(productsRef, where('updatedAt', '>', firestoreSafetyMargin));
+        
+        if (isFirstTime) {
+            console.log("🚀 [Sync] Primer Sincronización: Descargando catálogo completo...");
+            q = query(productsRef);
+        }
+
         const snapshot = await getDocs(q);
+        console.log(`🔍 [Sync-Audit] Firestore devolvió ${snapshot.size} productos nuevos/cambiados.`);
+
         if (!snapshot.empty) {
             const allDocs = snapshot.docs.map(doc => ({ id: doc.id, data: doc.data() }));
+            
             const toDelete = allDocs.filter(d => d.data.deleted === true).map(d => d.id);
             const toUpsert = allDocs.filter(d => d.data.deleted !== true).map(d => this._sanitizeCloudProduct(d.data, d.id));
 
             if (toDelete.length > 0) await localDb.products.bulkDelete(toDelete);
-            if (toUpsert.length > 0) await localDb.products.bulkPut(toUpsert);
+            
+            if (toUpsert.length > 0) {
+                await localDb.products.bulkPut(toUpsert);
+                console.log(`✅ [Sync-Audit] ${toUpsert.length} productos guardados con éxito.`);
+                window.dispatchEvent(new CustomEvent('onProductsSynced'));
+            }
+            
+            if (isFirstTime) {
+                await localDb.config.put({ key: 'products_full_synced', value: true, updatedAt: new Date().toISOString() });
+            }
         }
+
         await this.processScheduledPriceChanges();
     } catch (error) {
-        if (error.code === 'failed-precondition') {
-             const fullQ = query(productsRef);
-             const snap = await getDocs(fullQ);
-             const allDocs = snap.docs.map(doc => ({ id: doc.id, data: doc.data() }));
-             const toUpsert = allDocs.filter(d => !d.data.deleted).map(d => this._sanitizeCloudProduct(d.data, d.id));
-             await localDb.products.bulkPut(toUpsert);
-             await this.processScheduledPriceChanges();
-        }
+        console.error("❌ [Sync-Audit] Falló la sincronización de productos:", error);
+    } finally {
+        this._isSyncingProducts = false;
     }
   },
 
@@ -306,10 +361,15 @@ export const syncService = {
       
       const lastLocal = await localDb.inventory.where('branchId').equals(branchId).sortBy('updatedAt');
       const lastItem = lastLocal.length > 0 ? lastLocal[lastLocal.length - 1] : null;
-      const lastSyncDate = lastItem ? new Date(lastItem.updatedAt) : new Date(0); 
+      const rawDate = lastItem ? new Date(lastItem.updatedAt) : new Date(0);
+      // Guard: si updatedAt es null/inválido en Dexie, caemos a epoch para bajar todo
+      const lastSyncDate = isNaN(rawDate.getTime()) ? new Date(0) : rawDate;
 
       const invRef = collection(db, 'companies', companyId, 'branches', branchId, 'inventory');
-      let q = query(invRef, where('updatedAt', '>', Timestamp.fromDate(lastSyncDate)));
+
+      const safetyMarginDate = new Date(lastSyncDate.getTime() - (60 * 1000));
+      const firestoreSafetyMargin = Timestamp.fromDate(safetyMarginDate);
+      let q = query(invRef, where('updatedAt', '>', firestoreSafetyMargin));
       
       try {
           const snapshot = await getDocs(q);
@@ -343,18 +403,31 @@ export const syncService = {
       }
   },
 
-  async syncInitialMovements(companyId, branchId, role) {
+   async syncInitialMovements(companyId, branchId, role) {
       if (!companyId) return;
       const localDb = await getDB();
       
-      const lastLocal = await localDb.movements.orderBy('updatedAt').last();
-      const lastSyncDate = lastLocal ? new Date(lastLocal.updatedAt) : new Date(0); 
+      // 🔥 ESTRATEGIA DE BLINDAJE: Si la base está vacía, solo bajamos las últimas 48hs
+      // para no colgar el sistema con miles de movimientos históricos.
+      const count = await localDb.movements.count();
+      let lastSyncDate;
       
+      if (count === 0) {
+          console.log("📦 [Kardex] Base limpia. Bajando solo últimas 48hs por performance.");
+          lastSyncDate = new Date();
+          lastSyncDate.setHours(lastSyncDate.getHours() - 48);
+      } else {
+          const lastLocal = await localDb.movements.orderBy('updatedAt').last();
+          lastSyncDate = lastLocal ? new Date(lastLocal.updatedAt) : new Date(0);
+      }
+      
+      const safetyMarginDate = new Date(lastSyncDate.getTime() - (60 * 1000));
+      const firestoreSafetyMargin = Timestamp.fromDate(safetyMarginDate);
       const movRef = collection(db, 'companies', companyId, 'movements');
-      let q = query(movRef, where('updatedAt', '>', Timestamp.fromDate(lastSyncDate)));
+      let q = query(movRef, where('updatedAt', '>', firestoreSafetyMargin));
 
       if (role !== 'OWNER' || branchId !== 'ALL') {
-          q = query(movRef, where('branchId', '==', branchId), where('updatedAt', '>', Timestamp.fromDate(lastSyncDate)));
+          q = query(movRef, where('branchId', '==', branchId), where('updatedAt', '>', firestoreSafetyMargin));
       }
 
       try {
@@ -363,11 +436,11 @@ export const syncService = {
               const pendingIds = await localDb.movements.where('syncStatus').equals('pending').primaryKeys();
               const pendingSet = new Set(pendingIds);
               
-              const movsToPut = [];
-              snapshot.docs.forEach(docSnap => {
-                  if (!pendingSet.has(docSnap.id)) {
+              const movsToPut = snapshot.docs
+                  .filter(docSnap => !pendingSet.has(docSnap.id))
+                  .map(docSnap => {
                       const d = docSnap.data();
-                      movsToPut.push({
+                      return {
                           id: docSnap.id,
                           firestoreId: docSnap.id,
                           productId: d.productId || 'unknown',
@@ -380,14 +453,17 @@ export const syncService = {
                           refId: d.refId || null,
                           updatedAt: d.updatedAt || new Date().toISOString(),
                           syncStatus: 'synced'
-                      });
-                  }
-              });
+                      };
+                  });
 
               if (movsToPut.length > 0) await localDb.movements.bulkPut(movsToPut);
           }
       } catch (error) {
-          console.warn("Kardex sync missing index, relying on push only:", error);
+          if (error.code === 'failed-precondition') {
+              console.warn("⚠️ [Kardex] Falta índice compuesto en Firestore. El sistema funcionará con carga local hasta que se compile el índice.");
+          } else {
+              console.warn("Kardex sync warning:", error);
+          }
       }
   },
 
@@ -398,11 +474,13 @@ export const syncService = {
           const lastLocal = await localDb.sales.orderBy('updatedAt').last();
           const lastSyncDate = lastLocal ? new Date(lastLocal.updatedAt) : new Date(0);
           
+          const safetyMarginDate = new Date(lastSyncDate.getTime() - (60 * 1000));
+          const firestoreSafetyMargin = Timestamp.fromDate(safetyMarginDate);
           const salesRef = collection(db, 'companies', companyId, 'sales');
-          let q = query(salesRef, where('updatedAt', '>', Timestamp.fromDate(lastSyncDate)));
+          let q = query(salesRef, where('updatedAt', '>', firestoreSafetyMargin));
 
           if (role !== 'OWNER' || branchId !== 'ALL') {
-              q = query(salesRef, where('branchId', '==', branchId), where('updatedAt', '>', Timestamp.fromDate(lastSyncDate)));
+              q = query(salesRef, where('branchId', '==', branchId), where('updatedAt', '>', firestoreSafetyMargin));
           }
 
           const snapshot = await getDocs(q);
@@ -427,10 +505,13 @@ export const syncService = {
 
           if (lastSyncStr && countLocal > 0) {
               const lastSyncDate = new Date(lastSyncStr);
+              const safetyMarginDate = new Date(lastSyncDate.getTime() - (60 * 1000));
+              const firestoreSafetyMargin = Timestamp.fromDate(safetyMarginDate);
+              
               if (role === 'OWNER' && (!branchId || branchId === 'ALL')) {
-                  q = query(colRef, where('updatedAt', '>', Timestamp.fromDate(lastSyncDate)));
+                  q = query(colRef, where('updatedAt', '>', firestoreSafetyMargin));
               } else {
-                  q = query(colRef, where('branchId', '==', branchId), where('updatedAt', '>', Timestamp.fromDate(lastSyncDate)));
+                  q = query(colRef, where('branchId', '==', branchId), where('updatedAt', '>', firestoreSafetyMargin));
               }
           } else {
               if (role === 'OWNER' && (!branchId || branchId === 'ALL')) {
@@ -477,7 +558,10 @@ export const syncService = {
 
           if (lastSyncStr && countLocal > 0) {
               const lastSyncDate = new Date(lastSyncStr);
-              q = query(ledgerRef, where('updatedAt', '>', Timestamp.fromDate(lastSyncDate)));
+              // 🔥 FIX DEFINITIVO: Uso de Firebase Timestamp
+              const safetyMarginDate = new Date(lastSyncDate.getTime() - (60 * 1000));
+              const firestoreSafetyMargin = Timestamp.fromDate(safetyMarginDate);
+              q = query(ledgerRef, where('updatedAt', '>', firestoreSafetyMargin));
           } else {
               q = query(ledgerRef, orderBy('date', 'desc'), limit(1000)); 
           }
@@ -534,7 +618,10 @@ export const syncService = {
 
           if (lastSyncStr && countLocal > 0) {
               const lastSyncDate = new Date(lastSyncStr);
-              q = query(ledgerRef, where('updatedAt', '>', Timestamp.fromDate(lastSyncDate)));
+              // 🔥 FIX DEFINITIVO: Uso de Firebase Timestamp
+              const safetyMarginDate = new Date(lastSyncDate.getTime() - (60 * 1000));
+              const firestoreSafetyMargin = Timestamp.fromDate(safetyMarginDate);
+              q = query(ledgerRef, where('updatedAt', '>', firestoreSafetyMargin));
           } else {
               q = query(ledgerRef, orderBy('date', 'desc'), limit(1000)); 
           }
@@ -570,10 +657,24 @@ export const syncService = {
 
   async syncInitialData(user, activeBranchId) {
       if (!user?.companyId || user.companyId === 'master_admin' || user.superAdmin) return;
+      
+      // 🔥 BLOQUEO DE CONCURRENCIA: Evitar que 8 llamadas simultáneas rompan la base de datos
+      if (this._isSyncingData) {
+          console.log("🔍 [Sync-Audit] syncInitialData ya en curso. Ignorando llamada duplicada.");
+          return;
+      }
 
-      await this.syncConfig(user.companyId);
-      await this.syncInitialMasters(user.companyId); // 🔥 Bajar Clientes y Maestros
-      await this.syncProducts(user.companyId);
+      this._isSyncingData = true;
+      try {
+          console.log("🔍 [Sync-Audit] Iniciando Sincronización Delta...");
+          await this.syncConfig(user.companyId);
+          await this.syncInitialMasters(user.companyId); 
+          await this.syncProducts(user.companyId);
+          await this.syncInitialInventory(user.companyId, activeBranchId);
+          // ... otros syncs ...
+      } finally {
+          this._isSyncingData = false;
+      }
       await this.syncInitialSales(user.companyId, activeBranchId, user.role);
       await this.syncInitialMovements(user.companyId, activeBranchId, user.role);
       
@@ -630,19 +731,119 @@ export const syncService = {
     });
   },
 
-  async startRealTimeListeners(companyIdArg = null) {
-    this.stopListeners();
+  async fetchMovementsByRange(companyId, branchId, startDate, endDate) {
+      if (!companyId || !navigator.onLine) return;
+      try {
+        const localDb = await getDB();
+        const movRef = collection(db, 'companies', companyId, 'movements');
+        let q;
+        
+        if (branchId && branchId !== 'ALL') {
+            q = query(movRef, 
+                where('branchId', '==', branchId), 
+                where('date', '>=', startDate.toISOString()),
+                where('date', '<=', endDate.toISOString()),
+                limit(1000)
+            );
+        } else {
+            q = query(movRef, 
+                where('date', '>=', startDate.toISOString()),
+                where('date', '<=', endDate.toISOString()),
+                limit(1000)
+            );
+        }
 
-    const { user } = useAuthStore.getState();
-    if (user?.superAdmin || user?.companyId === 'master_admin') return; 
+        const snapshot = await getDocs(q);
+        if (!snapshot.empty) {
+            const movs = snapshot.docs.map(doc => ({ id: doc.id, firestoreId: doc.id, ...doc.data(), syncStatus: 'synced' }));
+            await localDb.movements.bulkPut(movs);
+            return movs.length;
+        }
+        return 0;
+      } catch (error) {
+          console.error("Error al bajar histórico de kardex:", error);
+          throw error;
+      }
+  },
 
+  async startMovementsListener(companyId, branchId, role) {
+      if (!companyId) return null;
+      const movRef = collection(db, 'companies', companyId, 'movements');
+      let q;
+      
+      if (role === 'OWNER' && (!branchId || branchId === 'ALL')) {
+          q = query(movRef, orderBy('updatedAt', 'desc'), limit(30));
+      } else if (branchId) {
+          q = query(movRef, where('branchId', '==', branchId), orderBy('updatedAt', 'desc'), limit(30));
+      }
+
+      if (!q) return null;
+
+      return onSnapshot(q, async (snapshot) => {
+          const localDb = await getDB();
+          const itemsToPut = [];
+          
+          snapshot.docChanges().forEach(change => {
+              if (change.type === 'added' || change.type === 'modified') {
+                  const data = change.doc.data();
+                  itemsToPut.push({ id: change.doc.id, firestoreId: change.doc.id, ...data, syncStatus: 'synced' });
+              }
+          });
+
+          if (itemsToPut.length > 0) {
+              await localDb.movements.bulkPut(itemsToPut);
+          }
+      });
+  },
+
+  startRealTimeListeners(companyIdArg = null) {
+    // Debounce: App.jsx+StrictMode+SubscriptionGuard disparan 4 llamadas en <50ms.
+    // Cada una mataba a la anterior via _listenerSessionId. Con 300ms absorbemos
+    // todas las llamadas rápidas y ejecutamos UNA sola vez cuando se estabiliza.
+    if (this._startListenersTimer) {
+        clearTimeout(this._startListenersTimer);
+    }
+    this._startListenersTimer = setTimeout(() => {
+        this._startListenersTimer = null;
+        this._doStartRealTimeListeners(companyIdArg);
+    }, 300);
+  },
+
+  async _doStartRealTimeListeners(companyIdArg = null) {
+    const { user, activeBranchId: currentBranchId } = useAuthStore.getState();
     const companyId = companyIdArg || this._getCompanyId();
-    const activeBranchId = this._getActiveBranchId(); 
+    const activeBranchId = currentBranchId || this._getActiveBranchId();
 
-    if (!companyId) return;
+    // 1. Evitamos reinicios innecesarios si ya estamos escuchando lo mismo
+    if (this._unsubscribes.length > 0 && this._lastSyncContext === `${companyId}_${activeBranchId}`) {
+        return;
+    }
+
+    this.stopListeners();
+    this._listenerSessionId = Date.now();
+    const sessionId = this._listenerSessionId;
+    this._lastSyncContext = `${companyId}_${activeBranchId}`;
+
+    // Solo bloqueamos si es superAdmin SIN empresa asignada (admin del sistema puro)
+    if (user?.companyId === 'master_admin' || !companyId) return;
 
     await this.checkTenantIntegrity(companyId);
+    if (sessionId !== this._listenerSessionId) return;
 
+    // 🔥 PUSH/PULL INICIAL (Background)
+    this.syncInitialData(user, activeBranchId).catch(e => console.warn("Sync inicial falló:", e));
+
+    // 🔥 LISTENER DE INVENTARIO (STOCK REAL-TIME POR SUCURSAL)
+    if (activeBranchId && activeBranchId !== 'ALL') {
+        try {
+            const invUnsub = await this.startInventoryListener(companyId, activeBranchId);
+            if (invUnsub) this._unsubscribes.push(invUnsub);
+        } catch (e) {
+            console.error('startInventoryListener falló:', e);
+        }
+    }
+
+    // 🔥 LISTENER DE CONFIGURACIÓN
     const configQuery = query(collection(db, 'companies', companyId, 'config'));
     this._unsubscribes.push(onSnapshot(configQuery, async (snapshot) => {
         try {
@@ -652,14 +853,45 @@ export const syncService = {
                 if (change.type === 'added' || change.type === 'modified') {
                     const configId = change.doc.id;
                     const configValue = data.value !== undefined ? data.value : data;
-                    await localDb.config.put({ 
-                        key: configId, 
+                    await localDb.config.put({
+                        key: configId,
                         value: configValue,
                         updatedAt: new Date().toISOString()
                     });
                 }
             }
         } catch (e) {}
+    }));
+
+    // 🔥 LISTENER DE PRODUCTOS (TIEMPO REAL)
+    // Usamos where('updatedAt', '>=', Timestamp) para evitar el problema de tipos mixtos:
+    // docs con updatedAt string ordenan ANTES que Timestamps en Firestore DESC,
+    // por lo que limit(N) los excluía silenciosamente. El where filtra SOLO Timestamps.
+    const liveStartTime = new Date(Date.now() - 60000); // 1 min de superposición
+    const productsRecentQ = query(
+        collection(db, 'companies', companyId, 'products'),
+        where('updatedAt', '>=', Timestamp.fromDate(liveStartTime))
+    );
+    this._unsubscribes.push(onSnapshot(productsRecentQ, async (snapshot) => {
+        const localDb = await getDB();
+        const itemsToPut = [];
+
+        snapshot.docChanges().forEach(change => {
+            if (change.type === 'added' || change.type === 'modified') {
+                if (change.doc.metadata.hasPendingWrites) return;
+                const data = change.doc.data();
+                const sanitized = this._sanitizeCloudProduct(data, change.doc.id);
+                itemsToPut.push(sanitized);
+            }
+        });
+
+        if (itemsToPut.length > 0) {
+            await localDb.products.bulkPut(itemsToPut);
+            console.log(`✅ [Real-Time] ${itemsToPut.length} productos escritos en Dexie. Disparando recarga...`);
+            window.dispatchEvent(new CustomEvent('onProductsSynced'));
+        }
+    }, (error) => {
+        console.error("❌ [Real-Time] Error en Listener de Productos:", error);
     }));
 
     try {
@@ -698,6 +930,11 @@ export const syncService = {
                 }
             }));
         }
+
+        // 🔥 LISTENER DE MOVIMIENTOS (KARDEX REAL-TIME)
+        const movUnsub = await this.startMovementsListener(companyId, activeBranchId, user?.role);
+        if (movUnsub) this._unsubscribes.push(movUnsub);
+
     } catch (e) { }
 
     try {
@@ -810,8 +1047,19 @@ export const syncService = {
   },
 
   stopListeners() {
+      // Cancelamos el debounce pendiente para que no arranque listeners después del stop
+      if (this._startListenersTimer) {
+          clearTimeout(this._startListenersTimer);
+          this._startListenersTimer = null;
+      }
+      this._listenerSessionId++; // Invalidamos cualquier proceso de arranque en curso
       this._unsubscribes.forEach(unsub => unsub());
       this._unsubscribes = [];
+      // Reseteamos flags para que el próximo login no quede bloqueado
+      this._isSyncingData = false;
+      this._isSyncingProducts = false;
+      this._isSyncingInventory = false;
+      this._lastSyncContext = null;
   },
 
   async syncAll() { 
@@ -821,6 +1069,9 @@ export const syncService = {
     if (!companyId) return { uploaded: 0, errors: 0 };
 
     try {
+        // 🔥 HOUSEKEEPING: Rotar datos locales antiguos (>45 días) una vez al día
+        this.rotateOldData(45).catch(e => {});
+
         const [
             salesRes, prodRes, mastersRes, shiftsRes, movsRes, 
             purchasesRes, supplierLedgerRes, kardexRes, customerLedgerRes 
@@ -1287,5 +1538,70 @@ export const syncService = {
 
   async syncPending() {
       return this.syncAll();
+  },
+
+  // 🔥 PILAR DE HIGIENE: Rotar datos antiguos para mantener Dexie ligero
+  async rotateOldData(days = 45) {
+      if (!navigator.onLine) return; // Solo rotamos si estamos seguros de que podemos validar sync
+
+      const lastCleanup = localStorage.getItem('NOAR_LAST_CLEANUP_DATE');
+      const today = new Date().toLocaleDateString('sv-SE'); // YYYY-MM-DD
+      
+      if (lastCleanup === today) return; 
+
+      const localDb = await getDB();
+      const thresholdDate = new Date();
+      thresholdDate.setDate(thresholdDate.getDate() - days);
+      const thresholdIso = thresholdDate.toISOString();
+
+      console.log(`🧹 [Nexus Housekeeping] Analizando rotación de datos (> ${days} días)...`);
+
+      try {
+          // 1. Rotar Ventas (Sales + Items)
+          const oldSalesIds = await localDb.sales
+              .filter(s => s.date < thresholdIso && s.syncStatus === 'synced')
+              .primaryKeys();
+          
+          if (oldSalesIds.length > 0) {
+              await localDb.sales.bulkDelete(oldSalesIds);
+              // Borrar items asociados (si son auto-incrementales por saleId o similar)
+              await localDb.sale_items.where('saleId').anyOf(oldSalesIds).delete();
+              console.log(`✅ ${oldSalesIds.length} ventas antiguas rotadas de la base local.`);
+          }
+
+          // 2. Rotar Movimientos de Caja
+          const oldCashMovIds = await localDb.cash_movements
+              .filter(m => m.date < thresholdIso && m.syncStatus === 'synced')
+              .primaryKeys();
+          if (oldCashMovIds.length > 0) {
+              await localDb.cash_movements.bulkDelete(oldCashMovIds);
+          }
+
+          // 3. Rotar Kardex de Inventario (Movements)
+          const oldKardexIds = await localDb.movements
+               .filter(m => m.date < thresholdIso && m.syncStatus === 'synced')
+               .primaryKeys();
+          if (oldKardexIds.length > 0) {
+               await localDb.movements.bulkDelete(oldKardexIds);
+          }
+
+          // 4. Rotar Turnos Cerrados antiguos (> 90 días para preservar auditoría reciente)
+          const thresholdShifts = new Date();
+          thresholdShifts.setDate(thresholdShifts.getDate() - 90);
+          const thresholdShiftsIso = thresholdShifts.toISOString();
+          
+          const oldShiftsIds = await localDb.shifts
+              .filter(s => s.status === 'CLOSED' && s.closedAt < thresholdShiftsIso && s.syncStatus === 'synced')
+              .primaryKeys();
+          
+          if (oldShiftsIds.length > 0) {
+              await localDb.shifts.bulkDelete(oldShiftsIds);
+              console.log(`✅ ${oldShiftsIds.length} turnos antiguos rotados.`);
+          }
+
+          localStorage.setItem('NOAR_LAST_CLEANUP_DATE', today);
+      } catch (error) {
+          console.warn("⚠️ Fallo en Housekeeping:", error);
+      }
   }
 };

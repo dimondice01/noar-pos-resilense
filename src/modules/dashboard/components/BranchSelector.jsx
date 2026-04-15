@@ -54,7 +54,7 @@ export const BranchSelector = () => {
             }
         };
         loadBranches();
-    }, [user?.companyId, isLocked]); 
+    }, [user?.companyId, isLocked, activeBranchId]); 
 
     const currentBranch = branches.find(b => b.id === activeBranchId);
     

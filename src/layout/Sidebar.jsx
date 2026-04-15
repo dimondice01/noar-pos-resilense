@@ -11,6 +11,8 @@ import { cn } from '../core/utils/cn';
 import { useAutoSync } from '../core/hooks/useAutoSync';
 import { useAuthStore } from '../modules/auth/store/useAuthStore';
 import { securityService } from '../modules/security/services/securityService';
+import { doc, getDoc } from 'firebase/firestore';
+import { db } from '../database/firebase';
 
 // 🔥 REPOSITORIOS LOCALES
 import { getDB } from '../database/db'; 
@@ -252,7 +254,11 @@ export const Sidebar = () => {
     const isAdmin = user?.role === 'ADMIN';
     const canManage = isOwner || isAdmin;
 
-    const [companyInfo, setCompanyInfo] = useState({ name: 'MI NEGOCIO', logo: defaultLogo });
+    const [companyInfo, setCompanyInfo] = useState({ 
+        name: 'MI NEGOCIO', 
+        logo: defaultLogo,
+        subscriptionStatus: 'ACTIVE' 
+    });
 
     const getLink = (path) => {
         const root = companySlug || user?.companyId; 
@@ -270,15 +276,16 @@ export const Sidebar = () => {
     const checkShiftStatus = async () => {
         if (!user) return;
         
-        if (!activeBranchId && !isOwner) {
-            if (user.branchId) {
-                switchBranch(user.branchId, "Mi Sucursal");
-                return;
-            }
-        }
-        
-        setCheckingShift(true); 
         try {
+            setCheckingShift(true); 
+            
+            // 🔥 AUTO-CONEXIÓN DE SUCURSAL PARA CAJEROS
+            if (!activeBranchId && !isOwner && user.branchId) {
+                console.log("🏪 [Sidebar] Auto-conectando sucursal del usuario...");
+                switchBranch(user.branchId, "Mi Sucursal");
+                // No retornamos aquí, dejamos que intente verificar el turno con el ID que ya tiene el user
+            }
+            
             const current = await cashRepository.getCurrentShift();
             setHasActiveShift(!!current);
         } catch (e) { 
@@ -297,12 +304,10 @@ export const Sidebar = () => {
 
     // 🔥 ABRIR CAJA 
     const handleOpenShiftDirectly = async () => {
-        if (!activeBranchId && !isOwner) {
-            alert("⚠️ Error: No tiene una sucursal asignada.");
-            return;
-        }
-        if (isOwner && activeBranchId === 'ALL') {
-            alert("⚠️ Seleccione una sucursal específica en el Dashboard para abrir caja.");
+        const realBranchId = activeBranchId;
+        
+        if (!realBranchId || realBranchId === 'ALL') {
+            alert("⚠️ Seleccione una sucursal específica para abrir caja.");
             navigate(getLink(''));
             return;
         }
@@ -327,26 +332,46 @@ export const Sidebar = () => {
     const loadLocalCompanyInfo = async () => {
         try {
             const dbLocal = await getDB();
-            const configData = await dbLocal.config.get('company_info');
+            let configData = await dbLocal.config.get('company_info');
+            
+            // 📡 FALLBACK A NUBE: Si no hay info local, intentamos leer de Firestore (Doble Blindaje)
+            if (!configData && user?.companyId && navigator.onLine) {
+                const docRef = doc(db, 'companies', user.companyId);
+                const snap = await getDoc(docRef);
+                if (snap.exists()) {
+                    const data = snap.data();
+                    configData = { 
+                        value: { 
+                            name: data.name || 'MI NEGOCIO', 
+                            logoUrl: data.logoUrl || null,
+                            subscriptionStatus: data.subscriptionStatus || 'ACTIVE'
+                        } 
+                    };
+                    // Guardamos localmente para la próxima
+                    await dbLocal.config.put({ key: 'company_info', value: configData.value });
+                }
+            }
+
             if (configData && configData.value) {
                 setCompanyInfo({
                     name: configData.value.name || 'MI NEGOCIO',
-                    logo: configData.value.logoUrl || defaultLogo
+                    logo: configData.value.logoUrl || defaultLogo,
+                    subscriptionStatus: configData.value.subscriptionStatus || 'ACTIVE'
                 });
             }
         } catch (error) {
-            console.warn("No se pudo cargar la configuración local de la empresa:", error);
+            console.warn("No se pudo cargar la configuración de la empresa:", error);
         }
     };
 
     useEffect(() => {
-        // Carga inicial
+        // Carga inicial (Intentamos local y luego nube si falla)
         loadLocalCompanyInfo();
         
-        // Polling silencioso para actualizar si el dueño cambia el logo en otra pestaña
-        const interval = setInterval(loadLocalCompanyInfo, 5000);
+        // Polling silencioso
+        const interval = setInterval(loadLocalCompanyInfo, 10000);
         return () => clearInterval(interval);
-    }, []);
+    }, [user?.companyId]); 
 
     useEffect(() => {
         const handleStatus = () => setIsOnline(navigator.onLine);
@@ -418,6 +443,19 @@ export const Sidebar = () => {
                 {/* Navigation */}
                 <nav className="flex-1 p-4 space-y-1 overflow-y-auto no-scrollbar">
                     
+                    {/* 🔥 AVISO DE MORA / SUSPENSIÓN INMINENTE */}
+                    {companyInfo.subscriptionStatus === 'PAST_DUE' && (
+                        <div className="mb-6 p-4 bg-red-50 border-2 border-red-200 rounded-2xl animate-pulse shadow-lg shadow-red-100">
+                             <div className="flex items-center gap-2 text-red-600 mb-1">
+                                 <AlertTriangle size={20} className="shrink-0" />
+                                 <span className="text-[10px] font-black uppercase tracking-widest">Aviso Importante</span>
+                             </div>
+                             <p className="text-xs font-black text-red-700 leading-tight">
+                                 El servicio será suspendido a las 19hs por falta de pago.
+                             </p>
+                        </div>
+                    )}
+
                     <div className="px-4 py-2 text-xs font-semibold text-sys-400 uppercase tracking-wider mb-1">Operación</div>
                     
                     <MenuLink to={getLink('')} icon={LayoutDashboard} label="Principal" />

@@ -211,7 +211,8 @@ const EditableCell = ({
         
         // Verificamos permisos antes de entrar a edición
         if (onRequestAuth) {
-            onRequestAuth(productId, field, localValue);
+            const canEdit = onRequestAuth(productId, field, localValue);
+            if (canEdit) setIsEditing(true);
         } else {
             setIsEditing(true);
         }
@@ -753,14 +754,41 @@ export const InventoryPage = () => {
     // 🔄 DATA LOADING 
     // =================================================================
 
+    // Lee solo desde Dexie, sin tocar Firestore. Usado por onProductsSynced y post-edición.
+    const loadFromLocal = async () => {
+        console.log('[INV] loadFromLocal — solo Dexie, sin Firestore');
+        try {
+            const fetchProductsTask = (canViewAllBranches && (!activeBranchId || activeBranchId === 'ALL'))
+                ? productRepository.getAll()
+                : productRepository.getAllByBranch(activeBranchId);
+
+            const [allProds, cats, brands, supps] = await Promise.all([
+                fetchProductsTask,
+                masterRepository.getAll('categories'),
+                masterRepository.getAll('brands'),
+                masterRepository.getAll('suppliers')
+            ]);
+
+            setProducts([...allProds].sort((a, b) => a.name.localeCompare(b.name)));
+            setMasters({ categories: cats || [], brands: brands || [], suppliers: supps || [] });
+
+            if (canViewAllBranches) {
+                await loadGlobalStock();
+            }
+        } catch (e) {
+            console.error("Error loadFromLocal:", e);
+        }
+    };
+
     const loadData = async (forceCloud = false, isSilent = false) => {
+        console.log(`[INV] loadData — forceCloud=${forceCloud} isSilent=${isSilent} (incluye sync Firestore)`);
         if (!isSilent) setLoading(true);
         try {
             const dbLocal = await getDB();
-            
+
             if (!isSilent) setLoadingMessage('Verificando Sucursales...');
             let branchesData = [];
-            
+
             if (canViewAllBranches && user?.companyId) {
                 branchesData = await dbLocal.branches.toArray();
                 if (branchesData.length === 0 && navigator.onLine) {
@@ -789,30 +817,13 @@ export const InventoryPage = () => {
             }
 
             if (!isSilent) setLoadingMessage('Construyendo matriz...');
-            
-            const fetchProductsTask = (canViewAllBranches && (!activeBranchId || activeBranchId === 'ALL')) 
-                ? productRepository.getAll() 
-                : productRepository.getAllByBranch(activeBranchId);
+            await loadFromLocal();
 
-            const [allProds, cats, brands, supps] = await Promise.all([
-                fetchProductsTask, 
-                masterRepository.getAll('categories'),
-                masterRepository.getAll('brands'),
-                masterRepository.getAll('suppliers')
-            ]);
-            
-            setProducts([...allProds].sort((a,b) => a.name.localeCompare(b.name)));
-            setMasters({ categories: cats || [], brands: brands || [], suppliers: supps || [] });
-
-            if (canViewAllBranches) {
-                await loadGlobalStock();
-            }
-
-        } catch (error) { 
-            console.error(error); 
+        } catch (error) {
+            console.error(error);
             if (!isSilent) toast.error("Error al cargar inventario");
-        } finally { 
-            if (!isSilent) setLoading(false); 
+        } finally {
+            if (!isSilent) setLoading(false);
         }
     };
 
@@ -867,6 +878,7 @@ export const InventoryPage = () => {
 
     // 🔥 EL MANEJADOR INLINE AHORA ESTÁ BLINDADO
     const handleInlineSave = async (productId, field, newValue) => {
+        console.log(`[INV] handleInlineSave — campo=${field} valor=${newValue} producto=${productId}`);
         try {
             const product = products.find(p => p.id === productId);
             if (!product) return;
@@ -894,12 +906,12 @@ export const InventoryPage = () => {
             }));
             
             toast.success(`${field.toUpperCase()} actualizado`, { position: 'bottom-right', duration: 1000 });
-            loadData(false, true);
+            loadFromLocal();
 
         } catch (e) {
             console.error(e);
             toast.error("Error al guardar cambio");
-            loadData(false, true); 
+            loadFromLocal();
         }
     };
 
@@ -918,13 +930,7 @@ export const InventoryPage = () => {
         }
 
         if (hasPermission) {
-            // Si tiene permiso, abrimos la celda para edición disparando un click simulado (HACK REACT)
-            const cell = document.getElementById(`cell-${productId}-${field}`);
-            if(cell) {
-               // Desactivamos el disabled temporalmente forzando el estado del padre no es posible directamente.
-               // Es mejor usar el PinModal y que el callback aplique el cambio
-            }
-            return;
+            return true; // Señal a EditableCell para activar modo edición
         }
 
         // Si NO tiene permiso, lanzamos el Modal de PIN
@@ -941,14 +947,24 @@ export const InventoryPage = () => {
         });
     };
 
-    useEffect(() => { loadData(); }, [user, activeBranchId]);
+    useEffect(() => { 
+        loadData(); 
+        
+        // Re-carga solo desde Dexie cuando el sync trae datos nuevos, sin volver a llamar Firestore
+        const handleSync = () => {
+            console.log('[INV] onProductsSynced recibido → loadFromLocal');
+            loadFromLocal();
+        };
+        window.addEventListener('onProductsSynced', handleSync);
+        
+        return () => {
+            window.removeEventListener('onProductsSynced', handleSync);
+        };
+    }, [user, activeBranchId]);
 
     useEffect(() => {
-        const timer = setTimeout(() => {
-            setSearchTerm(inputValue);
-            setCurrentPage(1);
-        }, 300);
-        return () => clearTimeout(timer);
+        setSearchTerm(inputValue);
+        setCurrentPage(1);
     }, [inputValue]);
 
     // =================================================================
@@ -1154,9 +1170,13 @@ export const InventoryPage = () => {
                         <div className="w-px h-8 bg-sys-200 mx-2 hidden md:block"></div>
 
                         {isSuperUser && (
-                            <Button variant="ghost" onClick={handleForceSync} className="text-sys-400 hover:text-brand hover:bg-brand/5 border border-transparent hover:border-brand/20">
-                                <RefreshCw size={18} className={cn("mr-2", loadingStock ? "animate-spin text-brand" : "")}/> Sync Global
-                            </Button>
+                            <div
+                                title="Sync en tiempo real activo. Si ves datos desactualizados, recargá la página."
+                                className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold text-green-600 bg-green-50 border border-green-200 cursor-default select-none"
+                            >
+                                <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse shrink-0" />
+                                Sync en vivo
+                            </div>
                         )}
 
                         {isAdmin && (

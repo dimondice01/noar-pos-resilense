@@ -29,10 +29,10 @@ export const ProtectedRoute = () => {
   }
 
   // =================================================================
-  // 👑 PASE VIP: MASTER ADMIN (BYPASS TOTAL)
+  // 👑 PASE VIP: MASTER ADMIN REAL (BYPASS TOTAL)
   // =================================================================
-  // Si es el usuario forzado (admin@noar.com) o tiene el flag superAdmin
-  if (user.uid === 'master-admin-nexus' || user.superAdmin === true) {
+  // Solo los administradores de la plataforma (admin@noar o admin@admin) tienen bypass
+  if (user.uid === 'master-admin-nexus' || user.companyId === 'master_admin') {
       return <Outlet />;
   }
 
@@ -40,10 +40,16 @@ export const ProtectedRoute = () => {
   // 🛡️ USUARIOS NORMALES (Dueños de Local, Cajeros)
   // =================================================================
   
-  // A. Seguridad básica: Si no tiene empresa asignada, no puede entrar al sistema
+  // A. Seguridad básica: Si no tiene empresa asignada, intentamos refrescar perfil antes de rebotar
   if (!user.companyId) {
-      console.error("⛔ Error Crítico: Usuario sin empresa asignada.");
-      return <Navigate to="/login" replace />;
+      console.warn("⚠️ Usuario detectado sin empresa. Intentando reparación de perfil...");
+      const { initAuthListener } = useAuthStore.getState();
+      initAuthListener(); // Esto dispara el fetch a Firestore
+      return (
+        <div className="h-screen w-screen flex items-center justify-center bg-sys-50">
+            <Loader2 className="animate-spin text-brand" size={40} />
+        </div>
+      );
   }
 
   // B. Validación de acceso a la ruta Maestra

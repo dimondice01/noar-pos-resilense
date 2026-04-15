@@ -98,7 +98,7 @@ export const authService = {
     // ==========================================
     // 🔥 REGISTRO ATÓMICO (Sprint SaaS Integration)
     // ==========================================
-    async register({ email, password, name, companyName, branchCount }) {
+    async register({ email, password, name, companyName, branchCount, branchNames, ...extraData }) {
         try {
             const userCredential = await createUserWithEmailAndPassword(auth, email, password);
             const { uid } = userCredential.user;
@@ -111,36 +111,46 @@ export const authService = {
             const userRef = doc(db, 'users', uid);
             const companyRef = doc(db, 'companies', companyId);
             
+            // Fusión de datos del usuario
             batch.set(userRef, {
+                uid,
                 name,
                 email,
-                role: 'OWNER',
+                role: extraData.role || 'OWNER',
                 companyId,
-                branchId: null, 
+                branchId: 'suc-01', // 🔥 MODIFICACIÓN: Iniciamos con la primera sucursal asignada
                 active: true,
-                createdAt: serverTimestamp()
+                createdAt: serverTimestamp(),
+                ...extraData.userMetadata
             });
 
+            // Fusión de datos de la empresa
             batch.set(companyRef, {
+                id: companyId,
                 name: companyName,
                 createdAt: serverTimestamp(),
                 ownerUid: uid,
                 isActive: true,
                 branchCount: parseInt(branchCount) || 1,
-                subscriptionStatus: 'TRIAL',
-                expiryDate: expiration.toISOString(),
-                planId: 'FULL_50K', 
-                lastPaymentDate: null
+                subscriptionStatus: extraData.subscriptionStatus || 'TRIAL',
+                expiryDate: extraData.expiryDate || expiration.toISOString(),
+                planId: extraData.planId || 'COMERCIO_50K', 
+                lastPaymentDate: null,
+                ...extraData.companyMetadata
             });
 
             const totalBranches = parseInt(branchCount) || 1;
 
             for (let i = 1; i <= totalBranches; i++) {
                 const branchId = `suc-${i.toString().padStart(2, '0')}`;
-                const branchName = i === 1 ? `Sucursal Central` : `Sucursal ${i}`;
+                const branchName = (branchNames && branchNames[i-1]) 
+                    ? branchNames[i-1] 
+                    : (i === 1 ? `Sucursal Central` : `Sucursal ${i}`);
+                
                 const branchRef = doc(db, 'companies', companyId, 'branches', branchId);
 
                 batch.set(branchRef, {
+                    id: branchId,
                     name: branchName,
                     number: i, 
                     address: '',

@@ -59,7 +59,7 @@ export const InvoiceA4 = ({ sale, companyConfig }) => {
     cuit: companyConfig?.cuit || '00-00000000-0',
     iibb: companyConfig?.iibb || companyConfig?.cuit || '00-00000000-0',
     inicioActividades: companyConfig?.inicioActividades || companyConfig?.inicioAct || '-',
-    logoUrl: companyConfig?.logoUrl || defaultLogo
+    logoUrl: companyConfig?.logoBase64 || companyConfig?.logoUrl || defaultLogo
   };
 
   // --- Datos del Cliente ---

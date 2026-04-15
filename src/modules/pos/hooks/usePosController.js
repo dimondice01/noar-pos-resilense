@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { productRepository } from '../../inventory/repositories/productRepository';
 import { salesRepository } from '../../sales/repositories/salesRepository';
 import { useAuthStore } from '../../auth/store/useAuthStore';
@@ -73,6 +73,7 @@ export const usePosController = () => {
     const [tabs, setTabs] = useState([{ ...NEW_TAB_TEMPLATE, id: Date.now() }]);
     const [activeTabId, setActiveTabId] = useState(tabs[0].id);
     const [isProcessing, setIsProcessing] = useState(false);
+    const processingRef = useRef(false); // 🛡️ Sincronización real contra llamadas concurrentes
     const [searchResults, setSearchResults] = useState([]);
 
     // 🔥 ESTADO DE CONFIGURACIÓN DEL POS (Integrando Surcharges)
@@ -507,12 +508,15 @@ export const usePosController = () => {
     };
 
     const processBudget = async () => {
+        if (processingRef.current) return null; // 🛡️ BLINDAJE SÍNCRONO
+        
         if (activeTab.items.length === 0) {
             toast.error("Carrito vacío");
             return null;
         }
 
         setIsProcessing(true);
+        processingRef.current = true;
         const toastId = toast.loading("Generando presupuesto...");
 
         try {
@@ -567,10 +571,13 @@ export const usePosController = () => {
             return null;
         } finally {
             setIsProcessing(false);
+            processingRef.current = false;
         }
     };
 
     const processSale = async (paymentData) => {
+        if (processingRef.current) return null; // 🛡️ BLINDAJE SÍNCRONO
+        
         if (activeTab.items.length === 0) {
             toast.error("Carrito vacío");
             return null;
@@ -581,6 +588,7 @@ export const usePosController = () => {
         }
 
         setIsProcessing(true);
+        processingRef.current = true;
         let loadingToast = null;
 
         try {
@@ -609,7 +617,10 @@ export const usePosController = () => {
                 const amountInput = parseFloat(paymentData.amountPaid || 0); 
                 const expectedTotal = parseFloat(paymentData.baseAmount || totals.total); 
 
-                const difference = expectedTotal - amountInput;
+                let difference = expectedTotal - amountInput;
+                if (amountInput === Math.trunc(expectedTotal) && expectedTotal % 1 !== 0) {
+                    difference = 0; 
+                }
 
                 // 🔥 FIX CRÍTICO: LÓGICA DE PAGOS CORREGIDA PARA CTA CTE
                 if (paymentData.method === 'account' || paymentData.method === 'debt') {
@@ -813,12 +824,15 @@ export const usePosController = () => {
             return null;
         } finally {
             setIsProcessing(false);
+            processingRef.current = false;
         }
     };
 
     const processInternalSale = async (reason = "Consumo Interno") => {
+        if (processingRef.current) return false;
         if (activeTab.items.length === 0) return toast.error("Carrito vacío");
         setIsProcessing(true);
+        processingRef.current = true;
         
         try {
             const currentShift = await _verifyShift();
@@ -856,7 +870,10 @@ export const usePosController = () => {
         } catch (error) {
             toast.error(error.message);
             return false;
-        } finally { setIsProcessing(false); }
+        } finally { 
+            setIsProcessing(false); 
+            processingRef.current = false;
+        }
     };
 
     // =================================================================

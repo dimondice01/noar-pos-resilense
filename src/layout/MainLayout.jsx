@@ -1,6 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import { Outlet } from 'react-router-dom';
 import { Sidebar } from './Sidebar'; 
+import { ShieldAlert } from 'lucide-react';
 
 // ✅ Stores
 import { useAuthStore } from '../modules/auth/store/useAuthStore';
@@ -30,11 +31,16 @@ export const MainLayout = () => {
         // Solo arrancamos si tenemos usuario y empresa
         if (user?.companyId) {
             
-            // A. Sincronización "Pesada" (Productos, Maestros) 
+            // A. Sincronización "Pesada" (Productos, Maestros)
             // Se ejecuta UNA vez al montar. Descarga solo lo nuevo.
             try {
                 await syncService.syncProducts(user.companyId);
             } catch (e) { console.warn("Error sync products:", e); }
+
+            // B2. Listeners de tiempo real (config, productos, ventas)
+            // Se llama aquí en lugar de App.jsx para evitar la race condition
+            // de StrictMode + SubscriptionGuard que disparaban 4 llamadas simultáneas.
+            syncService.startRealTimeListeners(user.companyId);
 
             // B. Sincronización "Real-Time" (Inventario de Sucursal)
             // Esto mantiene el stock vivo para el cajero.
@@ -73,6 +79,8 @@ export const MainLayout = () => {
             unsubscribeInventoryRef.current();
             unsubscribeInventoryRef.current = null;
         }
+        // Limpiamos también los listeners de startRealTimeListeners (config, productos, ventas)
+        syncService.stopListeners();
     };
   }, [user, loading, activeBranchId]); // Se reinicia si cambia el usuario o la sucursal
 
@@ -128,6 +136,28 @@ export const MainLayout = () => {
   
   if (loading) {
       return <div className="min-h-screen bg-sys-50 flex items-center justify-center text-sys-400">Cargando sistema...</div>; 
+  }
+
+  // 🚨 CAPA DE SEGURIDAD 2: BLOQUEO RADICAL DE LAYOUT
+  // Si el usuario llega hasta aquí pero su empresa está marcada como EXPIRED en el objeto user, bloqueamos todo.
+  if (user?.subscriptionStatus === 'EXPIRED') {
+      return (
+        <div className="fixed inset-0 z-[9999] bg-white flex items-center justify-center p-8">
+            <div className="max-w-md text-center">
+                <div className="w-20 h-20 bg-red-100 rounded-2xl flex items-center justify-center mx-auto mb-6">
+                    <ShieldAlert className="text-red-600" size={40} />
+                </div>
+                <h1 className="text-2xl font-black text-sys-900 mb-2">SISTEMA SUSPENDIDO</h1>
+                <p className="text-sys-500 font-bold mb-8">Por favor, contacte a su asesor para regularizar su situación.</p>
+                <button 
+                    onClick={() => window.location.replace('/plan-expired')}
+                    className="w-full py-4 bg-sys-900 text-white rounded-xl font-black uppercase tracking-widest hover:bg-black transition-colors"
+                >
+                    Ir a Pagos
+                </button>
+            </div>
+        </div>
+      );
   }
 
   return (

@@ -79,7 +79,7 @@ export const useCloudDashboard = () => {
             let cash = 0;
             let digital = 0;
             let fiscal = 0;
-            let netProfit = 0; // 🔥 SPRINT 6: Ganancia Neta
+            let grossProfit = 0; // 🔥 SPRINT 6: Utilidad Bruta (Ventas - Costos)
             let rawSales = [];
             const productMap = {}; 
 
@@ -88,28 +88,43 @@ export const useCloudDashboard = () => {
                 
                 // 🛡️ FILTRO CLIENT-SIDE: Sucursal
                 if (activeBranchId && activeBranchId !== 'ALL' && data.branchId !== activeBranchId) return;
-                if (data.status === 'CANCELLED' || data.status === 'ABANDONED') return;
+                
+                const sType = (data.type || '').toUpperCase();
+                const sStatus = (data.status || '').toUpperCase();
+
+                // Ignorar presupuestos, internos, cancelados y abandonados
+                if (sType === 'BUDGET' || sType === 'INTERNAL') return;
+                if (sStatus === 'CANCELLED' || sStatus === 'ABANDONED') return;
 
                 const saleTotal = parseFloat(data.total || 0);
                 total += saleTotal;
                 
-                // 🔥 SPRINT 6: Sumamos la ganancia neta guardada en la venta
-                netProfit += parseFloat(data.netProfit || 0);
+                // 🔥 SPRINT 6: Sumamos la ganancia neta guardada en la venta (Utilidad)
+                grossProfit += parseFloat(data.netProfit || 0);
 
-                // Soporte Split Payments
+                // Soporte Split Payments (Blindado)
                 if (data.payments && Array.isArray(data.payments)) {
                     data.payments.forEach(p => {
                         const amount = parseFloat(p.amount || 0);
-                        if (p.method === 'cash') cash += amount;
-                        else digital += amount;
+                        const pMethod = String(p.method || 'cash').toLowerCase().trim();
+                        
+                        if (pMethod === 'cash' || pMethod === 'efectivo') {
+                            cash += amount;
+                        } else if (!['account', 'employee_account', 'budget', 'debt', 'current_account'].includes(pMethod)) {
+                            digital += amount;
+                        }
                     });
                 } else {
                     // Soporte Legacy
-                    const method = (data.payment?.method || data.method || 'CASH').toUpperCase();
-                    const isCash = method === 'CASH' || method === 'EFECTIVO';
+                    const method = String(data.payment?.method || data.method || 'CASH').toLowerCase().trim();
+                    const isCash = method === 'cash' || method === 'efectivo';
                     const amount = parseFloat(data.payment?.amountPaid || saleTotal);
-                    if (isCash) cash += amount;
-                    else digital += amount;
+                    
+                    if (isCash) {
+                        cash += amount;
+                    } else if (!['account', 'employee_account', 'budget', 'debt', 'current_account'].includes(method)) {
+                        digital += amount;
+                    }
                 }
 
                 if (data.afip?.status === 'APPROVED') fiscal++;
@@ -141,9 +156,6 @@ export const useCloudDashboard = () => {
                 .slice(0, 5)
                 .map(([name, quantity]) => ({ name, quantity }));
 
-            // 🔥 SPRINT 6: Cálculo de Margen Operativo (%)
-            const marginPercentage = total > 0 ? Math.round((netProfit / total) * 100) : 0;
-
             // 🔥 SINCRONIZACIÓN DE BAJADA DEBENZED (CLOUD -> LOCAL)
             snapshot.docChanges().forEach(change => {
                 if (change.type === 'added' || change.type === 'modified') {
@@ -157,25 +169,34 @@ export const useCloudDashboard = () => {
                     const batch = [...syncBuffer.current];
                     syncBuffer.current = [];
                     for (const sale of batch) {
-                        await salesRepository.saveFromCloud(sale);
+                        try {
+                            await salesRepository.saveFromCloud(sale);
+                        } catch (e) {}
                     }
                 }
             }, 2000);
 
-            setStats(prev => ({
-                ...prev,
-                totalSales: total,
-                count: snapshot.size,
-                averageTicket: snapshot.size > 0 ? total / snapshot.size : 0,
-                cashTotal: cash,
-                digitalTotal: digital,
-                fiscalCount: fiscal,
-                recentSales: recentSales,
-                topProducts: sortedProducts,
-                netProfit: netProfit,               // 🔥 SPRINT 6
-                marginPercentage: marginPercentage, // 🔥 SPRINT 6
-                loading: false
-            }));
+            setStats(prev => {
+                const totalExpenses = prev.expenseTotal || 0;
+                const dailyNetProfit = grossProfit - totalExpenses;
+                const marginPercentage = total > 0 ? Math.round((dailyNetProfit / total) * 100) : 0;
+                
+                return {
+                    ...prev,
+                    totalSales: total,
+                    count: snapshot.size,
+                    averageTicket: snapshot.size > 0 ? total / snapshot.size : 0,
+                    cashTotal: cash,
+                    digitalTotal: digital,
+                    fiscalCount: fiscal,
+                    recentSales: recentSales,
+                    topProducts: sortedProducts,
+                    grossProfit: grossProfit, 
+                    netProfit: dailyNetProfit,
+                    marginPercentage: marginPercentage,
+                    loading: false
+                };
+            });
         }, (err) => console.warn("Sales Sync Error:", err.code));
 
         // ==========================================
@@ -203,6 +224,7 @@ export const useCloudDashboard = () => {
                     ...prev, 
                     abandonedSales: abandoned,
                     abandonedCount: abandoned.length 
+                    // No recalculamos margen aquí ya que las ventas abandonadas no afectan ingresos
                 }));
             });
         }
@@ -231,7 +253,16 @@ export const useCloudDashboard = () => {
                 }
             });
             
-            setStats(prev => ({ ...prev, expenseTotal: expenses }));
+            setStats(prev => {
+                const net = (prev.grossProfit || 0) - expenses;
+                const margin = prev.totalSales > 0 ? Math.round((net / prev.totalSales) * 100) : 0;
+                return { 
+                    ...prev, 
+                    expenseTotal: expenses,
+                    netProfit: net,
+                    marginPercentage: margin
+                };
+            });
         }, (err) => console.warn("Movements Sync Error:", err.code));
 
         // ==========================================

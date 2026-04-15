@@ -255,38 +255,91 @@ export const productRepository = {
 
         await dbLocal.products.put(masterProduct);
 
-        if (isNewProduct && masterProduct.stock > 0 && activeBranchId && activeBranchId !== 'ALL') {
-            try {
-                await this.addStock(
-                    productId, 
-                    masterProduct.stock, 
-                    'Stock Inicial', 
-                    user.name, 
-                    activeBranchId,
-                    'STOCK_IN'
-                );
-            } catch (err) {
-                console.error("Fallo al inyectar stock inicial:", err);
+        if (isNewProduct && masterProduct.stock > 0) {
+            let targetBranch = activeBranchId;
+            
+            // 🛡️ SEGURIDAD: Si no hay branch activa o es 'ALL', buscamos la primera sucursal disponible
+            if (!targetBranch || targetBranch === 'ALL') {
+                try {
+                    const branches = await dbLocal.branches.where('companyId').equals(user.companyId).toArray();
+                    if (branches.length > 0) {
+                        targetBranch = branches[0].id;
+                        console.log(`📦 [Auto-Assign] Asignando stock inicial a la sucursal: ${branches[0].name}`);
+                    }
+                } catch (e) {
+                    console.warn("No se pudo encontrar una sucursal para el stock inicial.");
+                }
+            }
+
+            if (targetBranch && targetBranch !== 'ALL') {
+                try {
+                    await this.addStock(
+                        productId, 
+                        masterProduct.stock, 
+                        'Stock Inicial', 
+                        user.name, 
+                        targetBranch,
+                        'STOCK_IN'
+                    );
+                } catch (err) {
+                    console.error("Fallo al inyectar stock inicial:", err);
+                }
             }
         }
 
         if (navigator.onLine) {
-            try {
-                const masterRef = doc(db, `companies/${user.companyId}/products`, productId);
-                const { stock, syncStatus, ...cloudData } = masterProduct;
-                
-                await setDoc(masterRef, {
-                    ...cloudData,
-                    updatedAt: serverTimestamp() 
-                }, { merge: true });
-                
-                await dbLocal.products.update(productId, { syncStatus: 'synced' });
-            } catch (e) {
-                console.error("Error en sincronización directa:", e);
-            }
+            const masterRef = doc(db, `companies/${user.companyId}/products`, productId);
+            const { stock, syncStatus, ...cloudData } = masterProduct;
+            
+            // 🔥 FIRE AND FORGET: Resiliencia Local-First. No bloqueamos la UI esperando a Firebase
+            setDoc(masterRef, {
+                ...cloudData,
+                updatedAt: serverTimestamp() 
+            }, { merge: true })
+            .then(() => dbLocal.products.update(productId, { syncStatus: 'synced' }))
+            .catch(e => console.error("Error en sincronización directa:", e));
         }
 
         return masterProduct;
+    },
+
+    // 🔥 NUEVO: Método de actualización rápida (Inline Editing)
+    async update(productId, updates) {
+        const dbLocal = await getDB();
+        const { user } = useAuthStore.getState();
+        if (!user?.companyId) throw new Error("Sesión no válida.");
+
+        // Guard: si el producto fue borrado (por listener de otra PC), no editar
+        const current = await dbLocal.products.get(productId);
+        if (!current || current.deleted) throw new Error("Producto eliminado. Recargá el inventario.");
+
+        const timestamp = new Date().toISOString();
+
+        // 1. GESTIÓN LOCAL INMEDIATA
+        const localUpdates = { ...updates, updatedAt: timestamp, syncStatus: 'pending' };
+        await dbLocal.products.update(productId, localUpdates);
+
+        // 2. ☁️ FIRE AND FORGET CLOUD SYNC
+        if (navigator.onLine) {
+            const masterRef = doc(db, `companies/${user.companyId}/products`, productId);
+
+            getDoc(masterRef).then(async (snap) => {
+                let cloudData;
+                if (snap.exists()) {
+                    // Doc existe: solo subimos los campos cambiados
+                    cloudData = { ...updates, updatedAt: serverTimestamp() };
+                } else {
+                    // Doc no existe: subimos el producto completo para no crear doc incompleto
+                    const full = await dbLocal.products.get(productId);
+                    if (!full) return;
+                    const { stock, syncStatus, promo, ...rest } = full;
+                    cloudData = { ...rest, ...updates, updatedAt: serverTimestamp() };
+                }
+                return setDoc(masterRef, cloudData, { merge: true });
+            })
+            .then(() => dbLocal.products.update(productId, { syncStatus: 'synced' }))
+            .catch(e => console.error("Error en update directo:", e));
+        }
     },
 
     // ==========================================
@@ -317,7 +370,9 @@ export const productRepository = {
         const { user, activeBranchId } = useAuthStore.getState();
         const branchId = forcedBranchId || activeBranchId;
 
-        if (!user?.companyId || !branchId || branchId === 'ALL') throw new Error("Debe seleccionar una sucursal para mover stock.");
+        if (!user?.companyId) throw new Error("Sesión no válida.");
+        
+        const isVirtualLog = !branchId || branchId === 'ALL';
 
         const qty = parseFloat(quantity);
         if (isNaN(qty) || qty === 0) return;
@@ -328,28 +383,28 @@ export const productRepository = {
 
         // 🔄 TRANSACCIÓN LOCAL ATÓMICA
         await dbLocal.transaction('rw', [dbLocal.inventory, dbLocal.movements], async () => {
-            const currentInv = await dbLocal.inventory.where({ branchId, productId }).first();
-            const currentStock = currentInv ? (parseFloat(currentInv.stock) || 0) : 0;
-            const newStock = currentStock + qty;
+            // A. ACTUALIZAR INVENTARIO (Solo si hay sucursal)
+            if (!isVirtualLog) {
+                const currentInv = await dbLocal.inventory.where({ branchId, productId }).first();
+                const currentStock = currentInv ? (parseFloat(currentInv.stock) || 0) : 0;
+                await dbLocal.inventory.put({
+                    branchId,
+                    productId,
+                    stock: currentStock + qty,
+                    promo: currentInv?.promo || null, 
+                    updatedAt: timestamp,
+                    syncStatus: 'pending'
+                });
+            }
 
-            const currentPromo = currentInv?.promo || null;
-
-            await dbLocal.inventory.put({
-                branchId,
-                productId,
-                stock: newStock,
-                promo: currentPromo, 
-                updatedAt: timestamp,
-                syncStatus: 'pending'
-            });
-
+            // B. REGISTRAR MOVIMIENTO (SIEMPRE, incluso si es virtual)
             await dbLocal.movements.add({
                 id: movId,
                 productId,
-                branchId,
-                type: type, // Ej: 'MERMA', 'STOCK_IN', 'SALE'
+                branchId: isVirtualLog ? 'GLOBAL' : branchId,
+                type: type, 
                 amount: Math.abs(qty),
-                description: description || 'Ajuste Manual',
+                description: description || 'Ajuste Inicial',
                 user: userName,
                 date: timestamp,
                 refId: null,
@@ -357,40 +412,38 @@ export const productRepository = {
             });
         });
 
-        // ☁️ ACTUALIZACIÓN CLOUD (Alineada con el syncService)
+        // ☁️ ACTUALIZACIÓN CLOUD
         if (navigator.onLine) {
-            try {
-                const batch = writeBatch(db);
-                
-                // 1. Actualizar Inventario Cloud
+            const batch = writeBatch(db);
+            
+            // 1. Inventario (Solo si hay sucursal)
+            if (!isVirtualLog) {
                 const inventoryRef = doc(db, `companies/${user.companyId}/branches/${branchId}/inventory`, productId);
-                batch.set(inventoryRef, {
-                    stock: increment(qty),
-                    updatedAt: serverTimestamp()
-                }, { merge: true });
-
-                // 2. Registrar Movimiento (Alineado con "movements")
-                const logRef = doc(db, `companies/${user.companyId}/movements`, movId);
-                batch.set(logRef, {
-                    productId,
-                    amount: Math.abs(qty),
-                    branchId,
-                    type: type,
-                    description: description,
-                    user: userName,
-                    date: serverTimestamp(),
-                    refId: null
-                });
-
-                await batch.commit();
-                
-                // Limpiar syncStatus local para no subirlo 2 veces
-                await dbLocal.inventory.update([branchId, productId], {syncStatus: 'synced'});
-                await dbLocal.movements.update(movId, {syncStatus: 'synced'});
-                
-            } catch (e) {
-                console.error("Error actualizando stock en nube:", e);
+                batch.set(inventoryRef, { stock: increment(qty), updatedAt: serverTimestamp() }, { merge: true });
             }
+
+            // 2. Movimiento Maestro
+            const logRef = doc(db, `companies/${user.companyId}/movements`, movId);
+            batch.set(logRef, {
+                productId,
+                amount: Math.abs(qty),
+                branchId: isVirtualLog ? 'GLOBAL' : branchId,
+                type: type,
+                description: description,
+                user: userName,
+                date: serverTimestamp(),
+                refId: null
+            });
+
+            // 3. 🔥 ACTUALIZAR PRODUCTO (Para despertar el Delta Sync)
+            const productRef = doc(db, `companies/${user.companyId}/products`, productId);
+            batch.set(productRef, { updatedAt: serverTimestamp() }, { merge: true });
+
+            // 🔥 FIRE AND FORGET: No bloqueamos el POS esperando el commit
+            batch.commit().then(async () => {
+                if (!isVirtualLog) await dbLocal.inventory.update([branchId, productId], {syncStatus: 'synced'});
+                await dbLocal.movements.update(movId, {syncStatus: 'synced'});
+            }).catch(e => console.error("Error sync cloud stock:", e));
         }
     },
 
@@ -420,13 +473,14 @@ export const productRepository = {
         });
 
         if (navigator.onLine && user?.companyId) {
-            try {
-                const invRef = doc(db, `companies/${user.companyId}/branches/${activeBranchId}/inventory`, productId);
-                await setDoc(invRef, { 
-                    promo: promoRule,
-                    updatedAt: serverTimestamp()
-                }, { merge: true });
-            } catch (e) { console.error("Error syncing promo:", e); }
+            const invRef = doc(db, `companies/${user.companyId}/branches/${activeBranchId}/inventory`, productId);
+            
+            // 🔥 FIRE AND FORGET
+            setDoc(invRef, { 
+                promo: promoRule,
+                updatedAt: serverTimestamp()
+            }, { merge: true })
+            .catch(e => console.error("Error syncing promo:", e));
         }
     },
 
@@ -445,10 +499,10 @@ export const productRepository = {
 
         if (navigator.onLine && user?.companyId) {
             const docRef = doc(db, `companies/${user.companyId}/products`, id);
-            await updateDoc(docRef, { 
-                deleted: true, 
-                updatedAt: serverTimestamp() 
-            });
+            // Fire and forget: consistente con el resto del repositorio
+            updateDoc(docRef, { deleted: true, updatedAt: serverTimestamp() }).catch(e =>
+                console.error("Error sync delete producto:", e)
+            );
         }
     },
 

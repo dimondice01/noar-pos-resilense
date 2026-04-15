@@ -22,6 +22,7 @@ import { Switch } from '../../../core/ui/Switch';
 import { cn } from '../../../core/utils/cn';
 import { paymentService } from '../../payments/services/paymentService';
 import { useAuthStore } from '../../auth/store/useAuthStore'; 
+import { getDB } from '../../../database/db'; 
 import toast from 'react-hot-toast';
 
 const API_URL = import.meta.env.VITE_API_URL || "https://us-central1-salvadorpos1.cloudfunctions.net/api";
@@ -77,14 +78,33 @@ export const PaymentModal = ({
     
     // Refs
     const pollingRef = useRef(null);
+    const hasTriggeredRef = useRef(false); // 🛡️ BLINDAJE: Evita disparos duplicados del polling
     const cashInputRef = useRef(null);
     const withAfipRef = useRef(false);
 
     // Hooks
 
+    // Cuenta de Transferencia Dinámica
+    const [branchConfig, setBranchConfig] = useState(null);
+    
+    // 🔥 LECTURA DE CONFIGURACIÓN DE SUCURSAL (Local-First)
+    useEffect(() => {
+        if (!activeBranchId) return;
+        const loadConfig = async () => {
+            try {
+                const dbLocal = await getDB();
+                const configEntry = await dbLocal.config.get(`branch_config_${activeBranchId}`);
+                if (configEntry && configEntry.value) {
+                    setBranchConfig(configEntry.value);
+                }
+            } catch (e) { console.warn("Error cargando config de sucursal:", e); }
+        };
+        loadConfig();
+    }, [activeBranchId]);
+
     const ACCOUNT_DATA = {
-        alias: "MAXIKIOSCO.ESQUINA",
-        bank: "MercadoPago / Naranja X"
+        alias: branchConfig?.transferAlias || "NO DEFINIDO",
+        bank: branchConfig?.transferAccountName || "---"
     };
 
     // ==========================================
@@ -122,7 +142,13 @@ export const PaymentModal = ({
     const payValue = parseFloat(amountToPay || 0);
     
     // Cálculo de cambio/deuda
-    const difference = (isSplitMode ? remainingBase : effectiveTotal) - payValue;
+    let difference = (isSplitMode ? remainingBase : effectiveTotal) - payValue;
+    
+    // Validar si el cliente paga la parte entera exacta y el total tiene centavos, no registrar deuda
+    if (!isSplitMode && payValue === Math.trunc(effectiveTotal)) {
+        difference = 0;
+    }
+    
     const debtValue = (!isSplitMode && difference > 0.5) ? difference : 0;
     const changeValue = difference < -0.5 ? Math.abs(difference) : 0;
 
@@ -160,6 +186,7 @@ export const PaymentModal = ({
             setAmountToPay(Math.round(total).toString());
             setReference('');
             setDigitalState('idle');
+            hasTriggeredRef.current = false; // Reset de blindaje
             setErrorMessage(null);
             setSelectedBrand(null);
             setSelectedRate(null);
@@ -434,13 +461,15 @@ export const PaymentModal = ({
                     const res = await paymentService.checkStatus(paymentReference, method);
                     
                     if (res.status === 'approved') {
-                        setDigitalState('approved');
-                        clearInterval(pollingRef.current);
+                        if (hasTriggeredRef.current) return; // 🛡️ Ya se está procesando
+                        hasTriggeredRef.current = true;
                         
-                        setTimeout(() => {
-                            if (isSplitMode) handleAddSplitPayment();
-                            else handleManualConfirm();
-                        }, 1000);
+                        setDigitalState('approved');
+                        if (pollingRef.current) clearInterval(pollingRef.current);
+                        
+                        // 🚀 PROCESAMIENTO INSTANTÁNEO (SIN DELAYS ARTIFICIALES)
+                        if (isSplitMode) handleAddSplitPayment();
+                        else handleManualConfirm();
 
                     } else if (['rejected', 'canceled'].includes(res.status)) {
                         setDigitalState('error');
@@ -540,6 +569,16 @@ export const PaymentModal = ({
                 <Button disabled className="w-full py-6 text-xl font-black uppercase shadow-none bg-blue-100 text-blue-500 cursor-wait">
                     <div className="flex items-center justify-center gap-2">
                         <Loader2 className="animate-spin" size={24} /> ESPERANDO APROBACIÓN...
+                    </div>
+                </Button>
+            );
+        }
+
+        if (digitalState === 'approved') {
+            return (
+                <Button disabled className="w-full py-6 text-xl font-black uppercase shadow-none bg-emerald-100 text-emerald-600 cursor-wait">
+                    <div className="flex items-center justify-center gap-2">
+                        <CheckCircle2 className="animate-bounce" size={24} /> PAGO APROBADO - REGISTRANDO...
                     </div>
                 </Button>
             );
@@ -923,9 +962,25 @@ export const PaymentModal = ({
                         )}
                         
                         {method === 'transfer' && (
-                            <div className="w-full max-w-xs space-y-3 animate-in fade-in">
-                                <div className="bg-purple-600 text-white p-4 rounded-xl text-center"><p className="font-black text-lg tracking-wide">{ACCOUNT_DATA.alias}</p></div>
-                                <input type="text" className="w-full p-3 rounded-xl border-2 border-sys-200 text-center font-bold" placeholder="Nro de Operación (Opcional)" value={reference} onChange={e => setReference(e.target.value)} />
+                            <div className="w-full max-w-xs space-y-4 animate-in fade-in text-center">
+                                <div className="bg-purple-50 border-2 border-purple-100 p-6 rounded-3xl shadow-sm relative overflow-hidden group">
+                                    <div className="absolute top-0 right-0 p-2 opacity-5 text-purple-900"><Landmark size={64}/></div>
+                                    <p className="text-[10px] font-black text-purple-600 uppercase tracking-widest mb-1 relative z-10">Alias para Transferir</p>
+                                    <p className="font-black text-2xl text-purple-900 tracking-tighter leading-tight relative z-10 break-all">{ACCOUNT_DATA.alias}</p>
+                                    <div className="h-px bg-purple-200 my-4 w-1/3 mx-auto relative z-10"></div>
+                                    <p className="text-[11px] font-bold text-slate-500 uppercase tracking-wide relative z-10 truncate" title={ACCOUNT_DATA.bank}>{ACCOUNT_DATA.bank}</p>
+                                </div>
+                                <div className="relative group">
+                                    <FileText className="absolute left-3 top-1/2 -translate-y-1/2 text-sys-400 group-focus-within:text-purple-500 transition-colors" size={18} />
+                                    <input 
+                                        type="text" 
+                                        className="w-full pl-10 pr-4 py-3.5 bg-white border-2 border-sys-200 rounded-2xl font-bold text-sys-800 outline-none focus:border-purple-500 transition-all placeholder:text-sys-300 shadow-sm" 
+                                        placeholder="Comprobante (Opcional)" 
+                                        value={reference} 
+                                        onChange={e => setReference(e.target.value)} 
+                                    />
+                                </div>
+                                <p className="text-[9px] text-sys-400 font-bold uppercase tracking-widest">Verifica la acreditación antes de entregar</p>
                             </div>
                         )}
                         

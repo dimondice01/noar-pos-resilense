@@ -8,6 +8,7 @@ import {
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { doc, updateDoc } from 'firebase/firestore';
 import { storage, db } from '../../../database/firebase'; 
+import { authService } from '../services/authService';
 import { useAuthStore } from '../store/useAuthStore';
 import { useDbSeeder } from '../../../core/hooks/useDbSeeder';
 import { Button } from '../../../core/ui/Button';
@@ -103,25 +104,21 @@ export const RegisterPage = () => {
         setLoading(true);
 
         try {
-            // 1. Crear Tenant
-            const res = await fetch(`${API_URL}/create-tenant`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    businessName: formData.businessName,
-                    email: formData.email,
-                    password: formData.password,
-                    ownerName: formData.ownerName
-                })
+            // 1. Registro Atómico (Reemplazando API externa por Batch nativo para mácimo blindaje)
+            await authService.register({
+                email: formData.email.toLowerCase().trim(),
+                password: formData.password,
+                name: formData.ownerName,
+                companyName: formData.businessName,
+                branchCount: 1,
+                role: 'OWNER',
+                subscriptionStatus: 'TRIAL',
+                planId: 'COMERCIO_50K'
             });
 
-            const data = await res.json();
-            if (!res.ok) throw new Error(data.error || "Error al crear cuenta");
-
-            const newCompanyId = data.companyId;
-
-            // 2. Auto-Login
-            await login(formData.email, formData.password);
+            // 2. Auto-Login (Ahora el perfil ya existe físicamente en Firestore)
+            const userProfile = await authService.login(formData.email, formData.password);
+            const newCompanyId = userProfile?.companyId;
 
             // 3. Subir Logo (Opcional)
             if (logoFile && newCompanyId) {

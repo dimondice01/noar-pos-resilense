@@ -2,6 +2,7 @@ import { getDB } from '../../../database/db';
 import { db } from '../../../database/firebase';
 import { doc, setDoc, collection, query, where, getDocs, limit, orderBy } from 'firebase/firestore';
 import { useAuthStore } from '../../auth/store/useAuthStore'; 
+import { syncService } from '../../sync/services/syncService'; // 🔥 IMPORTACIÓN FALTANTE
 
 // 🔥 GENERADOR DE ID GLOBAL ÚNICO (Blindaje Multi-Caja)
 const generateGlobalId = (prefix) => {

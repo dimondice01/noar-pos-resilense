@@ -61,13 +61,33 @@ export const SuperAdminPage = () => {
     };
 
     const toggleStatus = async (id, current) => {
-        const next = current === 'ACTIVE' ? 'EXPIRED' : 'ACTIVE';
+        // Lógica inteligente: Si no está vencido, lo vencemos. Si está vencido, lo activamos.
+        const next = current === 'EXPIRED' ? 'ACTIVE' : 'EXPIRED';
         if (!window.confirm(`¿Estás seguro de marcar a este cliente como ${next}?`)) return;
         try {
             await updateDoc(doc(db, 'companies', id), { subscriptionStatus: next });
             toast.success(`Cliente marcado como ${next}`);
             loadCompanies();
-        } catch (e) { toast.error("Error al cambiar estado"); }
+        } catch (e) { 
+            console.error("❌ Error toggleStatus:", e);
+            toast.error(`Error al cambiar estado: ${e.message}`); 
+        }
+    };
+    
+    // 🔥 NUEVO: Activar modo aviso de deuda
+    const toggleMora = async (id, current) => {
+        const next = current === 'PAST_DUE' ? 'ACTIVE' : 'PAST_DUE';
+        const msg = next === 'PAST_DUE' ? '¿Activar AVISO DE DEUDA?' : '¿Quitar aviso de deuda?';
+        if (!window.confirm(msg)) return;
+        try {
+            const docRef = doc(db, 'companies', id);
+            await updateDoc(docRef, { subscriptionStatus: next });
+            toast.success(next === 'PAST_DUE' ? "Aviso de deuda ACTIVADO" : "Aviso de deuda QUITADO");
+            loadCompanies();
+        } catch (e) { 
+            console.error("❌ Error toggleMora:", e);
+            toast.error(`Error al cambiar estado: ${e.message}`); 
+        }
     };
 
     const togglePinVisibility = (companyId) => {
@@ -235,6 +255,16 @@ export const SuperAdminPage = () => {
 
                                     {/* ACCIONES DE PAGO */}
                                     <div className="flex flex-col sm:flex-row gap-3 w-full lg:w-auto mt-4 lg:mt-0">
+                                        <Button 
+                                            variant="secondary"
+                                            onClick={() => toggleMora(c.id, c.subscriptionStatus)}
+                                            className={cn(
+                                                "flex-1 lg:flex-none h-12 px-4 font-black uppercase tracking-tighter",
+                                                c.subscriptionStatus === 'PAST_DUE' ? "bg-sys-900 text-white" : "bg-orange-100 text-orange-600 border-orange-200"
+                                            )}
+                                        >
+                                            {c.subscriptionStatus === 'PAST_DUE' ? 'Quitar Mora' : 'Avisar Mora'}
+                                        </Button>
                                         <Button 
                                             variant="primary" 
                                             className="flex-1 lg:flex-none h-12 px-6 bg-emerald-600 hover:bg-emerald-700 text-white font-black shadow-lg shadow-emerald-200/50"

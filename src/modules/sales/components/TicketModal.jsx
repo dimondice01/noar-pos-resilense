@@ -5,6 +5,7 @@ import { useReactToPrint } from 'react-to-print';
 import { useAuthStore } from '../../auth/store/useAuthStore';
 import { doc, getDoc } from 'firebase/firestore'; 
 import { db } from '../../../database/firebase'; 
+import { getDB } from '../../../database/db'; 
 import { Button } from '../../../core/ui/Button'; 
 import { cn } from '../../../core/utils/cn'; 
 import defaultLogo from '../../../assets/logo.png'; 
@@ -411,9 +412,10 @@ export const TicketModal = ({ isOpen, onClose, sale, receipt }) => {
 
     useEffect(() => {
         if (isOpen && data) {
+            // 🔥 REDUCCIÓN DE LATENCIA: Como el logo es Base64 (Local), no necesitamos esperar a la red
             const timer = setTimeout(() => {
                 handlePrint();
-            }, 300); 
+            }, 100); 
             return () => clearTimeout(timer);
         }
     }, [isOpen, data, handlePrint]);
@@ -437,33 +439,46 @@ export const TicketModal = ({ isOpen, onClose, sale, receipt }) => {
     }, [isOpen, handlePrint, onClose]);
 
     useEffect(() => {
-        if (isOpen && user?.companyId && activeBranchId) {
-            const fetchConfig = async () => {
-                try {
-                    const cacheKey = `SALVADOR_BRANCH_CONFIG_${activeBranchId}`;
-                    // 🔥 LECTURA DEL CACHÉ EN EL MOMENTO
-                    const localData = localStorage.getItem(cacheKey);
-                    
-                    if (localData) {
-                        setBranchConfig(JSON.parse(localData));
-                    } else if (navigator.onLine) {
-                        const docRef = doc(db, 'companies', user.companyId, 'branches', activeBranchId);
-                        const snap = await getDoc(docRef);
-                        
-                        if (snap.exists()) {
-                            const freshData = snap.data();
-                            setBranchConfig(freshData);
-                            localStorage.setItem(cacheKey, JSON.stringify(freshData));
-                        } else {
-                            const compRef = doc(db, 'companies', user.companyId);
-                            const compSnap = await getDoc(compRef);
-                            if (compSnap.exists()) setBranchConfig(compSnap.data());
-                        }
+        if (!isOpen || !user?.companyId || !activeBranchId) return;
+
+        const loadConfigInstant = async () => {
+            try {
+                const dbLocal = await getDB();
+                
+                // 🔥 1. Intentamos la config específica de la sucursal (Dexie)
+                const branchEntry = await dbLocal.config.get(`branch_config_${activeBranchId}`);
+                if (branchEntry && branchEntry.value) {
+                    setBranchConfig(branchEntry.value);
+                    return; // Éxito total
+                }
+
+                // 🔥 2. Si no hay de sucursal, probamos la global de empresa (Dexie)
+                const companyEntry = await dbLocal.config.get('company_info');
+                if (companyEntry && companyEntry.value) {
+                    setBranchConfig(prev => ({ 
+                        ...prev, 
+                        name: companyEntry.value.name, 
+                        logoBase64: companyEntry.value.logoUrl 
+                    }));
+                }
+
+                // 📡 FALLBACK: Solo si no hay NADA local, vamos a Nube (1 sola vez)
+                if (navigator.onLine) {
+                    const docRef = doc(db, 'companies', user.companyId, 'branches', activeBranchId);
+                    const snap = await getDoc(docRef);
+                    if (snap.exists()) {
+                        const cloudData = snap.data();
+                        setBranchConfig(cloudData);
+                        // Persistimos para que la próxima sea instantánea
+                        await dbLocal.config.put({ key: `branch_config_${activeBranchId}`, value: cloudData });
                     }
-                } catch (e) { console.error(e); }
-            };
-            fetchConfig();
-        }
+                }
+            } catch (e) {
+                console.warn("Error en carga instantánea de ticket:", e);
+            }
+        };
+
+        loadConfigInstant();
     }, [isOpen, user?.companyId, activeBranchId]);
 
     useEffect(() => {

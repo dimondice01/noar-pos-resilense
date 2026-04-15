@@ -324,33 +324,7 @@ export const MovementsPage = () => {
                     }
                 }
 
-                // 2. Hidratación de la Nube (si la base local está vacía o el dueño está en casa)
-                if (allMovements.length === 0 && navigator.onLine) {
-                    setSyncing(true);
-                    try {
-                        const { collection, query, orderBy, limit, getDocs, where } = await import('firebase/firestore');
-                        const { db: firestoreDB } = await import('../../../database/firebase');
-                        
-                        let q;
-                        if ((user?.role === 'OWNER' || user?.role === 'SUPER_ADMIN') && (!activeBranchId || activeBranchId === 'ALL')) {
-                            q = query(collection(firestoreDB, `companies/${user.companyId}/movements`), orderBy('date', 'desc'), limit(500));
-                        } else {
-                            q = query(collection(firestoreDB, `companies/${user.companyId}/movements`), where('branchId', '==', activeBranchId), orderBy('date', 'desc'), limit(500));
-                        }
-                        
-                        const snapshot = await getDocs(q);
-                        const cloudMovements = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data(), syncStatus: 'synced' }));
-                        
-                        if (cloudMovements.length > 0) {
-                            await db.movements.bulkPut(cloudMovements);
-                            allMovements = cloudMovements;
-                        }
-                    } catch (e) {
-                        console.warn("Fallo hidratación silenciosa de kardex:", e);
-                    } finally {
-                        setSyncing(false);
-                    }
-                }
+                // 2. 🔥 CARGAMOS EL MAPA DE PRODUCTOS PARA ENRIQUECER LOS MOVIMIENTOS
 
                 const productMap = new Map(allProducts.map(p => [String(p.id), p])); 
                 const uniqueUsers = new Set();
@@ -512,6 +486,34 @@ export const MovementsPage = () => {
         }
     };
 
+    // 🔥 FUNCIÓN DE DESCARGA BAJO DEMANDA (Sincronización de Históricos)
+    const fetchMoreMovements = async (months = 1) => {
+        if (!navigator.onLine) {
+            toast.error("No tienes conexión para descargar datos.");
+            return;
+        }
+        
+        try {
+            setSyncing(true);
+            const { syncService } = await import('../../sync/services/syncService');
+            const toastId = toast.loading(`Sincronizando últimos ${months === 1 ? '1 mes' : months + ' meses'}...`);
+            
+            const end = new Date();
+            const start = new Date();
+            start.setMonth(start.getMonth() - months);
+            
+            const count = await syncService.fetchMovementsByRange(user.companyId, activeBranchId, start, end);
+            
+            toast.success(`Se bajaron ${count} movimientos correctamente.`, { id: toastId });
+            // Forzamos recarga de la página (esto disparará el loadData del useEffect)
+            window.location.reload(); 
+        } catch (err) {
+            toast.error("Error sincronizando movimientos.");
+        } finally {
+            setSyncing(false);
+        }
+    };
+
     // ===================== RENDER =====================
     return (
         <div className="space-y-6 pb-20 animate-in fade-in duration-500 max-w-[1600px] mx-auto p-4 md:p-6">
@@ -569,6 +571,18 @@ export const MovementsPage = () => {
                     </div>
 
                     <div className="flex gap-2 w-full lg:w-auto overflow-x-auto pb-1 lg:pb-0">
+                        {dateRange === 'ALL' && (
+                             <Button 
+                               onClick={() => fetchMoreMovements(1)}
+                               variant="outline" 
+                               className="shrink-0 border-brand/40 text-brand bg-brand/5 hover:bg-brand/10 text-xs px-3 h-10 flex items-center gap-2"
+                               disabled={syncing}
+                             >
+                               <CloudDownload size={14} className={syncing ? 'animate-bounce' : ''} /> 
+                               {syncing ? 'Sincronizando...' : 'Bajar Mes (Nube)'}
+                             </Button>
+                        )}
+
                         <div className="flex bg-white rounded-lg border border-sys-200 p-1 shrink-0">
                            {['TODAY', 'WEEK', 'ALL'].map(range => (
                                <button 

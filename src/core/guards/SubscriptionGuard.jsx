@@ -1,87 +1,66 @@
 import React, { useEffect, useState } from 'react';
 import { Navigate } from 'react-router-dom';
-import { doc, getDoc } from 'firebase/firestore';
+import { doc, getDoc, onSnapshot } from 'firebase/firestore';
 import { db } from '../../database/firebase';
 import { useAuthStore } from '../../modules/auth/store/useAuthStore';
 import { Loader2 } from 'lucide-react';
 
 export const SubscriptionGuard = ({ children }) => {
-    const { user } = useAuthStore();
+    const { user, updateUser } = useAuthStore();
     const [status, setStatus] = useState('loading'); // loading | allowed | expired
 
     useEffect(() => {
-        const checkSubscription = async () => {
-            // Si no hay empresa asignada, dejamos que ProtectedRoute maneje la seguridad básica
-            if (!user?.companyId) {
-                setStatus('allowed'); 
+        // 🛡️ PASE VIP: Únicamente para el Master Admin Real
+        if (user?.companyId === 'master_admin' || user?.uid === 'master-admin-nexus' || !user?.companyId) {
+            console.log("👑 Bypass Master Admin activado.");
+            setStatus('allowed');
+            return;
+        }
+
+        const compId = user.companyId;
+        console.log(`📡 MONITOR ACTIVADO -> Empresa: ${compId}`);
+        const companyRef = doc(db, 'companies', compId);
+
+        // 🔥 ESCUCHA EN TIEMPO REAL (REFORZADA)
+        const unsubscribe = onSnapshot(companyRef, { includeMetadataChanges: true }, (snap) => {
+            if (!snap.exists()) {
+                console.error(`❌ EMPRESA NO ENCONTRADA EN DB (ID: ${compId})`);
+                setStatus('allowed'); // Fail-open: No bloqueamos por error de ID
                 return;
             }
 
-            try {
-                // Consultamos la "Verdad" directamente en Firestore
-                const companyRef = doc(db, 'companies', user.companyId);
-                const snap = await getDoc(companyRef);
-                
-                if (snap.exists()) {
-                    const data = snap.data();
-                    const sub = data.subscription;
+            const data = snap.data();
+            const currentStatus = data.subscriptionStatus || 'TRIAL';
 
-                    // =========================================================
-                    // 🛡️ LÓGICA DE COMPATIBILIDAD (CLIENTES ANTIGUOS)
-                    // =========================================================
-                    // Si el campo 'subscription' NO existe, es un cliente viejo.
-                    // Asumimos que ya pagó (Vitalicio) y lo dejamos pasar.
-                    if (!sub) {
-                        console.log("👑 Cliente Legacy detectado (Acceso Vitalicio)");
-                        setStatus('allowed');
-                        return;
-                    }
-
-                    // =========================================================
-                    // 🛡️ LÓGICA PARA NUEVOS CLIENTES (SaaS)
-                    // =========================================================
-                    
-                    // 1. Pase VIP: Si es vitalicio o ya pagó
-                    if (sub.isLifetime === true || sub.status === 'paid' || sub.status === 'active_manual') {
-                        setStatus('allowed');
-                        return;
-                    }
-
-                    // 2. Verificación de Trial (Prueba Gratuita)
-                    if (sub.plan === 'trial' && sub.trialEndDate) {
-                        const now = new Date();
-                        const endDate = new Date(sub.trialEndDate);
-
-                        // Si la fecha actual es MAYOR a la fecha de fin -> SE ACABÓ LA FIESTA
-                        if (now > endDate) {
-                            console.warn("🚫 Periodo de prueba finalizado.");
-                            setStatus('expired');
-                        } else {
-                            // Aún dentro del trial
-                            setStatus('allowed');
-                        }
-                    } else {
-                        // Si hay un objeto suscripción pero está en estado raro ('expired', 'past_due')
-                        // o no tiene fechas válidas, bloqueamos por seguridad.
-                        console.warn("🚫 Estado de suscripción no válido:", sub.status);
-                        setStatus('expired');
-                    }
-
-                } else {
-                    // Si el documento de la empresa no existe, algo está muy mal.
-                    console.error("❌ Error Crítico: La empresa asignada al usuario no existe en DB.");
-                    setStatus('expired');
-                }
-            } catch (error) {
-                console.error("⚠️ Error verificando suscripción (Fallo de Red):", error);
-                // ESTRATEGIA "FAIL OPEN": Si se cae internet o Firestore, 
-                // dejamos pasar al usuario para no bloquear su negocio.
-                setStatus('allowed'); 
+            // 🔄 ACTUALIZACIÓN SILENCIOSA DEL STORE (Solo si cambió)
+            // Esto permite que el MainLayout vea el cambio sin reiniciar el monitor
+            if (data.subscriptionStatus && data.subscriptionStatus !== user.subscriptionStatus) {
+                updateUser({ subscriptionStatus: data.subscriptionStatus });
             }
-        };
 
-        checkSubscription();
-    }, [user]);
+            // =========================================================
+            // 🚨 BLOQUEO EXPLÍCITO: SOLO SI ES "EXPIRED"
+            // =========================================================
+            if (currentStatus === 'EXPIRED' || data.isActive === false) {
+                setStatus('expired');
+                
+                // Redirección forzada e irreversible
+                if (window.location.pathname !== '/plan-expired') {
+                    window.location.replace('/plan-expired');
+                }
+                return;
+            }
+
+            // Para cualquier otro caso (ACTIVE, PAST_DUE, TRIAL), permitimos entrada
+            setStatus('allowed');
+            
+        }, (error) => {
+            console.error("⚠️ Error en el monitor de licencias:", error);
+            setStatus('allowed'); 
+        });
+
+        return () => unsubscribe();
+    }, [user?.uid, user?.companyId]); // Solo reiniciamos si cambia el usuario o su empresa
 
     // --- RENDERIZADO DE ESTADOS ---
 

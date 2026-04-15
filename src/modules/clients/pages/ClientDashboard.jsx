@@ -1,7 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import { 
     ArrowLeft, User, CreditCard, Calendar, 
-    TrendingDown, DollarSign, FileText, Printer, Search, MapPin, Building2, CheckCircle2, Mail, Loader2, CloudDownload
+    TrendingDown, DollarSign, FileText, Printer, Search, MapPin, Building2, CheckCircle2, Mail, Loader2, CloudDownload, Phone, Filter
 } from 'lucide-react';
 import { useAuthStore } from '../../auth/store/useAuthStore'; 
 import { clientRepository } from '../repositories/clientRepository';
@@ -37,6 +37,34 @@ export const ClientDashboard = ({ clientId, onBack }) => {
   // Estados UI
   const [isPaymentOpen, setIsPaymentOpen] = useState(false);
   const [ticketData, setTicketData] = useState(null); 
+
+  // Estados Filtros
+  const [filterType, setFilterType] = useState('THIS_MONTH'); 
+  const [filterMonth, setFilterMonth] = useState(new Date().getMonth() + 1);
+  const [filterYear, setFilterYear] = useState(new Date().getFullYear());
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
+
+  const filteredLedger = useMemo(() => {
+    return ledger.filter(mov => {
+      if (!mov.date) return true;
+      const movDate = new Date(mov.date);
+      if (filterType === 'ALL') return true;
+      if (filterType === 'THIS_MONTH') {
+        const now = new Date();
+        return movDate.getMonth() === now.getMonth() && movDate.getFullYear() === now.getFullYear();
+      }
+      if (filterType === 'MONTH') {
+        return movDate.getMonth() + 1 === parseInt(filterMonth) && movDate.getFullYear() === parseInt(filterYear);
+      }
+      if (filterType === 'MANUAL') {
+        if (dateFrom && new Date(mov.date) < new Date(dateFrom + 'T00:00:00')) return false;
+        if (dateTo && new Date(mov.date) > new Date(dateTo + 'T23:59:59')) return false;
+        return true;
+      }
+      return true;
+    });
+  }, [ledger, filterType, filterMonth, filterYear, dateFrom, dateTo]);
 
   const calculateTotalDebt = (movements) => {
         let totalDebt = 0;
@@ -336,9 +364,70 @@ export const ClientDashboard = ({ clientId, onBack }) => {
 
       {/* Historial de Cuenta Corriente (Ledger) */}
       <div>
-          <h3 className="text-xl font-black text-sys-900 mb-4 flex items-center gap-2">
-              <FileText size={24} className="text-brand"/> Movimientos de Cuenta Corriente
-          </h3>
+          <div className="flex flex-col xl:flex-row justify-between items-start xl:items-center mb-4 gap-4">
+              <h3 className="text-xl font-black text-sys-900 flex items-center gap-2">
+                  <FileText size={24} className="text-brand"/> Movimientos de Cuenta Corriente
+              </h3>
+              
+              {/* Controles de Filtro */}
+              <div className="flex flex-wrap items-center gap-2 bg-white p-2 rounded-xl border border-sys-200 shadow-sm">
+                  <div className="flex items-center gap-2 text-sys-500 px-2 font-bold text-xs uppercase tracking-widest border-r border-sys-200 mr-1">
+                      <Filter size={14}/> Filtro
+                  </div>
+                  <select 
+                      value={filterType} 
+                      onChange={e => setFilterType(e.target.value)} 
+                      className="bg-sys-50 border border-sys-200 text-sys-700 text-sm rounded-lg px-3 py-1.5 font-semibold outline-none focus:border-brand"
+                  >
+                      <option value="THIS_MONTH">Este Mes</option>
+                      <option value="MONTH">Por Mes</option>
+                      <option value="MANUAL">Periodo Manual</option>
+                      <option value="ALL">Todo el Historial</option>
+                  </select>
+
+                  {filterType === 'MONTH' && (
+                      <>
+                          <select 
+                              value={filterMonth} 
+                              onChange={e => setFilterMonth(e.target.value)}
+                              className="bg-sys-50 border border-sys-200 text-sys-700 text-sm rounded-lg px-3 py-1.5 font-semibold outline-none focus:border-brand"
+                          >
+                              {['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'].map((m, i) => (
+                                  <option key={i} value={i+1}>{m}</option>
+                              ))}
+                          </select>
+                          <select 
+                              value={filterYear} 
+                              onChange={e => setFilterYear(e.target.value)}
+                              className="bg-sys-50 border border-sys-200 text-sys-700 text-sm rounded-lg px-3 py-1.5 font-semibold outline-none focus:border-brand"
+                          >
+                              {[0,1,2,3,4].map(y => {
+                                  const year = new Date().getFullYear() - y;
+                                  return <option key={year} value={year}>{year}</option>;
+                              })}
+                          </select>
+                      </>
+                  )}
+
+                  {filterType === 'MANUAL' && (
+                      <div className="flex flex-wrap items-center gap-2">
+                          <input 
+                              type="date" 
+                              value={dateFrom} 
+                              onChange={e => setDateFrom(e.target.value)}
+                              className="bg-sys-50 border border-sys-200 text-sys-700 text-sm rounded-lg px-2 py-1.5 outline-none focus:border-brand h-[34px] w-[130px]"
+                          />
+                          <span className="text-sys-400 text-xs font-bold">a</span>
+                          <input 
+                              type="date" 
+                              value={dateTo} 
+                              onChange={e => setDateTo(e.target.value)}
+                              className="bg-sys-50 border border-sys-200 text-sys-700 text-sm rounded-lg px-2 py-1.5 outline-none focus:border-brand h-[34px] w-[130px]"
+                          />
+                      </div>
+                  )}
+              </div>
+          </div>
           
           <Card className="p-0 overflow-hidden border border-sys-200 shadow-sm">
               <div className="overflow-x-auto">
@@ -354,18 +443,18 @@ export const ClientDashboard = ({ clientId, onBack }) => {
                           </tr>
                       </thead>
                       <tbody className="divide-y divide-sys-100 bg-white">
-                          {ledger.length === 0 ? (
+                          {filteredLedger.length === 0 ? (
                               <tr>
                                   <td colSpan="6" className="p-12 text-center text-sys-400">
                                       <div className="flex flex-col items-center justify-center bg-sys-50/50 rounded-2xl border-2 border-dashed border-sys-200 py-10 w-3/4 mx-auto">
                                           <FileText size={32} className="mb-2 opacity-30 text-sys-500"/>
-                                          <p className="font-bold uppercase tracking-widest text-xs">Sin movimientos en la cuenta</p>
-                                          <p className="text-[10px] text-sys-400 mt-1">El cliente no tiene compras a crédito ni pagos registrados.</p>
+                                          <p className="font-bold uppercase tracking-widest text-xs">{ledger.length === 0 ? "Sin movimientos en la cuenta" : "No hay movimientos en este periodo"}</p>
+                                          <p className="text-[10px] text-sys-400 mt-1">{ledger.length === 0 ? "El cliente no tiene compras a crédito ni pagos registrados." : "Intente cambiar los filtros arriba."}</p>
                                       </div>
                                   </td>
                               </tr>
                           ) : (
-                              ledger.map((mov, idx) => (
+                              filteredLedger.map((mov, idx) => (
                                   <tr key={idx} className="hover:bg-sys-50/50 transition-colors group cursor-default">
                                       <td className="p-4 font-mono text-sys-600 whitespace-nowrap">
                                           <div className="font-bold text-sys-900 text-xs">{new Date(mov.date).toLocaleDateString()}</div>
