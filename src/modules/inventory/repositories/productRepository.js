@@ -69,9 +69,12 @@ const triggerCloudUpdate = async (product) => {
 // ==========================================
 const _injectBranchData = async (products, branchId, dbLocal) => {
     if (!products || products.length === 0) return [];
-    
-    const allInventory = await dbLocal.inventory.toArray();
-    
+
+    // 🔥 Cargar inventario solo de la sucursal necesaria — evita traer todas las sucursales
+    const allInventory = (!branchId || branchId === 'ALL')
+        ? await dbLocal.inventory.toArray()
+        : await dbLocal.inventory.where('branchId').equals(branchId).toArray();
+
     if (!branchId || branchId === 'ALL') {
         const globalStockMap = {};
         for (const item of allInventory) {
@@ -445,6 +448,10 @@ export const productRepository = {
                 await dbLocal.movements.update(movId, {syncStatus: 'synced'});
             }).catch(e => console.error("Error sync cloud stock:", e));
         }
+
+        // RETORNAR EL NUEVO STOCK PARA ACTUALIZACIÓN ATÓMICA DE UI
+        const finalInv = await dbLocal.inventory.where({ branchId, productId }).first();
+        return finalInv ? parseFloat(finalInv.stock) : 0;
     },
 
     // ==========================================

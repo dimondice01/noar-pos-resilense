@@ -63,10 +63,20 @@ export const LoginPage = () => {
       // Esto hace el signInWithEmailAndPassword y resuelve el Bypass si aplica
       await login(email, password);
       
-      // Obtenemos el usuario fresco directamente del Store 
-      const currentUser = useAuthStore.getState().user;
-      
-      if (!currentUser) throw new Error("No se pudo obtener la sesión.");
+      // Esperamos a que onAuthStateChanged popule el store (race condition fix)
+      const currentUser = await new Promise((resolve, reject) => {
+        const immediate = useAuthStore.getState().user;
+        if (immediate) return resolve(immediate);
+
+        const timeout = setTimeout(() => reject(new Error("Tiempo de espera agotado al obtener sesión.")), 8000);
+        const unsub = useAuthStore.subscribe(state => {
+          if (state.user) {
+            clearTimeout(timeout);
+            unsub();
+            resolve(state.user);
+          }
+        });
+      });
 
       // ---------------------------------------------------------
       // PASO 2: REDIRECCIÓN "VIP" (SUPER ADMIN)

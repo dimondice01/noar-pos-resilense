@@ -226,22 +226,22 @@ export const CompanySettingsPage = () => {
     };
 
     if (loadingData) {
-        return <div className="p-10 text-center text-slate-400 animate-pulse font-bold">Iniciando Centro de Control...</div>;
+        return <div className="p-10 text-center text-sys-400 animate-pulse font-bold">Iniciando Centro de Control...</div>;
     }
 
     return (
-        <div className="p-6 max-w-4xl mx-auto pb-20 animate-in fade-in duration-500 bg-slate-50 rounded-3xl min-h-[80vh] border border-slate-200 shadow-sm">
+        <div className="p-6 max-w-4xl mx-auto pb-20 animate-in fade-in duration-500 bg-sys-50 rounded-3xl min-h-[80vh] border border-border-default shadow-sm">
             
             <div className="mb-8 flex items-center justify-between">
                 <div>
-                    <h1 className="text-3xl font-black text-slate-900 flex items-center gap-3">
+                    <h1 className="text-3xl font-black text-sys-900 flex items-center gap-3">
                         <div className={cn("p-2 rounded-lg shadow-lg", noBranchSetup ? "bg-green-600 shadow-green-900/20" : "bg-blue-600 shadow-blue-900/20")}>
                             {noBranchSetup ? <Store size={22} className="text-white animate-bounce" /> : <Store size={22} className="text-white" />}
                         </div>
                         {noBranchSetup ? 'Configura tu primera Sucursal' : 'Configuración de Sucursal'}
                     </h1>
                     <div className="flex items-center gap-2 mt-3">
-                        <span className="text-slate-500 text-xs font-bold uppercase tracking-widest">
+                        <span className="text-sys-500 text-xs font-bold uppercase tracking-widest">
                             {noBranchSetup ? 'Paso Necesario' : 'Sucursal Activa:'}
                         </span>
                         <span className={cn("px-4 py-1.5 rounded-xl text-xs font-black border flex items-center gap-2 shadow-sm", 
@@ -257,19 +257,19 @@ export const CompanySettingsPage = () => {
             <form onSubmit={handleSave} className="space-y-6">
                 
                 {/* 1. IDENTIDAD VISUAL */}
-                <Card className="bg-white border-slate-200 p-6 shadow-sm">
-                    <h3 className="text-slate-700 font-bold mb-6 flex items-center gap-2 border-b border-slate-100 pb-2">
+                <Card className="bg-white border-border-default p-6 shadow-sm">
+                    <h3 className="text-sys-700 font-bold mb-6 flex items-center gap-2 border-b border-border-subtle pb-2">
                         <Camera size={18} className="text-blue-600"/> Identidad Visual
                     </h3>
                     
                     <div className="flex flex-col md:flex-row gap-8 items-center md:items-start">
                         {/* Logo Upload (BASE64) */}
                         <div className="flex flex-col items-center gap-3">
-                            <div className="w-32 h-32 rounded-full bg-slate-50 overflow-hidden flex items-center justify-center border-4 border-slate-100 shadow-sm relative group transition-all hover:border-blue-500">
+                            <div className="w-32 h-32 rounded-full bg-sys-50 overflow-hidden flex items-center justify-center border-4 border-border-subtle shadow-sm relative group transition-all hover:border-blue-500">
                                 {branchData.logoBase64 ? (
                                     <img src={branchData.logoBase64} className="w-full h-full object-contain p-2" alt="Logo de la Empresa" />
                                 ) : (
-                                    <Camera size={40} className="text-slate-300 group-hover:text-blue-500 transition-colors" />
+                                    <Camera size={40} className="text-sys-300 group-hover:text-blue-500 transition-colors" />
                                 )}
                                 
                                 <label htmlFor="logo-upload" className="absolute inset-0 bg-black/40 hidden group-hover:flex items-center justify-center text-[10px] font-black text-white cursor-pointer transition-all uppercase tracking-wider text-center p-2">
@@ -283,7 +283,7 @@ export const CompanySettingsPage = () => {
                                     onChange={handleImageUpload}
                                 />
                             </div>
-                            <p className="text-[10px] text-slate-400 font-medium font-mono uppercase">JPG/PNG (Max 1MB)</p>
+                            <p className="text-[10px] text-sys-400 font-medium font-mono uppercase">JPG/PNG (Max 1MB)</p>
                             {branchData.logoBase64 && (
                                 <button type="button" onClick={() => setBranchData({...branchData, logoBase64: null})} className="text-[10px] text-red-500 hover:text-red-600 font-bold uppercase tracking-widest mt-1">
                                     Eliminar Logo
@@ -294,15 +294,15 @@ export const CompanySettingsPage = () => {
                         {/* Nombre */}
                         <div className="flex-1 w-full space-y-4">
                             <div>
-                                <label className="block text-slate-500 text-xs font-bold mb-1.5 uppercase tracking-wide">Nombre de Fantasía</label>
+                                <label className="block text-sys-500 text-xs font-bold mb-1.5 uppercase tracking-wide">Nombre de Fantasía</label>
                                 <input 
                                     type="text" 
-                                    className="w-full bg-slate-50 border border-slate-200 rounded-lg p-3 text-slate-900 focus:border-blue-500 focus:bg-white outline-none transition-all"
+                                    className="w-full bg-sys-50 border border-border-default rounded-lg p-3 text-sys-900 focus:border-blue-500 focus:bg-white outline-none transition-all"
                                     placeholder={`Ej: ${activeBranchName}`}
                                     value={branchData.name || ''}
                                     onChange={(e) => setBranchData({...branchData, name: e.target.value})}
                                 />
-                                <p className="text-xs text-slate-500 mt-2 flex gap-1 items-center">
+                                <p className="text-xs text-sys-500 mt-2 flex gap-1 items-center">
                                     <Info size={12}/> Este nombre aparecerá en el encabezado principal del ticket.
                                 </p>
                             </div>
@@ -311,8 +311,8 @@ export const CompanySettingsPage = () => {
                 </Card>
 
                 {/* 2. DATOS FISCALES */}
-                <Card className="bg-white border-slate-200 p-6 shadow-sm">
-                    <h3 className="text-slate-700 font-bold mb-6 flex items-center gap-2 border-b border-slate-100 pb-2">
+                <Card className="bg-white border-border-default p-6 shadow-sm">
+                    <h3 className="text-sys-700 font-bold mb-6 flex items-center gap-2 border-b border-border-subtle pb-2">
                         <FileText size={18} className="text-blue-600"/> Datos Fiscales del Local
                     </h3>
                     
@@ -320,10 +320,10 @@ export const CompanySettingsPage = () => {
                         
                         {/* Razón Social */}
                         <div className="md:col-span-2">
-                            <label className="block text-slate-500 text-xs font-bold mb-1.5 uppercase">Razón Social</label>
+                            <label className="block text-sys-500 text-xs font-bold mb-1.5 uppercase">Razón Social</label>
                             <input 
                                 type="text" 
-                                className="w-full bg-slate-50 border border-slate-200 rounded-lg p-3 text-slate-900 focus:border-blue-500 focus:bg-white outline-none transition-all"
+                                className="w-full bg-sys-50 border border-border-default rounded-lg p-3 text-sys-900 focus:border-blue-500 focus:bg-white outline-none transition-all"
                                 placeholder="Ej: Juan Pérez S.A."
                                 value={branchData.razonSocial || ''}
                                 onChange={(e) => setBranchData({...branchData, razonSocial: e.target.value})}
@@ -332,24 +332,24 @@ export const CompanySettingsPage = () => {
 
                         {/* CUIT */}
                         <div>
-                            <label className="block text-slate-500 text-xs font-bold mb-1.5 uppercase">CUIT del Titular</label>
+                            <label className="block text-sys-500 text-xs font-bold mb-1.5 uppercase">CUIT del Titular</label>
                             <div className="relative">
                                 <input 
                                     type="text" 
-                                    className="w-full bg-slate-50 border border-slate-200 rounded-lg p-3 pl-10 text-slate-900 font-mono focus:border-blue-500 focus:bg-white outline-none transition-all"
+                                    className="w-full bg-sys-50 border border-border-default rounded-lg p-3 pl-10 text-sys-900 font-mono focus:border-blue-500 focus:bg-white outline-none transition-all"
                                     placeholder="20-12345678-9"
                                     value={branchData.cuit || ''}
                                     onChange={(e) => setBranchData({...branchData, cuit: e.target.value})}
                                 />
-                                <Hash size={16} className="absolute left-3 top-3.5 text-slate-500"/>
+                                <Hash size={16} className="absolute left-3 top-3.5 text-sys-500"/>
                             </div>
                         </div>
 
                         {/* Condición IVA */}
                         <div>
-                            <label className="block text-slate-500 text-xs font-bold mb-1.5 uppercase">Condición IVA</label>
+                            <label className="block text-sys-500 text-xs font-bold mb-1.5 uppercase">Condición IVA</label>
                             <select 
-                                className="w-full bg-slate-50 border border-slate-200 rounded-lg p-3 text-slate-900 focus:border-blue-500 focus:bg-white outline-none transition-all"
+                                className="w-full bg-sys-50 border border-border-default rounded-lg p-3 text-sys-900 focus:border-blue-500 focus:bg-white outline-none transition-all"
                                 value={branchData.taxCondition || 'CONSUMIDOR FINAL'}
                                 onChange={(e) => setBranchData({...branchData, taxCondition: e.target.value})}
                             >
@@ -362,28 +362,28 @@ export const CompanySettingsPage = () => {
 
                         {/* Dirección */}
                         <div className="md:col-span-2">
-                            <label className="block text-slate-500 text-xs font-bold mb-1.5 uppercase flex justify-between">
+                            <label className="block text-sys-500 text-xs font-bold mb-1.5 uppercase flex justify-between">
                                 Dirección del Local
                                 <span className="text-[10px] text-orange-600 flex items-center gap-1"><AlertTriangle size={10}/> Importante para el ticket</span>
                             </label>
                             <div className="relative">
                                 <input 
                                     type="text" 
-                                    className="w-full bg-slate-50 border border-slate-200 rounded-lg p-3 pl-10 text-slate-900 focus:border-blue-500 focus:bg-white outline-none transition-all"
+                                    className="w-full bg-sys-50 border border-border-default rounded-lg p-3 pl-10 text-sys-900 focus:border-blue-500 focus:bg-white outline-none transition-all"
                                     placeholder="Calle 123, Localidad, Provincia"
                                     value={branchData.address || ''}
                                     onChange={(e) => setBranchData({...branchData, address: e.target.value})}
                                 />
-                                <MapPin size={16} className="absolute left-3 top-3.5 text-slate-500"/>
+                                <MapPin size={16} className="absolute left-3 top-3.5 text-sys-500"/>
                             </div>
                         </div>
 
                         {/* IIBB */}
                         <div>
-                            <label className="block text-slate-500 text-xs font-bold mb-1.5 uppercase">N° Ingresos Brutos</label>
+                            <label className="block text-sys-500 text-xs font-bold mb-1.5 uppercase">N° Ingresos Brutos</label>
                             <input 
                                 type="text" 
-                                className="w-full bg-slate-50 border border-slate-200 rounded-lg p-3 text-slate-900 font-mono focus:border-blue-500 focus:bg-white outline-none transition-all"
+                                className="w-full bg-sys-50 border border-border-default rounded-lg p-3 text-sys-900 font-mono focus:border-blue-500 focus:bg-white outline-none transition-all"
                                 placeholder="Ej: 901-283921-1"
                                 value={branchData.iibb || ''}
                                 onChange={(e) => setBranchData({...branchData, iibb: e.target.value})}
@@ -392,15 +392,15 @@ export const CompanySettingsPage = () => {
 
                         {/* Inicio Actividad */}
                         <div>
-                            <label className="block text-slate-500 text-xs font-bold mb-1.5 uppercase">Inicio de Actividades</label>
+                            <label className="block text-sys-500 text-xs font-bold mb-1.5 uppercase">Inicio de Actividades</label>
                             <div className="relative">
                                 <input 
                                     type="date" 
-                                    className="w-full bg-slate-50 border border-slate-200 rounded-lg p-3 pl-10 text-slate-900 font-mono focus:border-blue-500 focus:bg-white outline-none transition-all"
+                                    className="w-full bg-sys-50 border border-border-default rounded-lg p-3 pl-10 text-sys-900 font-mono focus:border-blue-500 focus:bg-white outline-none transition-all"
                                     value={branchData.inicioAct || ''}
                                     onChange={(e) => setBranchData({...branchData, inicioAct: e.target.value})}
                                 />
-                                <Calendar size={16} className="absolute left-3 top-3.5 text-slate-500"/>
+                                <Calendar size={16} className="absolute left-3 top-3.5 text-sys-500"/>
                             </div>
                         </div>
 
@@ -408,8 +408,8 @@ export const CompanySettingsPage = () => {
                 </Card>
 
                 {/* 3. DATOS DE PAGO (NUEVO P/ TRANSFERENCIAS) */}
-                <Card className="bg-white border-slate-200 p-6 shadow-sm">
-                    <h3 className="text-slate-700 font-bold mb-6 flex items-center gap-2 border-b border-slate-100 pb-2">
+                <Card className="bg-white border-border-default p-6 shadow-sm">
+                    <h3 className="text-sys-700 font-bold mb-6 flex items-center gap-2 border-b border-border-subtle pb-2">
                         <Banknote size={18} className="text-purple-600"/> Datos para Cobros por Transferencia
                     </h3>
                     
@@ -417,28 +417,28 @@ export const CompanySettingsPage = () => {
                         
                         {/* Alias */}
                         <div>
-                            <label className="block text-slate-500 text-xs font-bold mb-1.5 uppercase tracking-wide">Alias Bancario / CVU</label>
+                            <label className="block text-sys-500 text-xs font-bold mb-1.5 uppercase tracking-wide">Alias Bancario / CVU</label>
                             <input 
                                 type="text" 
-                                className="w-full bg-slate-50 border border-slate-200 rounded-lg p-3 text-slate-900 focus:border-purple-500 focus:bg-white outline-none transition-all placeholder:text-slate-400"
+                                className="w-full bg-sys-50 border border-border-default rounded-lg p-3 text-sys-900 focus:border-purple-500 focus:bg-white outline-none transition-all placeholder:text-sys-400"
                                 placeholder="Ej: MI.NEGOCIO.MP"
                                 value={branchData.transferAlias || ''}
                                 onChange={(e) => setBranchData({...branchData, transferAlias: e.target.value})}
                             />
-                            <p className="text-[10px] text-slate-500 mt-2">Este alias se mostrará automáticamente en el modal de cobro.</p>
+                            <p className="text-[10px] text-sys-500 mt-2">Este alias se mostrará automáticamente en el modal de cobro.</p>
                         </div>
 
                         {/* Titular */}
                         <div>
-                            <label className="block text-slate-500 text-xs font-bold mb-1.5 uppercase tracking-wide">Titular de la Cuenta</label>
+                            <label className="block text-sys-500 text-xs font-bold mb-1.5 uppercase tracking-wide">Titular de la Cuenta</label>
                             <input 
                                 type="text" 
-                                className="w-full bg-slate-50 border border-slate-200 rounded-lg p-3 text-slate-900 focus:border-purple-500 focus:bg-white outline-none transition-all placeholder:text-slate-400"
+                                className="w-full bg-sys-50 border border-border-default rounded-lg p-3 text-sys-900 focus:border-purple-500 focus:bg-white outline-none transition-all placeholder:text-sys-400"
                                 placeholder="Ej: Juan Pérez"
                                 value={branchData.transferAccountName || ''}
                                 onChange={(e) => setBranchData({...branchData, transferAccountName: e.target.value})}
                             />
-                            <p className="text-[10px] text-slate-500 mt-2">Acompaña al alias para dar seguridad al cliente.</p>
+                            <p className="text-[10px] text-sys-500 mt-2">Acompaña al alias para dar seguridad al cliente.</p>
                         </div>
                     </div>
                 </Card>

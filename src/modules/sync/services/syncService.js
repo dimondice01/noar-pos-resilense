@@ -1,16 +1,18 @@
-import { 
-    collection, 
-    writeBatch, 
-    doc, 
-    setDoc, 
-    onSnapshot, 
-    query, 
-    orderBy, 
-    limit, 
-    serverTimestamp, 
+import {
+    collection,
+    writeBatch,
+    doc,
+    setDoc,
+    getDoc,
+    onSnapshot,
+    query,
+    orderBy,
+    limit,
+    serverTimestamp,
     where,
-    getDocs, 
-    Timestamp 
+    getDocs,
+    Timestamp,
+    increment
 } from 'firebase/firestore'; 
 import { db } from '../../../database/firebase'; 
 import { getDB } from '../../../database/db'; 
@@ -677,6 +679,8 @@ export const syncService = {
       }
       await this.syncInitialSales(user.companyId, activeBranchId, user.role);
       await this.syncInitialMovements(user.companyId, activeBranchId, user.role);
+      await this.syncInitialShifts(user.companyId, activeBranchId, user.role);
+      await this.syncInitialCashMovements(user.companyId, activeBranchId);
       
       await this.syncInitialCustomerLedger(user.companyId);
       
@@ -845,7 +849,7 @@ export const syncService = {
 
     // 🔥 LISTENER DE CONFIGURACIÓN
     const configQuery = query(collection(db, 'companies', companyId, 'config'));
-    this._unsubscribes.push(onSnapshot(configQuery, async (snapshot) => {
+    this._unsubscribes.push(this._safeOnSnapshot(configQuery, async (snapshot) => {
         try {
             const localDb = await getDB();
             for (const change of snapshot.docChanges()) {
@@ -858,6 +862,7 @@ export const syncService = {
                         value: configValue,
                         updatedAt: new Date().toISOString()
                     });
+                    window.dispatchEvent(new CustomEvent('noar:config-synced'));
                 }
             }
         } catch (e) {}
@@ -905,7 +910,7 @@ export const syncService = {
         }
 
         if (salesQuery) {
-            this._unsubscribes.push(onSnapshot(salesQuery, async (snapshot) => {
+            this._unsubscribes.push(this._safeOnSnapshot(salesQuery, async (snapshot) => {
                 const localDb = await getDB();
                 const pendingIds = await localDb.sales.filter(s => s.syncStatus !== 'synced').primaryKeys();
                 const pendingSet = new Set(pendingIds);
@@ -927,6 +932,7 @@ export const syncService = {
                 
                 if (salesToPut.length > 0) {
                     await localDb.sales.bulkPut(salesToPut);
+                    window.dispatchEvent(new CustomEvent('noar:sales-synced'));
                 }
             }));
         }
@@ -948,7 +954,7 @@ export const syncService = {
         }
 
         if (purchQuery) {
-            this._unsubscribes.push(onSnapshot(purchQuery, async (snapshot) => {
+            this._unsubscribes.push(this._safeOnSnapshot(purchQuery, async (snapshot) => {
                 const localDb = await getDB();
                 const pendingIds = await localDb.purchases.filter(p => p.syncStatus !== 'synced').primaryKeys();
                 const pendingSet = new Set(pendingIds);
@@ -970,9 +976,13 @@ export const syncService = {
     } catch (e) { }
 
     const masterCollections = ['categories', 'brands', 'clients', 'suppliers'];
+    const mastersLiveStart = new Date(Date.now() - 60000);
     masterCollections.forEach(collectionName => {
-        const q = query(collection(db, 'companies', companyId, collectionName));
-        this._unsubscribes.push(onSnapshot(q, async (snapshot) => {
+        const q = query(
+            collection(db, 'companies', companyId, collectionName),
+            where('updatedAt', '>=', Timestamp.fromDate(mastersLiveStart))
+        );
+        this._unsubscribes.push(this._safeOnSnapshot(q, async (snapshot) => {
             const itemsToPut = [];
             const idsToDelete = [];
             snapshot.docChanges().forEach(change => {
@@ -988,62 +998,84 @@ export const syncService = {
         }));
     });
 
-    // 🔥 LISTENER DE SHIFTS (TURNOS)
+    // 🔥 LISTENER DE SHIFTS (TIEMPO REAL — FILTRADO POR SUCURSAL)
     try {
-        const shiftsQuery = query(
-            collection(db, 'companies', companyId, 'shifts'),
-            orderBy('updatedAt', 'desc'), 
-            limit(20)
-        );
-        this._unsubscribes.push(onSnapshot(shiftsQuery, async (snapshot) => {
-            const localDb = await getDB();
-            const pendingIds = await localDb.shifts.filter(s => s.syncStatus !== 'synced').primaryKeys();
-            const pendingSet = new Set(pendingIds);
-            const toPut = [];
-            
-            snapshot.docChanges().forEach(change => {
-                if (change.type === 'added' || change.type === 'modified') {
-                    if (!pendingSet.has(change.doc.id)) {
+        const liveStartShifts = new Date(Date.now() - 60_000);
+        let shiftsQ;
+        if (user?.role === 'OWNER' && (!activeBranchId || activeBranchId === 'ALL')) {
+            shiftsQ = query(
+                collection(db, 'companies', companyId, 'shifts'),
+                where('updatedAt', '>=', Timestamp.fromDate(liveStartShifts))
+            );
+        } else if (activeBranchId) {
+            shiftsQ = query(
+                collection(db, 'companies', companyId, 'shifts'),
+                where('branchId', '==', activeBranchId),
+                where('updatedAt', '>=', Timestamp.fromDate(liveStartShifts))
+            );
+        }
+        if (shiftsQ) {
+            this._unsubscribes.push(this._safeOnSnapshot(shiftsQ, async (snapshot) => {
+                const localDb = await getDB();
+                const pendingIds = await localDb.shifts.filter(s => s.syncStatus !== 'synced').primaryKeys();
+                const pendingSet = new Set(pendingIds);
+                const toPut = [];
+                snapshot.docChanges().forEach(change => {
+                    if ((change.type === 'added' || change.type === 'modified') && !pendingSet.has(change.doc.id)) {
                         toPut.push(this._sanitizeCloudShift(change.doc.data(), change.doc.id));
                     }
+                });
+                if (toPut.length > 0) {
+                    await localDb.shifts.bulkPut(toPut);
+                    window.dispatchEvent(new CustomEvent('noar:shifts-synced'));
                 }
-            });
-            if (toPut.length > 0) await localDb.shifts.bulkPut(toPut);
-        }));
+            }));
+        }
     } catch (e) { console.warn("Error en listener de shifts:", e); }
 
-    // 🔥 LISTENER DE CASH MOVEMENTS (GASTOS/INGRESOS)
+    // 🔥 LISTENER DE CASH MOVEMENTS (TIEMPO REAL — FILTRADO POR SUCURSAL)
     try {
-        const movsQuery = query(
-            collection(db, 'companies', companyId, 'cash_movements'),
-            orderBy('date', 'desc'), 
-            limit(50)
-        );
-        this._unsubscribes.push(onSnapshot(movsQuery, async (snapshot) => {
-            const localDb = await getDB();
-            const pendingIds = await localDb.cash_movements.filter(m => m.syncStatus !== 'synced').primaryKeys();
-            const pendingSet = new Set(pendingIds);
-            const toPut = [];
-            
-            snapshot.docChanges().forEach(change => {
-                if (change.type === 'added' || change.type === 'modified') {
-                    if (!pendingSet.has(change.doc.id)) {
+        if (activeBranchId && activeBranchId !== 'ALL') {
+            const liveStartMovs = new Date(Date.now() - 60_000);
+            const movsQ = query(
+                collection(db, 'companies', companyId, 'cash_movements'),
+                where('branchId', '==', activeBranchId),
+                where('date', '>=', Timestamp.fromDate(liveStartMovs))
+            );
+            this._unsubscribes.push(this._safeOnSnapshot(movsQ, async (snapshot) => {
+                const localDb = await getDB();
+                const pendingIds = await localDb.cash_movements.filter(m => m.syncStatus !== 'synced').primaryKeys();
+                const pendingSet = new Set(pendingIds);
+                const toPut = [];
+                snapshot.docChanges().forEach(change => {
+                    if ((change.type === 'added' || change.type === 'modified') && !pendingSet.has(change.doc.id)) {
                         toPut.push(this._sanitizeCloudCashMovement(change.doc.data(), change.doc.id));
                     }
+                });
+                if (toPut.length > 0) {
+                    await localDb.cash_movements.bulkPut(toPut);
+                    window.dispatchEvent(new CustomEvent('noar:cash-movements-synced'));
                 }
-            });
-            if (toPut.length > 0) await localDb.cash_movements.bulkPut(toPut);
-        }));
+            }));
+        }
     } catch (e) { console.warn("Error en listener de cash_movements:", e); }
 
-    // 🔥 AUTO-SYNC AL VOLVER A ESTAR ONLINE
+    // 🔥 AUTO-SYNC + RESTART LISTENERS AL VOLVER A ESTAR ONLINE
     if (typeof window !== 'undefined' && !window._noar_online_init) {
         window.addEventListener('online', () => {
-            console.log("🌐 Internet restaurado. Sincronizando pendientes...");
+            console.log("🌐 Internet restaurado. Sincronizando y reconectando listeners...");
             this.syncAll();
+            this._lastSyncContext = null;
+            this.startRealTimeListeners();
         });
         window._noar_online_init = true;
     }
+
+    // 🔄 RETRY PERIÓDICO: flush pendientes cada 90s aunque nunca se haya cortado la red
+    const _retryInterval = setInterval(() => {
+        if (navigator.onLine) this.syncAll().catch(() => {});
+    }, 90 * 1000);
+    this._unsubscribes.push(() => clearInterval(_retryInterval));
   },
 
   stopListeners() {
@@ -1062,7 +1094,7 @@ export const syncService = {
       this._lastSyncContext = null;
   },
 
-  async syncAll() { 
+  async syncAll() {
     if (!navigator.onLine) return { uploaded: 0, errors: 0 };
     const companyId = this._getCompanyId();
     const branchId = this._getActiveBranchId();
@@ -1098,6 +1130,7 @@ export const syncService = {
             (kardexRes?.synced || 0) +
             (customerLedgerRes?.synced || 0);
             
+        if (totalUploaded > 0) console.log(`✅ [SyncAll] ${totalUploaded} items subidos a Firestore.`);
         return { uploaded: totalUploaded, errors: 0 };
     } catch (error) {
         console.error("❌ Error Sync Up:", error);
@@ -1160,18 +1193,37 @@ export const syncService = {
             try {
                 const stockRef = doc(db, `companies/${companyId}/branches/${inv.branchId}/inventory`, String(inv.productId));
                 const nowIso = new Date().toISOString();
-                
-                await setDoc(stockRef, {
-                    productId: inv.productId,
-                    stock: parseFloat(inv.stock) || 0,
-                    promo: inv.promo || null, 
-                    updatedAt: nowIso
-                }, { merge: true });
 
-                await localDb.inventory.update([inv.branchId, inv.productId], { 
-                    syncStatus: 'synced', 
-                    updatedAt: nowIso 
-                });
+                if (inv.stockDelta !== undefined && inv.stockDelta !== null) {
+                    // 🔥 ATÓMICO: aplica el delta — safe con 5 cajas simultáneas
+                    await setDoc(stockRef, {
+                        productId: inv.productId,
+                        stock: increment(inv.stockDelta),
+                        updatedAt: nowIso
+                    }, { merge: true });
+
+                    // 🔄 RECONCILE: lee el valor autoritativo de Firestore y actualiza Dexie
+                    const cloudSnap = await getDoc(stockRef);
+                    const cloudStock = cloudSnap.exists() ? parseFloat(cloudSnap.data().stock) : inv.stock;
+                    await localDb.inventory.update([inv.branchId, inv.productId], {
+                        stock: cloudStock,
+                        stockDelta: null,
+                        syncStatus: 'synced',
+                        updatedAt: nowIso
+                    });
+                } else {
+                    // Fallback: registros sin delta (backwards compat)
+                    await setDoc(stockRef, {
+                        productId: inv.productId,
+                        stock: parseFloat(inv.stock) || 0,
+                        promo: inv.promo || null,
+                        updatedAt: nowIso
+                    }, { merge: true });
+                    await localDb.inventory.update([inv.branchId, inv.productId], {
+                        syncStatus: 'synced',
+                        updatedAt: nowIso
+                    });
+                }
                 totalSynced++;
             } catch (err) {
                 console.warn(`❌ Error sinc. inventario ${inv.productId || '?'}:`, err);
@@ -1226,8 +1278,12 @@ export const syncService = {
 
   async syncPendingSales(companyId, branchId) {
     const localDb = await getDB();
-    const pendingSales = await localDb.sales.filter(s => s.syncStatus !== 'synced').toArray();
-    
+    // 🛡️ Excluir items con demasiados intentos fallidos (prob. corruptos)
+    const pendingSales = await localDb.sales
+        .filter(s => s.syncStatus !== 'synced' && (s.syncRetries || 0) < 5)
+        .toArray();
+
+    console.log(`[SyncPendingSales] ${pendingSales.length} ventas pendientes`);
     if (pendingSales.length === 0) return { synced: 0 };
 
     let totalSynced = 0;
@@ -1237,8 +1293,8 @@ export const syncService = {
         try {
             if (!sale.id) continue;
             const safeId = this._ensureValidCloudId(sale, 'sale');
-            const docRef = doc(salesCollection, safeId); 
-            const { localId, syncStatus, id, ...cleanSale } = sale;
+            const docRef = doc(salesCollection, safeId);
+            const { localId, syncStatus, syncRetries, id, ...cleanSale } = sale;
             const nowIso = new Date().toISOString();
 
             await setDoc(docRef, {
@@ -1246,27 +1302,96 @@ export const syncService = {
                 firestoreId: safeId,
                 branchId: sale.branchId || branchId || 'main',
                 syncedAt: serverTimestamp(),
-                updatedAt: nowIso, 
-                origin: 'POS_WEB' 
+                updatedAt: nowIso,
+                origin: 'POS_WEB'
             }, { merge: true });
 
-            await localDb.sales.update(sale.id, { 
-                syncStatus: 'synced', 
-                firestoreId: safeId, 
-                updatedAt: nowIso 
+            await localDb.sales.update(sale.id, {
+                syncStatus: 'synced',
+                firestoreId: safeId,
+                updatedAt: nowIso
             });
             totalSynced++;
         } catch (err) {
-            console.error(`❌ Error sincronizando venta ${sale.id}:`, err);
+            // 🔄 Incrementar contador de reintentos — se reintentará en el próximo ciclo
+            const retries = (sale.syncRetries || 0) + 1;
+            console.warn(`❌ Sync venta ${sale.id} — intento ${retries}/5:`, err.code || err.message);
+            try { await localDb.sales.update(sale.id, { syncRetries: retries }); } catch (_) {}
         }
     }
     return { synced: totalSynced };
   },
 
+  async syncInitialShifts(companyId, branchId, role) {
+      if (!companyId) return;
+      try {
+          const localDb = await getDB();
+          const lastLocal = await localDb.shifts.orderBy('updatedAt').last();
+          const rawDate = lastLocal ? new Date(lastLocal.updatedAt) : new Date(0);
+          const lastSyncDate = isNaN(rawDate.getTime()) ? new Date(0) : rawDate;
+          const safetyMarginDate = new Date(lastSyncDate.getTime() - 60_000);
+          const firestoreSafetyMargin = Timestamp.fromDate(safetyMarginDate);
+
+          const shiftsRef = collection(db, 'companies', companyId, 'shifts');
+          const q = (role === 'OWNER' && (!branchId || branchId === 'ALL'))
+              ? query(shiftsRef, where('updatedAt', '>', firestoreSafetyMargin))
+              : query(shiftsRef, where('branchId', '==', branchId), where('updatedAt', '>', firestoreSafetyMargin));
+
+          const snapshot = await getDocs(q);
+          if (!snapshot.empty) {
+              const pendingIds = await localDb.shifts.filter(s => s.syncStatus !== 'synced').primaryKeys();
+              const pendingSet = new Set(pendingIds);
+              const toPut = snapshot.docs
+                  .filter(d => !pendingSet.has(d.id))
+                  .map(d => this._sanitizeCloudShift(d.data(), d.id));
+              if (toPut.length > 0) await localDb.shifts.bulkPut(toPut);
+          }
+      } catch (e) {
+          if (e.code !== 'failed-precondition') console.warn("Shifts delta sync warning:", e);
+      }
+  },
+
+  async syncInitialCashMovements(companyId, branchId) {
+      if (!companyId || !branchId || branchId === 'ALL') return;
+      try {
+          const localDb = await getDB();
+          const count = await localDb.cash_movements.count();
+          let lastSyncDate;
+
+          if (count === 0) {
+              lastSyncDate = new Date(Date.now() - 48 * 3600_000);
+          } else {
+              const lastLocals = await localDb.cash_movements
+                  .where('branchId').equals(branchId).sortBy('date');
+              const lastItem = lastLocals.length > 0 ? lastLocals[lastLocals.length - 1] : null;
+              lastSyncDate = lastItem ? new Date(lastItem.date || lastItem.updatedAt || 0) : new Date(0);
+          }
+
+          const safetyMarginDate = new Date(lastSyncDate.getTime() - 60_000);
+          const firestoreMargin = Timestamp.fromDate(safetyMarginDate);
+          const movRef = collection(db, 'companies', companyId, 'cash_movements');
+          const q = query(movRef, where('branchId', '==', branchId), where('date', '>', firestoreMargin));
+
+          const snapshot = await getDocs(q);
+          if (!snapshot.empty) {
+              const pendingIds = await localDb.cash_movements.filter(m => m.syncStatus !== 'synced').primaryKeys();
+              const pendingSet = new Set(pendingIds);
+              const toPut = snapshot.docs
+                  .filter(d => !pendingSet.has(d.id))
+                  .map(d => this._sanitizeCloudCashMovement(d.data(), d.id));
+              if (toPut.length > 0) await localDb.cash_movements.bulkPut(toPut);
+          }
+      } catch (e) {
+          console.warn("CashMovements delta sync warning:", e);
+      }
+  },
+
   async syncPendingShifts(companyId) {
       const localDb = await getDB();
-      const pendingShifts = await localDb.shifts.filter(s => s.syncStatus !== 'synced').toArray();
-      
+      const pendingShifts = await localDb.shifts
+          .filter(s => s.syncStatus !== 'synced' && (s.syncRetries || 0) < 5)
+          .toArray();
+
       if (pendingShifts.length === 0) return { synced: 0 };
 
       let totalSynced = 0;
@@ -1276,9 +1401,9 @@ export const syncService = {
           try {
               if (!shift.id) continue;
               const safeId = this._ensureValidCloudId(shift, `shift_${shift.branchId || 'b'}`);
-              const docRef = doc(colRef, safeId); 
-              
-              const { localId, syncStatus, id, ...cleanShift } = shift;
+              const docRef = doc(colRef, safeId);
+
+              const { localId, syncStatus, syncRetries, id, ...cleanShift } = shift;
               const nowIso = new Date().toISOString();
 
               await setDoc(docRef, {
@@ -1287,14 +1412,16 @@ export const syncService = {
                   updatedAt: nowIso
               }, { merge: true });
 
-              await localDb.shifts.update(shift.id, { 
-                  syncStatus: 'synced', 
-                  firestoreId: safeId, 
-                  updatedAt: nowIso 
+              await localDb.shifts.update(shift.id, {
+                  syncStatus: 'synced',
+                  firestoreId: safeId,
+                  updatedAt: nowIso
               });
               totalSynced++;
           } catch (err) {
-              console.warn(`❌ Error sinc. turno ${shift.id}:`, err);
+              const retries = (shift.syncRetries || 0) + 1;
+              console.warn(`❌ Sync turno ${shift.id} — intento ${retries}/5:`, err.code || err.message);
+              try { await localDb.shifts.update(shift.id, { syncRetries: retries }); } catch (_) {}
           }
       }
       return { synced: totalSynced };
@@ -1302,8 +1429,10 @@ export const syncService = {
 
   async syncPendingCashMovements(companyId) {
       const localDb = await getDB();
-      const pendingMovs = await localDb.cash_movements.filter(c => c.syncStatus !== 'synced').toArray();
-      
+      const pendingMovs = await localDb.cash_movements
+          .filter(c => c.syncStatus !== 'synced' && (c.syncRetries || 0) < 5)
+          .toArray();
+
       if (pendingMovs.length === 0) return { synced: 0 };
 
       let totalSynced = 0;
@@ -1313,8 +1442,8 @@ export const syncService = {
           try {
               if (!mov.id) continue;
               const safeId = this._ensureValidCloudId(mov, 'cash');
-              const docRef = doc(colRef, safeId); 
-              const { syncStatus, localId, id, ...cleanMov } = mov;
+              const docRef = doc(colRef, safeId);
+              const { syncStatus, syncRetries, localId, id, ...cleanMov } = mov;
               const nowIso = new Date().toISOString();
 
               await setDoc(docRef, {
@@ -1323,14 +1452,16 @@ export const syncService = {
                   updatedAt: nowIso
               }, { merge: true });
 
-              await localDb.cash_movements.update(mov.id, { 
-                  syncStatus: 'synced', 
-                  firestoreId: safeId, 
-                  updatedAt: nowIso 
+              await localDb.cash_movements.update(mov.id, {
+                  syncStatus: 'synced',
+                  firestoreId: safeId,
+                  updatedAt: nowIso
               });
               totalSynced++;
           } catch (err) {
-              console.warn(`❌ Error sinc. mov. caja ${mov.id}:`, err);
+              const retries = (mov.syncRetries || 0) + 1;
+              console.warn(`❌ Sync mov. caja ${mov.id} — intento ${retries}/5:`, err.code || err.message);
+              try { await localDb.cash_movements.update(mov.id, { syncRetries: retries }); } catch (_) {}
           }
       }
       return { synced: totalSynced };
@@ -1488,10 +1619,38 @@ export const syncService = {
       return new Promise(resolve => setTimeout(resolve, ms));
   },
 
+  // 🔄 Wrapper de onSnapshot con auto-restart en caso de error permanente
+  _safeOnSnapshot(q, onNext, listenerName = 'unknown') {
+      return onSnapshot(q, onNext, (error) => {
+          console.warn(`⚠️ [Listener ${listenerName}] Error — reconectando en 5s:`, error.code || error.message);
+          setTimeout(() => {
+              if (navigator.onLine) {
+                  this._lastSyncContext = null;
+                  this.startRealTimeListeners();
+              }
+          }, 5000);
+      });
+  },
+
   _getCompanyId() {
+    // El master admin del SaaS queda bloqueado por companyId === 'master_admin'.
+    // NO bloqueamos por user.superAdmin: owners de empresa pueden tener ese flag.
+    const _isValid = (id) => id && id !== 'undefined' && id !== 'master_admin';
+
+    // Intento 1: Zustand store (disponible cuando la app ya está corriendo)
     const { user } = useAuthStore.getState();
-    if (!user || !user.companyId || user.companyId === 'undefined' || user.companyId === 'master_admin' || user.superAdmin) return null;
-    return user.companyId;
+    if (user && _isValid(user.companyId)) return user.companyId;
+
+    // Intento 2: localStorage directo (disponible antes de que Zustand hidrate)
+    try {
+        const stored = localStorage.getItem('auth-storage');
+        if (stored) {
+            const parsed = JSON.parse(stored);
+            const storedUser = parsed?.state?.user;
+            if (storedUser && _isValid(storedUser.companyId)) return storedUser.companyId;
+        }
+    } catch (_) {}
+    return null;
   },
 
   _getActiveBranchId() {

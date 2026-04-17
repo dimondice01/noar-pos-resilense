@@ -4,7 +4,7 @@ import {
     ArrowDownLeft, ShoppingBag, XCircle, RotateCcw, Calendar, User,
     ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, 
     TrendingUp, Tag, Percent, DollarSign, Store, CreditCard, Banknote,
-    PackageMinus, Save, X, Loader2, PlusCircle, ArrowUpRight, FileArchive, ArrowDownRight, Users, CloudDownload
+    PackageMinus, Save, X, Loader2, PlusCircle, ArrowUpRight, FileArchive, ArrowDownRight, Users
 } from 'lucide-react';
 import { billingService } from '../../billing/services/billingService';
 import { Card } from '../../../core/ui/Card';
@@ -17,7 +17,7 @@ import { cashRepository } from '../../cash/repositories/cashRepository';
 import { TicketModal } from '../components/TicketModal';
 import { useAuthStore } from '../../auth/store/useAuthStore'; 
 import { useCloudDashboard } from '../../dashboard/hooks/useCloudDashboard'; // 🔥 SINIESTROS MONITOR
-import { collection, query, where, getDocs, orderBy, limit, getCountFromServer } from 'firebase/firestore';
+import { collection, query, where, getDocs } from 'firebase/firestore';
 import { db as firestoreDB } from '../../../database/firebase';
 import toast from 'react-hot-toast';
 
@@ -283,114 +283,18 @@ export const SalesPage = () => {
       }
   }, [user?.companyId, activeBranchId]); 
 
-  // 🔥 AUTO-REFRESH: SalesPage escucha cuando el POS termina una venta
+  // 🔥 AUTO-REFRESH: SalesPage escucha ventas locales y ventas bajadas del sync
   useEffect(() => {
       const handler = () => setTimeout(() => fetchOperations(), 300);
       window.addEventListener('noar:sale-created', handler);
-      return () => window.removeEventListener('noar:sale-created', handler);
+      window.addEventListener('noar:sales-synced', handler);
+      return () => {
+          window.removeEventListener('noar:sale-created', handler);
+          window.removeEventListener('noar:sales-synced', handler);
+      };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // =================================================================
-  // ⚡ ESCUDO NEXUS (SINCRONIZACIÓN INTELIGENTE Y SEGURA)
-  // =================================================================
-  const handleForceCloudSync = async () => {
-      setLoading(true);
-      const toastId = toast.loading("Verificando consistencia con la nube...");
-      try {
-          const forcedCompanyId = user?.companyId;
-          const branchId = activeBranchId;
-          if (!forcedCompanyId) throw new Error("Falta companyId");
-
-          const { getDB } = await import('../../../database/db');
-          const dbLocal = await getDB();
-
-          // 1. Definimos el rango de tiempo del filtro actual
-          let startLimit = new Date();
-          let endLimit = new Date();
-          endLimit.setHours(23, 59, 59, 999);
-
-          if (filterPeriod === 'month') startLimit.setDate(1);
-          else if (filterPeriod === 'week') startLimit.setDate(startLimit.getDate() - 7);
-          else if (filterPeriod === 'custom') {
-              startLimit = new Date(customStart + 'T00:00:00');
-              endLimit = new Date(customEnd + 'T23:59:59');
-          }
-          startLimit.setHours(0, 0, 0, 0);
-
-          // 2. CONTEO INTELIGENTE (1000x más barato): ¿Cuántos hay en Firebase?
-          let cloudQ = query(
-              collection(firestoreDB, `companies/${forcedCompanyId}/sales`), 
-              where('date', '>=', startLimit.toISOString()),
-              where('date', '<=', endLimit.toISOString())
-          );
-          if (branchId && branchId !== 'ALL') cloudQ = query(cloudQ, where('branchId', '==', branchId));
-
-          const cloudCountSnapshot = await getCountFromServer(cloudQ);
-          const cloudCount = cloudCountSnapshot.data().count;
-
-          // 3. CONTEO LOCAL: ¿Cuántos tengo yo?
-          const allLocal = await dbLocal.sales.toArray();
-          const localCount = allLocal.filter(o => {
-              const opTime = new Date(o.date).getTime();
-              const fits = opTime >= startLimit.getTime() && opTime <= endLimit.getTime();
-              const branchFits = branchId === 'ALL' || String(o.branchId) === String(branchId);
-              return fits && branchFits;
-          }).length;
-
-          const difference = cloudCount - localCount;
-
-          // 4. LÓGICA DE DECISIÓN DE COSTO
-          if (difference <= 0 && localCount > 0) {
-              toast.success("¡Base local sincronizada! No hace falta descargar nada.", { id: toastId });
-              return;
-          }
-
-          const BATCH_LIMIT = 3000;
-          const fetchAmount = difference > BATCH_LIMIT ? BATCH_LIMIT : difference;
-
-          // Alerta si la descarga es pesada (> 200 tickets)
-          if (difference > 200) {
-              const confirmSync = window.confirm(
-                  `🚨 ¡ALERTA DE SEGURIDAD FINANCIERA!\n\n` +
-                  `Se detectaron ${difference} tickets faltantes en este periodo.\n` +
-                  (difference > BATCH_LIMIT ? 
-                  `Por resiliencia, la descarga se divide en lotes de protección. Este lote descargará ${BATCH_LIMIT} registros.\n\n` :
-                  `La descarga consumirá ${difference} lecturas de Firebase.\n\n`) +
-                  `¿Deseas proceder con la descarga ahora?`
-              );
-              if (!confirmSync) {
-                  toast.error("Descarga cancelada por el usuario.", { id: toastId });
-                  return;
-              }
-          }
-
-          toast.loading(`Descargando ${fetchAmount} tickets de la nube...`, { id: toastId });
-
-          // 5. EJECUCIÓN DEL FETCH REAL (Limitado por seguridad)
-          const finalQ = query(cloudQ, orderBy('date', 'desc'), limit(BATCH_LIMIT));
-          const snapshot = await getDocs(finalQ);
-          const cloudSales = snapshot.docs.map(doc => ({
-              ...doc.data(),
-              id: doc.id,
-              firestoreId: doc.id,
-              syncStatus: 'synced'
-          }));
-
-          if (cloudSales.length > 0) {
-              await dbLocal.sales.bulkPut(cloudSales);
-              toast.success(`Éxito: Se sincronizaron ${cloudSales.length} registros.`, { id: toastId });
-          } else {
-              toast.success("No hay datos nuevos para descargar.", { id: toastId });
-          }
-      } catch (error) {
-          console.error("Error en Smart Shield Sync:", error);
-          toast.error(`Error: ${error.message}`, { id: toastId });
-      } finally {
-          setLoading(false);
-          fetchOperations(); 
-      }
-  };
 
   // 2. CARGAR OPERACIONES LOCALES (OPTIMIZADO Y A PRUEBA DE FECHAS)
   const fetchOperations = async (append = false) => {
@@ -837,15 +741,6 @@ export const SalesPage = () => {
                     <RefreshCw size={18} className={loading ? "animate-spin" : ""}/>
                 </Button>
 
-                <Button 
-                    variant="outline" 
-                    onClick={handleForceCloudSync} 
-                    className="h-10 px-4 rounded-xl border-brand/30 text-brand bg-brand/5 hover:bg-brand hover:text-white transition-all flex items-center gap-2 shadow-sm"
-                    title="Forzar descarga de ventas desde Firebase"
-                >
-                    <CloudDownload size={18} className={loading ? "animate-bounce" : ""}/>
-                    <span className="text-xs font-bold hidden md:inline">Bajar Nube</span>
-                </Button>
                 
                 {/* 💳 TARJETA DE TOTALES REALES (SOLO ADMIN/OWNER) */}
                 {isAdmin && (

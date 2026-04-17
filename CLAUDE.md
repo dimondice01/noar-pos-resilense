@@ -11,6 +11,31 @@ Claude debe actuar como un desarrollador senior, priorizando:
 
 ---
 
+## 🔄 Campaña Activa: Resiliencia Offline-First
+
+Estamos aplicando un patrón de hardening en todos los módulos. El orden ya completado:
+
+1. ✅ Ventas (`salesRepository` + `SalesPage`)
+2. ✅ Inventario (`inventoryRepository` + página de inventario)
+3. ✅ Caja/Shift (`cashRepository` + `CashPage`)
+4. 🔜 **POS** (`PosPage` + `usePosController`) — próximo
+
+### Patrón estándar a aplicar por módulo:
+
+- **Delta Sync inicial** → `syncInitialX()` con `where('updatedAt', '>', firestoreSafetyMargin)` usando `Timestamp.fromDate()`
+- **Listener real-time** → `where('branchId', '==', activeBranchId)` + `where('updatedAt', '>=', liveStart)` + `dispatchEvent(new CustomEvent('noar:X-synced'))`
+- **`_syncToCloud` / pendientes** → siempre incluir `updatedAt: new Date().toISOString()` en el payload de Firestore
+- **UI reactiva** → `useEffect` escuchando `noar:X-synced` para recargar sin bloquear
+- **Pendientes locales protegidos** → nunca sobreescribir registros con `syncStatus !== 'synced'` al bajar del cloud
+
+### Eventos custom ya definidos:
+- `noar:sales-synced`
+- `noar:shifts-synced`
+- `noar:cash-movements-synced`
+- `onProductsSynced`
+
+---
+
 ## ⚠️ Reglas Generales (OBLIGATORIO)
 
 - NO explorar todo el repositorio

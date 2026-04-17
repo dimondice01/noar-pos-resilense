@@ -58,6 +58,15 @@ export const clientRepository = {
     });
   },
 
+  // Versión eficiente: trae solo los N más recientes sin cargar todo en memoria
+  async getRecent(n = 10) {
+    const dbLocal = await getDB();
+    const clients = await dbLocal.clients.toArray();
+    return clients
+        .sort((a, b) => parseInt(b.sequentialId || 0, 10) - parseInt(a.sequentialId || 0, 10))
+        .slice(0, n);
+  },
+
   async getById(id) {
     const dbLocal = await getDB();
     return await dbLocal.clients.get(id);

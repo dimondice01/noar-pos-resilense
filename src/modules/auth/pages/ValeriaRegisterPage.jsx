@@ -221,14 +221,14 @@ export const ValeriaRegisterPage = () => {
         <div className="min-h-screen flex bg-sys-50 font-sans">
             
             {/* IZQUIERDA: Branding */}
-            <div className="hidden lg:flex w-1/2 bg-slate-900 text-white flex-col justify-between p-12 relative overflow-hidden border-r border-slate-800">
+            <div className="hidden lg:flex w-1/2 bg-sys-900 text-white flex-col justify-between p-12 relative overflow-hidden border-r border-sys-800">
                 <div className="absolute top-0 right-0 w-96 h-96 bg-brand/10 rounded-full blur-3xl -translate-y-1/2 translate-x-1/3"></div>
                 
                 <div className="z-10">
                     <h1 className="text-3xl font-black tracking-tight flex items-center gap-3">
                         <Zap className="text-brand fill-brand" /> NOAR POS
                     </h1>
-                    <p className="mt-2 text-slate-400 text-sm font-mono uppercase tracking-widest">Enterprise Edition</p>
+                    <p className="mt-2 text-sys-400 text-sm font-mono uppercase tracking-widest">Enterprise Edition</p>
                 </div>
 
                 <div className="z-10 max-w-md">
@@ -240,14 +240,14 @@ export const ValeriaRegisterPage = () => {
                     <h2 className="text-4xl font-bold mb-6 leading-tight">
                         Alta de Cliente <span className="text-brand">Premium</span>.
                     </h2>
-                    <div className="space-y-4 text-slate-300">
+                    <div className="space-y-4 text-sys-300">
                         <div className="flex items-center gap-3"><CheckCircle2 className="text-brand" /> <span>Multi-Sucursal Nativo</span></div>
                         <div className="flex items-center gap-3"><CheckCircle2 className="text-brand" /> <span>Inventario Distribuido</span></div>
                         <div className="flex items-center gap-3"><CheckCircle2 className="text-brand" /> <span>Auditoría en Tiempo Real</span></div>
                     </div>
                 </div>
 
-                <div className="text-xs text-slate-500 z-10 border-t border-white/5 pt-4">
+                <div className="text-xs text-sys-500 z-10 border-t border-white/5 pt-4">
                     <span>© 2026 Noar Technology. ID: VG-REP-001</span>
                 </div>
             </div>
@@ -355,7 +355,7 @@ export const ValeriaRegisterPage = () => {
                                         value={formData.captcha} onChange={e => setFormData({...formData, captcha: e.target.value})} />
                                 </div>
 
-                                <Button type="submit" className="w-full py-4 text-base shadow-xl shadow-brand/20 bg-slate-900 hover:bg-black text-white transition-all hover:scale-[1.02]">
+                                <Button type="submit" className="w-full py-4 text-base shadow-xl shadow-brand/20 bg-sys-900 hover:bg-black text-white transition-all hover:scale-[1.02]">
                                     Continuar <ArrowRight size={18} className="ml-2"/>
                                 </Button>
                             </form>

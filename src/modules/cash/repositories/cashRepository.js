@@ -37,9 +37,10 @@ export const cashRepository = {
         const dbLocal = await getDB();
         
         // 1. Verificar LOCALMENTE si ya hay uno abierto
+        // 🔥 Índice compuesto [userId+status] — evita full-scan de shifts
         const activeInBranch = await dbLocal.shifts
-            .where('status').equals('OPEN')
-            .filter(s => s.userId === user.uid && s.branchId === branchId)
+            .where('[userId+status]').equals([user.uid, 'OPEN'])
+            .filter(s => s.branchId === branchId)
             .first();
 
         if (activeInBranch) {
@@ -221,9 +222,10 @@ export const cashRepository = {
 
         // 4. 🔥 BLINDAJE DE CIERRE: Sincronización Mandatoria de Pendientes
         try {
+            // 🔥 shiftId indexado — más selectivo que syncStatus
             const pendingMovs = await dbLocal.cash_movements
-                .where('syncStatus').equals('pending')
-                .filter(m => m.shiftId === shiftId)
+                .where('shiftId').equals(shiftId)
+                .filter(m => m.syncStatus === 'pending')
                 .toArray();
             
             for (const mov of pendingMovs) {
@@ -291,6 +293,7 @@ export const cashRepository = {
             setDoc(doc(db, path, cloudId), {
                 ...cloudData,
                 firestoreId: cloudId,
+                updatedAt: new Date().toISOString(),
                 syncedAt: new Date().toISOString(),
                 syncStatus: 'synced',
                 lastUpdatedBy: user.uid
@@ -312,9 +315,9 @@ export const cashRepository = {
         const { user, branchId } = this._getContext();
 
         try {
+            // 🔥 Índice compuesto [userId+status] — evita full-scan
             const openShifts = await dbLocal.shifts
-                .where('status').equals('OPEN')
-                .filter(s => s.userId === user.uid)
+                .where('[userId+status]').equals([user.uid, 'OPEN'])
                 .toArray();
 
             const activeInBranch = openShifts.find(s => s.branchId === branchId);
@@ -416,9 +419,6 @@ export const cashRepository = {
         const { user, branchId } = this._getContext();
         const dbLocal = await getDB();
 
-        // 1. Carga Local Inmediata
-        let shifts = await dbLocal.shifts.toArray();
-
         // 2. Hidratación Cloud en background
         if ((user.role === 'ADMIN' || user.role === 'OWNER') && navigator.onLine) {
              this._fetchHistoryFromCloud(dbLocal, user).then(async () => {
@@ -426,16 +426,16 @@ export const cashRepository = {
              });
         }
 
-        let filteredShifts = [];
-
+        // 🔥 Consultas por índice — evita cargar toda la tabla de turnos
+        let filteredShifts;
         if (user.role === 'ADMIN' || user.role === 'OWNER') {
             if (branchId && branchId !== 'main' && branchId !== 'ALL') {
-                filteredShifts = shifts.filter(s => s.branchId === branchId);
+                filteredShifts = await dbLocal.shifts.where('branchId').equals(branchId).toArray();
             } else {
-                filteredShifts = shifts;
+                filteredShifts = await dbLocal.shifts.toArray();
             }
         } else {
-            filteredShifts = shifts.filter(s => s.userId === user.uid);
+            filteredShifts = await dbLocal.shifts.where('userId').equals(user.uid).toArray();
         }
 
         return filteredShifts.sort((a, b) => {
@@ -487,17 +487,18 @@ export const cashRepository = {
     async _calculateShiftState(shift, dbLocal) {
         if (!shift) return null;
 
-        // 1. OBTENEMOS VENTAS REALES (Fuente de Verdad Única para Ingresos por Ventas)
+        // 1. OBTENEMOS VENTAS REALES — 🔥 índice shiftId evita full-scan
         const sales = await dbLocal.sales
-            .filter(s => s.shiftId === shift.id && s.status === 'COMPLETED' && s.status !== 'ABANDONED' && s.type !== 'INTERNAL' && s.type !== 'BUDGET')
+            .where('shiftId').equals(shift.id)
+            .filter(s => s.status === 'COMPLETED' && s.type !== 'INTERNAL' && s.type !== 'BUDGET')
             .toArray();
 
         // 🔥 EL ESCUDO ANTI-DUPLICACIÓN: Guardamos los IDs de todas las ventas contadas
         const countedSalesIds = new Set(sales.map(s => s.id));
 
-        // 2. OBTENEMOS MOVIMIENTOS DE CAJA
+        // 2. OBTENEMOS MOVIMIENTOS DE CAJA — 🔥 índice shiftId
         const movements = await dbLocal.cash_movements
-            .filter(m => m.shiftId === shift.id)
+            .where('shiftId').equals(shift.id)
             .toArray();
 
         let state = {
@@ -626,16 +627,16 @@ export const cashRepository = {
             
             const state = await this._calculateShiftState(shift, dbLocal);
             
-            // 🔥 UNIFICAMOS VISUALMENTE VENTAS Y MOVIMIENTOS PARA EL DASHBOARD
-            const sales = await dbLocal.sales.filter(s => 
-                s.shiftId === shiftId && 
-                s.status === 'COMPLETED' &&
-                s.type !== 'BUDGET' &&    // Excluir presupuestos del listado visual
-                s.type !== 'INTERNAL'    // Excluir internos
-            ).toArray();
+            // 🔥 UNIFICAMOS VISUALMENTE VENTAS Y MOVIMIENTOS — índices shiftId
+            const sales = await dbLocal.sales
+                .where('shiftId').equals(shiftId)
+                .filter(s => s.status === 'COMPLETED' && s.type !== 'BUDGET' && s.type !== 'INTERNAL')
+                .toArray();
             const countedSalesIds = new Set(sales.map(s => s.id));
-            
-            const movements = await dbLocal.cash_movements.filter(m => m.shiftId === shiftId).toArray();
+
+            const movements = await dbLocal.cash_movements
+                .where('shiftId').equals(shiftId)
+                .toArray();
             
             let allOperations = [];
 

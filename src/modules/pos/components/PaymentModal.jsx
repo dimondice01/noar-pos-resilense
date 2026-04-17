@@ -27,6 +27,20 @@ import toast from 'react-hot-toast';
 
 const API_URL = import.meta.env.VITE_API_URL || "https://us-central1-salvadorpos1.cloudfunctions.net/api";
 
+// 🛡️ Cache local con TTL para evitar Firestore calls en cada apertura del modal
+const _getCached = (key, ttlMs = 10 * 60 * 1000) => {
+    try {
+        const raw = localStorage.getItem(key);
+        if (!raw) return null;
+        const { ts, data } = JSON.parse(raw);
+        if (Date.now() - ts > ttlMs) return null;
+        return data;
+    } catch { return null; }
+};
+const _setCache = (key, data) => {
+    try { localStorage.setItem(key, JSON.stringify({ ts: Date.now(), data })); } catch {}
+};
+
 export const PaymentModal = ({ 
     isOpen, 
     onClose, 
@@ -61,11 +75,10 @@ export const PaymentModal = ({
     
     // Hardware & Configuración
     const [assignedHardware, setAssignedHardware] = useState({ qrId: null, pointId: null });
-    const [loadingHardware, setLoadingHardware] = useState(false);
-    const [paymentMethods, setPaymentMethods] = useState([]); 
-    const [selectedBrand, setSelectedBrand] = useState(null); 
-    const [selectedRate, setSelectedRate] = useState(null);   
-    const [loadingPlans, setLoadingPlans] = useState(false);
+    const [loadingConfig, setLoadingConfig] = useState(false);
+    const [paymentMethods, setPaymentMethods] = useState([]);
+    const [selectedBrand, setSelectedBrand] = useState(null);
+    const [selectedRate, setSelectedRate] = useState(null);
 
     // Estado Pagos Digitales (Mercado Pago Point / QR)
     const [digitalState, setDigitalState] = useState('idle'); // idle, creating, waiting, approved, error
@@ -195,9 +208,7 @@ export const PaymentModal = ({
             // 🔥 Aseguramos que la promo base se respete al abrir
             if (setTabPaymentMethod) setTabPaymentMethod('cash');
 
-            fetchHardwareAssignments();
-            fetchFinancialPlans();
-            fetchEmployees();
+            loadConfig();
 
             if (pollingRef.current) clearInterval(pollingRef.current);
             
@@ -209,6 +220,8 @@ export const PaymentModal = ({
             }, 100);
         } else {
             if (pollingRef.current) clearInterval(pollingRef.current);
+            hasTriggeredRef.current = false;
+            setDigitalState('idle');
         }
         // 🔥 FIX CRÍTICO: Se quitó 'total' y 'isRI' de las dependencias.
         // Esto evita el "Flicker Loop" que reseteaba el modal a 'cash' cuando el total cambiaba por un descuento.
@@ -241,33 +254,42 @@ export const PaymentModal = ({
     // ==========================================
     const fetchHardwareAssignments = async () => {
         if (!user?.uid || !activeBranchId) return;
-        setLoadingHardware(true);
+        const cacheKey = `pos_hw_${user.uid}`;
+        const cached = _getCached(cacheKey);
+        if (cached) setAssignedHardware(cached);
+        if (!navigator.onLine) return;
         try {
             const branchRef = `companies/${user.companyId}/branches/${activeBranchId}/integrations`;
             const assignDoc = await getDoc(doc(db, branchRef, 'assignments'));
             if (assignDoc.exists()) {
-                const allAssignments = assignDoc.data();
-                setAssignedHardware(allAssignments[user.uid] || { qrId: null, pointId: null });
+                const hw = assignDoc.data()[user.uid] || { qrId: null, pointId: null };
+                setAssignedHardware(hw);
+                _setCache(cacheKey, hw);
             }
-        } catch (e) { console.error(e); } finally { setLoadingHardware(false); }
+        } catch (e) { console.error(e); }
     };
 
     const fetchFinancialPlans = async () => {
         if (!user?.companyId) return;
-        setLoadingPlans(true);
+        const cacheKey = `pos_plans_${user.companyId}`;
+        const cached = _getCached(cacheKey);
+        if (cached) setPaymentMethods(cached);
+        if (!navigator.onLine) return;
         try {
             const configRef = doc(db, `companies/${user.companyId}/config/financials`);
             const snap = await getDoc(configRef);
-            if (snap.exists() && snap.data().methods) {
-                setPaymentMethods(snap.data().methods);
-            } else {
-                setPaymentMethods([]);
-            }
-        } catch (error) { setPaymentMethods([]); } finally { setLoadingPlans(false); }
+            const methods = (snap.exists() && snap.data().methods) ? snap.data().methods : [];
+            setPaymentMethods(methods);
+            _setCache(cacheKey, methods);
+        } catch (error) { setPaymentMethods([]); }
     };
 
     const fetchEmployees = async () => {
         if (!user?.companyId || !activeBranchId) return;
+        const cacheKey = `pos_employees_${activeBranchId}`;
+        const cached = _getCached(cacheKey);
+        if (cached) setEmployees(cached);
+        if (!navigator.onLine) return;
         try {
             const q = query(collection(db, 'users'), where('companyId', '==', user.companyId));
             const snap = await getDocs(q);
@@ -275,7 +297,18 @@ export const PaymentModal = ({
                 .map(doc => ({ uid: doc.id, ...doc.data() }))
                 .filter(u => String(u.branchId) === String(activeBranchId));
             setEmployees(branchEmployees);
+            _setCache(cacheKey, branchEmployees);
         } catch (error) { console.error("Error cargando empleados:", error); }
+    };
+
+    const loadConfig = async () => {
+        setLoadingConfig(true);
+        await Promise.allSettled([
+            fetchHardwareAssignments(),
+            fetchFinancialPlans(),
+            fetchEmployees()
+        ]);
+        setLoadingConfig(false);
     };
 
     const handleAfipChange = (checked) => {
@@ -385,6 +418,11 @@ export const PaymentModal = ({
     };
 
     const triggerPointTransaction = async () => {
+        if (!navigator.onLine) {
+            setDigitalState('error');
+            setErrorMessage('Sin conexión. Los pagos con terminal requieren internet.');
+            return;
+        }
         setDigitalState('creating');
         setErrorMessage(null);
         try {
@@ -406,6 +444,11 @@ export const PaymentModal = ({
     };
 
     const triggerQrTransaction = async () => {
+        if (!navigator.onLine) {
+            setDigitalState('error');
+            setErrorMessage('Sin conexión. Los pagos con QR requieren internet.');
+            return;
+        }
         setDigitalState('creating');
         setErrorMessage(null);
         try {
@@ -610,7 +653,7 @@ export const PaymentModal = ({
     };
 
     return (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-sys-900/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-sys-900/60 p-4 animate-in fade-in duration-200">
             <div className="bg-white rounded-3xl shadow-2xl w-full max-w-6xl overflow-hidden flex flex-col md:flex-row min-h-[600px] md:h-[650px]">
                 
                 {/* 🟢 IZQUIERDA: RESUMEN FINANCIERO */}
@@ -884,7 +927,7 @@ export const PaymentModal = ({
 
                         {method === 'manual_card' && (
                             <div className="w-full h-full flex flex-col">
-                                {loadingPlans ? (
+                                {loadingConfig ? (
                                     <div className="flex flex-col items-center justify-center h-full">
                                         <Loader2 size={32} className="animate-spin text-indigo-500 mb-2"/>
                                         <p className="text-xs text-indigo-500 font-bold">Cargando tasas...</p>
@@ -968,7 +1011,7 @@ export const PaymentModal = ({
                                     <p className="text-[10px] font-black text-purple-600 uppercase tracking-widest mb-1 relative z-10">Alias para Transferir</p>
                                     <p className="font-black text-2xl text-purple-900 tracking-tighter leading-tight relative z-10 break-all">{ACCOUNT_DATA.alias}</p>
                                     <div className="h-px bg-purple-200 my-4 w-1/3 mx-auto relative z-10"></div>
-                                    <p className="text-[11px] font-bold text-slate-500 uppercase tracking-wide relative z-10 truncate" title={ACCOUNT_DATA.bank}>{ACCOUNT_DATA.bank}</p>
+                                    <p className="text-[11px] font-bold text-sys-500 uppercase tracking-wide relative z-10 truncate" title={ACCOUNT_DATA.bank}>{ACCOUNT_DATA.bank}</p>
                                 </div>
                                 <div className="relative group">
                                     <FileText className="absolute left-3 top-1/2 -translate-y-1/2 text-sys-400 group-focus-within:text-purple-500 transition-colors" size={18} />

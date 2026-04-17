@@ -17,7 +17,7 @@ export const ProductCard = ({ product, onClick }) => {
     <Card 
       onClick={() => onClick(product)}
       className={cn(
-        "cursor-pointer group relative overflow-hidden p-0 border-0 shadow-sm hover:shadow-float hover:-translate-y-1 transition-all duration-300 h-48 flex flex-col"
+        "cursor-pointer group relative overflow-hidden p-0 border-0 shadow-sm hover:shadow-md transition-colors duration-150 h-48 flex flex-col"
       )}
     >
       {/* 1. Área de Imagen (Simulada) - Parte Superior */}

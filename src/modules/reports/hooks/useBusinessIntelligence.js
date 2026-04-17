@@ -1,6 +1,7 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { collection, query, where, getDocs, Timestamp } from 'firebase/firestore';
 import { db } from '../../../database/firebase';
+import { getDB } from '../../../database/db';
 import { useAuthStore } from '../../auth/store/useAuthStore';
 
 const getDateRange = (period) => {
@@ -34,11 +35,28 @@ const getGroupKeyAndLabel = (dateObj, period) => {
 
 export const useBusinessIntelligence = () => {
     const { user, activeBranchId } = useAuthStore();
-    const [period, setPeriod] = useState('month'); 
+    const [period, setPeriod] = useState('month');
+    const [forceRefresh, setForceRefresh] = useState(0);
     const [salesData, setSalesData] = useState([]);
     const [movementsData, setMovementsData] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
+
+    const parseDate = useCallback((d) => {
+        if (!d) return new Date();
+        if (d instanceof Timestamp) return d.toDate();
+        const p = new Date(d); return isNaN(p.getTime()) ? new Date() : p;
+    }, []);
+
+    useEffect(() => {
+        const handler = () => setForceRefresh(n => n + 1);
+        window.addEventListener('noar:sales-synced', handler);
+        window.addEventListener('noar:sale-created', handler);
+        return () => {
+            window.removeEventListener('noar:sales-synced', handler);
+            window.removeEventListener('noar:sale-created', handler);
+        };
+    }, []);
 
     useEffect(() => {
         const fetchBI = async () => {
@@ -47,7 +65,27 @@ export const useBusinessIntelligence = () => {
             try {
                 const { start, end } = getDateRange(period);
                 const companyPath = `companies/${user.companyId}`;
+                const isForced = forceRefresh > 0;
 
+                // 1. DEXIE FIRST: leer ventas locales del rango
+                const localDb = await getDB();
+                let localSales = await localDb.sales
+                    .where('date').between(start.toISOString(), end.toISOString(), true, true)
+                    .toArray();
+
+                // Filtrar por sucursal si aplica
+                if (activeBranchId && activeBranchId !== 'ALL') {
+                    localSales = localSales.filter(s => s.branchId === activeBranchId);
+                }
+
+                // 2. Si hay datos locales y no es refresh forzado → usar Dexie, 0 lecturas Firebase
+                if (localSales.length > 0 && !isForced) {
+                    setSalesData(localSales.map(s => ({ ...s, dateObj: parseDate(s.date || s.createdAt) })));
+                    setLoading(false);
+                    return;
+                }
+
+                // 3. Sin datos locales o refresh forzado → bajar de Firestore por 'date' (cubre ventas sin updatedAt)
                 let salesQ = query(collection(db, companyPath, 'sales'), where('date', '>=', start.toISOString()), where('date', '<=', end.toISOString()));
                 if (activeBranchId && activeBranchId !== 'ALL') salesQ = query(salesQ, where('branchId', '==', activeBranchId));
 
@@ -56,19 +94,20 @@ export const useBusinessIntelligence = () => {
 
                 const [sSnap, mSnap] = await Promise.all([getDocs(salesQ), getDocs(movQ)]);
 
-                const parseDate = (d) => {
-                    if (!d) return new Date();
-                    if (d instanceof Timestamp) return d.toDate();
-                    const p = new Date(d); return isNaN(p.getTime()) ? new Date() : p;
-                };
+                const cloudSales = sSnap.docs.map(doc => ({ ...doc.data(), id: doc.id, dateObj: parseDate(doc.data().date || doc.data().createdAt) }));
 
-                setSalesData(sSnap.docs.map(doc => ({ ...doc.data(), id: doc.id, dateObj: parseDate(doc.data().date || doc.data().createdAt) })));
+                // 4. Guardar en Dexie para la próxima visita (0 Firebase reads)
+                if (cloudSales.length > 0) {
+                    await localDb.sales.bulkPut(cloudSales.map(({ dateObj, ...s }) => ({ ...s, syncStatus: 'synced' })));
+                }
+
+                setSalesData(cloudSales);
                 setMovementsData(mSnap.docs.map(doc => ({ ...doc.data(), id: doc.id, dateObj: parseDate(doc.data().date || doc.data().createdAt) })));
 
             } catch (err) { setError(err.message); } finally { setLoading(false); }
         };
         fetchBI();
-    }, [user?.companyId, period, activeBranchId]);
+    }, [user?.companyId, period, activeBranchId, forceRefresh, parseDate]);
 
     const metrics = useMemo(() => {
         let revenue = 0; let cost = 0; let expenses = 0; let purchases = 0;
@@ -136,5 +175,5 @@ export const useBusinessIntelligence = () => {
         };
     }, [salesData, movementsData, period]);
 
-    return { metrics, loading, error, period, setPeriod, refetch: () => setLoading(true), activeBranchId };
+    return { metrics, loading, error, period, setPeriod, refetch: () => setForceRefresh(n => n + 1), activeBranchId };
 };

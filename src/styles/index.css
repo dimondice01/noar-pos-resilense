@@ -16,3 +16,22 @@ body {
   -ms-overflow-style: none;
   scrollbar-width: none;
 }
+
+/* Scrollbar visible y clicable — usado en Sidebar */
+.sidebar-scroll::-webkit-scrollbar {
+  width: 4px;
+}
+.sidebar-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.sidebar-scroll::-webkit-scrollbar-thumb {
+  background-color: #C2410C;
+  border-radius: 9999px;
+}
+.sidebar-scroll::-webkit-scrollbar-thumb:hover {
+  background-color: #9A3412;
+}
+.sidebar-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: #C2410C transparent;
+}

@@ -431,7 +431,17 @@ export const CashPage = () => {
         }
     };
 
-    useEffect(() => { if (user?.companyId) loadInitialData(); }, [user?.companyId, activeBranchId]); 
+    useEffect(() => { if (user?.companyId) loadInitialData(); }, [user?.companyId, activeBranchId]);
+
+    useEffect(() => {
+        const refresh = () => loadInitialData();
+        window.addEventListener('noar:shifts-synced', refresh);
+        window.addEventListener('noar:cash-movements-synced', refresh);
+        return () => {
+            window.removeEventListener('noar:shifts-synced', refresh);
+            window.removeEventListener('noar:cash-movements-synced', refresh);
+        };
+    }, [user?.companyId]);
 
     const resolveBranchName = (id) => {
         const branch = branchesList.find(b => b.id === id);

@@ -70,7 +70,7 @@ export const QuantityModal = ({ product, isOpen, onClose, onConfirm }) => {
   };
 
   return (
-    <div className="fixed inset-0 z-[80] flex items-center justify-center bg-sys-900/60 backdrop-blur-md p-4 animate-in fade-in zoom-in-95 duration-200">
+    <div className="fixed inset-0 z-[80] flex items-center justify-center bg-sys-900/60 p-4 animate-in fade-in zoom-in-95 duration-200">
       <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden transform transition-all scale-100 ring-1 ring-sys-900/5">
         
         {/* Header */}

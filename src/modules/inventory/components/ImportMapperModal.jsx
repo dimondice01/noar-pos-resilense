@@ -85,7 +85,7 @@ export const ImportMapperModal = ({ isOpen, onClose, branchId, onSuccess }) => {
                 </div>
 
                 {/* Body */}
-                <div className="flex-1 overflow-hidden flex flex-col bg-slate-50 relative">
+                <div className="flex-1 overflow-hidden flex flex-col bg-sys-50 relative">
                     
                     {/* Loading Overlay */}
                     {isProcessing && (

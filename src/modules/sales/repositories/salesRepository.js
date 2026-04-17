@@ -1,13 +1,18 @@
 import { getDB } from '../../../database/db';
 import { db } from '../../../database/firebase';
-import { 
-    doc, 
-    setDoc, 
-    getDoc, 
-    collection, 
+import {
+    doc,
+    setDoc,
+    getDoc,
+    collection,
     serverTimestamp,
-    increment // 🔥 IMPORTANTE: Atomicidad para Stock
-} from 'firebase/firestore'; 
+    increment, // 🔥 IMPORTANTE: Atomicidad para Stock
+    query,
+    where,
+    getDocs,
+    onSnapshot,
+    Timestamp
+} from 'firebase/firestore';
 import { useAuthStore } from '../../auth/store/useAuthStore'; 
 import { productRepository } from '../../inventory/repositories/productRepository';
 import { cashRepository } from '../../cash/repositories/cashRepository';
@@ -37,12 +42,14 @@ const triggerOptimisticSync = async (collectionName, data, companyId) => {
         const cleanData = sanitize(data);
         
         // Operación no bloqueante (sin await en el flujo principal)
+        const nowIso = new Date().toISOString();
         setDoc(doc(db, `companies/${companyId}/${collectionName}`, docId), {
             ...cleanData,
             firestoreId: docId,
-            syncedAt: new Date().toISOString(),
+            updatedAt: nowIso,
+            syncedAt: nowIso,
             origin: 'POS_WEB',
-            syncStatus: 'synced' 
+            syncStatus: 'synced'
         }, { merge: true }).then(async () => {
              // Si tuvo éxito, marcamos en local como 'synced' silenciosamente
              try {
@@ -172,7 +179,8 @@ export const salesRepository = {
       createdAt: timestamp,
       status: isBudget ? 'BUDGET' : 'COMPLETED', // Status claro
       type: isBudget ? 'BUDGET' : (saleData.type || 'SALE'), // Mantenemos el tipo
-      syncStatus: 'pending', 
+      syncStatus: 'pending',
+      updatedAt: timestamp,
       userId: user?.uid || 'unknown',
       userName: user?.name || 'Vendedor',
       companyId: user.companyId,
@@ -244,8 +252,9 @@ export const salesRepository = {
                 branchId: targetBranchId,
                 productId: item.id,
                 stock: newStock,
+                stockDelta: -item.quantity,
                 updatedAt: timestamp,
-                syncStatus: 'pending' 
+                syncStatus: 'pending'
             });
 
             const movement = {
@@ -299,18 +308,7 @@ export const salesRepository = {
         }
     });
     
-    // 4. ACTUALIZACIÓN CLOUD ATÓMICA (BLINDAJE DE STOCK) - Solo si no es Presupuesto
-    if (!isBudget) {
-        enrichedItems.forEach(item => {
-            const stockRef = doc(db, `companies/${user.companyId}/branches/${targetBranchId}/inventory`, item.id);
-            setDoc(stockRef, { 
-                stock: increment(-item.quantity), 
-                updatedAt: serverTimestamp() 
-            }, { merge: true }).catch(err => console.error("Error atomic stock decrement:", err));
-        });
-    }
-
-    // 5. SYNC OPTIMISTA (Cloud Replication)
+    // 4. SYNC OPTIMISTA (Cloud Replication)
     triggerOptimisticSync('sales', sale, user.companyId);
     
     if (!isBudget) {
@@ -460,10 +458,10 @@ export const salesRepository = {
   // ==========================================
   async saveFromCloud(saleData) {
     if (!saleData || !saleData.id) return null;
-    
+
     try {
       const dbLocal = await getDB();
-      
+
       // Verificamos si ya existe para no pisar estados locales 'pending' si el cloud es viejo
       const existing = await dbLocal.sales.get(saleData.id);
       if (existing && existing.syncStatus === 'pending') {
@@ -483,5 +481,50 @@ export const salesRepository = {
       console.warn("Error saving sale from cloud:", e);
       return null;
     }
+  },
+
+  // ==========================================
+  // ☁️ DELTA SYNC INICIAL (últimas 48h)
+  // ==========================================
+  async syncInitialSales(companyId, branchId) {
+    if (!navigator.onLine || !companyId || !branchId) return;
+    try {
+      const margin = new Date(Date.now() - 48 * 60 * 60 * 1000);
+      const q = query(
+        collection(db, `companies/${companyId}/sales`),
+        where('branchId', '==', branchId),
+        where('updatedAt', '>', Timestamp.fromDate(margin))
+      );
+      const snap = await getDocs(q);
+      for (const d of snap.docs) {
+        await salesRepository.saveFromCloud(d.data());
+      }
+      window.dispatchEvent(new CustomEvent('noar:sales-synced'));
+    } catch (e) {
+      console.warn('☁️ syncInitialSales falló (offline?):', e);
+    }
+  },
+
+  // ==========================================
+  // 📡 LISTENER REAL-TIME (ventas nuevas/modificadas)
+  // ==========================================
+  startSalesListener(companyId, branchId) {
+    if (!companyId || !branchId) return () => {};
+    const liveStart = Timestamp.now();
+    const q = query(
+      collection(db, `companies/${companyId}/sales`),
+      where('branchId', '==', branchId),
+      where('updatedAt', '>=', liveStart)
+    );
+    return onSnapshot(q, (snap) => {
+      snap.docChanges().forEach(async (change) => {
+        if (change.type === 'added' || change.type === 'modified') {
+          await salesRepository.saveFromCloud(change.doc.data());
+        }
+      });
+      if (!snap.empty) {
+        window.dispatchEvent(new CustomEvent('noar:sales-synced'));
+      }
+    }, (err) => console.warn('📡 salesListener error:', err));
   }
 };

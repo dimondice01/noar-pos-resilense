@@ -115,6 +115,27 @@ export const usePosController = () => {
         loadPosConfig();
     }, []);
 
+    // 🔄 REACTIVO: Recargar config cuando syncService detecta cambio desde cloud
+    useEffect(() => {
+        const reloadConfig = async () => {
+            try {
+                const localDb = await getDB();
+                const configDoc = await localDb.config.get('pos_settings');
+                if (configDoc?.value) {
+                    setPosConfig({
+                        isWholesaleEnabled: configDoc.value.isWholesaleEnabled || false,
+                        wholesalePercentage: configDoc.value.wholesalePercentage || null,
+                        paymentSurcharges: configDoc.value.paymentSurcharges || {
+                            cash: 0, transfer: 0, mp: 0, card: 0, current_account: 0
+                        }
+                    });
+                }
+            } catch (e) { console.error(e); }
+        };
+        window.addEventListener('noar:config-synced', reloadConfig);
+        return () => window.removeEventListener('noar:config-synced', reloadConfig);
+    }, []);
+
     // =================================================================
     // 🧮 MOTOR DE PROMOCIONES COMPLEJAS (🔥 BLINDADO POR MÉTODO DE PAGO)
     // =================================================================
@@ -310,23 +331,23 @@ export const usePosController = () => {
     // =================================================================
     useEffect(() => {
         const checkPrices = async () => {
-            if (!activeTab.items.length) return;
-            
+            // 🛡️ No correr si carrito vacío o en medio de processSale/addToCart
+            if (!activeTab.items.length || processingRef.current || addingRef.current) return;
+
+            // 🔥 Loop secuencial en lugar de Promise.all: evita saturar Dexie en PCs lentos
             let updatedCount = 0;
-            const updatedItems = await Promise.all(activeTab.items.map(async (item) => {
-                // No verificar precios de artículos manuales
-                if (item.code === 'MANUAL') return item;
-                
+            const updatedItems = [...activeTab.items];
+            for (let idx = 0; idx < updatedItems.length; idx++) {
+                const item = updatedItems[idx];
+                if (item.code === 'MANUAL') continue;
+
                 const freshProduct = await productRepository.findByCode(item.code);
-                
+
                 if (freshProduct && Math.abs(freshProduct.price - item.originalPrice) > 0.01 && !item.appliedWholesale) {
                     updatedCount++;
                     const newItem = { ...item, ...freshProduct, originalPrice: parseFloat(freshProduct.price) };
-                    
-                    // 🔥 Le pasamos el método de pago actual del tab para recalcular bien
                     const promoResult = _calculatePromo(newItem, item.quantity, activeTab.paymentMethod);
-                    
-                    return {
+                    updatedItems[idx] = {
                         ...newItem,
                         finalPrice: promoResult.finalPrice,
                         subtotal: promoResult.totalLine,
@@ -334,8 +355,7 @@ export const usePosController = () => {
                         appliedPromo: promoResult.applied
                     };
                 }
-                return item;
-            }));
+            }
 
             if (updatedCount > 0) {
                 updateActiveTab(tab => ({ ...tab, items: updatedItems }));
@@ -351,8 +371,11 @@ export const usePosController = () => {
     // 🛒 LÓGICA DEL CARRITO
     // =================================================================
 
+    const addingRef = useRef(false); // 🛡️ Mutex anti-duplicados por scan rápido
+
     const addToCart = useCallback((product, qty = 1) => {
-        if (!product) return;
+        if (!product || addingRef.current) return;
+        addingRef.current = true;
         updateActiveTab(tab => {
             const existingIndex = tab.items.findIndex(i => i.id === product.id);
             let newItems = [...tab.items];
@@ -397,6 +420,7 @@ export const usePosController = () => {
             }
             return { ...tab, items: newItems };
         });
+        Promise.resolve().then(() => { addingRef.current = false; });
     }, [activeTabId]);
 
     const updateItemQuantity = (productId, newQty) => {

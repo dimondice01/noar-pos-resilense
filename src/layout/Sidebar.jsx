@@ -29,10 +29,10 @@ const MenuLink = ({ to, icon: Icon, label, onClick, isRestricted }) => {
     const isActiveRoute = location.pathname === to;
 
     const baseClasses = cn(
-        "w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 group relative text-left outline-none focus:ring-2 focus:ring-brand/20",
-        isActiveRoute 
-            ? "bg-brand-light text-brand font-semibold shadow-sm" 
-            : "text-sys-500 hover:bg-sys-100 hover:text-sys-900"
+        "w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-base group relative text-left outline-none focus:ring-2 focus:ring-brand/30",
+        isActiveRoute
+            ? "bg-sys-800/60 text-white font-semibold border-l-2 border-brand"
+            : "text-sys-400 hover:bg-sys-800/40 hover:text-white"
     );
 
     const content = (
@@ -40,10 +40,10 @@ const MenuLink = ({ to, icon: Icon, label, onClick, isRestricted }) => {
             <Icon className="w-5 h-5" />
             <span className="flex-1 text-sm">{label}</span>
             {isActiveRoute && (
-                <div className="absolute right-2 w-1.5 h-1.5 rounded-full bg-brand" />
+                <div className="w-1.5 h-1.5 rounded-full bg-brand" />
             )}
             {isRestricted && !isActiveRoute && (
-                <Lock size={14} className="text-sys-300 group-hover:text-sys-400 transition-colors" />
+                <Lock size={14} className="text-sys-600 group-hover:text-sys-400 transition-colors" />
             )}
         </>
     );
@@ -403,10 +403,10 @@ export const Sidebar = () => {
 
     return (
         <>
-            <aside className="w-64 h-screen bg-white border-r border-sys-200 flex flex-col fixed left-0 top-0 z-20 hidden md:flex shadow-[4px_0_24px_rgba(0,0,0,0.02)]">
+            <aside className="w-64 h-screen bg-sys-900 border-r border-sys-800/50 flex flex-col fixed left-0 top-0 z-20 hidden md:flex shadow-[4px_0_24px_rgba(0,0,0,0.15)]">
                 
                 {/* Header */}
-                <div className="p-6 border-b border-sys-100 flex flex-col items-center text-center">
+                <div className="p-6 border-b border-sys-800/60 flex flex-col items-center text-center">
                     <div className="w-20 h-20 mb-3 bg-white rounded-full flex items-center justify-center overflow-hidden border border-sys-100 shadow-sm p-2 relative">
                         <img 
                             src={companyInfo.logo} 
@@ -417,31 +417,31 @@ export const Sidebar = () => {
                     </div>
 
                     <div className="flex flex-col gap-0.5 w-full">
-                        <h1 className="text-lg font-black text-sys-900 tracking-tight leading-none uppercase truncate px-2" title={companyInfo.name}>
+                        <h1 className="text-lg font-black text-white tracking-tight leading-none uppercase truncate px-2" title={companyInfo.name}>
                             {companyInfo.name}
                         </h1>
-                        <p className="text-xs font-bold text-blue-600 font-serif italic tracking-wide">
+                        <p className="text-xs font-bold text-brand-muted font-serif italic tracking-wide">
                             Sistema POS
                         </p>
                     </div>
 
                     {/* User Card */}
-                    <div className="w-full text-left flex items-center gap-2.5 bg-sys-50 p-2 rounded-xl border border-sys-200 mt-5">
+                    <div className="w-full text-left flex items-center gap-2.5 bg-sys-800/60 p-2 rounded-xl border border-sys-700/50 mt-5">
                         <div className={cn("w-7 h-7 rounded-full flex items-center justify-center text-white shadow-sm shrink-0", isOwner ? "bg-purple-600" : isAdmin ? "bg-sys-900" : "bg-brand")}>
                             {isOwner ? <ShieldCheck size={14} /> : <User size={14} />}
                         </div>
                         <div className="flex-1 min-w-0">
-                            <p className="text-[11px] font-bold text-sys-800 truncate leading-tight">{user?.name || user?.email}</p>
-                            <p className="text-[9px] text-sys-500 truncate font-mono uppercase leading-tight">{user?.role || 'Cajero'}</p>
+                            <p className="text-[11px] font-bold text-white truncate leading-tight">{user?.name || user?.email}</p>
+                            <p className="text-[9px] text-sys-400 truncate font-mono uppercase leading-tight">{user?.role || 'Cajero'}</p>
                         </div>
-                        <button onClick={handleLogout} className="text-sys-400 hover:text-red-500 transition-colors p-1 rounded-lg hover:bg-sys-200" title="Cerrar Sesión">
+                        <button onClick={handleLogout} className="text-sys-500 hover:text-red-400 transition-colors p-1 rounded-lg hover:bg-sys-700" title="Cerrar Sesión">
                             <LogOut size={14} />
                         </button>
                     </div>
                 </div>
 
                 {/* Navigation */}
-                <nav className="flex-1 p-4 space-y-1 overflow-y-auto no-scrollbar">
+                <nav className="flex-1 p-4 space-y-1 overflow-y-auto sidebar-scroll">
                     
                     {/* 🔥 AVISO DE MORA / SUSPENSIÓN INMINENTE */}
                     {companyInfo.subscriptionStatus === 'PAST_DUE' && (
@@ -456,7 +456,7 @@ export const Sidebar = () => {
                         </div>
                     )}
 
-                    <div className="px-4 py-2 text-xs font-semibold text-sys-400 uppercase tracking-wider mb-1">Operación</div>
+                    <div className="px-4 py-2 text-xs font-semibold text-sys-600 uppercase tracking-wider mb-1">Operación</div>
                     
                     <MenuLink to={getLink('')} icon={LayoutDashboard} label="Principal" />
                     <MenuLink to={getLink('pos')} icon={ShoppingCart} label="Punto de Venta" />
@@ -466,7 +466,7 @@ export const Sidebar = () => {
 
                     {/* Gestión */}
                     <div className="mt-6 mb-1">
-                        <div className="px-4 py-2 text-xs font-semibold text-sys-400 uppercase tracking-wider">
+                        <div className="px-4 py-2 text-xs font-semibold text-sys-600 uppercase tracking-wider">
                             Gestión
                         </div>
                         
@@ -491,11 +491,11 @@ export const Sidebar = () => {
                 </nav>
 
                 {/* Footer: Smart Button */}
-                <div className="p-4 border-t border-sys-100 bg-sys-50/50 space-y-3">
+                <div className="p-4 border-t border-sys-800/60 bg-sys-800/30 space-y-3">
                     
                     {checkingShift ? (
-                        <div className="w-full h-10 bg-sys-100 animate-pulse rounded-xl flex items-center justify-center">
-                            <span className="text-xs text-sys-400">Verificando...</span>
+                        <div className="w-full h-10 bg-sys-800/50 animate-pulse rounded-xl flex items-center justify-center">
+                            <span className="text-xs text-sys-500">Verificando...</span>
                         </div>
                     ) : hasActiveShift ? (
                         
@@ -507,9 +507,9 @@ export const Sidebar = () => {
                             disabled={!isOnline}
                             className={cn(
                                 "w-full flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-bold transition-all shadow-sm group",
-                                isOnline 
-                                    ? "bg-white border border-red-200 text-red-600 hover:bg-red-50 active:scale-95 cursor-pointer" 
-                                    : "bg-sys-100 border border-sys-200 text-sys-400 cursor-not-allowed"
+                                isOnline
+                                    ? "bg-sys-800 border border-red-900/40 text-red-400 hover:bg-red-900/20 active:scale-95 cursor-pointer"
+                                    : "bg-sys-800/50 border border-sys-700 text-sys-600 cursor-not-allowed"
                             )}
                         >
                             {isOnline ? (
@@ -528,7 +528,7 @@ export const Sidebar = () => {
                         </button>
                     )}
 
-                    <div className={cn("px-3 py-2 rounded-lg border flex items-center gap-2 text-xs transition-colors duration-300", !isOnline ? "bg-red-50 border-red-100 text-red-600" : "bg-white border-sys-200 text-sys-600")}>
+                    <div className={cn("px-3 py-2 rounded-lg border flex items-center gap-2 text-xs transition-colors duration-300", !isOnline ? "bg-red-900/20 border-red-900/40 text-red-400" : "bg-sys-800/40 border-sys-700/50 text-sys-400")}>
                         <div className={cn("w-2 h-2 rounded-full", !isOnline ? "bg-red-500" : isSyncing ? "bg-blue-500 animate-pulse" : "bg-green-500")} />
                         <span className="font-medium truncate flex-1">
                             {!isOnline ? 'Offline' : isSyncing ? 'Sincronizando...' : 'Sistema Online'}

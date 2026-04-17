@@ -66,9 +66,9 @@ export const AnalyticsDashboard = () => {
     }, [metrics.historyChart, viewMode]);
 
     if (loading) return (
-        <div className="h-screen flex flex-col items-center justify-center bg-slate-50 dark:bg-slate-900">
-            <div className="w-16 h-16 border-4 border-slate-200 border-t-primary-500 rounded-full animate-spin"></div>
-            <p className="mt-4 text-slate-500 font-bold animate-pulse tracking-widest uppercase text-xs">Sincronizando BI...</p>
+        <div className="h-screen flex flex-col items-center justify-center bg-sys-50 dark:bg-sys-900">
+            <div className="w-16 h-16 border-4 border-border-default border-t-primary-500 rounded-full animate-spin"></div>
+            <p className="mt-4 text-sys-500 font-bold animate-pulse tracking-widest uppercase text-xs">Sincronizando BI...</p>
         </div>
     );
 
@@ -80,12 +80,12 @@ export const AnalyticsDashboard = () => {
     ];
 
     return (
-        <div className="min-h-screen bg-slate-50 dark:bg-slate-950 p-4 md:p-8 space-y-8 overflow-y-auto custom-scrollbar">
+        <div className="min-h-screen bg-sys-50 dark:bg-sys-900 p-4 md:p-8 space-y-8 overflow-y-auto custom-scrollbar">
             
             {/* === HEADER DE COMANDO === */}
             <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
                 <div>
-                    <h1 className="text-4xl font-black text-slate-900 dark:text-white tracking-tighter flex items-center gap-3">
+                    <h1 className="text-4xl font-black text-sys-900 dark:text-white tracking-tighter flex items-center gap-3">
                         <Activity className="text-primary-500" size={36} />
                         INTELIGENCIA NEXUS
                     </h1>
@@ -93,36 +93,45 @@ export const AnalyticsDashboard = () => {
                         <span className="px-2 py-0.5 bg-primary-100 dark:bg-primary-900/30 text-primary-600 dark:text-primary-400 rounded-md text-[10px] font-black uppercase">
                             {activeBranchId === 'ALL' ? 'Audit Consolidada' : activeBranchName}
                         </span>
-                        <p className="text-sm text-slate-500 dark:text-slate-400 font-medium italic">Visión financiera y flujo de caja en tiempo real</p>
+                        <p className="text-sm text-sys-500 dark:text-sys-400 font-medium italic">Visión financiera y flujo de caja en tiempo real</p>
                     </div>
                 </div>
 
-                <div className="flex bg-slate-100 dark:bg-slate-900 p-1.5 rounded-2xl shadow-inner border border-slate-200 dark:border-slate-800">
-                    {periods.map(p => (
-                        <button
-                            key={p.id}
-                            onClick={() => setPeriod(p.id)}
-                            className={`px-5 py-2.5 rounded-xl text-xs font-black transition-all ${
-                                period === p.id 
-                                ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900 shadow-xl scale-105' 
-                                : 'text-slate-500 dark:text-slate-400 hover:bg-white dark:hover:bg-slate-800'
-                            }`}
-                        >
-                            {p.label}
-                        </button>
-                    ))}
+                <div className="flex items-center gap-2">
+                    <div className="flex bg-sys-100 dark:bg-sys-900 p-1.5 rounded-2xl shadow-inner border border-border-default dark:border-sys-800">
+                        {periods.map(p => (
+                            <button
+                                key={p.id}
+                                onClick={() => setPeriod(p.id)}
+                                className={`px-5 py-2.5 rounded-xl text-xs font-black transition-all ${
+                                    period === p.id
+                                    ? 'bg-sys-900 dark:bg-white text-white dark:text-sys-900 shadow-xl scale-105'
+                                    : 'text-sys-500 dark:text-sys-400 hover:bg-white dark:hover:bg-sys-800'
+                                }`}
+                            >
+                                {p.label}
+                            </button>
+                        ))}
+                    </div>
+                    <button
+                        onClick={refetch}
+                        title="Actualizar desde la nube"
+                        className="p-2.5 rounded-xl bg-sys-100 dark:bg-sys-900 border border-border-default dark:border-sys-800 text-sys-500 hover:text-sys-900 dark:hover:text-white transition-all"
+                    >
+                        <RefreshCw size={15} className={loading ? 'animate-spin' : ''} />
+                    </button>
                 </div>
             </div>
 
             {/* SWITCHER DE MODO (ECONÓMICO vs FINANCIERO) */}
             <div className="flex justify-center">
-                <div className="bg-slate-100 dark:bg-slate-900 p-2 rounded-[2rem] border border-slate-200 dark:border-slate-800 flex gap-2">
+                <div className="bg-sys-100 dark:bg-sys-900 p-2 rounded-[2rem] border border-border-default dark:border-sys-800 flex gap-2">
                     <button 
                         onClick={() => setViewMode('ECONOMIC')}
                         className={`flex items-center gap-3 px-8 py-4 rounded-2xl text-[10px] font-black tracking-widest transition-all ${
                             viewMode === 'ECONOMIC' 
-                            ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900 shadow-2xl scale-105' 
-                            : 'text-slate-500 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-800'
+                            ? 'bg-sys-900 dark:bg-white text-white dark:text-sys-900 shadow-2xl scale-105' 
+                            : 'text-sys-500 dark:text-sys-400 hover:bg-sys-200 dark:hover:bg-sys-800'
                         }`}
                     >
                         <TrendingUp size={18} /> RENTABILIDAD (P&L)
@@ -131,8 +140,8 @@ export const AnalyticsDashboard = () => {
                         onClick={() => setViewMode('FINANCIAL')}
                         className={`flex items-center gap-3 px-8 py-4 rounded-2xl text-[10px] font-black tracking-widest transition-all ${
                             viewMode === 'FINANCIAL' 
-                            ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900 shadow-2xl scale-105' 
-                            : 'text-slate-500 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-800'
+                            ? 'bg-sys-900 dark:bg-white text-white dark:text-sys-900 shadow-2xl scale-105' 
+                            : 'text-sys-500 dark:text-sys-400 hover:bg-sys-200 dark:hover:bg-sys-800'
                         }`}
                     >
                         <Wallet size={18} /> FLUJO DE EFECTIVO
@@ -162,13 +171,13 @@ export const AnalyticsDashboard = () => {
             {/* === MAIN CHARTS === */}
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
                 
-                <div className="lg:col-span-2 bg-white dark:bg-slate-900 p-8 rounded-[2.5rem] border border-slate-100 dark:border-slate-800">
+                <div className="lg:col-span-2 bg-white dark:bg-sys-900 p-8 rounded-[2.5rem] border border-border-subtle dark:border-sys-800">
                     <div className="flex justify-between items-center mb-10">
                         <div>
-                            <h3 className="text-xl font-black text-slate-900 dark:text-white uppercase">
+                            <h3 className="text-xl font-black text-sys-900 dark:text-white uppercase">
                                 {viewMode === 'ECONOMIC' ? 'Evolución de Rentabilidad' : 'Movimientos de Tesorería'}
                             </h3>
-                            <p className="text-sm text-slate-400 font-medium">{viewMode === 'ECONOMIC' ? 'Ventas vs Costos de Producto' : 'Entradas vs Salidas Reales'}</p>
+                            <p className="text-sm text-sys-400 font-medium">{viewMode === 'ECONOMIC' ? 'Ventas vs Costos de Producto' : 'Entradas vs Salidas Reales'}</p>
                         </div>
                         <div className="flex gap-4">
                             {viewMode === 'ECONOMIC' ? (
@@ -212,8 +221,8 @@ export const AnalyticsDashboard = () => {
                 </div>
 
                 {/* 🛒 MIX DE COBROS */}
-                <div className="bg-white dark:bg-slate-900 p-8 rounded-[2.5rem] shadow-2xl shadow-slate-200/50 dark:shadow-none border border-slate-100 dark:border-slate-800 flex flex-col">
-                    <h3 className="text-xl font-black text-slate-900 dark:text-white uppercase tracking-tight mb-8">Métodos de Cobro</h3>
+                <div className="bg-white dark:bg-sys-900 p-8 rounded-[2.5rem] shadow-2xl shadow-soft dark:shadow-none border border-border-subtle dark:border-sys-800 flex flex-col">
+                    <h3 className="text-xl font-black text-sys-900 dark:text-white uppercase tracking-tight mb-8">Métodos de Cobro</h3>
                     <div className="flex-1 min-h-[300px]">
                         {payments.length > 0 ? (
                             <ResponsiveContainer width="100%" height="100%">
@@ -231,7 +240,7 @@ export const AnalyticsDashboard = () => {
                                     <Legend verticalAlign="bottom" height={36} iconType="circle" wrapperStyle={{ fontSize: '11px', fontWeight: '800', paddingTop: '20px' }}/>
                                 </PieChart>
                             </ResponsiveContainer>
-                        ) : <p className="text-center text-slate-400 mt-20 font-bold">Sin datos de cobros</p>}
+                        ) : <p className="text-center text-sys-400 mt-20 font-bold">Sin datos de cobros</p>}
                     </div>
                 </div>
 
@@ -241,26 +250,26 @@ export const AnalyticsDashboard = () => {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-8 pb-10">
                 
                 {/* TOP PROVEEDORES */}
-                <div className="bg-white dark:bg-slate-900 p-8 rounded-[2.5rem] border border-slate-100 dark:border-slate-800">
-                    <h4 className="text-lg font-black text-slate-900 dark:text-white uppercase mb-6 flex items-center gap-2">
+                <div className="bg-white dark:bg-sys-900 p-8 rounded-[2.5rem] border border-border-subtle dark:border-sys-800">
+                    <h4 className="text-lg font-black text-sys-900 dark:text-white uppercase mb-6 flex items-center gap-2">
                         <Truck size={20} className="text-primary-500"/> Mayores Pagos a Proveedores
                     </h4>
                     <div className="space-y-4">
                         {suppliers.length > 0 ? suppliers.map((s, i) => (
-                            <div key={i} className="flex items-center justify-between p-4 bg-slate-50 dark:bg-slate-800/50 rounded-2xl">
+                            <div key={i} className="flex items-center justify-between p-4 bg-sys-50 dark:bg-sys-800/50 rounded-2xl">
                                 <div className="flex items-center gap-3">
                                     <div className="w-8 h-8 rounded-full bg-primary-100 dark:bg-primary-900/30 flex items-center justify-center text-primary-600 font-black text-xs">#{i+1}</div>
-                                    <span className="font-bold text-slate-700 dark:text-slate-300 uppercase text-xs">{s.name}</span>
+                                    <span className="font-bold text-sys-700 dark:text-sys-300 uppercase text-xs">{s.name}</span>
                                 </div>
-                                <span className="font-black text-slate-900 dark:text-white">{formatCurrency(s.value)}</span>
+                                <span className="font-black text-sys-900 dark:text-white">{formatCurrency(s.value)}</span>
                             </div>
-                        )) : <p className="text-center text-slate-400 italic py-10">Sin movimientos registrados</p>}
+                        )) : <p className="text-center text-sys-400 italic py-10">Sin movimientos registrados</p>}
                     </div>
                 </div>
 
                 {/* TOP PRODUCTOS */}
-                <div className="bg-white dark:bg-slate-900 p-8 rounded-[2.5rem] border border-slate-100 dark:border-slate-800">
-                    <h4 className="text-lg font-black text-slate-900 dark:text-white uppercase mb-6 flex items-center gap-2">
+                <div className="bg-white dark:bg-sys-900 p-8 rounded-[2.5rem] border border-border-subtle dark:border-sys-800">
+                    <h4 className="text-lg font-black text-sys-900 dark:text-white uppercase mb-6 flex items-center gap-2">
                         <Package size={20} className="text-emerald-500"/> Productos Más Rentables
                     </h4>
                     <div className="space-y-4">
@@ -268,11 +277,11 @@ export const AnalyticsDashboard = () => {
                             <div key={i} className="flex items-center justify-between p-4 bg-emerald-50/50 dark:bg-emerald-900/10 rounded-2xl group hover:bg-emerald-500 transition-all cursor-default">
                                 <div className="flex items-center gap-3">
                                     <div className="w-2 h-2 rounded-full bg-emerald-400 group-hover:bg-white"></div>
-                                    <span className="font-bold text-slate-700 dark:text-slate-300 uppercase text-xs group-hover:text-white">{p.name}</span>
+                                    <span className="font-bold text-sys-700 dark:text-sys-300 uppercase text-xs group-hover:text-white">{p.name}</span>
                                 </div>
                                 <span className="font-black text-emerald-600 dark:text-emerald-400 group-hover:text-white">+{formatCurrency(p.profit)}</span>
                             </div>
-                        )) : <p className="text-center text-slate-400 italic py-10">Sin datos de rentabilidad</p>}
+                        )) : <p className="text-center text-sys-400 italic py-10">Sin datos de rentabilidad</p>}
                     </div>
                 </div>
 
@@ -295,7 +304,7 @@ const KPICard = ({ title, value, icon: Icon, color, sub, isProfit }) => {
     };
 
     return (
-        <div className="bg-white dark:bg-slate-900 p-6 rounded-[2rem] shadow-xl shadow-slate-200/50 dark:shadow-none border border-slate-100 dark:border-slate-800 transition-all hover:scale-[1.02] duration-300">
+        <div className="bg-white dark:bg-sys-900 p-6 rounded-[2rem] shadow-xl shadow-soft dark:shadow-none border border-border-subtle dark:border-sys-800 transition-all hover:scale-[1.02] duration-300">
             <div className="flex justify-between items-start mb-4">
                 <div className={`p-4 rounded-2xl ${colorClasses[color]}`}>
                     <Icon size={24} />
@@ -306,9 +315,9 @@ const KPICard = ({ title, value, icon: Icon, color, sub, isProfit }) => {
                     </div>
                 )}
             </div>
-            <h3 className="text-sm font-black text-slate-400 uppercase tracking-wider mb-1">{title}</h3>
-            <p className="text-3xl font-black text-slate-900 dark:text-white tracking-tighter">{formatCurrency(value)}</p>
-            <p className="text-[10px] font-bold text-slate-400 mt-2 flex items-center gap-1">
+            <h3 className="text-sm font-black text-sys-400 uppercase tracking-wider mb-1">{title}</h3>
+            <p className="text-3xl font-black text-sys-900 dark:text-white tracking-tighter">{formatCurrency(value)}</p>
+            <p className="text-[10px] font-bold text-sys-400 mt-2 flex items-center gap-1">
                 <Activity size={10} /> {sub}
             </p>
         </div>
@@ -318,6 +327,6 @@ const KPICard = ({ title, value, icon: Icon, color, sub, isProfit }) => {
 const LegendDot = ({ color, label }) => (
     <div className="flex items-center gap-2">
         <div className="w-3 h-3 rounded-full shadow-sm" style={{ backgroundColor: color }}></div>
-        <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{label}</span>
+        <span className="text-[10px] font-black text-sys-400 uppercase tracking-widest">{label}</span>
     </div>
 );

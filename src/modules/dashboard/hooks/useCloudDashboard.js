@@ -66,11 +66,14 @@ export const useCloudDashboard = () => {
         // ==========================================
         // 1. MONITOR DE VENTAS Y RENTABILIDAD
         // ==========================================
-        const salesQ = query(
+        let salesQ = query(
             salesRef,
             where('date', '>=', start.toISOString()),
             where('date', '<=', end.toISOString())
         );
+        if (activeBranchId && activeBranchId !== 'ALL') {
+            salesQ = query(salesQ, where('branchId', '==', activeBranchId));
+        }
 
         const unsubSales = onSnapshot(salesQ, (snapshot) => {
             if (!isMounted.current) return;
@@ -81,13 +84,10 @@ export const useCloudDashboard = () => {
             let fiscal = 0;
             let grossProfit = 0; // 🔥 SPRINT 6: Utilidad Bruta (Ventas - Costos)
             let rawSales = [];
-            const productMap = {}; 
+            const productMap = {};
 
             snapshot.forEach((doc) => {
                 const data = doc.data();
-                
-                // 🛡️ FILTRO CLIENT-SIDE: Sucursal
-                if (activeBranchId && activeBranchId !== 'ALL' && data.branchId !== activeBranchId) return;
                 
                 const sType = (data.type || '').toUpperCase();
                 const sStatus = (data.status || '').toUpperCase();
@@ -204,20 +204,19 @@ export const useCloudDashboard = () => {
         // ==========================================
         let unsubAbandoned = null;
         if (user.role === 'ADMIN' || user.role === 'OWNER') {
-            const abandonedQ = query(
+            let abandonedQ = query(
                 salesRef,
                 where('status', '==', 'ABANDONED'),
                 where('date', '>=', start.toISOString())
             );
+            if (activeBranchId && activeBranchId !== 'ALL') {
+                abandonedQ = query(abandonedQ, where('branchId', '==', activeBranchId));
+            }
 
             unsubAbandoned = onSnapshot(abandonedQ, (snapshot) => {
                 if (!isMounted.current) return;
                 const abandoned = snapshot.docs
                     .map(doc => ({ id: doc.id, ...doc.data() }))
-                    .filter(d => {
-                        if (activeBranchId && activeBranchId !== 'ALL') return d.branchId === activeBranchId;
-                        return true;
-                    })
                     .sort((a, b) => new Date(b.date) - new Date(a.date));
 
                 setStats(prev => ({ 

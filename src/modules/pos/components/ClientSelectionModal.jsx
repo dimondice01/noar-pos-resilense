@@ -46,8 +46,8 @@ export const ClientSelectionModal = ({ isOpen, onClose, onSelect }) => {
         setLoading(true);
         try {
             if (!searchTerm) {
-                const all = await clientRepository.getAll();
-                setResults(all.slice(0, 10));
+                const limited = await clientRepository.getRecent(10);
+                setResults(limited);
             } else {
                 const data = await clientRepository.search(searchTerm);
                 setResults(data.slice(0, 50)); 
@@ -96,7 +96,7 @@ export const ClientSelectionModal = ({ isOpen, onClose, onSelect }) => {
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-sys-900/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-sys-900/60 p-4 animate-in fade-in duration-200">
       <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden flex flex-col h-[650px] max-h-[90vh]">
         
         {/* HEADER (FIJO) */}

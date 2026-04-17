@@ -4,7 +4,7 @@ import {
     Plus, Search, Edit2, Trash2, Package, AlertTriangle, 
     ArrowUpRight, Filter, CheckSquare, Square, X, History,
     Printer, ArrowRightLeft, Calendar, ChevronLeft, ChevronRight,
-    Upload, RefreshCw, MoreVertical, Cloud, MapPin, 
+    Upload, MoreVertical, MapPin,
     Tag, Percent, Megaphone, MoreHorizontal, LayoutGrid, DollarSign,
     CalendarClock, Info, Scale, Save, Pencil, Loader2, ArrowDown, ArrowUp, Minus, ShieldAlert, Lock
 } from 'lucide-react';
@@ -26,6 +26,9 @@ import { collection, getDocs, query, where, documentId, doc, getDoc } from 'fire
 import { db as firestoreDB, db } from '../../../database/firebase';
 import { getDB } from '../../../database/db'; 
 
+// Collator reutilizable — instanciar una sola vez evita ~50k creaciones por sort
+const nameCollator = new Intl.Collator('es', { sensitivity: 'base' });
+
 // =================================================================
 // 🧠 HELPER FUNCTIONS
 // =================================================================
@@ -39,9 +42,8 @@ const formatStock = (stock) => {
     return Number(stock) % 1 === 0 ? Number(stock).toFixed(0) : Number(stock).toFixed(3);
 };
 
-const getActivePromo = (product) => {
+const getActivePromo = (product, now) => {
     if (!product.promo) return null;
-    const now = new Date();
     const start = product.promo.startDate ? new Date(product.promo.startDate + 'T00:00:00') : null;
     const end = product.promo.endDate ? new Date(product.promo.endDate + 'T23:59:59') : null;
     
@@ -153,8 +155,8 @@ const PinVerificationModal = ({ isOpen, onClose, onSuccess, actionName }) => {
 // =================================================================
 // ⌨️ COMPONENTE CELDA EDITABLE (AUDITORÍA RÁPIDA)
 // =================================================================
-const EditableCell = ({ 
-    value, 
+const EditableCell = React.memo(({
+    value,
     id, 
     field, 
     productId, 
@@ -250,7 +252,7 @@ const EditableCell = ({
             />
         </div>
     );
-};
+});
 
 // =================================================================
 // 1. STOCK ENTRY MODAL
@@ -755,7 +757,7 @@ export const InventoryPage = () => {
     // =================================================================
 
     // Lee solo desde Dexie, sin tocar Firestore. Usado por onProductsSynced y post-edición.
-    const loadFromLocal = async () => {
+    const loadFromLocal = useCallback(async () => {
         console.log('[INV] loadFromLocal — solo Dexie, sin Firestore');
         try {
             const fetchProductsTask = (canViewAllBranches && (!activeBranchId || activeBranchId === 'ALL'))
@@ -769,26 +771,24 @@ export const InventoryPage = () => {
                 masterRepository.getAll('suppliers')
             ]);
 
-            setProducts([...allProds].sort((a, b) => a.name.localeCompare(b.name)));
+            setProducts(allProds); // el memo filteredProducts ya ordena, sort aquí es redundante
             setMasters({ categories: cats || [], brands: brands || [], suppliers: supps || [] });
 
             if (canViewAllBranches) {
-                await loadGlobalStock();
+                setTimeout(loadGlobalStock, 0); // diferida: primero pinta la tabla, luego carga stock multi-sucursal
             }
         } catch (e) {
             console.error("Error loadFromLocal:", e);
         }
-    };
+    }, [canViewAllBranches, activeBranchId, user]);
 
     const loadData = async (forceCloud = false, isSilent = false) => {
-        console.log(`[INV] loadData — forceCloud=${forceCloud} isSilent=${isSilent} (incluye sync Firestore)`);
         if (!isSilent) setLoading(true);
         try {
             const dbLocal = await getDB();
 
-            if (!isSilent) setLoadingMessage('Verificando Sucursales...');
+            // ── Branches: lectura local con fallback a nube ──
             let branchesData = [];
-
             if (canViewAllBranches && user?.companyId) {
                 branchesData = await dbLocal.branches.toArray();
                 if (branchesData.length === 0 && navigator.onLine) {
@@ -803,21 +803,35 @@ export const InventoryPage = () => {
             }
 
             const prodCount = await dbLocal.products.count();
-            if (prodCount === 0 || forceCloud) {
-                if (!isSilent) setLoadingMessage('Descargando Catálogo Global...');
+            const isFirstTime = prodCount === 0 || forceCloud;
+
+            // ── CAMINO A: sin datos locales → esperar sync (inevitable) ──
+            if (isFirstTime) {
+                if (!isSilent) setLoadingMessage('Descargando Catálogo...');
                 await syncService.syncProducts(user.companyId);
-            }
 
-            if (canViewAllBranches) {
-                if (!isSilent) setLoadingMessage('Sincronizando Stock global...');
-                await syncService.syncAllInventoryForOwner(user.companyId, branchesData);
+                if (!isSilent) setLoadingMessage('Sincronizando Stock...');
+                if (canViewAllBranches) {
+                    await syncService.syncAllInventoryForOwner(user.companyId, branchesData);
+                } else {
+                    await syncService.syncInitialInventory(user.companyId, activeBranchId);
+                }
+                await loadFromLocal();
+
+            // ── CAMINO B: datos en Dexie → mostrar ya, sync en background ──
             } else {
-                if (!isSilent) setLoadingMessage('Sincronizando Stock local...');
-                await syncService.syncInitialInventory(user.companyId, activeBranchId);
-            }
+                await loadFromLocal();            // UI lista en <100ms
+                if (!isSilent) setLoading(false); // liberar spinner antes del sync
 
-            if (!isSilent) setLoadingMessage('Construyendo matriz...');
-            await loadFromLocal();
+                // Fire & forget: onProductsSynced dispara loadFromLocal() al terminar
+                syncService.syncProducts(user.companyId).catch(console.error);
+                if (canViewAllBranches) {
+                    syncService.syncAllInventoryForOwner(user.companyId, branchesData).catch(console.error);
+                } else {
+                    syncService.syncInitialInventory(user.companyId, activeBranchId).catch(console.error);
+                }
+                return; // loading ya liberado arriba
+            }
 
         } catch (error) {
             console.error(error);
@@ -844,17 +858,6 @@ export const InventoryPage = () => {
         }
     };
 
-    const handleForceSync = async () => {
-        if (!isSuperUser) return;
-        const toastId = toast.loading("Sincronizando inventario global...");
-        try {
-            await syncService.syncInitialData(user, 'ALL'); 
-            await loadData(true, false); 
-            toast.success("Inventario actualizado de la nube", { id: toastId });
-        } catch (e) {
-            toast.error("Error al sincronizar", { id: toastId });
-        }
-    };
 
     const handleScaleExport = (brand) => {
         try {
@@ -877,10 +880,10 @@ export const InventoryPage = () => {
     };
 
     // 🔥 EL MANEJADOR INLINE AHORA ESTÁ BLINDADO
-    const handleInlineSave = async (productId, field, newValue) => {
+    const handleInlineSave = useCallback(async (productId, field, newValue) => {
         console.log(`[INV] handleInlineSave — campo=${field} valor=${newValue} producto=${productId}`);
         try {
-            const product = products.find(p => p.id === productId);
+            const product = productsRef.current.find(p => p.id === productId); // ref estable, evita dep en products
             if (!product) return;
 
             let updates = {};
@@ -913,10 +916,10 @@ export const InventoryPage = () => {
             toast.error("Error al guardar cambio");
             loadFromLocal();
         }
-    };
+    }, [user, activeBranchId, loadFromLocal]);
 
     // 🔒 INTERCEPTOR DE EDICIÓN: Pide PIN si no hay permisos
-    const handleRequestAuth = (productId, field, currentValue) => {
+    const handleRequestAuth = useCallback((productId, field, currentValue) => {
         let actionName = '';
         let hasPermission = false;
 
@@ -945,9 +948,9 @@ export const InventoryPage = () => {
                 }
             }
         });
-    };
+    }, [canRemoveStock, canAddStock, canChangePrices, handleInlineSave]);
 
-    useEffect(() => { 
+    useEffect(() => {
         loadData(); 
         
         // Re-carga solo desde Dexie cuando el sync trae datos nuevos, sin volver a llamar Firestore
@@ -1011,12 +1014,13 @@ export const InventoryPage = () => {
             if (bValue === undefined || bValue === null) bValue = '';
 
             if (typeof aValue === 'string') {
-                aValue = aValue.toLowerCase();
-                bValue = bValue.toLowerCase();
-            } else {
-                aValue = Number(aValue);
-                bValue = Number(bValue);
+                // nameCollator reutiliza el Intl.Collator instanciado globalmente (más rápido)
+                const cmp = nameCollator.compare(aValue, bValue);
+                return sortConfig.direction === 'asc' ? cmp : -cmp;
             }
+
+            aValue = Number(aValue);
+            bValue = Number(bValue);
 
             if (aValue < bValue) {
                 return sortConfig.direction === 'asc' ? -1 : 1;
@@ -1034,6 +1038,9 @@ export const InventoryPage = () => {
     const currentProducts = useMemo(() => {
         return filteredProducts.slice((currentPage - 1) * ITEMS_PER_PAGE, currentPage * ITEMS_PER_PAGE);
     }, [filteredProducts, currentPage]);
+
+    // Un solo new Date() por página renderizada en lugar de uno por cada fila
+    const renderNow = useMemo(() => new Date(), [currentProducts]);
 
     const toggleSelection = (id) => {
         const newSet = new Set(selectedIds);
@@ -1055,21 +1062,45 @@ export const InventoryPage = () => {
     // =================================================================
 
     const handleSaveProduct = async (masterPayload, promoPayload) => {
-        const savedProduct = await productRepository.save(masterPayload);
-        if (promoPayload) await productRepository.setPromotion(savedProduct.id, promoPayload);
-        else if (promoPayload === null && activeBranchId) await productRepository.setPromotion(savedProduct.id, null);
-        
-        await loadData(false, true);
-        setIsProductModalOpen(false);
+        try {
+            const savedProduct = await productRepository.save(masterPayload);
+            
+            let updatedPromo = promoPayload;
+            if (promoPayload !== undefined) {
+                await productRepository.setPromotion(savedProduct.id, promoPayload);
+            }
+
+            // ACTUALIZACIÓN ATÓMICA DEL ESTADO
+            setProducts(prev => {
+                const exists = prev.some(p => p.id === savedProduct.id);
+                if (exists) {
+                    return prev.map(p => p.id === savedProduct.id 
+                        ? { ...p, ...savedProduct, promo: updatedPromo === undefined ? p.promo : updatedPromo } 
+                        : p
+                    );
+                } else {
+                    // Si es nuevo, lo añadimos al principio para feedback inmediato
+                    return [{ ...savedProduct, promo: updatedPromo || null, stock: masterPayload.stock || 0 }, ...prev];
+                }
+            });
+
+            setIsProductModalOpen(false);
+            toast.success("Producto guardado correctamente");
+        } catch (e) {
+            console.error(e);
+            toast.error("Error al guardar producto");
+        }
     };
 
     const handleQuickStockEntry = async (productId, qty, reason, moveType) => {
         try {
             const userName = user?.name || user?.email || 'Sistema';
-            await productRepository.addStock(productId, qty, reason, userName, activeBranchId, moveType);
+            const newStock = await productRepository.addStock(productId, qty, reason, userName, activeBranchId, moveType);
+            
+            // ACTUALIZACIÓN ATÓMICA
+            setProducts(prev => prev.map(p => p.id === productId ? { ...p, stock: newStock } : p));
             
             toast.success("Ajuste registrado correctamente en Kardex");
-            loadData(false, true);
         } catch (e) { 
             console.error(e); 
             toast.error("Error al ajustar stock");
@@ -1088,6 +1119,8 @@ export const InventoryPage = () => {
 
         const toastId = toast.loading("Aplicando cambios masivos...");
         try {
+            const updatedItemsMap = {};
+
             for (const p of targetProducts) {
                 const draft = draftValues[p.id];
                 if (!draft) continue;
@@ -1111,14 +1144,20 @@ export const InventoryPage = () => {
                     productUpdate.syncStatus = 'pending';
                 }
                 
-                await productRepository.save(productUpdate);
+                const saved = await productRepository.save(productUpdate);
+                updatedItemsMap[saved.id] = saved;
             }
+
+            // ACTUALIZACIÓN ATÓMICA MASIVA (Una sola operación de estado)
+            setProducts(prev => prev.map(p => updatedItemsMap[p.id] ? { ...p, ...updatedItemsMap[p.id] } : p));
+
             toast.success(isFutureScheduled ? "Precios programados con éxito" : "Precios actualizados inmediatamente", { id: toastId });
             setSelectedIds(new Set());
             setIsBulkUpdateOpen(false);
-            
-            loadData(false, true);
-        } catch (error) { toast.error("Error en proceso masivo", { id: toastId }); }
+        } catch (error) { 
+            console.error(error);
+            toast.error("Error en proceso masivo", { id: toastId }); 
+        }
     };
 
     const goToLabels = () => navigate(`/${companySlug}/inventory/print-labels`);
@@ -1168,16 +1207,6 @@ export const InventoryPage = () => {
                         </Button>
 
                         <div className="w-px h-8 bg-sys-200 mx-2 hidden md:block"></div>
-
-                        {isSuperUser && (
-                            <div
-                                title="Sync en tiempo real activo. Si ves datos desactualizados, recargá la página."
-                                className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold text-green-600 bg-green-50 border border-green-200 cursor-default select-none"
-                            >
-                                <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse shrink-0" />
-                                Sync en vivo
-                            </div>
-                        )}
 
                         {isAdmin && (
                             <Button variant="secondary" className="border-green-200 text-green-700 bg-green-50 hover:bg-green-100" onClick={() => setIsScaleModalOpen(true)}>
@@ -1259,6 +1288,9 @@ export const InventoryPage = () => {
                             <div className="flex flex-col items-center gap-4 text-brand bg-white p-8 rounded-3xl shadow-2xl">
                                 <Loader2 className="animate-spin" size={48} />
                                 <span className="text-sm font-black uppercase tracking-widest text-sys-800">{loadingMessage}</span>
+                                <div className="w-48 h-1.5 bg-sys-100 rounded-full overflow-hidden">
+                                    <div className="h-full bg-brand rounded-full animate-pulse" style={{ width: '66%' }} />
+                                </div>
                             </div>
                         </div>
                     ) : (
@@ -1302,7 +1334,7 @@ export const InventoryPage = () => {
                             </thead>
                             <tbody className="divide-y divide-sys-100">
                                 {currentProducts.map((p, index) => {
-                                    const promo = getActivePromo(p);
+                                    const promo = getActivePromo(p, renderNow);
                                     const isSelected = selectedIds.has(p.id);
                                     const currentStock = p.stock; 
                                     const hasPendingPrice = p.priceActivationDate && p.nextPrice !== undefined && p.nextPrice !== null;
@@ -1449,7 +1481,18 @@ export const InventoryPage = () => {
                                                         <Edit2 size={18}/>
                                                     </button>
                                                     {isSuperUser && (
-                                                        <button onClick={() => { if(window.confirm('¿Eliminar producto?')) productRepository.delete(p.id).then(() => loadData(false, true)); }} className="p-2 rounded-xl text-red-300 hover:text-red-600 hover:bg-red-50 transition-all" title="Eliminar">
+                                                        <button 
+                                                            onClick={() => { 
+                                                                if(window.confirm('¿Eliminar producto?')) {
+                                                                    productRepository.delete(p.id).then(() => {
+                                                                        setProducts(prev => prev.filter(prod => prod.id !== p.id));
+                                                                        toast.success("Producto eliminado");
+                                                                    });
+                                                                } 
+                                                            }} 
+                                                            className="p-2 rounded-xl text-red-300 hover:text-red-600 hover:bg-red-50 transition-all" 
+                                                            title="Eliminar"
+                                                        >
                                                             <Trash2 size={18}/>
                                                         </button>
                                                     )}

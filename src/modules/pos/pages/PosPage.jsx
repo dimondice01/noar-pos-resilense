@@ -215,6 +215,8 @@ export const PosPage = () => {
   const openingInputRef = useRef(null);
   const productsListRef = useRef(null);
   const lastScanTime = useRef(0);
+  const isAddingRef = useRef(false);   // 🛡️ Mutex scan UI
+  const saleCompletedRef = useRef(false); // 🛡️ Anti-doble-cobro
 
   // =================================================================
   // 🛡️ FOCO PERSISTENTE (Solución de Navegación sin bloqueos)
@@ -306,6 +308,17 @@ export const PosPage = () => {
       loadInitialProducts();
   }, [hasOpenShift]);
 
+  // 🔄 REACTIVO: Recargar grilla cuando syncService actualiza productos desde cloud
+  useEffect(() => {
+      const reloadProducts = async () => {
+          if (!hasOpenShift) return;
+          const all = await productRepository.getAll();
+          setDefaultProducts(all.slice(0, 15));
+      };
+      window.addEventListener('onProductsSynced', reloadProducts);
+      return () => window.removeEventListener('onProductsSynced', reloadProducts);
+  }, [hasOpenShift]);
+
   // =================================================================
   // 1. VERIFICACIÓN DE CAJA
   // =================================================================
@@ -315,10 +328,22 @@ export const PosPage = () => {
               const shift = await cashRepository.getCurrentShift();
               setHasOpenShift(!!shift);
               if (!shift) setTimeout(() => openingInputRef.current?.focus(), 200);
-          } catch (e) { console.error(e); } 
+          } catch (e) { console.error(e); }
           finally { setIsShiftChecking(false); }
       };
       verifyShift();
+  }, []);
+
+  // 🔄 REACTIVO: Re-verificar turno cuando syncService detecta cambio en shifts
+  useEffect(() => {
+      const reVerifyShift = async () => {
+          try {
+              const shift = await cashRepository.getCurrentShift();
+              setHasOpenShift(!!shift);
+          } catch (e) { console.error(e); }
+      };
+      window.addEventListener('noar:shifts-synced', reVerifyShift);
+      return () => window.removeEventListener('noar:shifts-synced', reVerifyShift);
   }, []);
 
   const handleOpenShift = async (e) => {
@@ -401,16 +426,18 @@ export const PosPage = () => {
           e.stopPropagation();
 
           const now = Date.now();
-          if (now - lastScanTime.current < 500) return; 
+          if (now - lastScanTime.current < 1000) return; // 🛡️ 1000ms para PCs lentos
+          if (isAddingRef.current) return; // 🛡️ Mutex: esperar que termine el add anterior
 
           const queryValue = searchTerm.trim();
           if (!queryValue) return;
-          
+
           lastScanTime.current = now;
+          isAddingRef.current = true;
 
           try {
               const wasScale = await parseScaleBarcode(queryValue);
-              if (wasScale) return; 
+              if (wasScale) return;
 
               if (focusedIndex >= 0 && list[focusedIndex]) {
                   handleSelectProduct(list[focusedIndex]);
@@ -418,16 +445,16 @@ export const PosPage = () => {
               }
 
               const queryUpper = queryValue.toUpperCase();
-              
-              let exactMatch = list.find(p => 
-                  String(p.barcode || '').toUpperCase() === queryUpper || 
+
+              let exactMatch = list.find(p =>
+                  String(p.barcode || '').toUpperCase() === queryUpper ||
                   String(p.code || '').toUpperCase() === queryUpper
               );
 
               if (!exactMatch) {
                   const directResults = await productRepository.search(queryValue);
-                  exactMatch = directResults.find(p => 
-                      String(p.barcode || '').toUpperCase() === queryUpper || 
+                  exactMatch = directResults.find(p =>
+                      String(p.barcode || '').toUpperCase() === queryUpper ||
                       String(p.code || '').toUpperCase() === queryUpper
                   );
               }
@@ -435,15 +462,17 @@ export const PosPage = () => {
               if (exactMatch) {
                   handleSelectProduct(exactMatch);
                   return;
-              } 
-              
+              }
+
               if (list.length === 1) {
                   handleSelectProduct(list[0]);
                   return;
               }
-              
+
           } catch (err) {
               console.error("Error en escaneo:", err);
+          } finally {
+              setTimeout(() => { isAddingRef.current = false; }, 800);
           }
       }
   };
@@ -482,8 +511,10 @@ export const PosPage = () => {
   }, [hasOpenShift, activeTab.items.length]); 
 
   const handleProcessSale = async (paymentData) => {
+    if (saleCompletedRef.current) return; // 🛡️ Anti-doble-cobro por lag de React
     const result = await processSale(paymentData);
     if (result) {
+        saleCompletedRef.current = true;
         const enrichedTicket = {
             ...result,
             companySnapshot: { nombre: user?.activeBranchName || 'MI NEGOCIO' }
@@ -493,7 +524,7 @@ export const PosPage = () => {
         setSearchTerm('');
         const activeIndex = tabs.findIndex(t => t.id === activeTabId);
         if (tabs.length > 1 && activeIndex !== 0) removeTab(activeTabId, true);
-        setTimeout(refocusInput, 100);
+        setTimeout(() => { saleCompletedRef.current = false; refocusInput(); }, 300);
     }
   };
 

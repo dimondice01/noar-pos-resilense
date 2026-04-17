@@ -1,13 +1,16 @@
 import React from 'react';
 import { cn } from '../utils/cn';
 
-export const Card = ({ children, className, ...props }) => {
+export const Card = ({ children, className, variant = 'default', ...props }) => {
+  const variants = {
+    default:  "bg-surface-base border border-border-subtle shadow-card",
+    elevated: "bg-surface-raised border border-border-subtle shadow-float",
+    flat:     "bg-surface-overlay border border-border-subtle",
+  };
+
   return (
-    <div 
-      className={cn(
-        "bg-white rounded-2xl shadow-soft border border-sys-200 p-6", // Estilo base
-        className
-      )} 
+    <div
+      className={cn("rounded-card p-6", variants[variant], className)}
       {...props}
     >
       {children}

@@ -78,7 +78,7 @@ const NoBranchesSetupView = ({ onFix }) => {
     return (
         <div className="w-full h-[80vh] flex flex-col items-center justify-center p-6 animate-in fade-in slide-in-from-bottom-8">
             <div className="bg-white p-8 rounded-3xl shadow-2xl text-center max-w-md border border-sys-100 relative overflow-hidden">
-                <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-brand to-purple-500"></div>
+                <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-brand to-brand-active"></div>
                 <div className="w-20 h-20 bg-brand/10 rounded-full flex items-center justify-center mx-auto mb-6">
                     <div className="bg-brand text-white p-4 rounded-full shadow-lg shadow-brand/30">
                         <Building2 size={32} />
@@ -104,13 +104,13 @@ const AdminSecurityPanel = ({ onUpdatePin, activeBranchName, activeBranchId }) =
     const isDisabled = !activeBranchId || activeBranchId === 'ALL';
 
     return (
-        <Card className="p-5 border border-slate-200 bg-slate-50 shadow-none relative overflow-hidden">
+        <Card className="p-5 border border-border-default bg-sys-50 shadow-none relative overflow-hidden">
             <div className="flex items-center gap-2 mb-2">
-                <Shield size={16} className="text-slate-400" />
-                <h3 className="font-bold text-slate-700 text-sm">PIN de Seguridad</h3>
+                <Shield size={16} className="text-sys-400" />
+                <h3 className="font-bold text-sys-700 text-sm">PIN de Seguridad</h3>
             </div>
             
-            <p className="text-[10px] text-slate-400 mb-4 font-medium">
+            <p className="text-[10px] text-sys-400 mb-4 font-medium">
                 {isDisabled 
                     ? "Seleccione una sucursal específica arriba para configurar su PIN." 
                     : `Configurando PIN para: ${activeBranchName}`
@@ -121,18 +121,18 @@ const AdminSecurityPanel = ({ onUpdatePin, activeBranchName, activeBranchId }) =
                 <div className="relative flex-1">
                     <input 
                         type="password" placeholder="Nuevo PIN (4-6 dígitos)" 
-                        className="w-full px-3 py-2 rounded-lg border border-slate-200 focus:border-slate-400 outline-none text-xs font-mono tracking-widest bg-white shadow-sm transition-colors disabled:bg-slate-100 disabled:text-slate-300"
+                        className="w-full px-3 py-2 rounded-lg border border-border-default focus:border-border-strong outline-none text-xs font-mono tracking-widest bg-white shadow-sm transition-colors disabled:bg-sys-100 disabled:text-sys-300"
                         maxLength={6} value={newPin} onChange={(e) => setNewPin(e.target.value)}
                         disabled={isDisabled}
                     />
                 </div>
-                <Button size="sm" className="bg-slate-800 hover:bg-slate-900 text-white h-9 text-xs font-bold shadow-md px-4 rounded-lg" onClick={() => { onUpdatePin(newPin); setNewPin(''); }} disabled={newPin.length < 4 || isDisabled}>
+                <Button size="sm" className="bg-sys-800 hover:bg-sys-800 text-white h-9 text-xs font-bold shadow-md px-4 rounded-lg" onClick={() => { onUpdatePin(newPin); setNewPin(''); }} disabled={newPin.length < 4 || isDisabled}>
                     Actualizar
                 </Button>
             </div>
             {isDisabled && (
-                <div className="absolute inset-0 bg-white/60 backdrop-blur-[1px] flex items-center justify-center border-l-4 border-slate-300 transition-all">
-                    <p className="text-[10px] font-bold text-slate-500 uppercase flex items-center gap-1 bg-white px-3 py-1.5 rounded-full shadow-sm border border-slate-200">
+                <div className="absolute inset-0 bg-white/60 backdrop-blur-[1px] flex items-center justify-center border-l-4 border-border-strong transition-all">
+                    <p className="text-[10px] font-bold text-sys-500 uppercase flex items-center gap-1 bg-white px-3 py-1.5 rounded-full shadow-sm border border-border-default">
                         <MapPin size={12} className="text-brand"/> Seleccione Sucursal Única
                     </p>
                 </div>
@@ -147,18 +147,18 @@ const AdminSecurityPanel = ({ onUpdatePin, activeBranchName, activeBranchId }) =
 const StatCard = ({ title, value, subtext, icon: Icon, colorClass, borderClass }) => (
     <div className={cn("p-5 rounded-2xl border flex flex-col justify-between shadow-sm transition-all hover:shadow-md bg-white group", borderClass)}>
         <div className="flex justify-between items-start mb-2">
-            <p className={cn("text-[11px] font-bold uppercase tracking-wider text-slate-500")}>{title}</p>
-            <div className={cn("p-2 rounded-full bg-slate-50 transition-colors group-hover:scale-110", colorClass)}><Icon size={18} /></div>
+            <p className={cn("text-[11px] font-bold uppercase tracking-wider text-sys-500")}>{title}</p>
+            <div className={cn("p-2 rounded-full bg-sys-50 transition-colors group-hover:scale-110", colorClass)}><Icon size={18} /></div>
         </div>
         <div>
-            <h3 className="text-2xl font-black tracking-tight text-slate-900">{value}</h3>
-            {subtext && <p className="text-[10px] font-bold text-slate-400 mt-1 uppercase">{subtext}</p>}
+            <h3 className="text-2xl font-black tracking-tight text-sys-900">{value}</h3>
+            {subtext && <p className="text-[10px] font-bold text-sys-400 mt-1 uppercase">{subtext}</p>}
         </div>
     </div>
 );
 
 const KpiCard = ({ metrics, isAdmin, money, navigate, onTriggerClose, isCajeroActive, activeBranchName }) => (
-    <div className={cn("lg:col-span-2 relative overflow-hidden rounded-3xl p-6 text-white shadow-xl transition-all border border-white/5", isAdmin ? "bg-slate-900" : "bg-brand")}>
+    <div className={cn("lg:col-span-2 relative overflow-hidden rounded-3xl p-6 text-white shadow-xl transition-all border border-white/5", isAdmin ? "bg-sys-900" : "bg-brand")}>
         <div className="absolute top-0 right-0 p-12 opacity-5 pointer-events-none"><Activity size={180} /></div>
         
         <div className="relative z-10 flex flex-col h-full justify-between gap-8">
@@ -204,7 +204,7 @@ const KpiCard = ({ metrics, isAdmin, money, navigate, onTriggerClose, isCajeroAc
                             <Button onClick={() => navigate('reports')} variant="secondary" size="sm" className="bg-emerald-500 text-white hover:bg-emerald-600 border-none h-9 text-xs font-bold shadow-lg transition-transform active:scale-95">
                                 <LineChart size={14} className="mr-2" /> Métricas
                             </Button>
-                            <Button onClick={() => navigate('sales')} variant="secondary" size="sm" className="bg-white text-slate-900 hover:bg-slate-200 border-none h-9 text-xs font-bold shadow-lg transition-transform active:scale-95">
+                            <Button onClick={() => navigate('sales')} variant="secondary" size="sm" className="bg-white text-sys-900 hover:bg-sys-200 border-none h-9 text-xs font-bold shadow-lg transition-transform active:scale-95">
                                 <FileText size={14} className="mr-2" /> Historial
                             </Button>
                         </>
@@ -225,7 +225,7 @@ const MyShiftCard = ({ metrics, money, handleOpenShift, activeBranchId, activeBr
     const isMismatchedBranch = isCajeroActive && metrics.activeShift.branchId !== activeBranchId && activeBranchId !== 'ALL' && metrics.activeShift.branchId !== 'main';
 
     return (
-        <div className={cn("p-5 border-l-4 transition-all shadow-sm hover:shadow-md relative overflow-hidden group bg-white rounded-2xl border border-slate-100", 
+        <div className={cn("p-5 border-l-4 transition-all shadow-sm hover:shadow-md relative overflow-hidden group bg-white rounded-2xl border border-border-subtle", 
             isCajeroActive ? (isMismatchedBranch ? "border-l-amber-500" : "border-l-emerald-500") : "border-l-rose-500")}>
             
             <div className="flex justify-between items-center mb-4">
@@ -235,7 +235,7 @@ const MyShiftCard = ({ metrics, money, handleOpenShift, activeBranchId, activeBr
                         {isCajeroActive ? (isMismatchedBranch ? <AlertTriangle size={20}/> : <Unlock size={20}/> ) : <Lock size={20}/>}
                     </div>
                     <div>
-                        <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Estado de Caja</p>
+                        <p className="text-[10px] font-bold uppercase tracking-wider text-sys-400">Estado de Caja</p>
                         <h4 className={cn("text-base font-black leading-none mt-0.5", 
                             isCajeroActive ? (isMismatchedBranch ? "text-amber-700" : "text-emerald-700") : "text-rose-700")}>
                             {isCajeroActive ? (isMismatchedBranch ? "TURNO EN OTRA SEDE" : "TURNO ABIERTO") : "TURNO CERRADO"}
@@ -268,20 +268,20 @@ const MyShiftCard = ({ metrics, money, handleOpenShift, activeBranchId, activeBr
 
             {!isCajeroActive ? (
                 <div className="mt-2">
-                    <p className="text-xs text-slate-500 mb-4 font-medium">La caja está cerrada. Inicie turno para operar.</p>
-                    <Button size="sm" className="w-full bg-slate-900 hover:bg-black text-white h-11 text-xs font-bold shadow-lg shadow-slate-200 rounded-xl" onClick={handleOpenShift}>
+                    <p className="text-xs text-sys-500 mb-4 font-medium">La caja está cerrada. Inicie turno para operar.</p>
+                    <Button size="sm" className="w-full bg-sys-900 hover:bg-black text-white h-11 text-xs font-bold shadow-lg shadow-soft rounded-xl" onClick={handleOpenShift}>
                         <Unlock size={14} className="mr-2"/> ABRIR CAJA
                     </Button>
                 </div>
             ) : (
-                 <div className="bg-slate-50 rounded-xl p-3 border border-slate-100 flex justify-between items-center">
+                 <div className="bg-sys-50 rounded-xl p-3 border border-border-subtle flex justify-between items-center">
                     <div>
-                        <p className="text-[10px] text-slate-400 uppercase font-bold">Fondo Inicial</p>
-                        <p className="text-sm font-bold text-slate-800">$ {money(metrics.activeShift.initialAmount)}</p>
+                        <p className="text-[10px] text-sys-400 uppercase font-bold">Fondo Inicial</p>
+                        <p className="text-sm font-bold text-sys-800">$ {money(metrics.activeShift.initialAmount)}</p>
                     </div>
                     <div className="text-right">
-                        <p className="text-[10px] text-slate-400 uppercase font-bold">Apertura</p>
-                        <p className="text-xs font-mono font-bold text-slate-600">{new Date(metrics.activeShift.openedAt).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</p>
+                        <p className="text-[10px] text-sys-400 uppercase font-bold">Apertura</p>
+                        <p className="text-xs font-mono font-bold text-sys-600">{new Date(metrics.activeShift.openedAt).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</p>
                     </div>
                  </div>
             )}
@@ -372,14 +372,14 @@ const AdminCashAuditPanel = ({ allShifts, loadIntelligence, navigate, resolveNam
     };
 
     return (
-        <Card className="shadow-sm border border-slate-200 bg-white">
+        <Card className="shadow-sm border border-border-default bg-white">
              <div className="flex justify-between items-center mb-6">
-                <h3 className="font-bold text-lg text-slate-800 flex items-center gap-2"><FileText size={20} className="text-slate-400"/> Auditoría de Cajas</h3>
-                <Button variant="ghost" size="sm" onClick={() => navigate('cash')} className="text-slate-500 hover:text-brand font-medium text-xs">Ver Historial</Button>
+                <h3 className="font-bold text-lg text-sys-800 flex items-center gap-2"><FileText size={20} className="text-sys-400"/> Auditoría de Cajas</h3>
+                <Button variant="ghost" size="sm" onClick={() => navigate('cash')} className="text-sys-500 hover:text-brand font-medium text-xs">Ver Historial</Button>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
                 <div className="md:col-span-2 space-y-4">
-                    <p className="text-[10px] font-bold uppercase text-slate-400 tracking-wider mb-2">Pendientes ({shiftsToAudit.length})</p>
+                    <p className="text-[10px] font-bold uppercase text-sys-400 tracking-wider mb-2">Pendientes ({shiftsToAudit.length})</p>
                     {shiftsToAudit.length === 0 ? (
                         <div className="bg-emerald-50/50 text-emerald-700 p-5 rounded-xl border border-emerald-100 flex items-center gap-3 text-xs font-medium"><CheckCircle2 size={18} className="text-emerald-500"/> Todo al día.</div>
                     ) : (
@@ -387,17 +387,17 @@ const AdminCashAuditPanel = ({ allShifts, loadIntelligence, navigate, resolveNam
                             {shiftsToAudit.map(s => (
                                 <div key={s.id} className="p-4 bg-white rounded-xl border border-rose-100 shadow-sm flex justify-between items-center hover:border-rose-300 transition-all animate-in slide-in-from-left-2">
                                     <div>
-                                        <p className="font-bold text-slate-800 text-xs flex items-center gap-2">
+                                        <p className="font-bold text-sys-800 text-xs flex items-center gap-2">
                                             <span className="w-2 h-2 rounded-full bg-rose-500 animate-pulse"></span> {resolveName(s.userId, s.userName)}
                                         </p>
-                                        <div className="flex gap-3 text-[10px] text-slate-500 mt-1 pl-4 font-mono">
+                                        <div className="flex gap-3 text-[10px] text-sys-500 mt-1 pl-4 font-mono">
                                             <span>{new Date(s.closedAt).toLocaleTimeString([],{hour:'2-digit', minute:'2-digit'})}</span>
                                             <span className={cn("font-bold px-1.5 py-0.5 rounded text-[9px]", getShiftValues(s).diff !== 0 ? "bg-rose-50 text-rose-600" : "bg-emerald-50 text-emerald-600")}>
                                                 Desvío: $ {money(getShiftValues(s).diff)}
                                             </span>
                                         </div>
                                     </div>
-                                    <Button size="sm" onClick={() => handleAction(s, true)} disabled={loadingAudit} className="bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 text-xs h-8 shadow-sm rounded-lg">
+                                    <Button size="sm" onClick={() => handleAction(s, true)} disabled={loadingAudit} className="bg-white border border-border-default text-sys-700 hover:bg-sys-50 text-xs h-8 shadow-sm rounded-lg">
                                         {loadingAudit ? <RefreshCw className="animate-spin" size={12}/> : "Auditar"}
                                     </Button>
                                 </div>
@@ -406,14 +406,14 @@ const AdminCashAuditPanel = ({ allShifts, loadIntelligence, navigate, resolveNam
                     )}
                 </div>
                 <div className="space-y-5">
-                    <div className="bg-slate-50 p-4 rounded-xl border border-slate-100">
-                        <p className="text-[10px] font-bold uppercase text-slate-400 mb-3 flex items-center gap-2"><Monitor size={12}/> Activas ({openShifts.length})</p>
+                    <div className="bg-sys-50 p-4 rounded-xl border border-border-subtle">
+                        <p className="text-[10px] font-bold uppercase text-sys-400 mb-3 flex items-center gap-2"><Monitor size={12}/> Activas ({openShifts.length})</p>
                         <div className="max-h-[150px] overflow-y-auto custom-scrollbar space-y-2">
-                            {openShifts.length === 0 && <p className="text-xs text-slate-400 italic">Sin actividad.</p>}
+                            {openShifts.length === 0 && <p className="text-xs text-sys-400 italic">Sin actividad.</p>}
                             {openShifts.map(s => (
-                                <div key={s.id} className="text-xs p-2 bg-white rounded-lg border border-slate-200 flex justify-between shadow-sm">
-                                    <span className="font-bold text-slate-700 truncate max-w-[100px]">{resolveName(s.userId, s.userName)}</span>
-                                    <span className="text-slate-400 font-mono text-[10px]">{new Date(s.openedAt).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</span>
+                                <div key={s.id} className="text-xs p-2 bg-white rounded-lg border border-border-default flex justify-between shadow-sm">
+                                    <span className="font-bold text-sys-700 truncate max-w-[100px]">{resolveName(s.userId, s.userName)}</span>
+                                    <span className="text-sys-400 font-mono text-[10px]">{new Date(s.openedAt).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</span>
                                 </div>
                             ))}
                         </div>
@@ -440,11 +440,11 @@ const QuickActionsPanel = ({ navigate, onExpenseClick, onWithdrawalClick, isAdmi
                 { label: 'Reportes BI', icon: PieChart, color: 'text-purple-600', bg: 'group-hover:bg-purple-50', action: () => navigate('reports') }
             ] : [])
         ].map((btn, i) => (
-            <button key={i} onClick={btn.action} className="p-4 bg-white border border-slate-200 rounded-xl shadow-sm hover:shadow-md hover:border-slate-300 transition-all flex flex-col items-center gap-2 group">
-                <div className={cn("p-3 bg-slate-50 rounded-full transition-colors", btn.bg)}>
-                    <btn.icon className={cn("text-slate-600 transition-transform group-hover:scale-110", `group-hover:${btn.color}`)} size={20} />
+            <button key={i} onClick={btn.action} className="p-4 bg-white border border-border-default rounded-xl shadow-sm hover:shadow-md hover:border-border-strong transition-all flex flex-col items-center gap-2 group">
+                <div className={cn("p-3 bg-sys-50 rounded-full transition-colors", btn.bg)}>
+                    <btn.icon className={cn("text-sys-600 transition-transform group-hover:scale-110", `group-hover:${btn.color}`)} size={20} />
                 </div>
-                <span className="font-bold text-slate-700 text-xs">{btn.label}</span>
+                <span className="font-bold text-sys-700 text-xs">{btn.label}</span>
             </button>
         ))}
     </div>
@@ -471,7 +471,7 @@ const AdminDashboardView = ({ metrics, money, navigate, loadIntelligence, handle
             {/* Balance de "Calle" (Deudas) */}
             <div className="p-5 rounded-2xl border border-amber-200 shadow-sm transition-all hover:shadow-md bg-white flex flex-col justify-between">
                 <div className="flex justify-between items-start mb-2">
-                    <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500">Finanzas en Calle</p>
+                    <p className="text-[11px] font-bold uppercase tracking-wider text-sys-500">Finanzas en Calle</p>
                     <div className="p-2 rounded-full bg-amber-50 text-amber-600"><Scale size={18} /></div>
                 </div>
                 <div>
@@ -485,22 +485,22 @@ const AdminDashboardView = ({ metrics, money, navigate, loadIntelligence, handle
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
             
             {/* Top Productos */}
-            <Card className="col-span-1 md:col-span-2 p-0 overflow-hidden border border-slate-200 shadow-sm bg-white flex flex-col h-full">
-                <div className="p-3 bg-slate-50 border-b border-slate-100 flex justify-between items-center">
-                    <h4 className="font-bold text-xs text-slate-800 flex items-center gap-2"><TrendingUp size={14} className="text-brand"/> Top 5 Más Vendidos</h4>
+            <Card className="col-span-1 md:col-span-2 p-0 overflow-hidden border border-border-default shadow-sm bg-white flex flex-col h-full">
+                <div className="p-3 bg-sys-50 border-b border-border-subtle flex justify-between items-center">
+                    <h4 className="font-bold text-xs text-sys-800 flex items-center gap-2"><TrendingUp size={14} className="text-brand"/> Top 5 Más Vendidos</h4>
                 </div>
                 <div className="p-4 flex-1 flex flex-col justify-center">
                     {metrics.topProducts?.length > 0 ? (
                         <div className="flex gap-3 overflow-x-auto pb-2 no-scrollbar">
                             {metrics.topProducts.map((p, idx) => (
-                                <div key={idx} className="flex-none w-28 bg-white border border-slate-100 p-3 rounded-xl text-center shadow-sm">
-                                    <div className="w-6 h-6 bg-slate-900 text-white rounded-full flex items-center justify-center mx-auto mb-2 text-[10px] font-bold">{idx + 1}</div>
-                                    <p className="text-[10px] font-bold text-slate-700 truncate" title={p.name}>{p.name}</p>
+                                <div key={idx} className="flex-none w-28 bg-white border border-border-subtle p-3 rounded-xl text-center shadow-sm">
+                                    <div className="w-6 h-6 bg-sys-900 text-white rounded-full flex items-center justify-center mx-auto mb-2 text-[10px] font-bold">{idx + 1}</div>
+                                    <p className="text-[10px] font-bold text-sys-700 truncate" title={p.name}>{p.name}</p>
                                     <p className="text-[9px] font-black text-brand mt-1">{p.quantity} un.</p>
                                 </div>
                             ))}
                         </div>
-                    ) : <p className="text-xs text-slate-400 text-center italic">Sin datos suficientes.</p>}
+                    ) : <p className="text-xs text-sys-400 text-center italic">Sin datos suficientes.</p>}
                 </div>
             </Card>
 
@@ -512,10 +512,10 @@ const AdminDashboardView = ({ metrics, money, navigate, loadIntelligence, handle
                 </div>
                 <div className="p-0 flex-1 overflow-y-auto max-h-[140px] custom-scrollbar">
                     {metrics.lowStockItems?.length > 0 ? (
-                        <div className="divide-y divide-slate-50">
+                        <div className="divide-y divide-sys-200">
                             {metrics.lowStockItems.slice(0, 5).map((item, idx) => (
-                                <div key={idx} className="p-3 flex justify-between items-center hover:bg-slate-50">
-                                    <p className="text-[10px] font-bold text-slate-700 truncate max-w-[120px]" title={item.name}>{item.name}</p>
+                                <div key={idx} className="p-3 flex justify-between items-center hover:bg-sys-50">
+                                    <p className="text-[10px] font-bold text-sys-700 truncate max-w-[120px]" title={item.name}>{item.name}</p>
                                     <p className="text-[10px] font-black text-rose-600 bg-rose-50 px-1.5 py-0.5 rounded">{item.stock} u.</p>
                                 </div>
                             ))}
@@ -530,13 +530,13 @@ const AdminDashboardView = ({ metrics, money, navigate, loadIntelligence, handle
             </Card>
 
             {/* Cajas Activas Widget */}
-            <Card className="col-span-1 p-0 overflow-hidden border border-slate-200 shadow-sm bg-white flex flex-col h-full">
-                <div className="p-3 bg-slate-50 border-b border-slate-100 flex justify-between items-center">
-                    <h4 className="font-bold text-xs text-slate-800 flex items-center gap-2"><Monitor size={14} className="text-blue-500"/> Cajas Activas</h4>
+            <Card className="col-span-1 p-0 overflow-hidden border border-border-default shadow-sm bg-white flex flex-col h-full">
+                <div className="p-3 bg-sys-50 border-b border-border-subtle flex justify-between items-center">
+                    <h4 className="font-bold text-xs text-sys-800 flex items-center gap-2"><Monitor size={14} className="text-blue-500"/> Cajas Activas</h4>
                 </div>
                 <div className="p-4 flex flex-col items-center justify-center flex-1">
-                    <h3 className="text-4xl font-black text-slate-800">{metrics.activeShiftsCount || 0}</h3>
-                    <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mt-1">En Operación</p>
+                    <h3 className="text-4xl font-black text-sys-800">{metrics.activeShiftsCount || 0}</h3>
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-sys-400 mt-1">En Operación</p>
                 </div>
             </Card>
         </div>
@@ -549,12 +549,12 @@ const AdminDashboardView = ({ metrics, money, navigate, loadIntelligence, handle
             <div className="space-y-6">
                 <div className="grid grid-cols-2 gap-4">
                     <Card className="p-4 border-l-4 border-l-amber-500 cursor-pointer hover:shadow-md transition-all flex flex-col justify-between shadow-sm bg-white" onClick={() => navigate('clients')}>
-                        <p className="text-[10px] text-slate-400 uppercase font-bold mb-1">Créditos</p>
-                        <div className="flex justify-between items-end"><p className="text-sm font-black text-slate-800">GESTIONAR</p><Users className="text-amber-500 opacity-20" size={20}/></div>
+                        <p className="text-[10px] text-sys-400 uppercase font-bold mb-1">Créditos</p>
+                        <div className="flex justify-between items-end"><p className="text-sm font-black text-sys-800">GESTIONAR</p><Users className="text-amber-500 opacity-20" size={20}/></div>
                     </Card>
                     <Card className="p-4 border-l-4 border-l-violet-500 cursor-pointer hover:shadow-md transition-all flex flex-col justify-between shadow-sm bg-white" onClick={() => navigate('inventory')}>
-                         <p className="text-[10px] text-slate-400 uppercase font-bold mb-1">Inventario</p>
-                         <div className="flex justify-between items-end"><p className="text-sm font-black text-slate-800">GESTIONAR</p><Package className="text-violet-500 opacity-20" size={20}/></div>
+                         <p className="text-[10px] text-sys-400 uppercase font-bold mb-1">Inventario</p>
+                         <div className="flex justify-between items-end"><p className="text-sm font-black text-sys-800">GESTIONAR</p><Package className="text-violet-500 opacity-20" size={20}/></div>
                     </Card>
                 </div>
                 <AdminSecurityPanel onUpdatePin={handleUpdatePin} activeBranchName={activeBranchName} activeBranchId={activeBranchId} />
@@ -743,18 +743,18 @@ export const DashboardPage = () => {
         } catch (error) { alert("Error al configurar sucursal: " + error.message); }
     };
 
-    if (!user) return <div className="p-10 text-center text-slate-500">Error: Usuario no autenticado.</div>;
-    if (!dbStatus.checked) return <div className="w-full h-[80vh] flex flex-col items-center justify-center animate-pulse"><div className="w-16 h-16 border-4 border-slate-100 border-t-brand rounded-full animate-spin"></div></div>;
+    if (!user) return <div className="p-10 text-center text-sys-500">Error: Usuario no autenticado.</div>;
+    if (!dbStatus.checked) return <div className="w-full h-[80vh] flex flex-col items-center justify-center animate-pulse"><div className="w-16 h-16 border-4 border-border-subtle border-t-brand rounded-full animate-spin"></div></div>;
     if (!dbStatus.hasBranches && isAdminView) return <NoBranchesSetupView onFix={handleFixBranches} />;
 
     return (
         <div className="w-full space-y-8 pb-20 max-w-7xl mx-auto p-4 md:p-6">
             <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
                 <div>
-                    <h1 className="text-3xl font-black text-slate-900 tracking-tight flex items-center gap-3">
+                    <h1 className="text-3xl font-black text-sys-900 tracking-tight flex items-center gap-3">
                         Hola, {user?.name?.split(' ')[0] || 'Usuario'} <span className="text-2xl">👋</span>
                     </h1>
-                    <p className="text-slate-500 font-medium text-sm mt-1">
+                    <p className="text-sys-500 font-medium text-sm mt-1">
                         {isAdminView ? "Resumen operativo y financiero global." : "Panel de control de caja."}
                     </p>
                 </div>
