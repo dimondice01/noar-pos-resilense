@@ -7,11 +7,11 @@ import Dexie from 'dexie';
 // 🚨 MANTENEMOS EL NOMBRE DE LA V17 (Tus datos están a salvo aquí)
 export const db = new Dexie('NoarPosDB_V17');
 
-// 🔥 Subimos a 19 para incluir indexación de shiftId en ventas y blindar el motor de auditoría.
-db.version(19).stores({
-  companies: 'id, name, updatedAt, syncStatus', 
-  branches: 'id, companyId, name, active, updatedAt, syncStatus', 
-  products: 'id, code, *barcode, name, category, categoryId, brand, brandId, active, syncStatus, updatedAt, priceActivationDate', 
+// 🔥 V20: campos isCase y caseProductId para soporte de cajas/presentaciones
+db.version(20).stores({
+  companies: 'id, name, updatedAt, syncStatus',
+  branches: 'id, companyId, name, active, updatedAt, syncStatus',
+  products: 'id, code, *barcode, name, category, categoryId, brand, brandId, active, syncStatus, updatedAt, priceActivationDate, isCase, caseProductId', 
   categories: 'id, name, updatedAt, syncStatus',
   brands: 'id, name, updatedAt, syncStatus',
   suppliers: 'id, sequentialId, name, docNumber, updatedAt, syncStatus',

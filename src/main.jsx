@@ -24,6 +24,15 @@ if (import.meta.env.PROD) {
   })
 }
 
+// 🌱 SEEDER DEV (solo en desarrollo)
+if (import.meta.env.DEV) {
+  import('./dev/seeder.js').then(m => {
+    window.__noarSeed = m.runSeed;
+    window.__noarClear = m.clearSeed;
+    console.info('%c🌱 NOAR Seeder listo%c  →  window.__noarSeed()  /  window.__noarClear()', 'color:#22c55e;font-weight:bold', 'color:#888');
+  });
+}
+
 // 🚀 ARRANQUE DE REACT
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>

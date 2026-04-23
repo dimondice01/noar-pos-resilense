@@ -47,6 +47,7 @@ import { SuperAdminPage } from './modules/admin/pages/SuperAdminPage';
 import { CashPage } from './modules/cash/pages/CashPage';
 import { ClientsPage } from './modules/clients/pages/ClientsPage';
 import { CompanySettingsPage } from './modules/admin/pages/CompanySettingsPage';
+import { TestQaPage } from './dev/TestQaPage';
 
 
 function App() {
@@ -154,6 +155,8 @@ function App() {
                         <Route path="settings" element={<TeamPage />} />
                         <Route path="settings/integrations" element={<IntegrationsPage />} />
                         <Route path="settings/company" element={<CompanySettingsPage />} />
+                        {/* 🧪 QA — solo por URL directa, sin aparecer en sidebar */}
+                        <Route path="testqa" element={<TestQaPage />} />
                     </Route>
                 </Route>
 

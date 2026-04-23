@@ -475,7 +475,12 @@ export const cashRepository = {
             });
 
             if (cloudShifts.length > 0) {
-                await dbLocal.shifts.bulkPut(cloudShifts);
+                const pendingSet = new Set(
+                    (await dbLocal.shifts.where('syncStatus').equals('pending').toArray())
+                        .map(s => String(s.id))
+                );
+                const safeShifts = cloudShifts.filter(s => !pendingSet.has(String(s.id)));
+                if (safeShifts.length > 0) await dbLocal.shifts.bulkPut(safeShifts);
             }
         } catch (e) { console.warn("Background history sync warning:", e); }
     },

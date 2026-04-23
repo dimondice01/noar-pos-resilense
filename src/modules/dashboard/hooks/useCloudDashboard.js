@@ -335,28 +335,33 @@ export const useCloudDashboard = () => {
         const checkLowStock = async () => {
             try {
                 const localDb = await getDB();
-                const products = await localDb.products.filter(p => !p.deleted).toArray();
+
+                // Carga productos e inventario en 2 queries planas en lugar de 1 por producto
+                const [products, allInventory] = await Promise.all([
+                    localDb.products.filter(p => !p.deleted).toArray(),
+                    activeBranchId && activeBranchId !== 'ALL'
+                        ? localDb.inventory.where('branchId').equals(activeBranchId).toArray()
+                        : localDb.inventory.toArray()
+                ]);
+
+                // Índice plano: productId → stock total
+                const stockIndex = {};
+                for (const inv of allInventory) {
+                    stockIndex[inv.productId] = (stockIndex[inv.productId] || 0) + parseFloat(inv.stock || 0);
+                }
+
                 const lowStock = [];
-                
                 for (const p of products) {
-                    let totalStock = 0;
-                    if (activeBranchId && activeBranchId !== 'ALL') {
-                        const inv = await localDb.inventory.get([activeBranchId, p.id]);
-                        totalStock = inv ? parseFloat(inv.stock) : 0;
-                    } else {
-                        const invs = await localDb.inventory.where('productId').equals(p.id).toArray();
-                        totalStock = invs.reduce((acc, curr) => acc + parseFloat(curr.stock || 0), 0);
-                    }
-                    
-                    const minStock = parseFloat(p.minStock || 5); // Por defecto alerta si es menor o igual a 5
+                    const totalStock = stockIndex[p.id] || 0;
+                    const minStock = parseFloat(p.minStock || 5);
                     if (totalStock <= minStock) {
                         lowStock.push({ name: p.name, stock: totalStock });
                     }
                 }
-                
-                lowStock.sort((a, b) => a.stock - b.stock); // Los más críticos primero
+
+                lowStock.sort((a, b) => a.stock - b.stock);
                 if (isMounted.current) {
-                    setStats(prev => ({ ...prev, lowStockItems: lowStock.slice(0, 30) })); // Guardamos los 30 más críticos
+                    setStats(prev => ({ ...prev, lowStockItems: lowStock.slice(0, 30) }));
                 }
             } catch (e) {
                 console.warn("Error evaluando stock crítico:", e);
@@ -374,10 +379,11 @@ export const useCloudDashboard = () => {
             if (unsubMovements) unsubMovements();
             if (unsubShifts) unsubShifts();
             if (unsubActiveShifts) unsubActiveShifts();
-            if (unsubClients) unsubClients();     // 🔥 SPRINT 6
-            if (unsubSuppliers) unsubSuppliers(); // 🔥 SPRINT 6
-            if (unsubAbandoned) unsubAbandoned(); // 🔥 SINIESTROS
-            clearInterval(stockInterval);         // 🔥 SPRINT 6
+            if (unsubClients) unsubClients();
+            if (unsubSuppliers) unsubSuppliers();
+            if (unsubAbandoned) unsubAbandoned();
+            if (syncTimeout.current) clearTimeout(syncTimeout.current);
+            clearInterval(stockInterval);
         };
 
     }, [user?.companyId, activeBranchId]); 

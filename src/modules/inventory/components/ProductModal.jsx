@@ -2,13 +2,14 @@ import React, { useState, useEffect, useRef } from 'react';
 import { 
     X, Save, ScanLine, Scale, Package, DollarSign, Tag, Truck, 
     AlertTriangle, Award, ChevronDown, Check, Calendar, Plus, 
-    Trash2, Megaphone, Clock, Barcode, Edit2, Percent, Layers, ShoppingBag, MapPin, Loader2, Info, Banknote, CreditCard, QrCode
+    Trash2, Megaphone, Clock, Barcode, Edit2, Percent, Layers, ShoppingBag, MapPin, Loader2, Info, Banknote, CreditCard, QrCode, Search
 } from 'lucide-react';
 import { Button } from '../../../core/ui/Button';
 import { Switch } from '../../../core/ui/Switch';
 import { cn } from '../../../core/utils/cn';
 import { masterRepository } from '../repositories/masterRepository';
-import { useAuthStore } from '../../auth/store/useAuthStore'; 
+import { productRepository } from '../repositories/productRepository';
+import { useAuthStore } from '../../auth/store/useAuthStore';
 import toast from 'react-hot-toast';
 
 // ==========================================
@@ -120,12 +121,16 @@ const PremiumInput = ({ label, icon: Icon, rightIcon, className, readOnly, ...pr
 // 🏭 PRODUCT MODAL (NEXUS CORE PRO MAX)
 // ==========================================
 
-export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
+export const ProductModal = ({ isOpen, onClose, productToEdit, onSave, allProducts = [] }) => {
   const { user, activeBranchName } = useAuthStore();
   const [activeTab, setActiveTab] = useState('general'); 
   const [lists, setLists] = useState({ categories: [], brands: [], suppliers: [] });
   const [isSaving, setIsSaving] = useState(false);
   const [tempBarcode, setTempBarcode] = useState('');
+  const [caseSearch, setCaseSearch] = useState('');
+  const [caseResults, setCaseResults] = useState([]);
+  const [caseSearching, setCaseSearching] = useState(false);
+  const [selectedUnitProduct, setSelectedUnitProduct] = useState(null);
 
   // 1. ESTADO DEL FORMULARIO
   const [formData, setFormData] = useState({
@@ -148,14 +153,17 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
     
     // PROMO ENGINE
     promoActive: false,
-    promoType: 'PERCENTAGE', 
-    promoValue: '',          
-    promoDiscount: '',       
-    promoPayValue: '',       
+    promoType: 'PERCENTAGE',
+    promoValue: '',
+    promoDiscount: '',
+    promoPayValue: '',
     promoStartDate: '',
     promoEndDate: '',
-    // 🔥 SPRINT 1: Control de Medios de Pago Permitidos (Si está vacío, aplica a todos)
-    promoAllowedMethods: [] 
+    promoAllowedMethods: [],
+    // CAJA/PRESENTACIÓN
+    isCase: false,
+    caseProductId: '',
+    unitsPerCase: 12,
   });
 
   // Cargar Listas
@@ -227,7 +235,10 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
             promoPayValue: hasPromo ? String(promo.payValue || '') : '',
             promoStartDate: hasPromo ? (promo.startDate || '') : new Date().toISOString().split('T')[0],
             promoEndDate: hasPromo ? (promo.endDate || '') : '',
-            promoAllowedMethods: hasPromo ? (promo.allowedMethods || []) : [] // Array de strings ['cash', 'card']
+            promoAllowedMethods: hasPromo ? (promo.allowedMethods || []) : [],
+            isCase: productToEdit.isCase || false,
+            caseProductId: productToEdit.caseProductId || '',
+            unitsPerCase: productToEdit.unitsPerCase || 12,
         });
       } else {
         setFormData({ 
@@ -235,15 +246,28 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
             costNeto: '', cost: '', markup: '40', price: '', taxRate: '21',
             stock: '', minStock: '5', supplier: '', 
             isWeighable: false,
-            promoActive: false, promoType: 'PERCENTAGE', promoValue: '', promoDiscount: '', promoPayValue: '', 
-            promoStartDate: new Date().toISOString().split('T')[0], 
+            promoActive: false, promoType: 'PERCENTAGE', promoValue: '', promoDiscount: '', promoPayValue: '',
+            promoStartDate: new Date().toISOString().split('T')[0],
             promoEndDate: '',
-            promoAllowedMethods: []
+            promoAllowedMethods: [],
+            isCase: false,
+            caseProductId: '',
+            unitsPerCase: 12,
         });
       }
       setActiveTab('general');
       setTempBarcode('');
+      setCaseSearch('');
+      setCaseResults([]);
       setIsSaving(false);
+
+      // Restaurar selectedUnitProduct al editar una caja existente
+      if (productToEdit?.isCase && productToEdit?.caseProductId) {
+        const found = allProducts.find(p => p.id === productToEdit.caseProductId);
+        setSelectedUnitProduct(found || null);
+      } else {
+        setSelectedUnitProduct(null);
+      }
     }
   }, [isOpen, productToEdit]);
 
@@ -315,6 +339,41 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
     setFormData(newData);
   };
 
+  // Buscador de producto unitario para cajas (debounce 200ms, patrón PosPage con isSubscribed)
+  useEffect(() => {
+    if (!formData.isCase) { setCaseResults([]); return; }
+    let isSubscribed = true;
+    const timer = setTimeout(async () => {
+      if (caseSearch.length < 2) { if (isSubscribed) setCaseResults([]); return; }
+      if (isSubscribed) setCaseSearching(true);
+      try {
+        const exact = await productRepository.findByCode(caseSearch);
+        if (!isSubscribed) return;
+        if (exact && exact.isCase !== true && !exact.isWeighable && exact.id !== productToEdit?.id) {
+          setCaseResults([exact]);
+        } else {
+          const results = await productRepository.search(caseSearch);
+          if (!isSubscribed) return;
+          setCaseResults(results.filter(p => p.isCase !== true && !p.isWeighable && p.id !== productToEdit?.id).slice(0, 8));
+        }
+      } catch (e) { if (isSubscribed) setCaseResults([]); }
+      finally { if (isSubscribed) setCaseSearching(false); }
+    }, 200);
+    return () => { isSubscribed = false; clearTimeout(timer); };
+  }, [caseSearch, formData.isCase]);
+
+  const selectUnitProduct = (p) => {
+    setSelectedUnitProduct(p);
+    setFormData(prev => ({ ...prev, caseProductId: p.id }));
+    setCaseSearch('');
+    setCaseResults([]);
+  };
+
+  const clearUnitProduct = () => {
+    setSelectedUnitProduct(null);
+    setFormData(prev => ({ ...prev, caseProductId: '' }));
+  };
+
   const addBarcode = () => {
       if (tempBarcode.trim().length > 2 && !formData.barcodes.includes(tempBarcode)) {
           setFormData(prev => ({ ...prev, barcodes: [...prev.barcodes, tempBarcode] }));
@@ -358,6 +417,11 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
         return toast.error("⚠️ Debes ingresar un precio final válido");
     }
     
+    if (formData.isCase && !formData.caseProductId) {
+        setActiveTab('general');
+        return toast.error("⚠️ Debes seleccionar el producto unitario que contiene esta caja");
+    }
+
     if (formData.promoActive) {
         if (!formData.promoValue) {
             setActiveTab('promociones');
@@ -387,6 +451,9 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
             minStock: parseFloat(String(formData.minStock).replace(',', '.')) || 0,
             taxRate: parseFloat(String(formData.taxRate).replace(',', '.')) || 21,
             isWeighable: Boolean(formData.isWeighable),
+            isCase: Boolean(formData.isCase),
+            caseProductId: formData.isCase ? (formData.caseProductId || null) : null,
+            unitsPerCase: formData.isCase ? (Number(formData.unitsPerCase) || 1) : 1,
             user: user?.name || 'Sistema'
         };
 
@@ -584,8 +651,98 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave }) => {
                             </p>
                         </div>
                     </div>
-                    <Switch checked={!!formData.isWeighable} onCheckedChange={(c) => setFormData({...formData, isWeighable: c})} disabled={isSaving} />
+                    <Switch checked={!!formData.isWeighable} onCheckedChange={(c) => setFormData({...formData, isWeighable: c, isCase: false})} disabled={isSaving} />
                 </div>
+
+                {!formData.isWeighable && (
+                    <div className="bg-sys-50 p-3 rounded-xl border border-sys-200 flex items-center justify-between">
+                        <div className="flex items-center gap-3 text-sys-700 pl-2">
+                            <div className={cn("p-2 rounded-lg", formData.isCase ? "bg-amber-100 text-amber-600" : "bg-sys-100 text-sys-400")}>
+                                <Package size={20}/>
+                            </div>
+                            <div>
+                                <p className="text-sm font-bold">{formData.isCase ? 'Caja / Presentación' : 'Producto Normal'}</p>
+                                <p className="text-[10px] text-sys-500 font-medium">
+                                    {formData.isCase ? 'Al ajustar stock de esta caja, se actualizará el unitario automáticamente' : 'Activar si es una caja que contiene varias unidades'}
+                                </p>
+                            </div>
+                        </div>
+                        <Switch checked={!!formData.isCase} onCheckedChange={(c) => setFormData({...formData, isCase: c, caseProductId: '', unitsPerCase: 12})} disabled={isSaving} />
+                    </div>
+                )}
+
+                {formData.isCase && !formData.isWeighable && (
+                    <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl space-y-3">
+                        <p className="text-[10px] font-bold text-amber-700 uppercase tracking-wider">Configuración de Caja</p>
+                        <div className="relative">
+                            <label className="text-[10px] font-bold text-sys-500 uppercase block mb-1.5">Producto Unitario *</label>
+
+                            {selectedUnitProduct ? (
+                                <div className="flex items-center gap-2 bg-white border border-amber-300 rounded-xl px-4 py-3">
+                                    <Package size={16} className="text-amber-600 shrink-0" />
+                                    <div className="flex-1 min-w-0">
+                                        <p className="text-sm font-bold text-sys-900 truncate">{selectedUnitProduct.name}</p>
+                                        <p className="text-[10px] text-sys-400 font-mono">{selectedUnitProduct.code || 'S/C'}</p>
+                                    </div>
+                                    <button type="button" onClick={clearUnitProduct} disabled={isSaving} className="text-sys-400 hover:text-red-500 shrink-0 transition-colors">
+                                        <X size={16} />
+                                    </button>
+                                </div>
+                            ) : (
+                                <>
+                                    <div className="relative">
+                                        <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-sys-400 pointer-events-none" />
+                                        {caseSearching && <Loader2 size={14} className="absolute right-3.5 top-1/2 -translate-y-1/2 text-amber-500 animate-spin" />}
+                                        <input
+                                            type="text"
+                                            placeholder="Escanear código o escribir nombre..."
+                                            value={caseSearch}
+                                            onChange={e => setCaseSearch(e.target.value)}
+                                            disabled={isSaving}
+                                            className="w-full bg-white border border-sys-200 rounded-xl py-3 pl-10 pr-10 text-sm font-medium outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100 transition-all placeholder:text-sys-400"
+                                        />
+                                    </div>
+                                    {caseResults.length > 0 && (
+                                        <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-sys-200 rounded-xl shadow-xl z-50 overflow-hidden max-h-52 overflow-y-auto">
+                                            {caseResults.map(p => (
+                                                <div
+                                                    key={p.id}
+                                                    onClick={() => selectUnitProduct(p)}
+                                                    className="px-4 py-2.5 hover:bg-amber-50 cursor-pointer flex items-center gap-3 border-b border-sys-100 last:border-0"
+                                                >
+                                                    <Package size={14} className="text-amber-500 shrink-0" />
+                                                    <div className="flex-1 min-w-0">
+                                                        <p className="text-sm font-bold text-sys-900 truncate">{p.name}</p>
+                                                        <p className="text-[10px] text-sys-400 font-mono">{p.code || 'S/C'}</p>
+                                                    </div>
+                                                    <span className="text-[10px] font-bold text-sys-500 shrink-0">Stock: {p.stock ?? 0}</span>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                    {caseSearch.length >= 2 && !caseSearching && caseResults.length === 0 && (
+                                        <p className="text-[10px] text-sys-400 italic mt-1 ml-1">Sin resultados para "{caseSearch}"</p>
+                                    )}
+                                </>
+                            )}
+                        </div>
+                        <div className="grid grid-cols-2 gap-3 items-end">
+                            <PremiumInput
+                                label="Unidades por Caja *"
+                                icon={Package}
+                                type="number"
+                                placeholder="12"
+                                value={formData.unitsPerCase}
+                                onChange={e => setFormData({...formData, unitsPerCase: e.target.value})}
+                                disabled={isSaving}
+                            />
+                            <div className="bg-white border border-amber-200 rounded-xl p-3 text-center">
+                                <p className="text-[10px] text-amber-600 font-bold uppercase">Equivale a</p>
+                                <p className="text-lg font-black text-amber-700">×{formData.unitsPerCase || '?'} unidades</p>
+                            </div>
+                        </div>
+                    </div>
+                )}
 
                 {productToEdit && productToEdit.id ? (
                     <div className="bg-orange-50 border border-orange-100 p-3 rounded-xl text-xs text-orange-700 flex items-center gap-2">

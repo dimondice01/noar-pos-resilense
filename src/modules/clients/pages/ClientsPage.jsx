@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Plus, Search, Edit2, Trash2, Users, CreditCard, ChevronRight, AlertCircle, Phone, Mail, Loader2, CloudDownload } from 'lucide-react';
+import { Plus, Search, Edit2, Trash2, Users, CreditCard, ChevronRight, AlertCircle, Phone, Mail, Loader2 } from 'lucide-react';
 import { clientRepository } from '../repositories/clientRepository';
 import { Card } from '../../../core/ui/Card';
 import { Button } from '../../../core/ui/Button';
@@ -66,7 +66,49 @@ export const ClientsPage = () => {
     }
   };
 
-  useEffect(() => { loadClients(); }, []);
+  useEffect(() => {
+    loadClients();
+
+    if (!user?.companyId) return;
+    let unsub = null;
+
+    const setupListener = async () => {
+      const { collection, query, where, onSnapshot } = await import('firebase/firestore');
+      const { db: firestoreDB } = await import('../../../database/firebase');
+      const { getDB } = await import('../../../database/db');
+
+      const liveStart = new Date(); liveStart.setHours(0, 0, 0, 0);
+      const liveQ = query(
+        collection(firestoreDB, `companies/${user.companyId}/clients`),
+        where('updatedAt', '>=', liveStart.toISOString())
+      );
+
+      unsub = onSnapshot(liveQ, async (snap) => {
+        if (snap.empty) return;
+        const dbLocal = await getDB();
+        const pendingSet = new Set(
+          (await dbLocal.clients.where('syncStatus').equals('pending').toArray())
+            .map(c => String(c.id))
+        );
+        const incoming = snap.docs
+          .filter(d => !pendingSet.has(d.id))
+          .map(d => ({ ...d.data(), id: d.id, firestoreId: d.id, syncStatus: 'synced' }));
+        if (incoming.length > 0) {
+          await dbLocal.clients.bulkPut(incoming);
+          window.dispatchEvent(new CustomEvent('noar:clients-synced'));
+        }
+      }, (err) => console.warn('[Clients Listener]', err.code));
+    };
+
+    setupListener();
+    return () => { if (unsub) unsub(); };
+  }, [user?.companyId]);
+
+  useEffect(() => {
+    const handler = () => loadClients();
+    window.addEventListener('noar:clients-synced', handler);
+    return () => window.removeEventListener('noar:clients-synced', handler);
+  }, []);
 
   // Búsqueda en tiempo real (Debounced)
   useEffect(() => {
@@ -88,7 +130,7 @@ export const ClientsPage = () => {
         setIsModalOpen(false);
         toast.success("Cliente guardado correctamente");
     } catch (error) {
-        alert(error.message); 
+        toast.error(error.message);
     }
   };
 
@@ -109,46 +151,6 @@ export const ClientsPage = () => {
     e.stopPropagation(); 
     setEditingClient(client);
     setIsModalOpen(true);
-  };
-
-  // 🔥 BOTÓN DE RESCATE: Descarga Forzada desde Firebase
-  const handleForceCloudSync = async () => {
-      setLoading(true);
-      const toastId = toast.loading("Buscando clientes en la nube...");
-      try {
-          if (!user?.companyId) throw new Error("Falta companyId");
-
-          const { collection, getDocs } = await import('firebase/firestore');
-          const { db: firestoreDB } = await import('../../../database/firebase');
-          const { getDB } = await import('../../../database/db');
-          const dbLocal = await getDB();
-
-          // Descargamos TODA la lista de clientes de la empresa
-          const snapshot = await getDocs(collection(firestoreDB, `companies/${user.companyId}/clients`));
-          const cloudClients = [];
-          
-          snapshot.docs.forEach(doc => {
-              const data = doc.data();
-              cloudClients.push({
-                  ...data,
-                  id: doc.id,
-                  firestoreId: doc.id,
-                  syncStatus: 'synced'
-              });
-          });
-
-          if (cloudClients.length > 0) {
-              await dbLocal.clients.bulkPut(cloudClients);
-              toast.success(`¡Sincronización completa! Se bajaron ${cloudClients.length} clientes.`, { id: toastId });
-          } else {
-              toast.success("No hay clientes en Firebase.", { id: toastId });
-          }
-      } catch (error) {
-          console.error("Error forzando sync de clientes:", error);
-          toast.error(`Error al descargar: ${error.message}`, { id: toastId });
-      } finally {
-          loadClients(); 
-      }
   };
 
   const getConditionBadge = (condition) => {
@@ -185,15 +187,6 @@ export const ClientsPage = () => {
         </div>
         
         <div className="flex items-center gap-3">
-            <Button 
-                variant="outline" 
-                onClick={handleForceCloudSync} 
-                className="shadow-sm border-brand/30 text-brand bg-brand/5 hover:bg-brand hover:text-white transition-all"
-                title="Forzar descarga de clientes desde Firebase"
-            >
-                <CloudDownload size={18} className={loading ? "animate-bounce mr-2" : "mr-2"}/>
-                Bajar Nube
-            </Button>
             <Button onClick={() => { setEditingClient(null); setIsModalOpen(true); }} className="shadow-lg shadow-brand/20">
                 <Plus size={20} className="mr-2" /> Nuevo Cliente
             </Button>

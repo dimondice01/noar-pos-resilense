@@ -251,9 +251,13 @@ export const productRepository = {
 
             stock: product.stock !== undefined ? Number(product.stock) : (existingProduct.stock || 0),
 
+            isCase: product.isCase !== undefined ? product.isCase : (existingProduct.isCase || false),
+            caseProductId: product.caseProductId !== undefined ? product.caseProductId : (existingProduct.caseProductId || null),
+            unitsPerCase: product.unitsPerCase !== undefined ? Number(product.unitsPerCase) : (existingProduct.unitsPerCase || 1),
+
             updatedAt: timestamp,
             deleted: false,
-            syncStatus: 'pending' 
+            syncStatus: 'pending'
         };
 
         await dbLocal.products.put(masterProduct);
@@ -384,20 +388,63 @@ export const productRepository = {
         const movId = `mov_${Date.now()}_${crypto.randomUUID().slice(0,5)}`;
         const type = movementType || (qty > 0 ? 'STOCK_IN' : 'STOCK_OUT');
 
+        // Leer producto ANTES de la transacción para detectar si es caja
+        const productData = await dbLocal.products.get(productId);
+        const isCaseProduct = !!(productData?.isCase === true && productData?.caseProductId && Number(productData?.unitsPerCase) > 1);
+        const unitProductId = isCaseProduct ? productData.caseProductId : null;
+        const unitQty = isCaseProduct ? qty * Number(productData.unitsPerCase) : 0;
+        const unitMovId = isCaseProduct ? `mov_${Date.now() + 1}_${crypto.randomUUID().slice(0,5)}` : null;
+
+        // Cascade inverso: cajas que referencian este producto como unidad
+        const casesForThisUnit = (!isCaseProduct && !isVirtualLog)
+            ? await dbLocal.products.where('caseProductId').equals(productId).filter(p => !p.deleted && p.isCase === true && Number(p.unitsPerCase) > 1).toArray()
+            : [];
+
+        let newUnitStock = 0; // capturado en la transacción para usar en cloud sync
+
         // 🔄 TRANSACCIÓN LOCAL ATÓMICA
         await dbLocal.transaction('rw', [dbLocal.inventory, dbLocal.movements], async () => {
             // A. ACTUALIZAR INVENTARIO (Solo si hay sucursal)
             if (!isVirtualLog) {
                 const currentInv = await dbLocal.inventory.where({ branchId, productId }).first();
                 const currentStock = currentInv ? (parseFloat(currentInv.stock) || 0) : 0;
+                newUnitStock = currentStock + qty;
                 await dbLocal.inventory.put({
                     branchId,
                     productId,
-                    stock: currentStock + qty,
-                    promo: currentInv?.promo || null, 
+                    stock: newUnitStock,
+                    promo: currentInv?.promo || null,
                     updatedAt: timestamp,
                     syncStatus: 'pending'
                 });
+
+                // CASCADE caja→unidad: actualizar inventario del producto unitario
+                if (isCaseProduct) {
+                    const unitInv = await dbLocal.inventory.where({ branchId, productId: unitProductId }).first();
+                    const unitCurrentStock = unitInv ? (parseFloat(unitInv.stock) || 0) : 0;
+                    await dbLocal.inventory.put({
+                        branchId,
+                        productId: unitProductId,
+                        stock: unitCurrentStock + unitQty,
+                        promo: unitInv?.promo || null,
+                        updatedAt: timestamp,
+                        syncStatus: 'pending'
+                    });
+                }
+
+                // CASCADE INVERSO unidad→cajas: recalcular stock de cada caja
+                for (const caseProduct of casesForThisUnit) {
+                    const newCaseStock = Math.floor(newUnitStock / Number(caseProduct.unitsPerCase));
+                    const caseInv = await dbLocal.inventory.where({ branchId, productId: caseProduct.id }).first();
+                    await dbLocal.inventory.put({
+                        branchId,
+                        productId: caseProduct.id,
+                        stock: newCaseStock,
+                        promo: caseInv?.promo || null,
+                        updatedAt: timestamp,
+                        syncStatus: 'pending'
+                    });
+                }
             }
 
             // B. REGISTRAR MOVIMIENTO (SIEMPRE, incluso si es virtual)
@@ -405,7 +452,7 @@ export const productRepository = {
                 id: movId,
                 productId,
                 branchId: isVirtualLog ? 'GLOBAL' : branchId,
-                type: type, 
+                type: type,
                 amount: Math.abs(qty),
                 description: description || 'Ajuste Inicial',
                 user: userName,
@@ -413,6 +460,22 @@ export const productRepository = {
                 refId: null,
                 syncStatus: 'pending'
             });
+
+            // CASCADE: movimiento del producto unitario
+            if (isCaseProduct) {
+                await dbLocal.movements.add({
+                    id: unitMovId,
+                    productId: unitProductId,
+                    branchId: isVirtualLog ? 'GLOBAL' : branchId,
+                    type: type,
+                    amount: Math.abs(unitQty),
+                    description: `Desde caja: ${description || 'Ajuste'}`,
+                    user: userName,
+                    date: timestamp,
+                    refId: productId,
+                    syncStatus: 'pending'
+                });
+            }
         });
 
         // ☁️ ACTUALIZACIÓN CLOUD
@@ -442,10 +505,45 @@ export const productRepository = {
             const productRef = doc(db, `companies/${user.companyId}/products`, productId);
             batch.set(productRef, { updatedAt: serverTimestamp() }, { merge: true });
 
+            // CASCADE cloud: inventario y movimiento del producto unitario
+            if (isCaseProduct) {
+                if (!isVirtualLog) {
+                    const unitInvRef = doc(db, `companies/${user.companyId}/branches/${branchId}/inventory`, unitProductId);
+                    batch.set(unitInvRef, { stock: increment(unitQty), updatedAt: serverTimestamp() }, { merge: true });
+                }
+                const unitLogRef = doc(db, `companies/${user.companyId}/movements`, unitMovId);
+                batch.set(unitLogRef, {
+                    productId: unitProductId,
+                    amount: Math.abs(unitQty),
+                    branchId: isVirtualLog ? 'GLOBAL' : branchId,
+                    type: type,
+                    description: `Desde caja: ${description || 'Ajuste'}`,
+                    user: userName,
+                    date: serverTimestamp(),
+                    refId: productId
+                });
+                const unitProductCloudRef = doc(db, `companies/${user.companyId}/products`, unitProductId);
+                batch.set(unitProductCloudRef, { updatedAt: serverTimestamp() }, { merge: true });
+            }
+
+            // CASCADE INVERSO cloud: set absoluto del stock de cada caja
+            for (const caseProduct of casesForThisUnit) {
+                const newCaseStock = Math.floor(newUnitStock / Number(caseProduct.unitsPerCase));
+                const caseInvRef = doc(db, `companies/${user.companyId}/branches/${branchId}/inventory`, caseProduct.id);
+                batch.set(caseInvRef, { stock: newCaseStock, updatedAt: serverTimestamp() }, { merge: true });
+                const caseProductRef = doc(db, `companies/${user.companyId}/products`, caseProduct.id);
+                batch.set(caseProductRef, { updatedAt: serverTimestamp() }, { merge: true });
+            }
+
             // 🔥 FIRE AND FORGET: No bloqueamos el POS esperando el commit
             batch.commit().then(async () => {
                 if (!isVirtualLog) await dbLocal.inventory.update([branchId, productId], {syncStatus: 'synced'});
                 await dbLocal.movements.update(movId, {syncStatus: 'synced'});
+                if (isCaseProduct && !isVirtualLog) await dbLocal.inventory.update([branchId, unitProductId], {syncStatus: 'synced'});
+                if (isCaseProduct && unitMovId) await dbLocal.movements.update(unitMovId, {syncStatus: 'synced'});
+                for (const caseProduct of casesForThisUnit) {
+                    await dbLocal.inventory.update([branchId, caseProduct.id], {syncStatus: 'synced'});
+                }
             }).catch(e => console.error("Error sync cloud stock:", e));
         }
 
@@ -511,6 +609,14 @@ export const productRepository = {
                 console.error("Error sync delete producto:", e)
             );
         }
+    },
+
+    async getCasesByUnit(unitProductId) {
+        const dbLocal = await getDB();
+        return dbLocal.products
+            .where('caseProductId').equals(unitProductId)
+            .filter(p => !p.deleted)
+            .toArray();
     },
 
     async saveAll(products) {

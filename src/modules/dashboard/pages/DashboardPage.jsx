@@ -508,7 +508,17 @@ const AdminDashboardView = ({ metrics, money, navigate, loadIntelligence, handle
             <Card className="col-span-1 p-0 overflow-hidden border border-rose-200 shadow-sm bg-white flex flex-col h-full">
                 <div className="p-3 bg-rose-50 border-b border-rose-100 flex justify-between items-center">
                     <h4 className="font-bold text-xs text-rose-800 flex items-center gap-2"><BellRing size={14}/> Stock Crítico</h4>
-                    <span className="bg-rose-500 text-white text-[9px] font-black px-2 py-0.5 rounded-full">{metrics.lowStockItems?.length || 0}</span>
+                    <div className="flex items-center gap-2">
+                        <span className="bg-rose-500 text-white text-[9px] font-black px-2 py-0.5 rounded-full">{metrics.lowStockItems?.length || 0}</span>
+                        {metrics.lowStockItems?.length > 0 && (
+                            <button
+                                onClick={() => navigate('inventory?filter=critical')}
+                                className="text-[9px] font-black text-rose-600 hover:text-rose-800 flex items-center gap-0.5 hover:underline transition-colors"
+                            >
+                                Ver todos <ArrowRight size={10}/>
+                            </button>
+                        )}
+                    </div>
                 </div>
                 <div className="p-0 flex-1 overflow-y-auto max-h-[140px] custom-scrollbar">
                     {metrics.lowStockItems?.length > 0 ? (

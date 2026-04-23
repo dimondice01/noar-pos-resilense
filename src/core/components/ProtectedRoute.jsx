@@ -66,9 +66,9 @@ export const ProtectedRoute = () => {
   }
 
   // D. Validación de Aislamiento (Anti-Hacking de URL)
-  // Si el usuario de la empresa "kiosco-A" intenta entrar manualmente a "/kiosco-B"
-  // El companySlug debe coincidir estrictamente con su companyId de la base de datos
-  if (companySlug && companySlug !== user.companyId) {
+  // Rutas internas reservadas que no usan companySlug como tenant
+  const RESERVED_SLUGS = ['testqa'];
+  if (companySlug && !RESERVED_SLUGS.includes(companySlug) && companySlug !== user.companyId) {
       console.warn(`⛔ Bloqueo de seguridad: Acceso cruzado denegado de ${user.companyId} hacia ${companySlug}`);
       return <Navigate to={`/${user.companyId}`} replace />;
   }

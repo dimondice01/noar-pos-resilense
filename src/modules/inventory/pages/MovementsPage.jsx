@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo, useCallback } from 'react';
 import { 
     Search, Filter, ArrowDownLeft, ArrowUpRight, 
     History, DollarSign, Tag, AlertCircle, CheckCircle2, Package,
@@ -13,6 +13,8 @@ import { Card } from '../../../core/ui/Card';
 import { Button } from '../../../core/ui/Button';
 import { cn } from '../../../core/utils/cn';
 import { getDB } from '../../../database/db';
+import { collection, query, where, onSnapshot } from 'firebase/firestore';
+import { db as firestoreDB } from '../../../database/firebase';
 
 // Componentes de Trazabilidad (Tickets)
 import { TicketModal } from '../../sales/components/TicketModal'; 
@@ -31,8 +33,14 @@ const TYPE_CONFIG = {
   'OUT': { label: 'Salida Manual', icon: AlertCircle, color: 'text-red-600', bg: 'bg-red-50', border: 'border-red-200' },
   'CREATION': { label: 'Alta Producto', icon: Package, color: 'text-purple-600', bg: 'bg-purple-50', border: 'border-purple-200' },
   'STOCK_OUT': { label: 'Venta', icon: ArrowUpRight, color: 'text-sys-600', bg: 'bg-sys-100', border: 'border-sys-200' },
-  'BUDGET': { label: 'Presupuesto', icon: FileArchive, color: 'text-gray-500', bg: 'bg-gray-100', border: 'border-gray-200' }, 
+  'BUDGET': { label: 'Presupuesto', icon: FileArchive, color: 'text-gray-500', bg: 'bg-gray-100', border: 'border-gray-200' },
 };
+
+// Solo estos tipos aparecen en el Feed de Auditoría — ventas (STOCK_OUT) y presupuestos quedan excluidos
+const AUDIT_TYPES = new Set([
+    'STOCK_IN', 'IN', 'STOCK_ADJUST_IN', 'STOCK_ADJUST_OUT',
+    'OUT', 'PRICE_CHANGE', 'COST_CHANGE', 'CREATION'
+]);
 
 // =================================================================
 // 🖨️ MODAL: TICKET DE COMPRA IMPRIMIBLE
@@ -247,119 +255,115 @@ export const MovementsPage = () => {
     const [selectedProduct, setSelectedProduct] = useState(null); 
     const [selectedDocument, setSelectedDocument] = useState(null); // { type: 'sale' | 'purchase', data: {} }
 
-    // VISTA
-    const [viewMode, setViewMode] = useState('list'); 
-    
     // FILTROS
     const [search, setSearch] = useState('');
     const [dateRange, setDateRange] = useState('TODAY'); 
     const [filterUser, setFilterUser] = useState('ALL'); 
     const [filterCategory, setFilterCategory] = useState('ALL');
 
-    // ===================== CARGA OPTIMIZADA Y AUTO-SANACIÓN =====================
-    useEffect(() => {
-        const loadData = async () => {
-            try {
-                setLoading(true);
-                
-                const [allProducts, allCats] = await Promise.all([
-                    productRepository.getAll(),
-                    masterRepository.getAll('categories')
-                ]);
-                
-                setCategories(allCats);
+    // ===================== CARGA OPTIMIZADA — DEXIE FIRST =====================
+    const loadData = useCallback(async () => {
+        try {
+            setLoading(true);
 
-                const { getDB } = await import('../../../database/db');
-                const db = await getDB();
-                
-                let allMovements = [];
+            const [allCats, db] = await Promise.all([
+                masterRepository.getAll('categories'),
+                getDB()
+            ]);
+            setCategories(allCats);
 
-                // 1. Carga Local de Dexie
-                if (user?.role === 'OWNER' || user?.role === 'SUPER_ADMIN') {
-                    if (activeBranchId && activeBranchId !== 'ALL') {
-                        allMovements = await db.movements.where('branchId').equals(activeBranchId).toArray();
-                    } else {
-                        allMovements = await db.movements.toArray();
-                    }
-                } else {
-                    if (activeBranchId) {
-                        allMovements = await db.movements.where('branchId').equals(activeBranchId).toArray();
-                    } else {
-                        allMovements = []; 
-                    }
-                }
-
-                // 🔥 RUTINA DE AUTO-SANACIÓN (FORZAR SUBIDA DE PENDIENTES)
-                if (navigator.onLine && user?.companyId) {
-                    const pendingLocalMovs = allMovements.filter(m => m.syncStatus === 'pending');
-                    if (pendingLocalMovs.length > 0) {
-                        console.log(`[Auto-Heal] Encontrados ${pendingLocalMovs.length} movimientos locales sin subir. Forzando subida...`);
-                        
-                        // Importamos Firebase dinámicamente para no bloquear la UI
-                        const { doc, setDoc } = await import('firebase/firestore');
-                        const { db: firestoreDB } = await import('../../../database/firebase');
-                        
-                        const batchPromesas = pendingLocalMovs.map(async (mov) => {
-                            try {
-                                const cloudId = mov.firestoreId || mov.id;
-                                const { syncStatus, localId, id, ...cleanMov } = mov;
-                                const docRef = doc(firestoreDB, `companies/${user.companyId}/movements`, cloudId);
-                                
-                                await setDoc(docRef, {
-                                    ...cleanMov,
-                                    firestoreId: cloudId,
-                                    updatedAt: new Date().toISOString(),
-                                    syncStatus: 'synced'
-                                }, { merge: true });
-
-                                // Actualizamos localmente
-                                await db.movements.update(mov.id, { syncStatus: 'synced', firestoreId: cloudId });
-                            } catch (err) {
-                                console.error(`Error forzando subida del mov ${mov.id}`, err);
-                            }
-                        });
-
-                        await Promise.all(batchPromesas);
-                        console.log("[Auto-Heal] Subida forzada completada.");
-                    }
-                }
-
-                // 2. 🔥 CARGAMOS EL MAPA DE PRODUCTOS PARA ENRIQUECER LOS MOVIMIENTOS
-
-                const productMap = new Map(allProducts.map(p => [String(p.id), p])); 
-                const uniqueUsers = new Set();
-
-                const enrichedData = allMovements.map(mov => {
-                    const product = productMap.get(String(mov.productId));
-                    
-                    let cleanUser = mov.user || 'Sistema';
-                    if (cleanUser.toLowerCase() === 'admin') cleanUser = 'Sistema'; 
-                    uniqueUsers.add(cleanUser);
-
-                    const catName = product ? (product.category || 'Sin Categoría') : 'Eliminado';
-
-                    return {
-                        ...mov,
-                        user: cleanUser,
-                        productName: product ? product.name : 'Producto Eliminado',
-                        productCode: product ? product.code : '---',
-                        categoryName: catName, 
-                        priceAtMoment: product ? product.price : 0, 
-                        dateObj: new Date(mov.date || mov.createdAt || Date.now()) // Prevención de Fechas Nulas
-                    };
-                }).sort((a, b) => b.dateObj - a.dateObj);
-
-                setData(enrichedData);
-                setUserList(Array.from(uniqueUsers).sort()); 
-
-            } catch (error) {
-                console.error("Error cargando movimientos:", error);
-            } finally {
-                setLoading(false);
+            let allMovements = [];
+            if (user?.role === 'OWNER' || user?.role === 'SUPER_ADMIN') {
+                allMovements = (activeBranchId && activeBranchId !== 'ALL')
+                    ? await db.movements.where('branchId').equals(activeBranchId).toArray()
+                    : await db.movements.toArray();
+            } else {
+                allMovements = activeBranchId
+                    ? await db.movements.where('branchId').equals(activeBranchId).toArray()
+                    : [];
             }
-        };
+
+            // Solo movimientos de auditoría — excluye STOCK_OUT (ventas) y BUDGET
+            allMovements = allMovements.filter(m => AUDIT_TYPES.has(m.type));
+
+            // 🔥 AUTO-SANACIÓN: subir pendientes a Firestore sin bloquear la UI
+            if (navigator.onLine && user?.companyId) {
+                const pending = allMovements.filter(m => m.syncStatus === 'pending');
+                if (pending.length > 0) {
+                    const { doc, setDoc } = await import('firebase/firestore');
+                    Promise.all(pending.map(async (mov) => {
+                        try {
+                            const cloudId = mov.firestoreId || mov.id;
+                            const { syncStatus, localId, id, ...cleanMov } = mov;
+                            await setDoc(doc(firestoreDB, `companies/${user.companyId}/movements`, cloudId), {
+                                ...cleanMov, firestoreId: cloudId,
+                                updatedAt: new Date().toISOString(), syncStatus: 'synced'
+                            }, { merge: true });
+                            await db.movements.update(mov.id, { syncStatus: 'synced', firestoreId: cloudId });
+                        } catch (err) { console.error(`[Auto-Heal] mov ${mov.id}`, err); }
+                    })).catch(console.error);
+                }
+            }
+
+            // Enriquecimiento lazy: solo productos referenciados en los movimientos
+            const movProductIds = [...new Set(allMovements.map(m => m.productId).filter(Boolean))];
+            const movProducts = movProductIds.length > 0
+                ? await db.products.where('id').anyOf(movProductIds).toArray()
+                : [];
+            const productMap = new Map(movProducts.map(p => [String(p.id), p]));
+
+            const uniqueUsers = new Set();
+            const enrichedData = allMovements.map(mov => {
+                const product = productMap.get(String(mov.productId));
+                let cleanUser = mov.user || 'Sistema';
+                if (cleanUser.toLowerCase() === 'admin') cleanUser = 'Sistema';
+                uniqueUsers.add(cleanUser);
+                return {
+                    ...mov,
+                    user: cleanUser,
+                    productName: product ? product.name : 'Producto Eliminado',
+                    productCode: product ? product.code : '---',
+                    categoryName: product ? (product.category || 'Sin Categoría') : 'Eliminado',
+                    dateObj: new Date(mov.date || mov.createdAt || Date.now())
+                };
+            }).sort((a, b) => b.dateObj - a.dateObj);
+
+            setData(enrichedData);
+            setUserList(Array.from(uniqueUsers).sort());
+        } catch (error) {
+            console.error("Error cargando movimientos:", error);
+        } finally {
+            setLoading(false);
+        }
+    }, [user, activeBranchId]);
+
+    useEffect(() => {
         loadData();
-    }, [user, activeBranchId]); 
+
+        // Listener real-time: sincroniza movimientos de auditoría entre PCs
+        if (!user?.companyId || !activeBranchId || activeBranchId === 'ALL') return;
+
+        const liveStart = new Date(); liveStart.setHours(0, 0, 0, 0);
+        const movRef = collection(firestoreDB, `companies/${user.companyId}/movements`);
+        const liveQ = query(movRef,
+            where('branchId', '==', activeBranchId),
+            where('updatedAt', '>=', liveStart.toISOString())
+        );
+
+        const unsub = onSnapshot(liveQ, async (snap) => {
+            if (snap.empty) return;
+            const incoming = snap.docs
+                .map(d => ({ ...d.data(), id: d.id }))
+                .filter(m => AUDIT_TYPES.has(m.type));
+            if (incoming.length > 0) {
+                const db = await getDB();
+                await db.movements.bulkPut(incoming);
+                loadData();
+            }
+        }, (err) => console.warn('[Movements Listener]', err.code));
+
+        return () => unsub();
+    }, [user, activeBranchId, loadData]);
 
     // ===================== LÓGICA DE FILTRADO =====================
     const filteredData = useMemo(() => {
@@ -389,61 +393,6 @@ export const MovementsPage = () => {
         });
     }, [data, search, dateRange, filterUser, filterCategory]);
 
-    // ===================== ESTADÍSTICAS POR CATEGORÍA =====================
-    const categoryStats = useMemo(() => {
-        const stats = {}; 
-        filteredData.forEach(mov => {
-            if (mov.type === 'BUDGET') return;
-            if (mov.type !== 'STOCK_OUT' && mov.type !== 'OUT') return;
-            
-            const catName = mov.categoryName;
-            if (!stats[catName]) stats[catName] = { name: catName, money: 0, items: 0 };
-            
-            const qty = Math.abs(parseFloat(mov.amount));
-            stats[catName].items += qty;
-            stats[catName].money += qty * (mov.priceAtMoment || 0);
-        });
-        return Object.values(stats).sort((a,b) => b.money - a.money);
-    }, [filteredData]);
-
-    // ===================== VISTA AGREGADA =====================
-    const aggregatedData = useMemo(() => {
-        const grouping = {};
-        filteredData.forEach(mov => {
-            if (mov.type === 'BUDGET') return;
-
-            if (!grouping[mov.productId]) {
-                grouping[mov.productId] = {
-                    id: mov.productId,
-                    name: mov.productName,
-                    code: mov.productCode,
-                    soldQty: 0, 
-                    addedQty: 0,
-                    netQty: 0,
-                    movementsList: [],
-                    revenue: 0 
-                };
-            }
-            
-            const entry = grouping[mov.productId];
-            const qty = parseFloat(mov.amount || 0);
-            
-            const isOut = mov.type.includes('OUT') || qty < 0;
-
-            if (isOut) {
-                entry.soldQty += Math.abs(qty);
-                if (mov.type === 'STOCK_OUT') {
-                    entry.revenue += Math.abs(qty) * (mov.priceAtMoment || 0);
-                }
-            } else {
-                entry.addedQty += qty;
-            }
-
-            entry.netQty += qty;
-            entry.movementsList.push(mov); 
-        });
-        return Object.values(grouping).sort((a,b) => b.soldQty - a.soldQty);
-    }, [filteredData]);
 
     // ===================== HANDLERS DE TRAZABILIDAD =====================
     const handleOpenProductHistory = (aggItem) => {
@@ -505,8 +454,7 @@ export const MovementsPage = () => {
             const count = await syncService.fetchMovementsByRange(user.companyId, activeBranchId, start, end);
             
             toast.success(`Se bajaron ${count} movimientos correctamente.`, { id: toastId });
-            // Forzamos recarga de la página (esto disparará el loadData del useEffect)
-            window.location.reload(); 
+            await loadData();
         } catch (err) {
             toast.error("Error sincronizando movimientos.");
         } finally {
@@ -522,7 +470,7 @@ export const MovementsPage = () => {
                 <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
                     <div>
                         <h2 className="text-2xl font-bold text-sys-900 tracking-tight flex items-center gap-2">
-                            <History className="text-brand" /> Control de Movimientos
+                            <History className="text-brand" /> Auditoría de Stock
                         </h2>
                         <p className="text-sys-500 text-sm mt-1 flex items-center gap-2">
                            {dateRange === 'TODAY' ? 'Mostrando actividad de HOY' : 'Historial de movimientos'}
@@ -543,19 +491,6 @@ export const MovementsPage = () => {
                     </div>
                 </div>
 
-                {categoryStats.length > 0 && (
-                    <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
-                        {categoryStats.map((cat, idx) => (
-                            <Card key={idx} className="p-3 border-l-4 border-l-brand flex flex-col justify-between hover:shadow-md transition-shadow">
-                                <span className="text-[10px] uppercase font-bold text-sys-400 truncate" title={cat.name}>{cat.name}</span>
-                                <div>
-                                    <p className="text-lg font-black text-sys-800">$ {cat.money.toLocaleString('es-AR', {maximumFractionDigits: 0})}</p>
-                                    <p className="text-[10px] text-sys-500">{cat.items} u. movidas</p>
-                                </div>
-                            </Card>
-                        ))}
-                    </div>
-                )}
 
                 <Card className="p-2 flex flex-col lg:flex-row gap-3 bg-sys-100/50 backdrop-blur-md border-sys-200 items-center">
                     
@@ -626,10 +561,6 @@ export const MovementsPage = () => {
                             </select>
                         </div>
 
-                        <div className="flex bg-white rounded-lg border border-sys-200 p-1 shrink-0">
-                            <button onClick={() => setViewMode('list')} className={cn("px-2 py-1.5 rounded-md transition-all flex items-center gap-2 text-xs font-bold", viewMode === 'list' ? "bg-brand text-white shadow-md" : "text-sys-500 hover:bg-sys-50")} title="Ver Lista de Movimientos"><List size={16} /></button>
-                            <button onClick={() => setViewMode('aggregated')} className={cn("px-2 py-1.5 rounded-md transition-all flex items-center gap-2 text-xs font-bold", viewMode === 'aggregated' ? "bg-brand text-white shadow-md" : "text-sys-500 hover:bg-sys-50")} title="Ver Totales Agrupados"><BarChart3 size={16} /></button>
-                        </div>
                     </div>
                 </Card>
             </div>
@@ -643,52 +574,8 @@ export const MovementsPage = () => {
                 ) : filteredData.length === 0 ? (
                     <div className="text-center py-20 bg-white rounded-2xl border border-dashed border-sys-200 shadow-sm">
                         <div className="w-16 h-16 bg-sys-50 rounded-full flex items-center justify-center mx-auto mb-3 text-sys-300"><Filter size={32} /></div>
-                        <p className="text-sys-500 font-medium">Sin movimientos encontrados</p>
+                        <p className="text-sys-500 font-medium">Sin alertas de auditoría en este período</p>
                     </div>
-                ) : viewMode === 'aggregated' ? (
-                    
-                    /* VISTA AGREGADA (TARJETAS) */
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 animate-in slide-in-from-bottom-2 duration-300">
-                        {aggregatedData.map(item => (
-                            <div 
-                                key={item.id} 
-                                onClick={() => handleOpenProductHistory(item)} 
-                                className="bg-white p-4 rounded-xl border border-sys-200 shadow-sm flex flex-col justify-between group hover:border-brand/30 hover:shadow-md transition-all relative overflow-hidden cursor-pointer"
-                            >
-                                {item.soldQty > 5 && <div className="absolute top-0 right-0 w-12 h-12 bg-gradient-to-bl from-green-50 to-transparent rounded-bl-3xl -mr-2 -mt-2"></div>}
-
-                                <div className="flex justify-between items-start mb-3 relative z-10">
-                                    <div className="min-w-0 pr-2">
-                                        <p className="text-[9px] font-bold text-sys-400 uppercase tracking-wider mb-0.5 truncate">{item.code}</p>
-                                        <h4 className="font-bold text-sys-900 text-sm leading-tight line-clamp-2 group-hover:text-brand transition-colors" title={item.name}>{item.name}</h4>
-                                    </div>
-                                    <span className="bg-sys-50 text-sys-500 text-[9px] font-bold px-1.5 py-0.5 rounded border border-sys-100 whitespace-nowrap">
-                                        {item.movementsList.length} movs
-                                    </span>
-                                </div>
-
-                                <div className="flex items-end justify-between border-t border-sys-100 pt-2 relative z-10">
-                                    <div className="flex flex-col">
-                                        <span className="text-[9px] text-sys-400 uppercase font-bold">Vendido</span>
-                                        <div className="flex items-baseline gap-1">
-                                            <span className={cn("text-xl font-black tracking-tighter", item.soldQty > 0 ? "text-sys-900" : "text-sys-300")}>
-                                                {item.soldQty > 0 ? item.soldQty : '-'}
-                                            </span>
-                                            {item.revenue > 0 && <span className="text-[10px] text-sys-500 font-medium">$ {item.revenue.toLocaleString('es-AR', {maximumFractionDigits:0})}</span>}
-                                        </div>
-                                    </div>
-                                    
-                                    {item.addedQty > 0 && (
-                                        <div className="text-right">
-                                            <span className="text-[9px] text-green-600 uppercase font-bold block">Entrada</span>
-                                            <span className="text-xs font-bold text-green-700 bg-green-50 px-1.5 py-0.5 rounded">+{item.addedQty}</span>
-                                        </div>
-                                    )}
-                                </div>
-                            </div>
-                        ))}
-                    </div>
-
                 ) : (
                     
                     /* VISTA LISTA DETALLADA (TABLA PROFESIONAL) */
@@ -762,7 +649,7 @@ export const MovementsPage = () => {
                             </table>
                         </div>
                         <div className="p-3 border-t border-sys-100 bg-sys-50/50 flex justify-between items-center text-[10px] font-bold text-sys-400">
-                            <span>Mostrando {filteredData.length} movimientos de stock</span>
+                            <span>Mostrando {filteredData.length} alertas de auditoría</span>
                         </div>
                     </Card>
                 )}

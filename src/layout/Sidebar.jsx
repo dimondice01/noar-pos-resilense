@@ -1,13 +1,14 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { NavLink, useNavigate, useLocation, useParams } from 'react-router-dom'; 
-import { 
-    LayoutDashboard, ShoppingCart, Package, Settings, 
+import {
+    LayoutDashboard, ShoppingCart, Package, Settings,
     FileText, Cloud, RefreshCw, LogOut, User, ShieldCheck, Wallet,
-    Users, Lock, ArrowRight, X, Loader2, Plug, 
-    Building, Truck, Unlock, WifiOff
+    Users, Lock, ArrowRight, X, Loader2, Plug,
+    Building, Truck, Unlock, WifiOff, ChevronLeft, ChevronRight
 } from 'lucide-react';
 
-import { cn } from '../core/utils/cn'; 
+import { cn } from '../core/utils/cn';
+import { useUiStore } from '../core/store/useUiStore';
 import { useAutoSync } from '../core/hooks/useAutoSync';
 import { useAuthStore } from '../modules/auth/store/useAuthStore';
 import { securityService } from '../modules/security/services/securityService';
@@ -26,10 +27,12 @@ import defaultLogo from '../assets/logo.png';
 // ============================================================================
 const MenuLink = ({ to, icon: Icon, label, onClick, isRestricted }) => {
     const location = useLocation();
+    const { sidebarCollapsed } = useUiStore();
     const isActiveRoute = location.pathname === to;
 
     const baseClasses = cn(
-        "w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-base group relative text-left outline-none focus:ring-2 focus:ring-brand/30",
+        "w-full flex items-center gap-3 rounded-xl transition-all duration-base group relative text-left outline-none focus:ring-2 focus:ring-brand/30",
+        sidebarCollapsed ? "justify-center px-2 py-3" : "px-4 py-3",
         isActiveRoute
             ? "bg-sys-800/60 text-white font-semibold border-l-2 border-brand"
             : "text-sys-400 hover:bg-sys-800/40 hover:text-white"
@@ -37,12 +40,12 @@ const MenuLink = ({ to, icon: Icon, label, onClick, isRestricted }) => {
 
     const content = (
         <>
-            <Icon className="w-5 h-5" />
-            <span className="flex-1 text-sm">{label}</span>
-            {isActiveRoute && (
+            <Icon className="w-5 h-5 shrink-0" />
+            {!sidebarCollapsed && <span className="flex-1 text-sm">{label}</span>}
+            {!sidebarCollapsed && isActiveRoute && (
                 <div className="w-1.5 h-1.5 rounded-full bg-brand" />
             )}
-            {isRestricted && !isActiveRoute && (
+            {!sidebarCollapsed && isRestricted && !isActiveRoute && (
                 <Lock size={14} className="text-sys-600 group-hover:text-sys-400 transition-colors" />
             )}
         </>
@@ -235,6 +238,7 @@ const CloseShiftModalWrapper = ({ isOpen, onClose, onShiftClosed }) => {
 // 4. COMPONENTE PRINCIPAL: SIDEBAR
 // ============================================================================
 export const Sidebar = () => {
+    const { sidebarCollapsed, setSidebarCollapsed } = useUiStore();
     const { isSyncing } = useAutoSync(15000);
     const [isOnline, setIsOnline] = useState(navigator.onLine);
     
@@ -403,41 +407,60 @@ export const Sidebar = () => {
 
     return (
         <>
-            <aside className="w-64 h-screen bg-sys-900 border-r border-sys-800/50 flex flex-col fixed left-0 top-0 z-20 hidden md:flex shadow-[4px_0_24px_rgba(0,0,0,0.15)]">
+            <aside className={cn("h-screen bg-sys-900 border-r border-sys-800/50 flex-col fixed left-0 top-0 z-20 shadow-[4px_0_24px_rgba(0,0,0,0.15)] transition-all duration-300 hidden md:flex", sidebarCollapsed ? "w-16" : "w-64")}>
                 
                 {/* Header */}
-                <div className="p-6 border-b border-sys-800/60 flex flex-col items-center text-center">
-                    <div className="w-20 h-20 mb-3 bg-white rounded-full flex items-center justify-center overflow-hidden border border-sys-100 shadow-sm p-2 relative">
-                        <img 
-                            src={companyInfo.logo} 
-                            alt="Logo" 
+                <div className={cn("border-b border-sys-800/60 flex flex-col items-center text-center relative", sidebarCollapsed ? "p-3" : "p-6")}>
+                    {/* Toggle button */}
+                    <button
+                        onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+                        className="absolute -right-3 top-6 w-6 h-6 bg-sys-800 border border-sys-700 rounded-full flex items-center justify-center text-sys-400 hover:text-white hover:bg-sys-700 transition-all z-30 shadow-md"
+                        title={sidebarCollapsed ? "Expandir sidebar" : "Colapsar sidebar"}
+                    >
+                        {sidebarCollapsed ? <ChevronRight size={12} /> : <ChevronLeft size={12} />}
+                    </button>
+
+                    <div className={cn("bg-white rounded-full flex items-center justify-center overflow-hidden border border-sys-100 shadow-sm p-2 relative", sidebarCollapsed ? "w-9 h-9" : "w-20 h-20 mb-3")}>
+                        <img
+                            src={companyInfo.logo}
+                            alt="Logo"
                             className="w-full h-full object-contain"
-                            onError={(e) => { e.target.src = defaultLogo; }} 
+                            onError={(e) => { e.target.src = defaultLogo; }}
                         />
                     </div>
 
-                    <div className="flex flex-col gap-0.5 w-full">
-                        <h1 className="text-lg font-black text-white tracking-tight leading-none uppercase truncate px-2" title={companyInfo.name}>
-                            {companyInfo.name}
-                        </h1>
-                        <p className="text-xs font-bold text-brand-muted font-serif italic tracking-wide">
-                            Sistema POS
-                        </p>
-                    </div>
+                    {!sidebarCollapsed && (
+                        <>
+                            <div className="flex flex-col gap-0.5 w-full">
+                                <h1 className="text-lg font-black text-white tracking-tight leading-none uppercase truncate px-2" title={companyInfo.name}>
+                                    {companyInfo.name}
+                                </h1>
+                                <p className="text-xs font-bold text-brand-muted font-serif italic tracking-wide">
+                                    Sistema POS
+                                </p>
+                            </div>
 
-                    {/* User Card */}
-                    <div className="w-full text-left flex items-center gap-2.5 bg-sys-800/60 p-2 rounded-xl border border-sys-700/50 mt-5">
-                        <div className={cn("w-7 h-7 rounded-full flex items-center justify-center text-white shadow-sm shrink-0", isOwner ? "bg-purple-600" : isAdmin ? "bg-sys-900" : "bg-brand")}>
-                            {isOwner ? <ShieldCheck size={14} /> : <User size={14} />}
-                        </div>
-                        <div className="flex-1 min-w-0">
-                            <p className="text-[11px] font-bold text-white truncate leading-tight">{user?.name || user?.email}</p>
-                            <p className="text-[9px] text-sys-400 truncate font-mono uppercase leading-tight">{user?.role || 'Cajero'}</p>
-                        </div>
-                        <button onClick={handleLogout} className="text-sys-500 hover:text-red-400 transition-colors p-1 rounded-lg hover:bg-sys-700" title="Cerrar Sesión">
-                            <LogOut size={14} />
+                            {/* User Card */}
+                            <div className="w-full text-left flex items-center gap-2.5 bg-sys-800/60 p-2 rounded-xl border border-sys-700/50 mt-5">
+                                <div className={cn("w-7 h-7 rounded-full flex items-center justify-center text-white shadow-sm shrink-0", isOwner ? "bg-purple-600" : isAdmin ? "bg-sys-900" : "bg-brand")}>
+                                    {isOwner ? <ShieldCheck size={14} /> : <User size={14} />}
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                    <p className="text-[11px] font-bold text-white truncate leading-tight">{user?.name || user?.email}</p>
+                                    <p className="text-[9px] text-sys-400 truncate font-mono uppercase leading-tight">{user?.role || 'Cajero'}</p>
+                                </div>
+                                <button onClick={handleLogout} className="text-sys-500 hover:text-red-400 transition-colors p-1 rounded-lg hover:bg-sys-700" title="Cerrar Sesión">
+                                    <LogOut size={14} />
+                                </button>
+                            </div>
+                        </>
+                    )}
+
+                    {sidebarCollapsed && (
+                        <button onClick={handleLogout} className="mt-2 text-sys-500 hover:text-red-400 transition-colors p-1 rounded-lg hover:bg-sys-700" title="Cerrar Sesión">
+                            <LogOut size={13} />
                         </button>
-                    </div>
+                    )}
                 </div>
 
                 {/* Navigation */}
@@ -456,7 +479,7 @@ export const Sidebar = () => {
                         </div>
                     )}
 
-                    <div className="px-4 py-2 text-xs font-semibold text-sys-600 uppercase tracking-wider mb-1">Operación</div>
+                    {!sidebarCollapsed && <div className="px-4 py-2 text-xs font-semibold text-sys-600 uppercase tracking-wider mb-1">Operación</div>}
                     
                     <MenuLink to={getLink('')} icon={LayoutDashboard} label="Principal" />
                     <MenuLink to={getLink('pos')} icon={ShoppingCart} label="Punto de Venta" />
@@ -466,9 +489,7 @@ export const Sidebar = () => {
 
                     {/* Gestión */}
                     <div className="mt-6 mb-1">
-                        <div className="px-4 py-2 text-xs font-semibold text-sys-600 uppercase tracking-wider">
-                            Gestión
-                        </div>
+                        {!sidebarCollapsed && <div className="px-4 py-2 text-xs font-semibold text-sys-600 uppercase tracking-wider">Gestión</div>}
                         
                         <MenuLink 
                             to={getLink('inventory')}
@@ -495,16 +516,16 @@ export const Sidebar = () => {
                     
                     {checkingShift ? (
                         <div className="w-full h-10 bg-sys-800/50 animate-pulse rounded-xl flex items-center justify-center">
-                            <span className="text-xs text-sys-500">Verificando...</span>
+                            {!sidebarCollapsed && <span className="text-xs text-sys-500">Verificando...</span>}
                         </div>
                     ) : hasActiveShift ? (
-                        
-                        <button 
+                        <button
                             onClick={() => {
                                 if (isOnline) setIsCloseModalOpen(true);
                                 else alert("⚠️ DEBE ESTAR ONLINE\n\nEl cierre de caja requiere conexión a internet para sincronizar los datos y evitar errores.");
                             }}
                             disabled={!isOnline}
+                            title="Cerrar Turno"
                             className={cn(
                                 "w-full flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-bold transition-all shadow-sm group",
                                 isOnline
@@ -513,28 +534,34 @@ export const Sidebar = () => {
                             )}
                         >
                             {isOnline ? (
-                                <><LogOut size={16} className="group-hover:text-red-700" /> Cerrar Turno</>
+                                <>{sidebarCollapsed ? <LogOut size={16} /> : <><LogOut size={16} className="group-hover:text-red-700" /> Cerrar Turno</>}</>
                             ) : (
-                                <><WifiOff size={16} /> Cerrar (Requiere Red)</>
+                                <>{sidebarCollapsed ? <WifiOff size={16} /> : <><WifiOff size={16} /> Cerrar (Requiere Red)</>}</>
                             )}
                         </button>
-
                     ) : (
-                        <button 
+                        <button
                             onClick={handleOpenShiftDirectly}
+                            title="Abrir Turno"
                             className="w-full flex items-center justify-center gap-2 bg-green-600 border border-green-700 text-white hover:bg-green-700 py-2.5 rounded-xl text-sm font-bold transition-all shadow-md active:scale-95 group"
                         >
-                            <Unlock size={16} /> Abrir Turno
+                            <Unlock size={16} />{!sidebarCollapsed && ' Abrir Turno'}
                         </button>
                     )}
 
-                    <div className={cn("px-3 py-2 rounded-lg border flex items-center gap-2 text-xs transition-colors duration-300", !isOnline ? "bg-red-900/20 border-red-900/40 text-red-400" : "bg-sys-800/40 border-sys-700/50 text-sys-400")}>
-                        <div className={cn("w-2 h-2 rounded-full", !isOnline ? "bg-red-500" : isSyncing ? "bg-blue-500 animate-pulse" : "bg-green-500")} />
-                        <span className="font-medium truncate flex-1">
-                            {!isOnline ? 'Offline' : isSyncing ? 'Sincronizando...' : 'Sistema Online'}
-                        </span>
-                        {isSyncing ? <RefreshCw size={12} className="animate-spin text-brand"/> : <Cloud size={12}/>}
-                    </div>
+                    {sidebarCollapsed ? (
+                        <div className={cn("p-2 rounded-lg border flex items-center justify-center transition-colors duration-300", !isOnline ? "bg-red-900/20 border-red-900/40" : "bg-sys-800/40 border-sys-700/50")} title={!isOnline ? 'Offline' : isSyncing ? 'Sincronizando...' : 'Sistema Online'}>
+                            <div className={cn("w-2 h-2 rounded-full", !isOnline ? "bg-red-500" : isSyncing ? "bg-blue-500 animate-pulse" : "bg-green-500")} />
+                        </div>
+                    ) : (
+                        <div className={cn("px-3 py-2 rounded-lg border flex items-center gap-2 text-xs transition-colors duration-300", !isOnline ? "bg-red-900/20 border-red-900/40 text-red-400" : "bg-sys-800/40 border-sys-700/50 text-sys-400")}>
+                            <div className={cn("w-2 h-2 rounded-full", !isOnline ? "bg-red-500" : isSyncing ? "bg-blue-500 animate-pulse" : "bg-green-500")} />
+                            <span className="font-medium truncate flex-1">
+                                {!isOnline ? 'Offline' : isSyncing ? 'Sincronizando...' : 'Sistema Online'}
+                            </span>
+                            {isSyncing ? <RefreshCw size={12} className="animate-spin text-brand"/> : <Cloud size={12}/>}
+                        </div>
+                    )}
                 </div>
             </aside>
 

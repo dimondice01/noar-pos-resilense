@@ -62,7 +62,8 @@ export const ValeriaRegisterPage = () => {
     const [mathChallenge] = useState({ 
         q: `${Math.floor(Math.random() * 5) + 1} + ${Math.floor(Math.random() * 5) + 1}`, 
     });
-    const realAnswer = eval(mathChallenge.q);
+    const [_a, _b] = mathChallenge.q.split(' + ').map(Number);
+    const realAnswer = _a + _b;
 
     // --- EFECTO DE CONFETI ---
     const triggerCelebration = () => {

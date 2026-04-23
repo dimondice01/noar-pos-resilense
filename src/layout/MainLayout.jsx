@@ -5,6 +5,8 @@ import { ShieldAlert } from 'lucide-react';
 
 // ✅ Stores
 import { useAuthStore } from '../modules/auth/store/useAuthStore';
+import { useUiStore } from '../core/store/useUiStore';
+import { cn } from '../core/utils/cn';
 import { useShiftStore } from '../modules/cash/store/useShiftStore';
 
 // 🔥 SERVICIOS (Motor de Sincronización)
@@ -16,6 +18,7 @@ import { db } from '../database/firebase';
 
 export const MainLayout = () => {
   const { user, loading, activeBranchId } = useAuthStore();
+  const { sidebarCollapsed } = useUiStore();
   const { activeShift, setActiveShift } = useShiftStore(); 
   
   // Ref para guardar la función de desuscripción de manera persistente y mutable
@@ -163,7 +166,7 @@ export const MainLayout = () => {
   return (
     <div className="min-h-screen bg-sys-50 flex">
       <Sidebar />
-      <main className="flex-1 md:ml-64 p-4 md:p-8 transition-all duration-300">
+      <main className={cn("flex-1 p-4 md:p-8 transition-all duration-300", sidebarCollapsed ? "md:ml-16" : "md:ml-64")}>
         <div className="max-w-7xl mx-auto">
             <Outlet />
         </div>

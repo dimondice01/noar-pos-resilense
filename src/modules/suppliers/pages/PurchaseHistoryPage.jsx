@@ -4,13 +4,11 @@ import {
     Truck, Plus, FileText, Search, 
     DollarSign, Package, ChevronRight, ChevronLeft,
     Filter, AlertCircle, CheckCircle2, Clock, Wallet, X, MapPin,
-    Eye, Trash2, PackageMinus, Printer, Loader2, CloudDownload
+    Eye, Trash2, PackageMinus, Printer, Loader2
 } from 'lucide-react';
 
 // 🔥 REPOSITORIO
 import { purchaseRepository } from '../repositories/purchaseRepository'; 
-import { collection, query, where, getDocs, limit, orderBy } from 'firebase/firestore';
-import { db as firestoreDB } from '../../../database/firebase';
 
 import { useAuthStore } from '../../auth/store/useAuthStore';
 import { Button } from '../../../core/ui/Button';
@@ -331,50 +329,6 @@ export const PurchaseHistoryPage = () => {
     // =================================================================
     // ⚡ DESCARGA FORZADA (CLOUD PULL) - EL BOTÓN DE RESCATE
     // =================================================================
-    const handleForceCloudSync = async () => {
-        setLoading(true);
-        const toastId = toast.loading("Buscando en Firebase. No cierres la ventana...");
-        try {
-            const forcedCompanyId = user?.companyId || user?.tenantId;
-            if (!forcedCompanyId) throw new Error("Falta companyId");
-
-            const { getDB } = await import('../../../database/db');
-            const dbLocal = await getDB();
-
-            let q;
-            if (activeBranchId && activeBranchId !== 'ALL') {
-                q = query(collection(firestoreDB, `companies/${forcedCompanyId}/purchases`), where('branchId', '==', activeBranchId), orderBy('date', 'desc'), limit(1000));
-            } else {
-                q = query(collection(firestoreDB, `companies/${forcedCompanyId}/purchases`), orderBy('date', 'desc'), limit(1000));
-            }
-
-            const snapshot = await getDocs(q);
-            const cloudPurchases = [];
-            
-            snapshot.docs.forEach(docSnap => {
-                const data = docSnap.data();
-                cloudPurchases.push({
-                    ...data,
-                    id: docSnap.id,
-                    firestoreId: docSnap.id,
-                    syncStatus: 'synced'
-                });
-            });
-
-            if (cloudPurchases.length > 0) {
-                await dbLocal.purchases.bulkPut(cloudPurchases);
-                toast.success(`¡Misterio resuelto! Se bajaron ${cloudPurchases.length} compras de la nube.`, { id: toastId });
-            } else {
-                toast.success("No se encontraron compras en Firebase.", { id: toastId });
-            }
-        } catch (error) {
-            console.error("Error forzando sync:", error);
-            toast.error(`Error al bajar de la nube: ${error.message}`, { id: toastId });
-        } finally {
-            loadData(); 
-        }
-    };
-
     // CORE: Carga de Datos
     const loadData = useCallback(async () => {
         setLoading(true);
@@ -407,41 +361,6 @@ export const PurchaseHistoryPage = () => {
         loadData();
     }, [loadData]);
 
-    // 🔥 AUTO-RESCATE SILENCIOSO EN SEGUNDO PLANO
-    useEffect(() => {
-        const silentCloudPull = async () => {
-            if (!navigator.onLine || !user?.companyId) return;
-            try {
-                const { getDB } = await import('../../../database/db');
-                const dbLocal = await getDB();
-                
-                let q;
-                if (activeBranchId && activeBranchId !== 'ALL') {
-                    q = query(collection(firestoreDB, `companies/${user.companyId}/purchases`), where('branchId', '==', activeBranchId), orderBy('date', 'desc'), limit(100));
-                } else {
-                    q = query(collection(firestoreDB, `companies/${user.companyId}/purchases`), orderBy('date', 'desc'), limit(100));
-                }
-
-                const snapshot = await getDocs(q);
-                const cloudPurchases = [];
-                
-                snapshot.docs.forEach(docSnap => {
-                    const data = docSnap.data();
-                    cloudPurchases.push({ ...data, id: docSnap.id, firestoreId: docSnap.id, syncStatus: 'synced' });
-                });
-
-                if (cloudPurchases.length > 0) {
-                    await dbLocal.purchases.bulkPut(cloudPurchases);
-                    loadData(); // Recargamos en silencio
-                }
-            } catch (error) {
-                console.warn("Fallo el Auto-Rescate silencioso de Compras:", error);
-            }
-        };
-
-        const timer = setTimeout(() => { silentCloudPull(); }, 2000);
-        return () => clearTimeout(timer);
-    }, [user?.companyId, activeBranchId]);
 
     // ACCIONES
     const handleOpenPayment = (e, purchase) => {
@@ -570,15 +489,6 @@ export const PurchaseHistoryPage = () => {
                     </div>
                     
                     <div className="flex gap-3">
-                        <Button 
-                            variant="outline" 
-                            onClick={handleForceCloudSync} 
-                            className="shadow-sm border-brand/30 text-brand bg-brand/5 hover:bg-brand hover:text-white transition-all h-12 px-6"
-                            title="Forzar descarga de compras desde Firebase"
-                        >
-                            <CloudDownload size={18} className={loading ? "animate-bounce mr-2" : "mr-2"}/>
-                            <span className="font-bold">Bajar Nube</span>
-                        </Button>
                         {canOperate && (
                             <Button 
                                 onClick={handleNewPurchase} 

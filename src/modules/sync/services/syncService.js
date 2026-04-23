@@ -71,6 +71,9 @@ export const syncService = {
           suppliers: Array.isArray(data.suppliers) ? data.suppliers : [],
           minStock: parseFloat(data.minStock) || 5,
           isWeighable: data.isWeighable === true,
+          isCase: data.isCase === true,
+          caseProductId: data.caseProductId || null,
+          unitsPerCase: data.unitsPerCase ? Number(data.unitsPerCase) : 1,
           active: data.active !== false,
           deleted: data.deleted === true,
           updatedAt: data.updatedAt?.toDate ? data.updatedAt.toDate().toISOString() : (data.updatedAt || data.lastUpdated || new Date().toISOString()),
@@ -383,12 +386,20 @@ export const syncService = {
                   branchId,
                   productId: doc.id,
                   stock: parseFloat(d.stock) || 0,
-                  promo: d.promo || null, 
+                  promo: d.promo || null,
                   updatedAt: d.updatedAt ? (d.updatedAt.toDate ? d.updatedAt.toDate().toISOString() : d.updatedAt) : new Date().toISOString(),
                   syncStatus: 'synced'
               };
           });
-          if (inventoryItems.length > 0) await localDb.inventory.bulkPut(inventoryItems);
+          if (inventoryItems.length > 0) {
+              // Nunca sobreescribir registros con ventas pendientes de subir
+              const pendingSet = new Set(
+                  (await localDb.inventory.where('syncStatus').equals('pending').toArray())
+                      .map(i => `${i.branchId}_${i.productId}`)
+              );
+              const safeItems = inventoryItems.filter(i => !pendingSet.has(`${i.branchId}_${i.productId}`));
+              if (safeItems.length > 0) await localDb.inventory.bulkPut(safeItems);
+          }
       } catch (e) {
           if (e.code === 'failed-precondition') {
                const fullSnap = await getDocs(collection(db, 'companies', companyId, 'branches', branchId, 'inventory'));
@@ -400,7 +411,13 @@ export const syncService = {
                   updatedAt: new Date().toISOString(),
                   syncStatus: 'synced'
                }));
-               await localDb.inventory.bulkPut(allItems);
+               // Nunca sobreescribir registros con ventas pendientes de subir
+               const pendingSet = new Set(
+                   (await localDb.inventory.where('syncStatus').equals('pending').toArray())
+                       .map(i => `${i.branchId}_${i.productId}`)
+               );
+               const safeAll = allItems.filter(i => !pendingSet.has(`${i.branchId}_${i.productId}`));
+               if (safeAll.length > 0) await localDb.inventory.bulkPut(safeAll);
           }
       }
   },
@@ -487,7 +504,13 @@ export const syncService = {
 
           const snapshot = await getDocs(q);
           if (!snapshot.empty) {
-              const salesToPut = snapshot.docs.map(docSnap => this._sanitizeCloudSale(docSnap.data(), docSnap.id));
+              const pendingSet = new Set(
+                  (await localDb.sales.where('syncStatus').equals('pending').toArray())
+                      .map(s => s.id)
+              );
+              const salesToPut = snapshot.docs
+                  .filter(docSnap => !pendingSet.has(docSnap.id))
+                  .map(docSnap => this._sanitizeCloudSale(docSnap.data(), docSnap.id));
               if (salesToPut.length > 0) await localDb.sales.bulkPut(salesToPut);
           }
       } catch (error) {}
@@ -607,6 +630,74 @@ export const syncService = {
       }
   },
 
+  async syncInitialClients(companyId) {
+      if (!companyId) return;
+      try {
+          const localDb = await getDB();
+          const lastSyncStr = localStorage.getItem('noar_last_sync_clients');
+          const countLocal = await localDb.clients.count();
+
+          const clientsRef = collection(db, 'companies', companyId, 'clients');
+          let q;
+
+          if (lastSyncStr && countLocal > 0) {
+              const safetyDate = new Date(new Date(lastSyncStr).getTime() - 60000);
+              q = query(clientsRef, where('updatedAt', '>', Timestamp.fromDate(safetyDate)));
+          } else {
+              q = query(clientsRef, orderBy('updatedAt', 'desc'), limit(2000));
+          }
+
+          const snapshot = await getDocs(q);
+          if (!snapshot.empty) {
+              const pendingSet = new Set(
+                  (await localDb.clients.where('syncStatus').equals('pending').toArray())
+                      .map(c => String(c.id))
+              );
+              const toPut = snapshot.docs
+                  .filter(d => !pendingSet.has(d.id))
+                  .map(d => ({ ...d.data(), id: d.id, firestoreId: d.id, syncStatus: 'synced' }));
+              if (toPut.length > 0) await localDb.clients.bulkPut(toPut);
+          }
+          localStorage.setItem('noar_last_sync_clients', new Date().toISOString());
+      } catch (error) {
+          console.warn('Error syncInitialClients:', error);
+      }
+  },
+
+  async syncInitialSuppliers(companyId) {
+      if (!companyId) return;
+      try {
+          const localDb = await getDB();
+          const lastSyncStr = localStorage.getItem('noar_last_sync_suppliers');
+          const countLocal = await localDb.suppliers.count();
+
+          const suppliersRef = collection(db, 'companies', companyId, 'suppliers');
+          let q;
+
+          if (lastSyncStr && countLocal > 0) {
+              const safetyDate = new Date(new Date(lastSyncStr).getTime() - 60000);
+              q = query(suppliersRef, where('updatedAt', '>', Timestamp.fromDate(safetyDate)));
+          } else {
+              q = query(suppliersRef, orderBy('updatedAt', 'desc'), limit(2000));
+          }
+
+          const snapshot = await getDocs(q);
+          if (!snapshot.empty) {
+              const pendingSet = new Set(
+                  (await localDb.suppliers.where('syncStatus').equals('pending').toArray())
+                      .map(s => String(s.id))
+              );
+              const toPut = snapshot.docs
+                  .filter(d => !pendingSet.has(d.id))
+                  .map(d => ({ ...d.data(), id: d.id, firestoreId: d.id, syncStatus: 'synced' }));
+              if (toPut.length > 0) await localDb.suppliers.bulkPut(toPut);
+          }
+          localStorage.setItem('noar_last_sync_suppliers', new Date().toISOString());
+      } catch (error) {
+          console.warn('Error syncInitialSuppliers:', error);
+      }
+  },
+
   async syncInitialSupplierLedger(companyId) {
       if (!companyId) return;
       try {
@@ -683,7 +774,9 @@ export const syncService = {
       await this.syncInitialCashMovements(user.companyId, activeBranchId);
       
       await this.syncInitialCustomerLedger(user.companyId);
-      
+      await this.syncInitialClients(user.companyId);
+      await this.syncInitialSuppliers(user.companyId);
+
       await this.syncInitialPurchases(user.companyId, activeBranchId, user.role);
       await this.syncInitialSupplierLedger(user.companyId);
 

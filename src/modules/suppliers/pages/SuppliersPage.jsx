@@ -1,18 +1,16 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { 
-    Truck, Search, FileText, 
+import {
+    Truck, Search, FileText,
     ExternalLink, ShoppingBag, Plus, Loader2,
-    ArrowRight, Phone, Mail, Building2, User, CloudDownload
+    ArrowRight, Phone, Mail, Building2, User
 } from 'lucide-react';
-import { masterRepository } from '../../inventory/repositories/masterRepository'; 
+import { masterRepository } from '../../inventory/repositories/masterRepository';
 import { useAuthStore } from '../../auth/store/useAuthStore';
 import { Card } from '../../../core/ui/Card';
 import { Button } from '../../../core/ui/Button';
 import { cn } from '../../../core/utils/cn';
-import { MastersModal } from '../../inventory/components/MastersModal'; 
-import { collection, getDocs } from 'firebase/firestore';
-import { db as firestoreDB } from '../../../database/firebase';
+import { MastersModal } from '../../inventory/components/MastersModal';
 import { getDB } from '../../../database/db';
 import toast from 'react-hot-toast';
 
@@ -25,43 +23,6 @@ export const SuppliersPage = () => {
     const [loading, setLoading] = useState(true);
     const [searchTerm, setSearchTerm] = useState('');
     const [isMastersModalOpen, setIsMastersModalOpen] = useState(false);
-
-    // =================================================================
-    // ⚡ DESCARGA FORZADA (CLOUD PULL) - EL BOTÓN DE RESCATE
-    // =================================================================
-    const handleForceCloudSync = async () => {
-        setLoading(true);
-        const toastId = toast.loading("Buscando proveedores en la nube...");
-        try {
-            if (!user?.companyId) throw new Error("Falta companyId");
-
-            const dbLocal = await getDB();
-            const snapshot = await getDocs(collection(firestoreDB, `companies/${user.companyId}/suppliers`));
-            const cloudSuppliers = [];
-            
-            snapshot.docs.forEach(docSnap => {
-                const data = docSnap.data();
-                cloudSuppliers.push({
-                    ...data,
-                    id: docSnap.id,
-                    firestoreId: docSnap.id,
-                    syncStatus: 'synced'
-                });
-            });
-
-            if (cloudSuppliers.length > 0) {
-                await dbLocal.suppliers.bulkPut(cloudSuppliers);
-                toast.success(`¡Sincronización completa! Se bajaron ${cloudSuppliers.length} proveedores.`, { id: toastId });
-            } else {
-                toast.success("No hay proveedores en Firebase.", { id: toastId });
-            }
-        } catch (error) {
-            console.error("Error forzando sync de proveedores:", error);
-            toast.error(`Error al descargar: ${error.message}`, { id: toastId });
-        } finally {
-            loadData(); 
-        }
-    };
 
     const loadData = async () => {
         setLoading(true);
@@ -109,7 +70,49 @@ export const SuppliersPage = () => {
         }
     };
 
-    useEffect(() => { loadData(); }, []);
+    useEffect(() => {
+        loadData();
+
+        if (!user?.companyId) return;
+        let unsub = null;
+
+        const setupListener = async () => {
+            const { collection, query, where, onSnapshot } = await import('firebase/firestore');
+            const { db: firestoreDB } = await import('../../../database/firebase');
+            const { getDB } = await import('../../../database/db');
+
+            const liveStart = new Date(); liveStart.setHours(0, 0, 0, 0);
+            const liveQ = query(
+                collection(firestoreDB, `companies/${user.companyId}/suppliers`),
+                where('updatedAt', '>=', liveStart.toISOString())
+            );
+
+            unsub = onSnapshot(liveQ, async (snap) => {
+                if (snap.empty) return;
+                const dbLocal = await getDB();
+                const pendingSet = new Set(
+                    (await dbLocal.suppliers.where('syncStatus').equals('pending').toArray())
+                        .map(s => String(s.id))
+                );
+                const incoming = snap.docs
+                    .filter(d => !pendingSet.has(d.id))
+                    .map(d => ({ ...d.data(), id: d.id, firestoreId: d.id, syncStatus: 'synced' }));
+                if (incoming.length > 0) {
+                    await dbLocal.suppliers.bulkPut(incoming);
+                    window.dispatchEvent(new CustomEvent('noar:suppliers-synced'));
+                }
+            }, (err) => console.warn('[Suppliers Listener]', err.code));
+        };
+
+        setupListener();
+        return () => { if (unsub) unsub(); };
+    }, [user?.companyId]);
+
+    useEffect(() => {
+        const handler = () => loadData();
+        window.addEventListener('noar:suppliers-synced', handler);
+        return () => window.removeEventListener('noar:suppliers-synced', handler);
+    }, []);
 
     const filteredSuppliers = suppliers.filter(s => 
         s.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
@@ -154,16 +157,7 @@ export const SuppliersPage = () => {
                 </div>
                 
                 <div className="flex flex-wrap gap-3">
-                    <Button 
-                        variant="outline" 
-                        onClick={handleForceCloudSync} 
-                        className="shadow-sm border-brand/30 text-brand bg-brand/5 hover:bg-brand hover:text-white transition-all"
-                        title="Forzar descarga de proveedores desde Firebase"
-                    >
-                        <CloudDownload size={18} className={loading ? "animate-bounce mr-2" : "mr-2"}/>
-                        Bajar Nube
-                    </Button>
-                    <Button 
+                    <Button
                         variant="ghost" 
                         onClick={() => goToHistory()} 
                         className="text-sys-600 hover:bg-sys-100 font-bold border border-sys-200"

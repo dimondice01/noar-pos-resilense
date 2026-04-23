@@ -18,7 +18,7 @@ Estamos aplicando un patrón de hardening en todos los módulos. El orden ya com
 1. ✅ Ventas (`salesRepository` + `SalesPage`)
 2. ✅ Inventario (`inventoryRepository` + página de inventario)
 3. ✅ Caja/Shift (`cashRepository` + `CashPage`)
-4. 🔜 **POS** (`PosPage` + `usePosController`) — próximo
+4. ✅ POS (`PosPage` + `usePosController`)
 
 ### Patrón estándar a aplicar por módulo:
 
@@ -151,6 +151,32 @@ Estos módulos NO deben modificarse sin extremo cuidado:
 - NO dar teoría innecesaria
 - Priorizar soluciones prácticas
 - Mostrar solo el código necesario (no archivos completos)
+
+---
+
+## 🧪 Dev / QA
+
+### Seeder de datos
+- **Archivo:** `src/dev/seeder.js`
+- **Uso:** solo en desarrollo, expuesto en `window.__noarSeed()` / `window.__noarClear()`
+- Genera: 25 productos, 5 proveedores, 8 clientes, 4 turnos, 40 ventas, 6 compras, kardex, ledgers
+- Lee `companyId` / `branchId` de `useAuthStore.getState()` — requiere sesión activa
+- Todos los IDs con prefijo `SEED-` → `__noarClear()` elimina solo esos registros
+- Los balances (clientes/proveedores) se calculan desde el ledger, no hardcodeados
+
+### Página QA
+- **Ruta:** `/:companySlug/testqa` (protegida por login, sin aparecer en sidebar)
+- Muestra conteo por tabla, registros seed, pendientes de sync, estado online/offline
+- Útil para verificar integridad de datos post-seed
+
+---
+
+## 🎨 UX aplicada (referencia)
+
+- **Sidebar colapsable:** `useUiStore` (`src/core/store/useUiStore.js`) — toggle manual en todas las rutas; auto-colapsa al entrar a `/pos` y restaura al salir
+- **SalesPage:** filtro "Facturado AFIP" toggle — filtra por `op.afip?.status === 'APPROVED'`
+- **InventoryPage:** filtro `?filter=critical` desde URL, pills de filtro con dismiss, banner de stock crítico
+- **PIN inventario (cajeros):** `PinVerificationModal` usa `securityService.verifyPin()` (Dexie), no Firestore
 
 ---
 

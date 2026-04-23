@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { 
     ArrowLeft, User, CreditCard, Calendar, 
-    TrendingDown, DollarSign, FileText, Printer, Search, MapPin, Building2, CheckCircle2, Mail, Loader2, CloudDownload, Phone, Filter
+    TrendingDown, DollarSign, FileText, Printer, Search, MapPin, Building2, CheckCircle2, Mail, Loader2, Phone, Filter
 } from 'lucide-react';
 import { useAuthStore } from '../../auth/store/useAuthStore'; 
 import { clientRepository } from '../repositories/clientRepository';
@@ -29,8 +29,6 @@ export const ClientDashboard = ({ clientId, onBack }) => {
   const [client, setClient] = useState(null);
   const [ledger, setLedger] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [syncing, setSyncing] = useState(false);
-
   // 🔥 ESTADO DE SALDO CALCULADO EN VIVO
   const [calculatedDebt, setCalculatedDebt] = useState(0);
   
@@ -79,9 +77,8 @@ export const ClientDashboard = ({ clientId, onBack }) => {
         return Math.max(0, totalDebt);
   };
 
-  const loadData = async (forceCloud = false) => {
-    if (!forceCloud) setLoading(true);
-    else setSyncing(true);
+  const loadData = async () => {
+    setLoading(true);
     
     try {
         const c = await clientRepository.getById(clientId);
@@ -90,7 +87,7 @@ export const ClientDashboard = ({ clientId, onBack }) => {
         let movements = await clientRepository.getLedger(clientId);
 
         // 🔥 AUTO-HIDRATACIÓN SILENCIOSA O FORZADA DE NUBE
-        if ((movements.length === 0 || forceCloud) && navigator.onLine && user?.companyId) {
+        if (movements.length === 0 && navigator.onLine && user?.companyId) {
             try {
                 const dbLocal = await getDB();
                 const q = query(
@@ -108,15 +105,16 @@ export const ClientDashboard = ({ clientId, onBack }) => {
                 });
 
                 if (cloudMovs.length > 0) {
-                    await dbLocal.customer_ledger.bulkPut(cloudMovs);
+                    const pendingSet = new Set(
+                        (await dbLocal.customer_ledger.where('syncStatus').equals('pending').toArray())
+                            .map(m => String(m.id))
+                    );
+                    const safeMoves = cloudMovs.filter(m => !pendingSet.has(String(m.id)));
+                    if (safeMoves.length > 0) await dbLocal.customer_ledger.bulkPut(safeMoves);
                     movements = await clientRepository.getLedger(clientId);
-                    if (forceCloud) toast.success("Historial actualizado desde la nube.");
-                } else if (forceCloud) {
-                    toast.success("No hay más datos en la nube.");
                 }
             } catch (e) {
                 console.warn("Fallo hidratación del historial del cliente:", e);
-                if (forceCloud) toast.error("Error al buscar en la nube.");
             }
         }
 
@@ -131,7 +129,6 @@ export const ClientDashboard = ({ clientId, onBack }) => {
         toast.error("Error cargando el estado de cuenta");
     } finally {
         setLoading(false);
-        setSyncing(false);
     }
   };
 
@@ -281,9 +278,6 @@ export const ClientDashboard = ({ clientId, onBack }) => {
             <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-3">
                     <h2 className="text-2xl font-black text-sys-900 leading-none uppercase truncate">{client.name}</h2>
-                    <Button variant="ghost" onClick={() => loadData(true)} disabled={syncing} className="h-6 w-6 p-0 text-brand bg-brand/10 hover:bg-brand hover:text-white rounded-full shrink-0" title="Bajar Nube">
-                        {syncing ? <Loader2 size={12} className="animate-spin"/> : <CloudDownload size={12}/>}
-                    </Button>
                 </div>
                 <div className="flex flex-wrap items-center gap-2 text-xs text-sys-500 mt-1.5">
                     <span className="font-mono bg-sys-100 px-2 py-0.5 rounded text-sys-600 font-bold border border-sys-200 flex items-center gap-1">

@@ -249,7 +249,8 @@ export const SalesPage = () => {
   const [customEnd, setCustomEnd] = useState(toInputDate(new Date()));
   const [filterType, setFilterType] = useState('ALL'); 
   const [filterCashier, setFilterCashier] = useState('ALL'); 
-  const [filterPaymentMethod, setFilterPaymentMethod] = useState('ALL'); 
+  const [filterPaymentMethod, setFilterPaymentMethod] = useState('ALL');
+  const [filterAfip, setFilterAfip] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
 
   const [currentPage, setCurrentPage] = useState(1);
@@ -352,11 +353,12 @@ export const SalesPage = () => {
           });
 
           // 🔥 TOTALES REALES: Excluimos anulados, devueltos, presupuestos y SINIESTROS
-          const validForTotals = filteredByDate.filter(op => 
-              op.afip?.status !== 'VOIDED' && 
-              op.status !== 'REFUNDED' && 
-              op.status !== 'ABANDONED' && 
-              op.type !== 'BUDGET'
+          const validForTotals = filteredByDate.filter(op =>
+              op.afip?.status !== 'VOIDED' &&
+              op.status !== 'REFUNDED' &&
+              op.status !== 'ABANDONED' &&
+              op.type !== 'BUDGET' &&
+              (!filterAfip || op.afip?.status === 'APPROVED')
           );
           const gross = validForTotals.reduce((acc, op) => acc + (parseFloat(op.total) || 0), 0);
           const netProfit = validForTotals.reduce((acc, op) => acc + (parseFloat(op.netProfit) || 0), 0);
@@ -381,7 +383,7 @@ export const SalesPage = () => {
   useEffect(() => { 
       fetchOperations(displayLimit > 150); 
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filterPeriod, customStart, customEnd, activeBranchId, displayLimit]);
+  }, [filterPeriod, customStart, customEnd, activeBranchId, displayLimit, filterAfip]);
 
   const resolveCashierName = (op) => {
       const idToCheck = op.userId || op.createdBy || op.operatorId;
@@ -461,6 +463,8 @@ export const SalesPage = () => {
               }
           }
 
+          if (filterAfip && op.afip?.status !== 'APPROVED') return false;
+
           if (searchTerm) {
               const search = searchTerm.toLowerCase();
               const clientName = (op.client?.name || '').toLowerCase();
@@ -472,7 +476,7 @@ export const SalesPage = () => {
           }
           return true;
       });
-  }, [operations, filterType, filterCashier, filterPaymentMethod, searchTerm, cashiersList, activeBranchId]);
+  }, [operations, filterType, filterCashier, filterPaymentMethod, searchTerm, cashiersList, activeBranchId, filterAfip]);
 
   const totalPages = Math.ceil(visibleOperations.length / itemsPerPage);
   const paginatedOperations = useMemo(() => {
@@ -746,8 +750,8 @@ export const SalesPage = () => {
                 {isAdmin && (
                     <Card className="px-5 py-2 bg-white border border-sys-200 shadow-sm flex items-center gap-6 animate-in slide-in-from-right-2">
                         <div>
-                            <p className="text-[10px] text-sys-400 uppercase font-bold tracking-wider flex items-center gap-1">
-                                Ventas Brutas
+                            <p className={cn("text-[10px] uppercase font-bold tracking-wider flex items-center gap-1", filterAfip ? "text-emerald-600" : "text-sys-400")}>
+                                {filterAfip ? "Total Facturado AFIP" : "Ventas Brutas"}
                             </p>
                             <p className="text-xl font-black text-sys-900">
                                 $ {periodTotals.gross.toLocaleString('es-AR', {minimumFractionDigits: 2})}
@@ -831,6 +835,24 @@ export const SalesPage = () => {
                       </select>
                   </div>
 
+                  <button
+                      onClick={() => setFilterAfip(prev => !prev)}
+                      className={cn(
+                          "flex items-center gap-1.5 px-3 py-2 text-xs font-black rounded-lg border transition-all whitespace-nowrap shrink-0",
+                          filterAfip
+                              ? "bg-emerald-600 text-white border-emerald-600 shadow-md shadow-emerald-200"
+                              : "bg-white text-sys-500 border-sys-200 hover:border-emerald-300 hover:text-emerald-600"
+                      )}
+                  >
+                      <CheckCircle size={14}/>
+                      Facturado AFIP
+                      {filterAfip && (
+                          <span className="bg-white/25 text-white text-[9px] font-black px-1.5 py-0.5 rounded-full">
+                              {visibleOperations.length}
+                          </span>
+                      )}
+                  </button>
+
                   <div className="relative flex-1 xl:w-64">
                       <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-sys-400"/>
                       <input type="text" placeholder="Buscar ticket, cliente..." className="w-full pl-9 pr-3 py-2 text-sm bg-white border border-sys-200 rounded-lg outline-none focus:border-brand transition-all" value={searchTerm} onChange={e => setSearchTerm(e.target.value)}/>
@@ -838,6 +860,24 @@ export const SalesPage = () => {
               </div>
           </Card>
       </div>
+
+      {filterAfip && (
+          <div className="px-4 py-2.5 bg-emerald-50 border border-emerald-200 rounded-xl flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                  <CheckCircle size={14} className="text-emerald-600" />
+                  <span className="text-xs font-black text-emerald-800 uppercase tracking-wide">Viendo: Facturado AFIP/ARCA</span>
+                  <span className="bg-emerald-100 text-emerald-700 text-[10px] font-black px-2 py-0.5 rounded-full border border-emerald-200">
+                      {visibleOperations.length} comprobantes
+                  </span>
+              </div>
+              <button
+                  onClick={() => setFilterAfip(false)}
+                  className="flex items-center gap-1 text-[10px] font-black text-emerald-600 hover:text-emerald-800 hover:bg-emerald-100 px-2.5 py-1.5 rounded-lg transition-all border border-emerald-200 hover:border-emerald-300"
+              >
+                  <X size={12}/> Quitar filtro
+              </button>
+          </div>
+      )}
 
       {/* TABLA DE RESULTADOS PAGINADA */}
       <Card className="p-0 overflow-hidden shadow-soft border-0 flex flex-col min-h-[400px]">

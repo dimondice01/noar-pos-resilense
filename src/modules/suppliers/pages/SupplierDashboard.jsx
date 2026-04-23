@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { 
     ArrowLeft, Truck, FileText, 
-    TrendingDown, DollarSign, MapPin, Building2, CreditCard, User, AlertCircle, RefreshCw, CloudDownload
+    TrendingDown, DollarSign, MapPin, Building2, CreditCard, User, AlertCircle, Loader2
 } from 'lucide-react';
 import { useAuthStore } from '../../auth/store/useAuthStore'; 
 import { supplierRepository } from '../repositories/supplierRepository';
@@ -30,8 +30,6 @@ export const SupplierDashboard = () => {
   const [calculatedDebt, setCalculatedDebt] = useState(0); 
   const [monthTotal, setMonthTotal] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [syncing, setSyncing] = useState(false);
-  
   const [isPaymentOpen, setIsPaymentOpen] = useState(false);
 
   const calculateTotals = (purchases) => {
@@ -55,9 +53,8 @@ export const SupplierDashboard = () => {
         setMonthTotal(monthSum);
   };
 
-  const loadData = async (forceCloud = false) => {
-    if (!forceCloud) setLoading(true);
-    else setSyncing(true);
+  const loadData = async () => {
+    setLoading(true);
     
     try {
         const s = await supplierRepository.getById(supplierId);
@@ -70,7 +67,7 @@ export const SupplierDashboard = () => {
             .toArray();
 
         // 🔥 AUTO-HIDRATACIÓN SILENCIOSA O FORZADA DE NUBE
-        if ((purchases.length === 0 || forceCloud) && navigator.onLine && user?.companyId) {
+        if (purchases.length === 0 && navigator.onLine && user?.companyId) {
             try {
                 const q = query(
                     collection(firestoreDB, `companies/${user.companyId}/purchases`),
@@ -87,15 +84,16 @@ export const SupplierDashboard = () => {
                 });
 
                 if (cloudPurchases.length > 0) {
-                    await localDb.purchases.bulkPut(cloudPurchases);
+                    const pendingSet = new Set(
+                        (await localDb.purchases.where('syncStatus').equals('pending').toArray())
+                            .map(p => String(p.id))
+                    );
+                    const safePurchases = cloudPurchases.filter(p => !pendingSet.has(String(p.id)));
+                    if (safePurchases.length > 0) await localDb.purchases.bulkPut(safePurchases);
                     purchases = await localDb.purchases.where('supplierId').equals(supplierId).reverse().toArray();
-                    if (forceCloud) toast.success("Historial actualizado desde la nube.");
-                } else if (forceCloud) {
-                    toast.success("No hay más datos en la nube.");
                 }
             } catch (e) {
                 console.warn("Fallo hidratación del historial del proveedor:", e);
-                if (forceCloud) toast.error("Error al buscar en la nube.");
             }
         }
 
@@ -107,7 +105,6 @@ export const SupplierDashboard = () => {
         toast.error("Error cargando el historial del proveedor");
     } finally {
         setLoading(false);
-        setSyncing(false);
     }
   };
 
@@ -198,9 +195,6 @@ export const SupplierDashboard = () => {
             <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-3">
                     <h2 className="text-2xl font-black text-sys-900 leading-none uppercase truncate">{supplier.name}</h2>
-                    <Button variant="ghost" onClick={() => loadData(true)} disabled={syncing} className="h-6 w-6 p-0 text-brand bg-brand/10 hover:bg-brand hover:text-white rounded-full shrink-0" title="Bajar Nube">
-                        {syncing ? <Loader2 size={12} className="animate-spin"/> : <CloudDownload size={12}/>}
-                    </Button>
                 </div>
                 <div className="flex flex-wrap items-center gap-2 text-xs text-sys-500 mt-1.5">
                     <span className="font-mono bg-sys-100 px-2 py-0.5 rounded text-sys-600 font-bold border border-sys-200 flex items-center gap-1">

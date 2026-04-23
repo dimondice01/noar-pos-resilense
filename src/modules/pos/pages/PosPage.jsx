@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
-import { 
-    Search, Trash2, ShoppingCart, PackageOpen, 
-    Keyboard, User, DollarSign, ChevronRight, Plus, 
+import {
+    Search, Trash2, ShoppingCart, PackageOpen,
+    Keyboard, User, DollarSign, ChevronRight, Plus,
     Lock, Wallet, ArrowRight, Loader2, X, Store,
     Tag, Percent
 } from 'lucide-react';
@@ -22,6 +22,7 @@ import { TicketModal } from '../../sales/components/TicketModal';
 import { CashOperationsModal } from '../components/CashOperationsModal';
 import { Button } from '../../../core/ui/Button';
 import { cn } from '../../../core/utils/cn';
+import { useUiStore } from '../../../core/store/useUiStore';
 import toast from 'react-hot-toast';
 
 // =================================================================
@@ -163,6 +164,12 @@ const InlineQuantityEditor = ({ currentQty, isWeighable, onUpdate, onCancel }) =
 // 🏭 MAIN: POS PAGE
 // =================================================================
 export const PosPage = () => {
+  const { setSidebarCollapsed } = useUiStore();
+  useEffect(() => {
+    setSidebarCollapsed(true);
+    return () => setSidebarCollapsed(false);
+  }, [setSidebarCollapsed]);
+
   const { user } = useAuthStore();
   
   const {
@@ -611,7 +618,11 @@ export const PosPage = () => {
                           <X size={12} />
                       </button>
                   )}
-                  {tab.items.length > 0 && <span className="absolute top-1 right-2 w-2 h-2 bg-emerald-500 rounded-full animate-pulse shadow-sm"></span>}
+                  {tab.items.length > 0 && (
+                      <span className="absolute -top-1.5 -right-1 min-w-[18px] h-[18px] bg-emerald-500 text-white text-[9px] font-black rounded-full flex items-center justify-center px-1 shadow-sm leading-none">
+                          {tab.items.length}
+                      </span>
+                  )}
               </div>
           ))}
           <button onClick={addTab} className="ml-2 mb-1.5 p-1.5 bg-sys-50 text-sys-400 hover:text-brand hover:bg-brand/10 border border-sys-200 rounded-lg transition-all" title="Nueva Venta (F1)">
@@ -648,22 +659,19 @@ export const PosPage = () => {
                   ) : (
                       <div className="space-y-2">
                           {activeTab.items.map((item) => (
-                              <div key={item.id} className={cn("group flex items-center p-3 bg-white border rounded-xl shadow-sm hover:shadow-md transition-all animate-in fade-in slide-in-from-left-2", item.appliedWholesale ? "border-brand border-2 bg-brand/5" : "border-sys-100")}>
-                                  
-                                  {/* 🔥 ÁREA EDITABLE DE CANTIDAD */}
-                                  <div 
-                                    className="w-16 text-center mr-2 cursor-pointer rounded-lg hover:bg-sys-100 p-1 transition-colors"
-                                    onClick={(e) => { e.stopPropagation(); setEditingItemId(item.id); }}
-                                    title="Click para editar cantidad"
+                              <div key={item.id} className={cn("group flex items-center gap-3 px-3 py-2.5 bg-white border rounded-xl shadow-sm hover:shadow-md transition-all animate-in fade-in slide-in-from-left-2", item.appliedWholesale ? "border-brand border-2 bg-brand/5" : "border-sys-100")}>
+
+                                  {/* Cantidad editable */}
+                                  <div
+                                      className="w-14 shrink-0 text-center cursor-pointer rounded-lg hover:bg-sys-100 py-1 transition-colors"
+                                      onClick={(e) => { e.stopPropagation(); setEditingItemId(item.id); }}
+                                      title="Click para editar cantidad"
                                   >
                                       {editingItemId === item.id ? (
-                                          <InlineQuantityEditor 
-                                              currentQty={item.quantity} 
+                                          <InlineQuantityEditor
+                                              currentQty={item.quantity}
                                               isWeighable={item.isWeighable}
                                               onUpdate={(newQty) => {
-                                                  // Usamos la función del PosController pero forzando el número directo
-                                                  // Como PosController suma si el item existe, lo mejor es setear directo (requiere función en el hook)
-                                                  // Si no tenés updateCartItemQuantity, lo simulamos removiendo y agregando (hack rápido)
                                                   if (typeof updateCartItemQuantity === 'function') {
                                                       updateCartItemQuantity(item.id, newQty);
                                                   } else {
@@ -677,42 +685,44 @@ export const PosPage = () => {
                                           />
                                       ) : (
                                           <>
-                                              <div className="text-lg font-black text-sys-900 tracking-tighter">
-                                                  {formatQuantity(item.quantity, item.isWeighable)}
-                                              </div>
-                                              <div className="text-[9px] uppercase text-sys-400 font-black">{item.isWeighable ? 'KG' : 'UN'}</div>
+                                              <div className="text-xl font-black text-sys-900 leading-none">{formatQuantity(item.quantity, item.isWeighable)}</div>
+                                              <div className="text-[9px] uppercase text-sys-400 font-black mt-0.5">{item.isWeighable ? 'KG' : 'UN'}</div>
                                           </>
                                       )}
                                   </div>
 
+                                  {/* Info producto */}
                                   <div className="flex-1 min-w-0">
-                                      <div className="text-sm font-black text-sys-800 truncate uppercase tracking-tight">{item.name}</div>
-                                      
-                                      {(item.appliedPromo || item.appliedWholesale) && (
-                                          <div className={cn("inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wide mt-1", item.appliedWholesale ? "bg-orange-100 text-orange-700 border border-orange-200" : "bg-purple-100 text-purple-700 animate-pulse")}>
-                                              {item.appliedWholesale ? <Percent size={10}/> : <Tag size={10} className="fill-purple-700"/>}
-                                              {item.promoLabel || "OFERTA"}
-                                          </div>
-                                      )}
-                                      
-                                      <div className="text-xs text-sys-400 font-mono mt-0.5 flex items-center gap-2">
-                                          {item.originalPrice && item.originalPrice > item.price ? (
-                                              <>
-                                                  <span className="line-through opacity-50">${(Number(item.originalPrice)).toLocaleString('es-AR', {minimumFractionDigits: 2})}</span>
-                                                  <span className={cn("font-bold", item.appliedWholesale ? "text-orange-600" : "text-purple-700")}>
-                                                      ${(Number(item.price) || 0).toLocaleString('es-AR', {minimumFractionDigits: 2})} x {item.isWeighable ? 'kg' : 'unid'}.
-                                                  </span>
-                                              </>
-                                          ) : (
-                                              <span>${(Number(item.price) || 0).toLocaleString('es-AR', {minimumFractionDigits: 2})} x {item.isWeighable ? 'kg' : 'unid'}.</span>
+                                      <div className="text-sm font-black text-sys-900 truncate uppercase leading-tight">{item.name}</div>
+                                      <div className="flex items-center gap-2 mt-0.5">
+                                          {(item.appliedPromo || item.appliedWholesale) && (
+                                              <span className={cn("inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-black uppercase", item.appliedWholesale ? "bg-orange-100 text-orange-700" : "bg-purple-100 text-purple-700")}>
+                                                  {item.appliedWholesale ? <Percent size={9}/> : <Tag size={9}/>}
+                                                  {item.promoLabel || "OFERTA"}
+                                              </span>
                                           )}
+                                          <span className="text-[10px] text-sys-400 font-mono">
+                                              {item.originalPrice && item.originalPrice > item.price ? (
+                                                  <><s className="opacity-40">${Number(item.originalPrice).toLocaleString('es-AR')}</s> ${(Number(item.price)||0).toLocaleString('es-AR')}</>
+                                              ) : (
+                                                  `$${(Number(item.price)||0).toLocaleString('es-AR')} × ${item.isWeighable ? 'kg' : 'u'}.`
+                                              )}
+                                          </span>
                                       </div>
                                   </div>
-                                  <div className="text-right pl-3">
-                                      <div className="text-base font-black text-sys-900 tracking-tight">
+
+                                  {/* Subtotal + eliminar */}
+                                  <div className="flex flex-col items-end gap-1 shrink-0">
+                                      <div className="text-lg font-black text-sys-900 tabular-nums">
                                           ${(Number(item.subtotal) || 0).toLocaleString('es-AR', {minimumFractionDigits: 2})}
                                       </div>
-                                      <button onClick={(e) => { e.stopPropagation(); removeFromCart(item.id); }} className="text-[10px] text-red-400 font-bold hover:text-red-600 transition-colors">ELIMINAR</button>
+                                      <button
+                                          onClick={(e) => { e.stopPropagation(); removeFromCart(item.id); }}
+                                          className="text-red-300 hover:text-red-600 hover:bg-red-50 p-1 rounded-lg transition-all"
+                                          title="Eliminar"
+                                      >
+                                          <Trash2 size={14}/>
+                                      </button>
                                   </div>
                               </div>
                           ))}
@@ -720,25 +730,37 @@ export const PosPage = () => {
                   )}
               </div>
 
-              <div className="p-5 bg-white border-t border-sys-200 shadow-[0_-5px_20px_rgba(0,0,0,0.05)] z-20">
-                  <div className="flex justify-between items-end mb-4">
+              <div className="bg-white border-t border-sys-200 shadow-[0_-8px_24px_rgba(0,0,0,0.06)] z-20 shrink-0">
+                  <div className="px-5 pt-4 pb-3 flex items-center justify-between">
                       <div>
-                          <p className="text-[10px] font-black text-sys-400 uppercase tracking-widest mb-1">Subtotal de Venta</p>
+                          <p className="text-[10px] font-black text-sys-400 uppercase tracking-widest mb-0.5">Total a Cobrar</p>
                           <p className="text-5xl font-black text-sys-900 tracking-tighter tabular-nums leading-none">
-                            ${(Number(totals?.total) || 0).toLocaleString('es-AR', {minimumFractionDigits: 2})}
+                              ${(Number(totals?.total) || 0).toLocaleString('es-AR', {minimumFractionDigits: 2})}
                           </p>
                           {(Number(totals?.discountAmount) || 0) > 0 && (
-                              <p className="text-xs font-bold text-green-600 mt-1 animate-bounce">
-                                  Ahorro aplicado: -${(Number(totals.discountAmount) || 0).toLocaleString('es-AR', {minimumFractionDigits: 2})}
+                              <p className="text-xs font-bold text-green-600 mt-1">
+                                  Ahorro: -${(Number(totals.discountAmount) || 0).toLocaleString('es-AR', {minimumFractionDigits: 2})}
                               </p>
                           )}
                       </div>
-                      <div className="flex gap-3">
-                          <Button variant="ghost" className="h-14 w-14 rounded-xl border border-red-100 text-red-500 hover:bg-red-50 p-0" onClick={() => { if(confirm('¿Vacíar venta?')) clearCart(); }}><Trash2 size={24}/></Button>
-                          <Button className="h-14 px-10 text-xl rounded-xl shadow-xl active:scale-95 transition-all flex items-center gap-3 font-black uppercase tracking-tighter" disabled={activeTab.items.length === 0} onClick={() => setIsPaymentOpen(true)}>
-                              <DollarSign size={24} strokeWidth={3}/> COBRAR <span className="opacity-50 text-[10px] font-mono">F12</span>
-                          </Button>
-                      </div>
+                      <Button
+                          variant="ghost"
+                          className="h-10 w-10 rounded-xl border border-red-100 text-red-400 hover:bg-red-50 hover:text-red-600 p-0 transition-all"
+                          onClick={() => { if(confirm('¿Vacíar venta?')) clearCart(); }}
+                          title="Vaciar carrito"
+                      >
+                          <Trash2 size={18}/>
+                      </Button>
+                  </div>
+                  <div className="px-4 pb-4">
+                      <Button
+                          className="w-full h-14 text-xl rounded-2xl shadow-xl shadow-brand/20 active:scale-[0.98] transition-all flex items-center justify-center gap-3 font-black uppercase tracking-tighter disabled:opacity-40 disabled:shadow-none"
+                          disabled={activeTab.items.length === 0}
+                          onClick={() => setIsPaymentOpen(true)}
+                      >
+                          <DollarSign size={22} strokeWidth={3}/> COBRAR
+                          <span className="opacity-40 text-[11px] font-mono ml-1">F12</span>
+                      </Button>
                   </div>
               </div>
           </div>
@@ -815,19 +837,19 @@ export const PosPage = () => {
           </div>
       </div>
 
-      <div className="fixed bottom-0 left-0 right-0 h-8 bg-sys-900 text-sys-300 flex items-center px-4 z-50 text-[10px] font-mono justify-between select-none overflow-x-auto">
-          <div className="flex gap-4 md:gap-6 shrink-0">
-              <span className="hover:text-white transition-colors cursor-default"><strong className="text-brand">F1:</strong> NVA CUENTA</span>
-              <span className="hover:text-white transition-colors cursor-default"><strong className="text-brand">F2:</strong> FOCO</span>
-              <span className="hover:text-white transition-colors cursor-default"><strong className="text-brand">F3:</strong> CLIENTE</span>
-              <span className="hover:text-white transition-colors cursor-default"><strong className="text-brand">F4:</strong> ANULAR</span>
-              <span className="hover:text-emerald-400 transition-colors cursor-default"><strong className="text-emerald-500">F9:</strong> ART. LIBRE (+)</span>
-              <span className="hover:text-blue-400 transition-colors cursor-default text-blue-200"><strong className="text-blue-500">F8:</strong> CAJA IN/OUT</span>
-              <span className="hover:text-orange-400 transition-colors cursor-default text-orange-200 hidden md:inline"><strong className="text-orange-500">F6:</strong> MAYORISTA (ÚLTIMO ÍTEM)</span>
+      <div className="fixed bottom-0 left-0 right-0 h-9 bg-sys-950 border-t border-sys-800 text-sys-500 flex items-center px-5 z-50 text-[10px] font-mono justify-between select-none overflow-x-auto">
+          <div className="flex gap-5 shrink-0">
+              <span className="hover:text-white transition-colors cursor-default"><strong className="text-brand">F1</strong> NVA. CUENTA</span>
+              <span className="hover:text-white transition-colors cursor-default"><strong className="text-brand">F2</strong> FOCO</span>
+              <span className="hover:text-white transition-colors cursor-default"><strong className="text-brand">F3</strong> CLIENTE</span>
+              <span className="hover:text-white transition-colors cursor-default"><strong className="text-brand">F4</strong> ANULAR</span>
+              <span className="hover:text-emerald-300 transition-colors cursor-default"><strong className="text-emerald-500">F9</strong> ART. LIBRE</span>
+              <span className="hover:text-blue-300 transition-colors cursor-default hidden sm:inline"><strong className="text-blue-400">F8</strong> CAJA</span>
+              <span className="hover:text-orange-300 transition-colors cursor-default hidden md:inline"><strong className="text-orange-400">F6</strong> MAYORISTA</span>
           </div>
-          <div className="flex gap-6 shrink-0 ml-4">
-              <span className="hover:text-white transition-colors cursor-default"><strong className="text-brand">ESC:</strong> LIMPIAR / CERRAR</span>
-              <span className="text-white font-bold tracking-widest"><strong className="text-emerald-400">F12:</strong> COBRAR</span>
+          <div className="flex items-center gap-5 shrink-0">
+              <span className="hover:text-white transition-colors cursor-default"><strong className="text-sys-400">ESC</strong> LIMPIAR</span>
+              <span className="bg-brand/20 text-brand border border-brand/30 px-3 py-0.5 rounded font-black tracking-widest"><strong>F12</strong> COBRAR</span>
           </div>
       </div>
 

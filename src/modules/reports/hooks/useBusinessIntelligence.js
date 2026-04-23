@@ -97,8 +97,16 @@ export const useBusinessIntelligence = () => {
                 const cloudSales = sSnap.docs.map(doc => ({ ...doc.data(), id: doc.id, dateObj: parseDate(doc.data().date || doc.data().createdAt) }));
 
                 // 4. Guardar en Dexie para la próxima visita (0 Firebase reads)
+                // Nunca sobreescribir ventas con syncStatus: 'pending' (creadas offline aún no subidas)
                 if (cloudSales.length > 0) {
-                    await localDb.sales.bulkPut(cloudSales.map(({ dateObj, ...s }) => ({ ...s, syncStatus: 'synced' })));
+                    const pendingSet = new Set(
+                        (await localDb.sales.where('syncStatus').equals('pending').toArray())
+                            .map(s => s.id)
+                    );
+                    const safeItems = cloudSales
+                        .filter(s => !pendingSet.has(s.id))
+                        .map(({ dateObj, ...s }) => ({ ...s, syncStatus: 'synced' }));
+                    if (safeItems.length > 0) await localDb.sales.bulkPut(safeItems);
                 }
 
                 setSalesData(cloudSales);
