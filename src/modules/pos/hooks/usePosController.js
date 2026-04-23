@@ -677,6 +677,15 @@ export const usePosController = () => {
                            employeeId: paymentData.employeeId || null 
                        }];
                    }
+                } else if (amountInput === 0) {
+                    // 0 entregado con cliente = 100% Cta. Corriente
+                    finalPayments = [{
+                        method: 'account',
+                        amount: expectedTotal,
+                        surcharge: parseFloat(paymentData.surcharge || 0),
+                        total: totalWithInterest,
+                        employeeId: null
+                    }];
                 } else if (difference > 0.05) {
                      // Si el método NO ES cuenta corriente, pero pagó de menos (y no usó el slider split)
                      // asumimos que dejó un saldo deudor (Cta Cte).

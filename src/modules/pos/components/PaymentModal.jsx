@@ -178,7 +178,7 @@ export const PaymentModal = ({
 
     const hasError = !isBudgetMode && ((!isSplitMode && isPartialPayment && !isClientRegistered) || isEmployeePaymentInvalid || (isAccountMode && !isClientRegistered)); 
     
-    const canConfirmSimple = isBudgetMode || (!hasError && payValue > 0 && amountToPay !== '' && !isProcessing);
+    const canConfirmSimple = isBudgetMode || (!hasError && amountToPay !== '' && !isProcessing && (payValue > 0 || isClientRegistered));
 
     const isRI = client?.fiscalCondition === 'RESPONSABLE_INSCRIPTO';
     

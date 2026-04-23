@@ -410,6 +410,8 @@ export const PosPage = () => {
       }
       
       if (product.isWeighable) {
+          setSearchTerm('');
+          setSearchResults([]);
           setSelectedProduct(product);
       } else {
           addToCart(product, 1);
