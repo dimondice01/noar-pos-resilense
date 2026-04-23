@@ -1,14 +1,13 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { 
-    ArrowLeft, User, CreditCard, Calendar, 
-    TrendingDown, DollarSign, FileText, Printer, Search, MapPin, Building2, CheckCircle2, Mail, Loader2, Phone, Filter
+    ArrowLeft, User, CreditCard, Calendar,
+    TrendingDown, DollarSign, FileText, Printer, Eye, Search, MapPin, Building2, CheckCircle2, Mail, Loader2, Phone, Filter, X
 } from 'lucide-react';
 import { useAuthStore } from '../../auth/store/useAuthStore'; 
 import { clientRepository } from '../repositories/clientRepository';
 import { cashRepository } from '../../cash/repositories/cashRepository'; 
 import { salesRepository } from '../../sales/repositories/salesRepository'; 
 import { Card } from '../../../core/ui/Card';
-import { Button } from '../../../core/ui/Button';
 import { cn } from '../../../core/utils/cn';
 
 // Imports Modales
@@ -34,7 +33,8 @@ export const ClientDashboard = ({ clientId, onBack }) => {
   
   // Estados UI
   const [isPaymentOpen, setIsPaymentOpen] = useState(false);
-  const [ticketData, setTicketData] = useState(null); 
+  const [ticketData, setTicketData] = useState(null);
+  const [viewSale, setViewSale] = useState(null);
 
   // Estados Filtros
   const [filterType, setFilterType] = useState('THIS_MONTH'); 
@@ -118,11 +118,29 @@ export const ClientDashboard = ({ clientId, onBack }) => {
             }
         }
 
-        const sortedLedger = movements.sort((a, b) => new Date(b.date) - new Date(a.date));
+        // Merge ventas pagadas al contado (no están en el ledger)
+        const ledgerRefIds = new Set(movements.map(m => m.referenceId).filter(Boolean));
+        const clientSales = await salesRepository.getSalesByClientId(clientId);
+        const paidEntries = clientSales
+            .filter(s => !ledgerRefIds.has(s.id))
+            .map(s => ({
+                id: `sale-${s.id}`,
+                clientId,
+                referenceId: s.id,
+                type: 'SALE_PAID',
+                amount: s.total,
+                description: `Venta contado (Ticket: ${s.number || s.ticketNumber || s.id})`,
+                date: s.date,
+                branchId: s.branchId,
+                newBalance: null,
+            }));
+
+        const sortedLedger = [...movements, ...paidEntries]
+            .sort((a, b) => new Date(b.date) - new Date(a.date));
         setLedger(sortedLedger);
-        
-        // Calculamos la deuda real
-        setCalculatedDebt(calculateTotalDebt(sortedLedger));
+
+        // Deuda real: solo SALE_DEBT, ignora SALE_PAID
+        setCalculatedDebt(calculateTotalDebt(movements));
 
     } catch (error) {
         console.error(error);
@@ -230,7 +248,7 @@ export const ClientDashboard = ({ clientId, onBack }) => {
   const handleReprint = async (mov) => {
       const toastId = toast.loading("Buscando comprobante...");
       try {
-          if (mov.type === 'SALE_DEBT' && mov.referenceId) {
+          if ((mov.type === 'SALE_DEBT' || mov.type === 'SALE_PAID') && mov.referenceId) {
               // Si es una venta, buscamos la venta completa
               const sale = await salesRepository.getSaleById(mov.referenceId);
               if (sale) {
@@ -258,6 +276,13 @@ export const ClientDashboard = ({ clientId, onBack }) => {
           console.error("Error al reimprimir:", error);
           toast.error("Error cargando el comprobante.", { id: toastId });
       }
+  };
+
+  const handleViewSale = async (mov) => {
+      if (!mov.referenceId) return;
+      const sale = await salesRepository.getSaleById(mov.referenceId);
+      if (sale) setViewSale(sale);
+      else toast.error("Venta no encontrada en este dispositivo.");
   };
 
   if (loading) return <div className="h-screen flex items-center justify-center text-sys-500 font-bold uppercase tracking-widest animate-pulse"><Loader2 className="animate-spin mb-2 text-brand" size={32}/>Cargando perfil...</div>;
@@ -310,19 +335,9 @@ export const ClientDashboard = ({ clientId, onBack }) => {
                       </p>
                   </div>
                   <div className="mt-4">
-                      <Button 
-                        variant="secondary" 
-                        className={cn(
-                            "w-full text-sm h-11 font-black transition-all border shadow-sm",
-                            calculatedDebt > 0.01 
-                                ? "bg-white border-red-200 hover:bg-red-500 hover:text-white text-red-600 hover:border-red-600" 
-                                : "bg-white border-sys-200 text-sys-400 opacity-50 cursor-not-allowed"
-                        )}
-                        onClick={() => setIsPaymentOpen(true)}
-                        disabled={calculatedDebt <= 0.01} 
-                      >
-                          <DollarSign size={18} className="mr-2"/> Registrar Pago
-                      </Button>
+                      <p className={cn("text-xs font-bold uppercase tracking-widest", calculatedDebt > 0.01 ? "text-red-400" : "text-emerald-500")}>
+                          {calculatedDebt > 0.01 ? "Saldo pendiente de cobro" : "Al día — sin deuda"}
+                      </p>
                   </div>
               </div>
               <div className={cn("absolute -right-4 -bottom-4 opacity-10 transform rotate-12", calculatedDebt > 0.01 ? "text-red-500" : "text-emerald-500")}>
@@ -428,12 +443,12 @@ export const ClientDashboard = ({ clientId, onBack }) => {
                   <table className="w-full text-left text-sm border-collapse">
                       <thead className="bg-sys-50 text-sys-500 text-[10px] uppercase font-black tracking-widest border-b border-sys-200">
                           <tr>
-                              <th className="p-4 whitespace-nowrap">Fecha / Hora</th>
-                              <th className="p-4 text-center whitespace-nowrap">Sucursal</th>
-                              <th className="p-4 w-full">Descripción del Movimiento</th>
-                              <th className="p-4 text-right whitespace-nowrap">Importe</th>
-                              <th className="p-4 text-right whitespace-nowrap">Saldo (Deuda)</th>
-                              <th className="p-4 text-center whitespace-nowrap">Acciones</th>
+                              <th className="px-4 py-3 whitespace-nowrap">Fecha</th>
+                              <th className="px-4 py-3 whitespace-nowrap">Tipo</th>
+                              <th className="px-4 py-3 w-full">Descripción</th>
+                              <th className="px-4 py-3 text-right whitespace-nowrap">Importe</th>
+                              <th className="px-4 py-3 text-right whitespace-nowrap">Saldo Deuda</th>
+                              <th className="px-4 py-3 text-center whitespace-nowrap">Acciones</th>
                           </tr>
                       </thead>
                       <tbody className="divide-y divide-sys-100 bg-white">
@@ -443,54 +458,61 @@ export const ClientDashboard = ({ clientId, onBack }) => {
                                       <div className="flex flex-col items-center justify-center bg-sys-50/50 rounded-2xl border-2 border-dashed border-sys-200 py-10 w-3/4 mx-auto">
                                           <FileText size={32} className="mb-2 opacity-30 text-sys-500"/>
                                           <p className="font-bold uppercase tracking-widest text-xs">{ledger.length === 0 ? "Sin movimientos en la cuenta" : "No hay movimientos en este periodo"}</p>
-                                          <p className="text-[10px] text-sys-400 mt-1">{ledger.length === 0 ? "El cliente no tiene compras a crédito ni pagos registrados." : "Intente cambiar los filtros arriba."}</p>
+                                          <p className="text-[10px] text-sys-400 mt-1">{ledger.length === 0 ? "El cliente no tiene ventas ni pagos registrados." : "Intente cambiar los filtros arriba."}</p>
                                       </div>
                                   </td>
                               </tr>
                           ) : (
                               filteredLedger.map((mov, idx) => (
-                                  <tr key={idx} className="hover:bg-sys-50/50 transition-colors group cursor-default">
-                                      <td className="p-4 font-mono text-sys-600 whitespace-nowrap">
-                                          <div className="font-bold text-sys-900 text-xs">{new Date(mov.date).toLocaleDateString()}</div>
-                                          <div className="text-[10px] text-sys-400 mt-0.5">{new Date(mov.date).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</div>
+                                  <tr key={idx} className={cn("border-b border-sys-100 last:border-0 transition-colors", mov.type === 'SALE_DEBT' ? "hover:bg-red-50/30" : mov.type === 'SALE_PAID' ? "hover:bg-blue-50/20" : "hover:bg-emerald-50/20")}>
+                                      <td className="px-4 py-3 whitespace-nowrap">
+                                          <div className="font-bold text-sys-900 text-xs">{new Date(mov.date).toLocaleDateString('es-AR', {day:'2-digit', month:'2-digit', year:'2-digit'})}</div>
+                                          <div className="text-[10px] text-sys-400 mt-0.5 font-mono">{new Date(mov.date).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</div>
                                       </td>
-                                      
-                                      <td className="p-4 text-center align-top pt-5">
-                                          {mov.branchId === activeBranchId ? (
-                                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-brand/10 text-brand text-[9px] font-black uppercase tracking-wide border border-brand/20">
-                                                  <Building2 size={10} /> Actual
-                                              </span>
-                                          ) : (
-                                              <span className="text-[9px] font-black text-sys-400 uppercase bg-sys-100 px-2 py-0.5 rounded border border-sys-200">
-                                                  {mov.branchId || 'Global'}
-                                              </span>
-                                          )}
+
+                                      <td className="px-4 py-3">
+                                          <span className={cn(
+                                              "inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-wide border",
+                                              mov.type === 'SALE_DEBT' ? "bg-red-50 text-red-600 border-red-200" :
+                                              mov.type === 'SALE_PAID' ? "bg-blue-50 text-blue-600 border-blue-200" :
+                                              "bg-emerald-50 text-emerald-600 border-emerald-200"
+                                          )}>
+                                              {mov.type === 'SALE_DEBT' ? 'Deuda' : mov.type === 'SALE_PAID' ? 'Contado' : mov.type === 'PAYMENT' ? 'Pago' : mov.type === 'REFUND' ? 'Devolución' : 'Liquidación'}
+                                          </span>
                                       </td>
-                                      
-                                      <td className="p-4">
-                                          <div className="flex items-center gap-2">
-                                              <div className={cn("w-1.5 h-1.5 rounded-full shrink-0", mov.type === 'SALE_DEBT' ? "bg-red-500" : "bg-emerald-500")}></div>
-                                              <span className="font-bold text-sys-800 text-xs uppercase">{mov.description}</span>
+
+                                      <td className="px-4 py-3 max-w-[200px]">
+                                          <span className="font-semibold text-sys-800 text-xs truncate block">{mov.description}</span>
+                                          {mov.referenceId && <span className="text-[9px] text-sys-400 font-mono">#{mov.referenceId.slice(-8)}</span>}
+                                      </td>
+
+                                      <td className={cn("px-4 py-3 text-right font-black font-mono text-sm whitespace-nowrap", mov.type === 'SALE_DEBT' ? "text-red-600" : mov.type === 'SALE_PAID' ? "text-blue-600" : "text-emerald-600")}>
+                                          {mov.type === 'SALE_DEBT' ? '+' : mov.type === 'SALE_PAID' ? '' : '-'} {formatCurrency(mov.amount)}
+                                      </td>
+
+                                      <td className="px-4 py-3 text-right font-mono text-sys-700 text-sm font-bold bg-sys-50/40 border-l border-sys-100">
+                                          {mov.type === 'SALE_PAID' ? <span className="text-sys-300">—</span> : formatCurrency(mov.newBalance)}
+                                      </td>
+
+                                      <td className="px-4 py-3 text-center">
+                                          <div className="flex items-center justify-center gap-1">
+                                              {(mov.type === 'SALE_DEBT' || mov.type === 'SALE_PAID') && (
+                                                  <button
+                                                      onClick={() => handleViewSale(mov)}
+                                                      className="p-1.5 rounded-lg bg-blue-50 text-blue-500 hover:bg-blue-100 border border-blue-200 transition-all"
+                                                      title="Ver detalle"
+                                                  >
+                                                      <Eye size={14} />
+                                                  </button>
+                                              )}
+                                              <button
+                                                  onClick={() => handleReprint(mov)}
+                                                  className="p-1.5 rounded-lg bg-sys-100 text-sys-500 hover:bg-sys-200 border border-sys-200 transition-all"
+                                                  title="Imprimir"
+                                              >
+                                                  <Printer size={14} />
+                                              </button>
                                           </div>
-                                          {mov.referenceId && <p className="text-[9px] text-sys-400 ml-3.5 font-mono uppercase mt-1 bg-sys-50 inline-block px-1.5 py-0.5 rounded border border-sys-100">Ref: {mov.referenceId.slice(-8)}</p>}
-                                      </td>
-                                      
-                                      <td className={cn("p-4 text-right font-black font-mono text-sm whitespace-nowrap align-top pt-4", mov.type === 'SALE_DEBT' ? "text-red-600" : "text-emerald-600")}>
-                                          {mov.type === 'SALE_DEBT' ? '+' : '-'} {formatCurrency(mov.amount)}
-                                      </td>
-                                      
-                                      <td className="p-4 text-right font-mono text-sys-900 text-sm font-black bg-sys-50/50 align-top pt-4 border-l border-sys-100">
-                                          {formatCurrency(mov.newBalance)}
-                                      </td>
-                                      
-                                      <td className="p-4 text-center align-top pt-3">
-                                          <button 
-                                            onClick={() => handleReprint(mov)}
-                                            className="p-2 rounded-xl text-sys-400 hover:text-brand hover:bg-brand/10 hover:border-brand/20 border border-transparent transition-all opacity-0 group-hover:opacity-100 mx-auto block"
-                                            title={mov.type === 'SALE_DEBT' ? "Ver Ticket de Venta" : "Ver Recibo de Pago"}
-                                          >
-                                              <Printer size={18} />
-                                          </button>
                                       </td>
                                   </tr>
                               ))
@@ -501,8 +523,100 @@ export const ClientDashboard = ({ clientId, onBack }) => {
           </Card>
       </div>
 
+      {/* BARRA DE ACCIONES FIJA */}
+      <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 flex items-center gap-2 bg-white border border-sys-200 shadow-2xl rounded-2xl px-3 py-2.5">
+          <button
+              onClick={onBack}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-sys-500 hover:text-sys-900 hover:bg-sys-100 border border-transparent hover:border-sys-200 text-sm font-bold transition-all"
+          >
+              <ArrowLeft size={16}/> Volver
+          </button>
+          <div className="w-px h-6 bg-sys-200" />
+          <button
+              onClick={() => setIsPaymentOpen(true)}
+              disabled={calculatedDebt <= 0.01}
+              className={cn(
+                  "flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-black border transition-all",
+                  calculatedDebt > 0.01
+                      ? "bg-red-500 text-white border-red-600 hover:bg-red-600 shadow-sm"
+                      : "bg-sys-100 text-sys-400 border-sys-200 cursor-not-allowed opacity-60"
+              )}
+          >
+              <DollarSign size={16}/>
+              Registrar Pago
+              {calculatedDebt > 0.01 && <span className="ml-1 bg-white/20 px-1.5 py-0.5 rounded-lg text-xs font-black">{formatCurrency(calculatedDebt)}</span>}
+          </button>
+      </div>
+
+      {/* SALE VIEW MODAL */}
+      {viewSale && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4" onClick={() => setViewSale(null)}>
+              <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md max-h-[85vh] flex flex-col overflow-hidden" onClick={e => e.stopPropagation()}>
+                  {/* Header */}
+                  <div className="flex items-center justify-between p-5 border-b border-sys-100">
+                      <div>
+                          <p className="text-xs font-black uppercase tracking-widest text-sys-400">Detalle de Venta</p>
+                          <p className="text-lg font-black text-sys-900">Ticket #{viewSale.number || viewSale.ticketNumber || viewSale.localId?.slice(-6)}</p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                          <button
+                              onClick={() => { handleReprint({ type: 'SALE_DEBT', referenceId: viewSale.id }); setViewSale(null); }}
+                              className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-sm font-bold border border-sys-200 hover:border-brand hover:text-brand transition-all"
+                          >
+                              <Printer size={14}/> Imprimir
+                          </button>
+                          <button onClick={() => setViewSale(null)} className="p-2 rounded-xl hover:bg-sys-100 text-sys-400 hover:text-sys-700 transition-all">
+                              <X size={20}/>
+                          </button>
+                      </div>
+                  </div>
+                  {/* Meta */}
+                  <div className="px-5 py-3 bg-sys-50 border-b border-sys-100 flex items-center justify-between text-xs text-sys-500 font-bold">
+                      <span><Calendar size={12} className="inline mr-1"/>{new Date(viewSale.date || viewSale.createdAt).toLocaleDateString('es-AR', { day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit' })}</span>
+                      <span className="uppercase">{viewSale.client?.name || 'Consumidor Final'}</span>
+                  </div>
+                  {/* Items */}
+                  <div className="flex-1 overflow-y-auto px-5 py-4 space-y-2">
+                      {(viewSale.items || []).map((item, i) => (
+                          <div key={i} className="flex items-center justify-between gap-3 py-2 border-b border-sys-50 last:border-0">
+                              <div className="flex items-center gap-2 min-w-0">
+                                  <span className="shrink-0 w-7 h-7 rounded-lg bg-sys-100 flex items-center justify-center text-xs font-black text-sys-600">{item.quantity}</span>
+                                  <span className="text-sm font-bold text-sys-800 truncate uppercase">{item.name}</span>
+                              </div>
+                              <span className="shrink-0 font-black font-mono text-sm text-sys-900">{formatCurrency(item.subtotal ?? item.price * item.quantity)}</span>
+                          </div>
+                      ))}
+                      {(!viewSale.items || viewSale.items.length === 0) && (
+                          <p className="text-center text-sys-400 text-sm py-6">Sin detalle de items disponible</p>
+                      )}
+                  </div>
+                  {/* Totales */}
+                  <div className="px-5 py-4 border-t border-sys-100 bg-sys-50/50 space-y-1.5">
+                      {viewSale.discount > 0 && (
+                          <div className="flex justify-between text-xs text-emerald-600 font-bold">
+                              <span>Descuento</span><span>- {formatCurrency(viewSale.discount)}</span>
+                          </div>
+                      )}
+                      {viewSale.surcharge > 0 && (
+                          <div className="flex justify-between text-xs text-orange-500 font-bold">
+                              <span>Recargo</span><span>+ {formatCurrency(viewSale.surcharge)}</span>
+                          </div>
+                      )}
+                      <div className="flex justify-between font-black text-base text-sys-900 pt-1 border-t border-sys-200">
+                          <span>TOTAL</span><span>{formatCurrency(viewSale.total || viewSale.amount)}</span>
+                      </div>
+                      {viewSale.method && (
+                          <p className="text-xs text-sys-400 font-bold uppercase text-right">
+                              Pagado con: {viewSale.method}
+                          </p>
+                      )}
+                  </div>
+              </div>
+          </div>
+      )}
+
       {/* 🟢 MODALES 🟢 */}
-      
+
       <PaymentModal 
         isOpen={isPaymentOpen}
         onClose={() => setIsPaymentOpen(false)}

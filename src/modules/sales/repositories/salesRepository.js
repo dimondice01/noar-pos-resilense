@@ -526,5 +526,12 @@ export const salesRepository = {
         window.dispatchEvent(new CustomEvent('noar:sales-synced'));
       }
     }, (err) => console.warn('📡 salesListener error:', err));
+  },
+
+  async getSalesByClientId(clientId) {
+    if (!clientId) return [];
+    const dbLocal = await getDB();
+    const all = await dbLocal.sales.toArray();
+    return all.filter(s => s.client?.id === clientId && s.status !== 'abandoned');
   }
 };
