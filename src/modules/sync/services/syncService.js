@@ -490,30 +490,47 @@ export const syncService = {
       if (!companyId) return;
       try {
           const localDb = await getDB();
-          const lastLocal = await localDb.sales.orderBy('updatedAt').last();
-          const lastSyncDate = lastLocal ? new Date(lastLocal.updatedAt) : new Date(0);
-          
-          const safetyMarginDate = new Date(lastSyncDate.getTime() - (60 * 1000));
-          const firestoreSafetyMargin = Timestamp.fromDate(safetyMarginDate);
-          const salesRef = collection(db, 'companies', companyId, 'sales');
-          let q = query(salesRef, where('updatedAt', '>', firestoreSafetyMargin));
+          const keySuffix = (role === 'OWNER' && (!branchId || branchId === 'ALL')) ? 'GLOBAL' : branchId;
+          const SYNC_KEY = `noar_sales_sync_${keySuffix}`;
+          const lastSyncStr = localStorage.getItem(SYNC_KEY);
+          const countLocal = await localDb.sales.count();
 
-          if (role !== 'OWNER' || branchId !== 'ALL') {
-              q = query(salesRef, where('branchId', '==', branchId), where('updatedAt', '>', firestoreSafetyMargin));
+          const salesRef = collection(db, 'companies', companyId, 'sales');
+          let q;
+
+          if (lastSyncStr && countLocal > 0) {
+              // Delta: solo lo nuevo desde el último sync
+              const safetyMargin = new Date(new Date(lastSyncStr).getTime() - 60 * 1000);
+              const firestoreMargin = Timestamp.fromDate(safetyMargin);
+              q = (role !== 'OWNER' || branchId !== 'ALL')
+                  ? query(salesRef, where('branchId', '==', branchId), where('updatedAt', '>', firestoreMargin))
+                  : query(salesRef, where('updatedAt', '>', firestoreMargin));
+          } else {
+              // Full sync inicial: últimos 30 días
+              const margin30 = Timestamp.fromDate(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000));
+              q = (role !== 'OWNER' || branchId !== 'ALL')
+                  ? query(salesRef, where('branchId', '==', branchId), where('updatedAt', '>', margin30))
+                  : query(salesRef, where('updatedAt', '>', margin30));
           }
 
           const snapshot = await getDocs(q);
           if (!snapshot.empty) {
               const pendingSet = new Set(
-                  (await localDb.sales.where('syncStatus').equals('pending').toArray())
-                      .map(s => s.id)
+                  (await localDb.sales.where('syncStatus').equals('pending').toArray()).map(s => s.id)
               );
               const salesToPut = snapshot.docs
                   .filter(docSnap => !pendingSet.has(docSnap.id))
                   .map(docSnap => this._sanitizeCloudSale(docSnap.data(), docSnap.id));
-              if (salesToPut.length > 0) await localDb.sales.bulkPut(salesToPut);
+              if (salesToPut.length > 0) {
+                  await localDb.sales.bulkPut(salesToPut);
+                  window.dispatchEvent(new CustomEvent('noar:sales-synced'));
+              }
           }
-      } catch (error) {}
+
+          localStorage.setItem(SYNC_KEY, new Date().toISOString());
+      } catch (error) {
+          console.warn('syncInitialSales error:', error);
+      }
   },
 
   async syncInitialPurchases(companyId, branchId, role) {

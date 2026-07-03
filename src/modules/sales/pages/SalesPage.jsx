@@ -256,10 +256,13 @@ export const SalesPage = () => {
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 20; 
 
-  const [loadingMap, setLoadingMap] = useState({}); 
-  const [selectedOpForTicket, setSelectedOpForTicket] = useState(null); 
-  const [refundData, setRefundData] = useState(null); 
+  const [loadingMap, setLoadingMap] = useState({});
+  const [selectedOpForTicket, setSelectedOpForTicket] = useState(null);
+  const [refundData, setRefundData] = useState(null);
   const [isProcessingRefund, setIsProcessingRefund] = useState(false);
+
+  // Ref para evitar stale closure en event listeners de sync
+  const fetchOperationsRef = useRef(null);
 
   // 1. CARGAR LISTA DE CAJEROS
   useEffect(() => {
@@ -286,14 +289,13 @@ export const SalesPage = () => {
 
   // 🔥 AUTO-REFRESH: SalesPage escucha ventas locales y ventas bajadas del sync
   useEffect(() => {
-      const handler = () => setTimeout(() => fetchOperations(), 300);
+      const handler = () => setTimeout(() => fetchOperationsRef.current?.(), 300);
       window.addEventListener('noar:sale-created', handler);
       window.addEventListener('noar:sales-synced', handler);
       return () => {
           window.removeEventListener('noar:sale-created', handler);
           window.removeEventListener('noar:sales-synced', handler);
       };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
 
@@ -380,8 +382,10 @@ export const SalesPage = () => {
       }
   };
 
-  useEffect(() => { 
-      fetchOperations(displayLimit > 150); 
+  fetchOperationsRef.current = fetchOperations;
+
+  useEffect(() => {
+      fetchOperations(displayLimit > 150);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filterPeriod, customStart, customEnd, activeBranchId, displayLimit, filterAfip]);
 

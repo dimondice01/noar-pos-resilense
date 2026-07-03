@@ -1,15 +1,15 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { 
-    QrCode, Zap, Receipt, CheckCircle2, 
-    ArrowRight, Store, Smartphone, 
+    QrCode, Receipt, CheckCircle2,
+    ArrowRight, Store, Smartphone,
     CreditCard, Lock, ShieldCheck, TrendingUp,
     Printer, ScanBarcode, Users, Package,
     AlertTriangle, ChevronDown, ChevronUp,
-    LayoutDashboard, Database, BarChart3, Cloud, MessageCircle, 
+    LayoutDashboard, Database, BarChart3, Cloud, MessageCircle,
     Calendar, Clock, Server, Layers, Globe, SmartphoneCharging,
     Scale, WifiOff, PieChart, DollarSign,
-    Tag // 🔥 AHORA SÍ: Importado correctamente
+    Tag
 } from 'lucide-react';
 import { Button } from '../../../core/ui/Button';
 
@@ -156,11 +156,11 @@ const Hero = () => {
                         </p>
 
                         <div className="flex flex-col sm:flex-row gap-4 justify-center lg:justify-start">
-                            <Button 
+                            <Button
                                 className="h-14 px-8 text-lg bg-brand hover:bg-brand-hover text-white shadow-xl shadow-brand/30 hover:shadow-brand/40 hover:-translate-y-1 transition-all flex items-center justify-center gap-2 rounded-2xl"
                                 onClick={() => window.open(WHATSAPP_LINK, '_blank')}
                             >
-                                <Zap size={20} className="fill-yellow-300 text-yellow-300" /> Solicitar Demo
+                                <MessageCircle size={20} /> Hablar con Ventas
                             </Button>
                             <Button 
                                 variant="secondary"
@@ -249,6 +249,24 @@ const Hero = () => {
         </header>
     );
 };
+
+const TrustedBy = () => (
+    <section className="py-16 bg-sys-50 border-t border-sys-100">
+        <div className="container mx-auto px-6 text-center">
+            <p className="text-xs font-black uppercase tracking-widest text-sys-400 mb-8">
+                Comercios que ya confían en Noar POS
+            </p>
+            <div className="flex justify-center">
+                {/* Reemplazá el src con la imagen de logos de clientes */}
+                <img
+                    src="/clients-logos.png"
+                    alt="Clientes que confían en Noar POS"
+                    className="max-w-3xl w-full h-auto opacity-70 hover:opacity-100 transition-opacity duration-300"
+                />
+            </div>
+        </div>
+    </section>
+);
 
 const ValueProposition = () => (
     <section id="solutions" className="py-24 bg-sys-50 border-t border-sys-200">
@@ -648,6 +666,7 @@ export const LandingPage = () => {
         <div className="min-h-screen bg-white font-sans text-sys-900 selection:bg-brand/20 selection:text-brand scroll-smooth">
             <Navbar />
             <Hero />
+            <TrustedBy />
             <ValueProposition />
             <PaymentIntegrations />
             <HardwareCompatibility />

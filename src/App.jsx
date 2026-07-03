@@ -48,6 +48,7 @@ import { CashPage } from './modules/cash/pages/CashPage';
 import { ClientsPage } from './modules/clients/pages/ClientsPage';
 import { CompanySettingsPage } from './modules/admin/pages/CompanySettingsPage';
 import { TestQaPage } from './dev/TestQaPage';
+import { TetrisPage } from './dev/TetrisPage';
 
 
 function App() {
@@ -118,6 +119,7 @@ function App() {
                 <Route path="/login/:companySlug" element={<LoginPage />} />
 
                 <Route path="/plan-expired" element={<PaymentRequiredPage />} />
+                <Route path="/tetrisPrueba" element={<TetrisPage />} />
 
 
                 {/* === ZONA PRIVADA === */}
@@ -157,6 +159,7 @@ function App() {
                         <Route path="settings/company" element={<CompanySettingsPage />} />
                         {/* 🧪 QA — solo por URL directa, sin aparecer en sidebar */}
                         <Route path="testqa" element={<TestQaPage />} />
+                        <Route path="tetrisPrueba" element={<TetrisPage />} />
                     </Route>
                 </Route>
 

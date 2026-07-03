@@ -631,7 +631,8 @@ export const CashPage = () => {
                                         <tr key={shift.id} className="hover:bg-sys-50 transition-colors group">
                                             <td className="p-5">
                                                 <div className="font-black text-sys-800 text-xs uppercase">{new Date(shift.closedAt).toLocaleDateString()}</div>
-                                                <div className="text-[10px] text-sys-400 font-mono">{new Date(shift.closedAt).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</div>
+                                                <div className="text-[10px] text-sys-400 font-mono">Inicio: {new Date(shift.openedAt).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</div>
+                                                <div className="text-[10px] text-sys-400 font-mono">Cierre: {new Date(shift.closedAt).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</div>
                                             </td>
                                             <td className="p-5">
                                                 <span className="text-[10px] font-black uppercase px-2 py-1 bg-sys-50 rounded-lg text-sys-600 border border-sys-100 flex items-center gap-1 w-fit">

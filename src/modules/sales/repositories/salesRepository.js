@@ -489,7 +489,7 @@ export const salesRepository = {
   async syncInitialSales(companyId, branchId) {
     if (!navigator.onLine || !companyId || !branchId) return;
     try {
-      const margin = new Date(Date.now() - 48 * 60 * 60 * 1000);
+      const margin = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
       const q = query(
         collection(db, `companies/${companyId}/sales`),
         where('branchId', '==', branchId),
