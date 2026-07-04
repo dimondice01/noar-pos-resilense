@@ -2,38 +2,63 @@ export const scaleService = {
     generateScaleFile: (products, brand) => {
         if (!products || products.length === 0) return null;
 
+        const normalizeName = (name) =>
+            name.normalize("NFD").replace(/[̀-ͯ]/g, "")
+                .replace(/[^a-zA-Z0-9 ]/g, '').trim().toUpperCase();
+
         if (brand === 'KRETZ') {
-            return products.map(p => {
-                // 1. PLU: Solo números, máximo 6 dígitos según modelo. 
-                const plu = String(p.code).replace(/\D/g, '').slice(-6);
+            const rows = [];
+            for (const p of products) {
+                const baseName = normalizeName(p.name).substring(0, 36);
+                const tiers = Array.isArray(p.priceTiers) && p.priceTiers.length > 0 ? p.priceTiers : null;
 
-                // 2. NOMBRE: ¡CLAVE! Eliminamos TODO lo que no sea letra o espacio.
-                // iTegra falla con puntos, comas, tildes o símbolos en el envío a balanza.
-                const cleanName = p.name
-                    .normalize("NFD").replace(/[\u0300-\u036f]/g, "") // Quita acentos
-                    .replace(/[^a-zA-Z0-9 ]/g, '') // Quita puntos, comas, #, etc.
-                    .substring(0, 36) // Aumentado a 36 caracteres para la Kretz Report NX
-                    .trim()
-                    .toUpperCase();
-
-                // 3. PRECIO: Aseguramos punto decimal y 2 dígitos exactos.
-                // Filtramos precios en 0 porque algunas balanzas bloquean el envío.
-                const rawPrice = parseFloat(p.price) || 0;
-                const price = rawPrice > 0 ? rawPrice.toFixed(2) : "0.01";
-
-                // 4. FORMATO: PLU, Nombre, Precio, Departamento, Familia
-                // Forzamos Departamento 1 y Familia 1 para evitar bloqueos en iTegra
-                return `${plu},${cleanName},${price},1,1,01`;
-            }).join('\r\n');
+                if (tiers) {
+                    for (const tier of tiers) {
+                        const plu = String(tier.plu).replace(/\D/g, '').slice(-6);
+                        const rawPrice = parseFloat(tier.price) || 0;
+                        const price = rawPrice > 0 ? rawPrice.toFixed(2) : "0.01";
+                        const label = tier.label
+                            ? `${baseName} ${normalizeName(tier.label)}`.substring(0, 36)
+                            : baseName;
+                        rows.push(`${plu},${label},${price},1,1,01`);
+                    }
+                } else {
+                    const plu = String(p.code).replace(/\D/g, '').slice(-6);
+                    const rawPrice = parseFloat(p.price) || 0;
+                    const price = rawPrice > 0 ? rawPrice.toFixed(2) : "0.01";
+                    rows.push(`${plu},${baseName},${price},1,1,01`);
+                }
+            }
+            return rows.join('\r\n');
         }
 
         if (brand === 'SYSTEL') {
-            return products.map(p => {
-                const code = String(p.code).replace(/\D/g, '').slice(-6);
-                const name = p.name.substring(0, 25).replace(/;/g, '').toUpperCase();
-                const price = parseFloat(p.price).toFixed(2).replace('.', ',');
-                return `${code};${name};${price};1;0`;
-            }).join('\r\n');
+            // Formato 8 columnas: Categoria;CodInterno;Nombre;PLU;Precio;Precio;P/U;0
+            // price en noar es el precio final que va al ticket → va directo en ambas columnas de precio
+            const rows = [];
+            for (const p of products) {
+                const category = (p.category || 'GENERAL').replace(/;/g, '').toUpperCase();
+                const pu = p.isWeighable ? 'P' : 'U';
+                const tiers = Array.isArray(p.priceTiers) && p.priceTiers.length > 0 ? p.priceTiers : null;
+
+                if (tiers) {
+                    for (const tier of tiers) {
+                        const plu = String(tier.plu).replace(/\D/g, '').slice(-6);
+                        const baseName = p.name.substring(0, 18).replace(/;/g, '').toUpperCase();
+                        const label = tier.label
+                            ? `${baseName} ${tier.label.substring(0, 5).toUpperCase()}`.substring(0, 18)
+                            : baseName;
+                        const price = Math.round(parseFloat(tier.price) || 0);
+                        rows.push(`${category};${plu};${label};${plu};${price};${price};${pu};0`);
+                    }
+                } else {
+                    const plu = String(p.code).replace(/\D/g, '').slice(-6);
+                    const name = p.name.substring(0, 18).replace(/;/g, '').toUpperCase();
+                    const price = Math.round(parseFloat(p.price) || 0);
+                    rows.push(`${category};${plu};${name};${plu};${price};${price};${pu};0`);
+                }
+            }
+            return rows.join('\r\n');
         }
 
         return null;
@@ -41,7 +66,6 @@ export const scaleService = {
 
     downloadFile: (content, brand) => {
         if (!content) return;
-        // Nombre de archivo sin espacios para evitar líos en Windows y JDataGate
         const filename = brand === 'KRETZ' ? 'novedades.txt' : 'productos_systel.csv';
         const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
         const url = window.URL.createObjectURL(blob);

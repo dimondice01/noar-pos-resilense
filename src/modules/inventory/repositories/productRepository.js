@@ -168,16 +168,41 @@ export const productRepository = {
             product = await dbLocal.products.where('barcode').equals(cleanCode).first();
         }
 
+        let matchedTier = null;
         if (!product || product.deleted) {
             product = await dbLocal.products
-                .filter(p => !p.deleted && Array.isArray(p.barcode) && p.barcode.includes(cleanCode))
+                .filter(p => !p.deleted && (
+                    (Array.isArray(p.barcode) && p.barcode.includes(cleanCode)) ||
+                    (Array.isArray(p.priceTiers) && p.priceTiers.some(t => t.plu === cleanCode))
+                ))
                 .first();
+
+            if (product && !product.deleted && Array.isArray(product.priceTiers)) {
+                matchedTier = product.priceTiers.find(t => t.plu === cleanCode) || null;
+            }
         }
 
         if (product && !product.deleted) {
+            // 🔥 IMPORTANTE: checkAndActivatePrice puede persistir el producto (precio programado).
+            // Tiene que correr sobre el producto ORIGINAL, nunca sobre la versión "decorada" con el
+            // tier — si no, un precio programado que se activa justo al escanear una variante
+            // pisaría el nombre/precio real del padre en Dexie/Firestore con los datos del tier.
             const activeProduct = await checkAndActivatePrice(product, dbLocal);
             const enriched = await _injectBranchData([activeProduct], activeBranchId, dbLocal);
-            return enriched[0];
+            let result = enriched[0];
+
+            // Recién acá, sobre el resultado final (solo para esta lectura, no se persiste),
+            // aplicamos el precio/nombre/tierPlu de la variante anexada.
+            if (matchedTier) {
+                result = {
+                    ...result,
+                    price: matchedTier.price,
+                    name: `${result.name} - ${matchedTier.label}`,
+                    tierPlu: matchedTier.plu
+                };
+            }
+
+            return result;
         }
 
         return null;
@@ -254,6 +279,9 @@ export const productRepository = {
             isCase: product.isCase !== undefined ? product.isCase : (existingProduct.isCase || false),
             caseProductId: product.caseProductId !== undefined ? product.caseProductId : (existingProduct.caseProductId || null),
             unitsPerCase: product.unitsPerCase !== undefined ? Number(product.unitsPerCase) : (existingProduct.unitsPerCase || 1),
+            priceTiers: Array.isArray(product.priceTiers) ? product.priceTiers : (existingProduct.priceTiers || []),
+            isCombo: product.isCombo !== undefined ? product.isCombo : (existingProduct.isCombo || false),
+            components: Array.isArray(product.components) ? product.components : (existingProduct.components || []),
 
             updatedAt: timestamp,
             deleted: false,
@@ -347,6 +375,59 @@ export const productRepository = {
             .then(() => dbLocal.products.update(productId, { syncStatus: 'synced' }))
             .catch(e => console.error("Error en update directo:", e));
         }
+    },
+
+    // ==========================================
+    // 🔗 ANEXAR PRODUCTO COMO VARIANTE (priceTier)
+    // ==========================================
+    async mergeAsVariant(childId, parentId, label) {
+        const dbLocal = await getDB();
+        const { user, activeBranchId } = useAuthStore.getState();
+
+        const child = await dbLocal.products.get(childId);
+        const parent = await dbLocal.products.get(parentId);
+        if (!child || !parent) throw new Error('Producto no encontrado');
+
+        const existingTiers = Array.isArray(parent.priceTiers) ? parent.priceTiers : [];
+        if (existingTiers.some(t => t.plu === child.code)) throw new Error(`El PLU ${child.code} ya existe en ${parent.name}`);
+
+        const newTier = { plu: child.code, price: child.price, label: label.trim() };
+        const timestamp = new Date().toISOString();
+
+        const updatedParent = {
+            ...parent,
+            priceTiers: [...existingTiers, newTier],
+            updatedAt: timestamp,
+            syncStatus: 'pending'
+        };
+
+        // Transferir stock del hijo al padre (sucursal activa)
+        if (activeBranchId && activeBranchId !== 'ALL') {
+            const childInv = await dbLocal.inventory.get([activeBranchId, childId]);
+            const parentInv = await dbLocal.inventory.get([activeBranchId, parentId]);
+            const childStock = childInv ? parseFloat(childInv.stock) : 0;
+            const parentStock = parentInv ? parseFloat(parentInv.stock) : 0;
+            if (childStock > 0) {
+                await dbLocal.inventory.put({
+                    branchId: activeBranchId,
+                    productId: parentId,
+                    stock: parentStock + childStock,
+                    updatedAt: timestamp,
+                    syncStatus: 'pending'
+                });
+            }
+        }
+
+        await dbLocal.products.put(updatedParent);
+        await dbLocal.products.update(childId, { deleted: true, updatedAt: timestamp, syncStatus: 'pending' });
+
+        if (navigator.onLine && user?.companyId) {
+            const { stock, syncStatus, ...cloudParent } = updatedParent;
+            setDoc(doc(db, `companies/${user.companyId}/products`, parentId), { ...cloudParent, updatedAt: serverTimestamp() }, { merge: true }).catch(() => {});
+            setDoc(doc(db, `companies/${user.companyId}/products`, childId), { deleted: true, updatedAt: serverTimestamp() }, { merge: true }).catch(() => {});
+        }
+
+        return updatedParent;
     },
 
     // ==========================================

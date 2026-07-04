@@ -3,7 +3,7 @@ import {
     Users, UserPlus, Shield, ShieldCheck, Mail, Lock, Info, Building2, Store, 
     Trash2, CreditCard, Percent, PlusCircle, AlertTriangle, Layers, Tag, Save,
     ChevronDown, ChevronUp, CheckCircle2, MonitorSmartphone, Loader2, ArrowUpRight,
-    Wallet, ReceiptText, ArrowRightCircle, X, ShieldAlert, Package, CloudDownload
+    Wallet, ReceiptText, ArrowRightCircle, X, ShieldAlert, Package, CloudDownload, Scale
 } from 'lucide-react';
 import { Card } from '../../../core/ui/Card';
 import { Button } from '../../../core/ui/Button';
@@ -280,7 +280,13 @@ export const TeamPage = () => {
       wholesalePercentage: 10,
       paymentSurcharges: {
           cash: 0, transfer: 0, mp: 0, card: 0, current_account: 0
-      }
+      },
+      paymentDiscounts: {
+          cash: 0, transfer: 0, mp: 0, card: 0, current_account: 0
+      },
+      // 🔥 Formato de código de barras de balanza por sucursal: { [branchId]: 'EAN13_GRAMS' }
+      // Si una sucursal no tiene entrada, usa el formato legado (KRETZ/SYSTEL) sin cambios.
+      scaleBarcodeFormats: {}
   });
   const [savingPosConfig, setSavingPosConfig] = useState(false);
 
@@ -431,12 +437,29 @@ export const TeamPage = () => {
                   wholesalePercentage: data.wholesalePercentage || 10,
                   paymentSurcharges: data.paymentSurcharges || {
                       cash: 0, transfer: 0, mp: 0, card: 0, current_account: 0
-                  }
+                  },
+                  paymentDiscounts: data.paymentDiscounts || {
+                      cash: 0, transfer: 0, mp: 0, card: 0, current_account: 0
+                  },
+                  scaleBarcodeFormats: data.scaleBarcodeFormats || {}
               });
           }
       } catch (error) {
           console.error("Error cargando config de POS:", error);
       }
+  };
+
+  const handleToggleScaleFormat = (checked) => {
+      if (!activeBranchId || activeBranchId === 'ALL') {
+          toast.error("Elegí una sucursal específica para activar esta opción.");
+          return;
+      }
+      setPosConfig(prev => {
+          const scaleBarcodeFormats = { ...prev.scaleBarcodeFormats };
+          if (checked) scaleBarcodeFormats[activeBranchId] = 'EAN13_GRAMS';
+          else delete scaleBarcodeFormats[activeBranchId];
+          return { ...prev, scaleBarcodeFormats };
+      });
   };
 
   const getBranchName = (branchId) => {
@@ -667,6 +690,17 @@ export const TeamPage = () => {
           ...prev,
           paymentSurcharges: {
               ...prev.paymentSurcharges,
+              [method]: numValue
+          }
+      }));
+  };
+
+  const handleDiscountChange = (method, value) => {
+      const numValue = parseFloat(value) || 0;
+      setPosConfig(prev => ({
+          ...prev,
+          paymentDiscounts: {
+              ...prev.paymentDiscounts,
               [method]: numValue
           }
       }));
@@ -1153,7 +1187,7 @@ export const TeamPage = () => {
                   {/* BLOQUE: RECARGOS POR METODO DE PAGO */}
                   <Card className="p-6 border-blue-100 shadow-lg shadow-blue-500/5 relative overflow-hidden">
                       <div className="absolute -right-4 -top-4 w-24 h-24 bg-blue-50 rounded-full opacity-50 pointer-events-none"></div>
-                      
+
                       <div className="relative z-10 mb-6">
                           <h3 className="font-bold text-lg text-sys-900 flex items-center gap-2">
                               <ArrowUpRight className="text-blue-500" size={20} /> Recargos de Pago
@@ -1174,7 +1208,7 @@ export const TeamPage = () => {
                               <div key={method.id} className="flex items-center justify-between p-3 rounded-xl border border-sys-100 bg-sys-50 hover:bg-sys-100 transition-colors">
                                   <span className="text-sm font-bold text-sys-700">{method.label}</span>
                                   <div className="relative w-24">
-                                      <input 
+                                      <input
                                           type="number"
                                           className={cn(
                                               "w-full bg-white border border-sys-200 rounded-lg pl-3 pr-8 py-2 text-sm font-black outline-none text-right shadow-sm",
@@ -1191,9 +1225,77 @@ export const TeamPage = () => {
                       </div>
                   </Card>
 
+                  {/* BLOQUE: DESCUENTOS POR METODO DE PAGO */}
+                  <Card className="p-6 border-green-100 shadow-lg shadow-green-500/5 relative overflow-hidden">
+                      <div className="absolute -right-4 -top-4 w-24 h-24 bg-green-50 rounded-full opacity-50 pointer-events-none"></div>
+
+                      <div className="relative z-10 mb-6">
+                          <h3 className="font-bold text-lg text-sys-900 flex items-center gap-2">
+                              <Tag className="text-green-500" size={20} /> Descuentos de Pago
+                          </h3>
+                          <p className="text-xs text-sys-500 mt-1 max-w-md">
+                              Aplica un descuento automático según el medio de pago elegido (Ej: 5% off en efectivo).
+                          </p>
+                      </div>
+
+                      <div className="space-y-3 relative z-10">
+                          {[
+                              { id: 'cash', label: 'Efectivo', color: 'green' },
+                              { id: 'transfer', label: 'Transferencia', color: 'blue' },
+                              { id: 'mp', label: 'MercadoPago / QR', color: 'sky' },
+                              { id: 'card', label: 'Débito / Tarjeta (1 Pago)', color: 'indigo' },
+                              { id: 'current_account', label: 'Cuenta Corriente', color: 'orange' }
+                          ].map(method => (
+                              <div key={method.id} className="flex items-center justify-between p-3 rounded-xl border border-sys-100 bg-sys-50 hover:bg-sys-100 transition-colors">
+                                  <span className="text-sm font-bold text-sys-700">{method.label}</span>
+                                  <div className="relative w-24">
+                                      <input
+                                          type="number"
+                                          className={cn(
+                                              "w-full bg-white border border-sys-200 rounded-lg pl-3 pr-8 py-2 text-sm font-black outline-none text-right shadow-sm",
+                                              posConfig.paymentDiscounts[method.id] > 0 ? `text-${method.color}-600 border-${method.color}-300 focus:border-${method.color}-500` : "text-sys-900 focus:border-brand"
+                                          )}
+                                          placeholder="0"
+                                          value={posConfig.paymentDiscounts[method.id] || ''}
+                                          onChange={(e) => handleDiscountChange(method.id, e.target.value)}
+                                      />
+                                      <span className="absolute right-3 top-2.5 text-sys-400 text-xs font-bold">%</span>
+                                  </div>
+                              </div>
+                          ))}
+                      </div>
+                  </Card>
+
+                  {/* BLOQUE: BALANZA */}
+                  <Card className="p-6 border-purple-100 shadow-lg shadow-purple-500/5 relative overflow-hidden">
+                      <div className="absolute -right-4 -top-4 w-24 h-24 bg-purple-50 rounded-full opacity-50 pointer-events-none"></div>
+
+                      <div className="flex items-start justify-between gap-4 relative z-10">
+                          <div>
+                              <h3 className="font-bold text-lg text-sys-900 flex items-center gap-2">
+                                  <Scale className="text-purple-500" size={20} /> Balanza
+                              </h3>
+                              <p className="text-xs text-sys-500 mt-1 max-w-sm">
+                                  <strong>Activar EAN13 Gramos:</strong> usa el formato de código de barras estándar (peso en gramos embebido + dígito verificador) en vez del formato KRETZ/SYSTEL por defecto. Aplica únicamente a la sucursal <strong className="text-sys-700">{getBranchName(activeBranchId)}</strong>.
+                              </p>
+                          </div>
+                          <Switch
+                              checked={posConfig.scaleBarcodeFormats?.[activeBranchId] === 'EAN13_GRAMS'}
+                              onCheckedChange={handleToggleScaleFormat}
+                              disabled={!activeBranchId || activeBranchId === 'ALL'}
+                          />
+                      </div>
+
+                      {(!activeBranchId || activeBranchId === 'ALL') && (
+                          <p className="text-[11px] text-orange-500 font-bold mt-3 relative z-10 flex items-center gap-1">
+                              <AlertTriangle size={12}/> Elegí una sucursal específica (arriba a la izquierda) para poder activar esta opción.
+                          </p>
+                      )}
+                  </Card>
+
                   <div className="flex justify-end pt-2">
-                      <Button 
-                          onClick={savePosConfig} 
+                      <Button
+                          onClick={savePosConfig}
                           disabled={savingPosConfig}
                           className="w-full sm:w-auto px-8 bg-brand hover:bg-brand-dark text-white shadow-xl shadow-brand/20 h-12 text-base font-bold"
                       >
@@ -1217,12 +1319,16 @@ export const TeamPage = () => {
                               <strong>Descuento Mayorista:</strong> Es ideal para negocios híbridos donde el cajero decide a qué artículos aplicarle el precio por cantidad.
                           </li>
                           <li className="flex items-start gap-2">
-                              <CheckCircle2 size={14} className="mt-0.5 shrink-0" /> 
-                              <strong>Recargos por Transferencia / MP:</strong> Si configuras un 10% en Transferencia, un ticket de $1.000 pasará a cobrarse $1.100 automáticamente cuando el cajero elija ese método de pago.
+                              <CheckCircle2 size={14} className="mt-0.5 shrink-0" />
+                              <span><strong>Recargos:</strong> Si configuras 10% en Transferencia, un ticket de $1.000 pasará a $1.100 automáticamente. El ticket aclarará <em>"RECARGO"</em>.</span>
                           </li>
                           <li className="flex items-start gap-2">
-                              <CheckCircle2 size={14} className="mt-0.5 shrink-0" /> 
-                              <strong>Efectivo:</strong> Por convención fiscal y comercial, el efectivo siempre debería tener un recargo de 0%.
+                              <CheckCircle2 size={14} className="mt-0.5 shrink-0" />
+                              <span><strong>Descuentos:</strong> Si configuras 5% en Efectivo, un ticket de $1.000 pasará a $950 automáticamente. El ticket aclarará <em>"DESCUENTO"</em>.</span>
+                          </li>
+                          <li className="flex items-start gap-2">
+                              <CheckCircle2 size={14} className="mt-0.5 shrink-0" />
+                              <strong>Regla general:</strong> No configurar recargo Y descuento para el mismo medio de pago.
                           </li>
                       </ul>
                   </div>

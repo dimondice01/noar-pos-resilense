@@ -65,8 +65,14 @@ export const useSmartImport = () => {
     };
 
     const normalizeUnit = (val) => {
-        if (!val) return { unit: 'UN', isWeighable: false };
+        if (val === undefined || val === null || val === '') return { unit: 'UN', isWeighable: false };
         const str = String(val).toLowerCase().trim();
+        // Soporte numérico: 0 = pesable, 1 = unitario
+        if (str === '0') return { unit: 'KG', isWeighable: true };
+        if (str === '1') return { unit: 'UN', isWeighable: false };
+        // Soporte letra: P = Pesable, U = Unitario (formato balanza)
+        if (str === 'p') return { unit: 'KG', isWeighable: true };
+        if (str === 'u') return { unit: 'UN', isWeighable: false };
         const weighableKeywords = ['kg', 'kilo', 'gramo', 'gr', 'lt', 'litro', 'mt', 'metro', 'pesable'];
         if (weighableKeywords.some(k => str.includes(k))) {
             return { unit: 'KG', isWeighable: true };
@@ -78,7 +84,7 @@ export const useSmartImport = () => {
     // 🚀 PROCESADOR PRINCIPAL (LOCAL-FIRST OPTIMIZED + SMART UPSERT)
     // =================================================================
     // Agregamos options = { roundTo50: false } para controlar el redondeo opcional
-    const processImport = async (columnMapping, branchId, options = { roundTo50: false }) => {
+    const processImport = async (columnMapping, branchId, options = { roundTo50: false, forceWeighable: false }) => {
         if (!file || !user?.companyId) return;
         if (!branchId) throw new Error("Falta el ID de la sucursal destino.");
 
@@ -129,11 +135,10 @@ export const useSmartImport = () => {
                             if (rawData.price === undefined) continue;
 
                             // --- PROCESAMIENTO DE PRECIO & REDONDEO ---
-                            let finalPrice = normalizeMoney(rawData.price);
+                            let finalPrice = Math.round(normalizeMoney(rawData.price)); // siempre entero
                             if (options?.roundTo50 && finalPrice > 0) {
-                                // Redondeo matemático estricto a múltiplos de 50
-                                let rounded = Math.round(finalPrice / 50) * 50;
-                                finalPrice = rounded === 0 ? 50 : rounded; // Prevenir que un precio muy bajo quede en $0
+                                const rounded = Math.round(finalPrice / 50) * 50;
+                                finalPrice = rounded === 0 ? 50 : rounded;
                             }
 
                             // --- CATEGORÍAS (Respeta existente si no se mapeó) ---
@@ -173,8 +178,11 @@ export const useSmartImport = () => {
                             // --- UNIDADES ---
                             let unit = existingProduct?.unit || 'UN';
                             let isWeighable = existingProduct ? existingProduct.isWeighable : false;
-                            
-                            if (rawData.unit) {
+
+                            if (options?.forceWeighable) {
+                                unit = 'KG';
+                                isWeighable = true;
+                            } else if (rawData.unit) {
                                 const unitData = normalizeUnit(rawData.unit);
                                 unit = unitData.unit;
                                 isWeighable = unitData.isWeighable;
@@ -191,7 +199,7 @@ export const useSmartImport = () => {
                                 name: rawData.name ? String(rawData.name).trim().toUpperCase() : (existingProduct?.name || 'SIN NOMBRE'),
                                 price: finalPrice,
                                 // Si no mandaron costo nuevo, mantenemos el existente
-                                cost: rawData.cost !== undefined ? normalizeMoney(rawData.cost) : (existingProduct?.cost || 0),
+                                cost: rawData.cost !== undefined ? Math.round(normalizeMoney(rawData.cost)) : (existingProduct?.cost || 0),
                                 taxRate: rawData.tax !== undefined ? normalizeTax(rawData.tax) : (existingProduct?.taxRate || 21),
                                 category: categoryName,
                                 categoryId: categoryId,
@@ -304,5 +312,100 @@ export const useSmartImport = () => {
         });
     };
 
-    return { parseFile, processImport, previewData, file, isProcessing, progress };
+    // =================================================================
+    // ⚖️ IMPORTADOR DE BALANZA (PLU → match por NOMBRE → pisa código)
+    // =================================================================
+    const processScaleImport = async (colPlu, colName, colPrice, updatePrice) => {
+        if (!file || !user?.companyId) return;
+        setIsProcessing(true);
+        setProgress({ current: 0, total: 0, stage: 'Leyendo archivo...' });
+
+        const localDB = await getDB();
+
+        return new Promise((resolve, reject) => {
+            Papa.parse(file, {
+                header: false,
+                skipEmptyLines: true,
+                delimiter: '',   // auto-detect , o ;
+                complete: async (results) => {
+                    try {
+                        const rows = results.data;
+                        setProgress({ current: 0, total: rows.length, stage: 'Cruzando por nombre...' });
+
+                        const existingProducts = await localDB.products
+                            .filter(p => !p.deleted)
+                            .toArray();
+
+                        const normalize = (s) => (s || '').trim().toUpperCase();
+                        const byName = new Map(existingProducts.map(p => [normalize(p.name), p]));
+
+                        const toUpdate = [];
+                        const unmatched = [];
+                        const timestamp = new Date().toISOString();
+
+                        for (let i = 0; i < rows.length; i++) {
+                            const row = rows[i];
+                            const plu   = String(row[colPlu]   || '').trim();
+                            const name  = normalize(row[colName]  || '');
+                            const price = Math.round(normalizeMoney(row[colPrice] || ''));
+
+                            if (!plu || !name) continue;
+
+                            const product = byName.get(name);
+                            if (!product) { unmatched.push(name); continue; }
+
+                            const updated = {
+                                ...product,
+                                code: plu,
+                                isWeighable: true,  // si está en balanza, es pesable
+                                unit: 'KG',
+                                updatedAt: timestamp,
+                                syncStatus: 'pending'
+                            };
+                            if (updatePrice && price > 0) updated.price = price;
+                            toUpdate.push(updated);
+
+                            if (i % 50 === 0) setProgress(p => ({ ...p, current: i }));
+                        }
+
+                        setProgress({ current: rows.length, total: rows.length, stage: 'Guardando...' });
+
+                        if (toUpdate.length) {
+                            await localDB.products.bulkPut(toUpdate);
+                        }
+
+                        if (navigator.onLine && toUpdate.length) {
+                            const chunkSize = 100;
+                            for (let j = 0; j < toUpdate.length; j += chunkSize) {
+                                try {
+                                    const chunk = toUpdate.slice(j, j + chunkSize);
+                                    const batch = writeBatch(firestoreDB);
+                                    chunk.forEach(p => {
+                                        const { syncStatus, stock, ...cloudData } = p;
+                                        const pRef = doc(firestoreDB, `companies/${user.companyId}/products`, p.id);
+                                        batch.set(pRef, { ...cloudData, lastUpdated: serverTimestamp() }, { merge: true });
+                                    });
+                                    await batch.commit();
+                                    const ids = chunk.map(p => p.id);
+                                    await localDB.products.bulkUpdate(ids.map(id => ({ key: id, changes: { syncStatus: 'synced' } })));
+                                } catch (e) {
+                                    console.warn('Batch balanza falló, syncService reintentará:', e);
+                                    break;
+                                }
+                            }
+                        }
+
+                        resolve({ matched: toUpdate.length, unmatched: unmatched.length, unmatchedNames: unmatched });
+                    } catch (error) {
+                        reject(error);
+                    } finally {
+                        setIsProcessing(false);
+                    }
+                },
+                error: (err) => { setIsProcessing(false); reject(err); }
+            });
+        });
+    };
+
+    return { parseFile, processImport, processScaleImport, previewData, file, isProcessing, progress };
 };

@@ -138,13 +138,15 @@ export const PaymentModal = ({
     const CurrentIcon = currentMethodInfo.icon;
     
     const methodSurchargePercentage = posConfig?.paymentSurcharges?.[method] || 0;
-    
-    const currentInterestRate = selectedRate 
-        ? selectedRate.interest 
+    const methodDiscountPercentage = posConfig?.paymentDiscounts?.[method] || 0;
+
+    const currentInterestRate = selectedRate
+        ? selectedRate.interest
         : methodSurchargePercentage;
-    
-    const effectiveTotal = total * (1 + (currentInterestRate / 100));
-    const surchargeAmountUI = effectiveTotal - total;
+
+    const surchargeAmountUI = total * (currentInterestRate / 100);
+    const discountAmountUI = total * (methodDiscountPercentage / 100);
+    const effectiveTotal = total + surchargeAmountUI - discountAmountUI;
 
     // -- Lógica Split --
     const totalPaidSoFar = payments.reduce((acc, p) => acc + p.amount, 0); 
@@ -330,7 +332,9 @@ export const PaymentModal = ({
 
         const splitInterestRate = selectedRate ? selectedRate.interest : (posConfig?.paymentSurcharges?.[method] || 0);
         const interestAmount = amount * (splitInterestRate / 100);
-        
+        const splitDiscountRate = posConfig?.paymentDiscounts?.[method] || 0;
+        const splitDiscountAmount = amount * (splitDiscountRate / 100);
+
         let paymentMethodName = method;
         if (['manual_card', 'point', 'clover'].includes(method)) paymentMethodName = 'card';
         if (method === 'employee_account') paymentMethodName = 'employee_account';
@@ -339,9 +343,10 @@ export const PaymentModal = ({
         const paymentObj = {
             id: Date.now(),
             method: paymentMethodName,
-            amount: amount, 
-            surcharge: interestAmount, 
-            total: amount + interestAmount, 
+            amount: amount,
+            surcharge: interestAmount,
+            discount: splitDiscountAmount,
+            total: amount + interestAmount - splitDiscountAmount,
             reference: method === 'employee_account' ? `A cuenta: ${employees.find(e => e.uid === selectedEmployeeId)?.name}` : (reference || (selectedRate ? `${selectedBrand?.brand} ${selectedRate.qty} ctes` : '')),
             brand: selectedBrand?.brand || null,
             employeeId: method === 'employee_account' ? (selectedEmployeeId || null) : null
@@ -365,14 +370,16 @@ export const PaymentModal = ({
         if (!isFullyPaid) return;
         const totalSaleReal = payments.reduce((acc, p) => acc + p.total, 0);
         const totalSurcharge = payments.reduce((acc, p) => acc + (p.surcharge || 0), 0);
+        const totalPaymentDiscount = payments.reduce((acc, p) => acc + (p.discount || 0), 0);
 
         onConfirm({
-            payments: payments, 
+            payments: payments,
             method: 'SPLIT',
             totalSale: totalSaleReal,
             subtotal: subtotal,
             discount: discount,
-            surcharge: totalSurcharge, 
+            surcharge: totalSurcharge,
+            paymentDiscount: totalPaymentDiscount,
             amountPaid: totalPaidSoFar,
             change: changeValue,
             withAfip: withAfip,
@@ -406,14 +413,15 @@ export const PaymentModal = ({
             method: finalMethod,
             reference: finalReference,
             employeeId: method === 'employee_account' ? selectedEmployeeId : null,
-            branchId: activeBranchId, 
+            branchId: activeBranchId,
             totalSale: effectiveTotal,
-            amountPaid: method === 'account' ? 0 : (payValue - changeValue), 
-            amountDebt: method === 'account' ? payValue : debtValue, 
+            amountPaid: method === 'account' ? 0 : (payValue - changeValue),
+            amountDebt: method === 'account' ? payValue : debtValue,
             baseAmount: total,
-            surcharge: surchargeAmountUI, 
+            surcharge: surchargeAmountUI,
+            paymentDiscount: discountAmountUI,
             discount: discount || 0,
-            withAfip: method === 'employee_account' || method === 'account' ? false : withAfip 
+            withAfip: method === 'employee_account' || method === 'account' ? false : withAfip
         });
     };
 
@@ -726,12 +734,23 @@ export const PaymentModal = ({
                             
                             {isSplitMode && <p className="text-[10px] text-sys-400 font-bold mt-1">RESTANTE A PAGAR</p>}
 
-                            {!isSplitMode && currentInterestRate > 0 && !isBudgetMode && !isAccountMode && (
-                                <div className="mt-2 pt-2 border-t border-dashed border-sys-200 flex justify-between text-xs animate-in slide-in-from-left-2">
-                                    <span className="text-sys-500">Base: ${total.toLocaleString('es-AR')}</span>
-                                    <span className="text-indigo-600 font-bold">
-                                        + ${surchargeAmountUI.toLocaleString('es-AR', {maximumFractionDigits: 2})} ({currentInterestRate}%)
-                                    </span>
+                            {!isSplitMode && (surchargeAmountUI > 0 || discountAmountUI > 0) && !isBudgetMode && !isAccountMode && (
+                                <div className="mt-2 pt-2 border-t border-dashed border-sys-200 space-y-1 animate-in slide-in-from-left-2">
+                                    <div className="flex justify-between text-xs">
+                                        <span className="text-sys-500">Base: ${total.toLocaleString('es-AR')}</span>
+                                    </div>
+                                    {surchargeAmountUI > 0 && (
+                                        <div className="flex justify-between text-xs">
+                                            <span className="text-indigo-500">Recargo ({currentInterestRate}%)</span>
+                                            <span className="text-indigo-600 font-bold">+ ${surchargeAmountUI.toLocaleString('es-AR', {maximumFractionDigits: 2})}</span>
+                                        </div>
+                                    )}
+                                    {discountAmountUI > 0 && (
+                                        <div className="flex justify-between text-xs">
+                                            <span className="text-green-600">Descuento ({methodDiscountPercentage}%)</span>
+                                            <span className="text-green-700 font-bold">− ${discountAmountUI.toLocaleString('es-AR', {maximumFractionDigits: 2})}</span>
+                                        </div>
+                                    )}
                                 </div>
                             )}
                         </div>
@@ -744,6 +763,7 @@ export const PaymentModal = ({
                                         <div>
                                             <span className="font-bold uppercase block text-sys-700">{p.method === 'manual_card' ? 'Tarjeta' : p.method === 'employee_account' ? 'Cta. Empleado' : p.method === 'account' ? 'Fiado (Cta Cte)' : p.method}</span>
                                             {p.surcharge > 0 && <span className="text-[9px] text-indigo-600">+ Rec. ${p.surcharge.toLocaleString()}</span>}
+                                            {p.discount > 0 && <span className="text-[9px] text-green-600">− Desc. ${p.discount.toLocaleString()}</span>}
                                         </div>
                                         <div className="flex items-center gap-2">
                                             <span className="font-mono font-bold">$ {p.amount.toLocaleString()}</span>

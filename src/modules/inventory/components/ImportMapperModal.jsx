@@ -1,22 +1,31 @@
 import React, { useState, useEffect } from 'react';
 // 🔥 Importamos AVAILABLE_FIELDS para tener las opciones reales
 import { useSmartImport, AVAILABLE_FIELDS } from '../hooks/useSmartImport';
-import { X, Upload, Save, AlertTriangle, CheckCircle, FileSpreadsheet } from 'lucide-react';
+import { X, Upload, Save, AlertTriangle, CheckCircle, FileSpreadsheet, Scale } from 'lucide-react';
 import { cn } from '../../../core/utils/cn';
 
 export const ImportMapperModal = ({ isOpen, onClose, branchId, onSuccess }) => {
-    const { 
-        parseFile, 
-        processImport, 
-        previewData, 
-        isProcessing, 
-        progress 
+    const {
+        parseFile,
+        processImport,
+        processScaleImport,
+        previewData,
+        isProcessing,
+        progress
     } = useSmartImport();
 
     const [mapping, setMapping] = useState({});
     const [headers, setHeaders] = useState([]);
-    // 🔥 NUEVO ESTADO: Controla si redondeamos o no
     const [roundTo50, setRoundTo50] = useState(false);
+    const [forceWeighable, setForceWeighable] = useState(false);
+
+    // Modo Balanza
+    const [scaleMode, setScaleMode] = useState(false);
+    const [scaleColPlu,   setScaleColPlu]   = useState(0);
+    const [scaleColName,  setScaleColName]  = useState(1);
+    const [scaleColPrice, setScaleColPrice] = useState(2);
+    const [scaleUpdatePrice, setScaleUpdatePrice] = useState(false);
+    const [scaleResult, setScaleResult] = useState(null);
 
     // Extraer headers reales del preview cuando cambia
     useEffect(() => {
@@ -31,7 +40,18 @@ export const ImportMapperModal = ({ isOpen, onClose, branchId, onSuccess }) => {
 
     const handleFileChange = (e) => {
         const file = e.target.files[0];
-        if (file) parseFile(file);
+        if (file) { parseFile(file); setScaleResult(null); }
+    };
+
+    const handleScaleSave = async () => {
+        try {
+            const result = await processScaleImport(scaleColPlu, scaleColName, scaleColPrice, scaleUpdatePrice);
+            setScaleResult(result);
+            if (result.matched > 0 && onSuccess) onSuccess();
+        } catch (e) {
+            console.error(e);
+            alert('❌ Error al procesar el archivo de balanza.');
+        }
     };
 
     const handleMapChange = (colIndex, fieldKey) => {
@@ -46,7 +66,7 @@ export const ImportMapperModal = ({ isOpen, onClose, branchId, onSuccess }) => {
 
         try {
             // 🔥 LE PASAMOS LA OPCIÓN AL HOOK
-            const result = await processImport(mapping, branchId, { roundTo50 });
+            const result = await processImport(mapping, branchId, { roundTo50, forceWeighable });
             
             // Mensaje de éxito detallado
             let msg = `✅ ¡Importación / Actualización Exitosa!\n\n`;
@@ -75,13 +95,31 @@ export const ImportMapperModal = ({ isOpen, onClose, branchId, onSuccess }) => {
                 <div className="p-5 border-b border-sys-100 flex justify-between items-center bg-sys-50">
                     <div>
                         <h2 className="text-xl font-black text-sys-900 flex items-center gap-2">
-                            <Upload className="text-brand" size={24} /> Importador Inteligente
+                            {scaleMode ? <Scale className="text-orange-500" size={24} /> : <Upload className="text-brand" size={24} />}
+                            {scaleMode ? 'Importar PLUs de Balanza' : 'Importador Inteligente'}
                         </h2>
-                        <p className="text-sm text-sys-500 mt-1">Sube tu Excel/CSV y actualiza masivamente tus precios o catálogo.</p>
+                        <p className="text-sm text-sys-500 mt-1">
+                            {scaleMode
+                                ? 'Carga el CSV de tu balanza y actualiza el PLU de cada producto pesable por nombre.'
+                                : 'Sube tu Excel/CSV y actualiza masivamente tus precios o catálogo.'}
+                        </p>
                     </div>
-                    <button onClick={onClose} className="p-2 hover:bg-sys-200 rounded-full transition-colors text-sys-400 hover:text-sys-600">
-                        <X size={24}/>
-                    </button>
+                    <div className="flex items-center gap-4">
+                        <button
+                            onClick={() => { setScaleMode(m => !m); setScaleResult(null); }}
+                            className={cn(
+                                "flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold border-2 transition-all",
+                                scaleMode
+                                    ? "bg-orange-500 text-white border-orange-500 shadow-lg shadow-orange-500/20"
+                                    : "bg-white text-orange-600 border-orange-200 hover:border-orange-400"
+                            )}
+                        >
+                            <Scale size={16} /> Modo Balanza
+                        </button>
+                        <button onClick={onClose} className="p-2 hover:bg-sys-200 rounded-full transition-colors text-sys-400 hover:text-sys-600">
+                            <X size={24}/>
+                        </button>
+                    </div>
                 </div>
 
                 {/* Body */}
@@ -121,9 +159,94 @@ export const ImportMapperModal = ({ isOpen, onClose, branchId, onSuccess }) => {
                                 </p>
                             </label>
                         </div>
+                    ) : scaleMode ? (
+                        <div className="flex-1 overflow-auto p-6 space-y-4">
+                            <div className="bg-orange-50 border border-orange-100 p-4 rounded-xl flex gap-3 text-orange-800 text-sm">
+                                <Scale size={20} className="shrink-0 mt-0.5 text-orange-500"/>
+                                <div>
+                                    <strong className="block font-bold mb-1">Cruce por Nombre</strong>
+                                    El sistema busca cada fila del CSV por <strong>nombre exacto</strong>, pisa el código genérico con el PLU real y <strong>marca el producto como pesable (KG)</strong> automáticamente. Indicá en qué columna está cada dato.
+                                </div>
+                            </div>
+
+                            {/* Selector de columnas */}
+                            <div className="bg-white border border-sys-200 rounded-xl p-4 grid grid-cols-3 gap-4">
+                                {[
+                                    { label: 'Columna PLU', value: scaleColPlu, set: setScaleColPlu },
+                                    { label: 'Columna Nombre', value: scaleColName, set: setScaleColName },
+                                    { label: 'Columna Precio', value: scaleColPrice, set: setScaleColPrice },
+                                ].map(({ label, value, set }) => (
+                                    <div key={label}>
+                                        <label className="text-[10px] font-bold text-sys-500 uppercase block mb-1.5">{label}</label>
+                                        <select
+                                            value={value}
+                                            onChange={e => set(Number(e.target.value))}
+                                            className="w-full border border-sys-200 rounded-lg py-2 px-3 text-sm font-medium outline-none focus:border-orange-400"
+                                        >
+                                            {(previewData[0] || []).map((cell, i) => (
+                                                <option key={i} value={i}>Col {i + 1} — {String(cell).slice(0, 20)}</option>
+                                            ))}
+                                        </select>
+                                    </div>
+                                ))}
+                            </div>
+
+                            {/* Opción actualizar precio */}
+                            <div className="flex items-center gap-3 bg-white p-3 px-4 rounded-xl border border-sys-200 w-fit cursor-pointer hover:bg-sys-50"
+                                onClick={() => setScaleUpdatePrice(v => !v)}>
+                                <input type="checkbox" checked={scaleUpdatePrice} onChange={() => {}} className="w-5 h-5 text-orange-500 rounded" />
+                                <label className="text-sm font-bold text-sys-800 cursor-pointer select-none flex flex-col">
+                                    <span>También actualizar el precio</span>
+                                    <span className="text-[10px] text-sys-500 font-normal">Si no está marcado, solo se pisa el PLU</span>
+                                </label>
+                            </div>
+
+                            {/* Preview */}
+                            <div className="bg-white border border-sys-200 rounded-xl overflow-hidden">
+                                <table className="w-full text-xs">
+                                    <thead className="bg-sys-50 border-b border-sys-200">
+                                        <tr>
+                                            {(previewData[0] || []).map((_, i) => (
+                                                <th key={i} className={cn("p-3 text-left font-bold text-sys-500",
+                                                    i === scaleColPlu   && "text-orange-600 bg-orange-50",
+                                                    i === scaleColName  && "text-blue-600 bg-blue-50",
+                                                    i === scaleColPrice && scaleUpdatePrice && "text-green-600 bg-green-50"
+                                                )}>
+                                                    {i === scaleColPlu ? '⚡ PLU' : i === scaleColName ? '🏷 Nombre' : i === scaleColPrice && scaleUpdatePrice ? '$ Precio' : `Col ${i+1}`}
+                                                </th>
+                                            ))}
+                                        </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-sys-100">
+                                        {previewData.slice(0, 5).map((row, ri) => (
+                                            <tr key={ri} className="hover:bg-sys-50">
+                                                {row.map((cell, ci) => (
+                                                    <td key={ci} className={cn("p-3 font-mono",
+                                                        ci === scaleColPlu   && "font-bold text-orange-700",
+                                                        ci === scaleColName  && "font-bold text-blue-700",
+                                                        ci === scaleColPrice && scaleUpdatePrice && "font-bold text-green-700"
+                                                    )}>{cell}</td>
+                                                ))}
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                                <div className="p-2 text-center text-[10px] text-sys-400 bg-sys-50 border-t border-sys-200 uppercase tracking-wider">Vista previa — 5 primeras filas</div>
+                            </div>
+
+                            {/* Resultado post-import */}
+                            {scaleResult && (
+                                <div className={cn("p-4 rounded-xl border text-sm font-medium", scaleResult.matched > 0 ? "bg-green-50 border-green-200 text-green-800" : "bg-red-50 border-red-200 text-red-800")}>
+                                    <p className="font-bold mb-1">✅ {scaleResult.matched} productos actualizados con PLU</p>
+                                    {scaleResult.unmatched > 0 && (
+                                        <p className="text-[11px] text-orange-700">⚠️ {scaleResult.unmatched} sin coincidencia por nombre: {scaleResult.unmatchedNames.slice(0, 5).join(', ')}{scaleResult.unmatched > 5 ? '...' : ''}</p>
+                                    )}
+                                </div>
+                            )}
+                        </div>
                     ) : (
                         <div className="flex-1 overflow-auto p-6">
-                            
+
                             {/* Warning Box */}
                             <div className="bg-blue-50 border border-blue-100 p-4 rounded-xl flex gap-3 text-blue-800 text-sm shadow-sm mb-4">
                                 <AlertTriangle size={20} className="shrink-0 mt-0.5 text-blue-600"/>
@@ -133,19 +256,22 @@ export const ImportMapperModal = ({ isOpen, onClose, branchId, onSuccess }) => {
                                 </div>
                             </div>
 
-                            {/* 🔥 OPCIÓN DE REDONDEO A $50 */}
-                            <div className="flex items-center gap-3 mb-6 bg-white p-3 px-4 rounded-xl border border-sys-200 shadow-sm w-fit cursor-pointer hover:bg-sys-50 transition-colors" onClick={() => setRoundTo50(!roundTo50)}>
-                                <input 
-                                    type="checkbox" 
-                                    id="roundTo50Toggle" 
-                                    checked={roundTo50}
-                                    onChange={(e) => setRoundTo50(e.target.checked)}
-                                    className="w-5 h-5 text-brand rounded focus:ring-brand border-gray-300 cursor-pointer"
-                                />
-                                <label htmlFor="roundTo50Toggle" className="text-sm font-bold text-sys-800 cursor-pointer select-none flex flex-col">
-                                    <span>Redondear precios a múltiplos de $50</span>
-                                    <span className="text-[10px] text-sys-500 font-normal">Ejemplo: $1123 ➔ $1100 | $1135 ➔ $1150</span>
-                                </label>
+                            {/* OPCIONES */}
+                            <div className="flex flex-wrap gap-3 mb-6">
+                                <div className="flex items-center gap-3 bg-white p-3 px-4 rounded-xl border border-sys-200 shadow-sm cursor-pointer hover:bg-sys-50 transition-colors" onClick={() => setRoundTo50(!roundTo50)}>
+                                    <input type="checkbox" id="roundTo50Toggle" checked={roundTo50} onChange={(e) => setRoundTo50(e.target.checked)} className="w-5 h-5 text-brand rounded focus:ring-brand border-gray-300 cursor-pointer"/>
+                                    <label htmlFor="roundTo50Toggle" className="text-sm font-bold text-sys-800 cursor-pointer select-none flex flex-col">
+                                        <span>Redondear precios a múltiplos de $50</span>
+                                        <span className="text-[10px] text-sys-500 font-normal">Ejemplo: $1123 ➔ $1100 | $1135 ➔ $1150</span>
+                                    </label>
+                                </div>
+                                <div className="flex items-center gap-3 bg-white p-3 px-4 rounded-xl border border-orange-200 shadow-sm cursor-pointer hover:bg-orange-50 transition-colors" onClick={() => setForceWeighable(!forceWeighable)}>
+                                    <input type="checkbox" id="forceWeighableToggle" checked={forceWeighable} onChange={(e) => setForceWeighable(e.target.checked)} className="w-5 h-5 text-orange-500 rounded focus:ring-orange-400 border-gray-300 cursor-pointer"/>
+                                    <label htmlFor="forceWeighableToggle" className="text-sm font-bold text-sys-800 cursor-pointer select-none flex flex-col">
+                                        <span className={forceWeighable ? "text-orange-700" : ""}>Marcar todos como pesables (KG)</span>
+                                        <span className="text-[10px] text-sys-500 font-normal">Útil para importar archivo de balanza completo</span>
+                                    </label>
+                                </div>
                             </div>
 
                             {/* Mapper Table */}
@@ -210,16 +336,18 @@ export const ImportMapperModal = ({ isOpen, onClose, branchId, onSuccess }) => {
                         Cancelar Operación
                     </button>
                     
-                    <button 
-                        onClick={handleSave} 
+                    <button
+                        onClick={scaleMode ? handleScaleSave : handleSave}
                         disabled={!previewData.length || isProcessing}
-                        className="px-8 py-3 rounded-xl bg-sys-900 text-white font-bold hover:bg-black shadow-lg shadow-sys-900/20 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 transition-all active:scale-95"
-                    >
-                        {isProcessing ? (
-                            <>Procesando...</>
-                        ) : (
-                            <><CheckCircle size={20}/> Confirmar e Importar</>
+                        className={cn(
+                            "px-8 py-3 rounded-xl text-white font-bold shadow-lg disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 transition-all active:scale-95",
+                            scaleMode ? "bg-orange-500 hover:bg-orange-600 shadow-orange-500/20" : "bg-sys-900 hover:bg-black shadow-sys-900/20"
                         )}
+                    >
+                        {isProcessing ? <>Procesando...</> : scaleMode
+                            ? <><Scale size={20}/> Cargar PLUs</>
+                            : <><CheckCircle size={20}/> Confirmar e Importar</>
+                        }
                     </button>
                 </div>
             </div>

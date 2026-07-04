@@ -127,6 +127,9 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave, allProduc
   const [lists, setLists] = useState({ categories: [], brands: [], suppliers: [] });
   const [isSaving, setIsSaving] = useState(false);
   const [tempBarcode, setTempBarcode] = useState('');
+  const [tempTierPlu, setTempTierPlu] = useState('');
+  const [tempTierLabel, setTempTierLabel] = useState('');
+  const [tempTierPrice, setTempTierPrice] = useState('');
   const [caseSearch, setCaseSearch] = useState('');
   const [caseResults, setCaseResults] = useState([]);
   const [caseSearching, setCaseSearching] = useState(false);
@@ -164,6 +167,8 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave, allProduc
     isCase: false,
     caseProductId: '',
     unitsPerCase: 12,
+    // PRECIOS DE BALANZA
+    priceTiers: [],
   });
 
   // Cargar Listas
@@ -239,6 +244,7 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave, allProduc
             isCase: productToEdit.isCase || false,
             caseProductId: productToEdit.caseProductId || '',
             unitsPerCase: productToEdit.unitsPerCase || 12,
+            priceTiers: Array.isArray(productToEdit.priceTiers) ? productToEdit.priceTiers : [],
         });
       } else {
         setFormData({ 
@@ -253,10 +259,12 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave, allProduc
             isCase: false,
             caseProductId: '',
             unitsPerCase: 12,
+            priceTiers: [],
         });
       }
       setActiveTab('general');
       setTempBarcode('');
+      setTempTierPlu(''); setTempTierLabel(''); setTempTierPrice('');
       setCaseSearch('');
       setCaseResults([]);
       setIsSaving(false);
@@ -385,6 +393,22 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave, allProduc
       setFormData(prev => ({ ...prev, barcodes: prev.barcodes.filter(b => b !== code) }));
   };
 
+  const addPriceTier = () => {
+      const plu = tempTierPlu.trim();
+      const price = parseFloat(String(tempTierPrice).replace(',', '.'));
+      if (!plu || isNaN(price) || price <= 0) return;
+      if (formData.priceTiers.some(t => t.plu === plu)) return;
+      setFormData(prev => ({
+          ...prev,
+          priceTiers: [...prev.priceTiers, { plu, label: tempTierLabel.trim(), price }]
+      }));
+      setTempTierPlu(''); setTempTierLabel(''); setTempTierPrice('');
+  };
+
+  const removePriceTier = (plu) => {
+      setFormData(prev => ({ ...prev, priceTiers: prev.priceTiers.filter(t => t.plu !== plu) }));
+  };
+
   // 🔥 SPRINT 1: Función para alternar métodos de pago permitidos en la oferta
   const togglePromoMethod = (methodId) => {
       setFormData(prev => {
@@ -451,6 +475,7 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave, allProduc
             minStock: parseFloat(String(formData.minStock).replace(',', '.')) || 0,
             taxRate: parseFloat(String(formData.taxRate).replace(',', '.')) || 21,
             isWeighable: Boolean(formData.isWeighable),
+            priceTiers: formData.isWeighable ? (formData.priceTiers || []) : [],
             isCase: Boolean(formData.isCase),
             caseProductId: formData.isCase ? (formData.caseProductId || null) : null,
             unitsPerCase: formData.isCase ? (Number(formData.unitsPerCase) || 1) : 1,
@@ -653,6 +678,68 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave, allProduc
                     </div>
                     <Switch checked={!!formData.isWeighable} onCheckedChange={(c) => setFormData({...formData, isWeighable: c, isCase: false})} disabled={isSaving} />
                 </div>
+
+                {formData.isWeighable && (
+                    <div className="p-4 bg-orange-50 border border-orange-200 rounded-xl space-y-3">
+                        <p className="text-[10px] font-bold text-orange-700 uppercase tracking-wider flex items-center gap-1">
+                            <Scale size={12}/> Precios de Balanza (PLU + Precio)
+                        </p>
+                        <p className="text-[10px] text-orange-600">
+                            El <strong>Tipo</strong> se agrega al nombre en la balanza → ej: <em>JAMON MAYOR</em> / <em>JAMON FETA</em>
+                        </p>
+
+                        {formData.priceTiers.map(tier => (
+                            <div key={tier.plu} className="bg-white border border-orange-200 rounded-lg px-3 py-2 space-y-0.5">
+                                <div className="flex items-center gap-2">
+                                    <span className="text-[10px] font-mono font-bold text-orange-700 w-14 shrink-0">PLU {tier.plu}</span>
+                                    <span className="text-xs font-bold text-sys-800 flex-1 truncate">
+                                        {formData.name ? `${formData.name.toUpperCase()} ` : ''}{tier.label ? tier.label.toUpperCase() : <span className="text-sys-400 font-normal">sin tipo</span>}
+                                    </span>
+                                    <span className="text-xs font-bold text-green-700 shrink-0">${parseFloat(tier.price).toLocaleString('es-AR')}</span>
+                                    <button type="button" onClick={() => removePriceTier(tier.plu)} disabled={isSaving} className="text-sys-300 hover:text-red-500 transition-colors shrink-0">
+                                        <X size={14}/>
+                                    </button>
+                                </div>
+                                <p className="text-[9px] text-orange-400 pl-16">↑ así aparece en la balanza</p>
+                            </div>
+                        ))}
+
+                        <div className="grid grid-cols-3 gap-2">
+                            <input
+                                type="text"
+                                placeholder="PLU"
+                                value={tempTierPlu}
+                                onChange={e => setTempTierPlu(e.target.value)}
+                                onKeyDown={e => e.key === 'Enter' && (e.preventDefault(), addPriceTier())}
+                                disabled={isSaving}
+                                className="bg-white border border-sys-200 rounded-lg py-2 px-3 text-xs font-mono outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-100"
+                            />
+                            <input
+                                type="text"
+                                placeholder="Tipo: MAYOR / FETA / PIEZA"
+                                value={tempTierLabel}
+                                onChange={e => setTempTierLabel(e.target.value)}
+                                onKeyDown={e => e.key === 'Enter' && (e.preventDefault(), addPriceTier())}
+                                disabled={isSaving}
+                                className="bg-white border border-sys-200 rounded-lg py-2 px-3 text-xs outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-100"
+                            />
+                            <div className="flex gap-1">
+                                <input
+                                    type="number"
+                                    placeholder="Precio"
+                                    value={tempTierPrice}
+                                    onChange={e => setTempTierPrice(e.target.value)}
+                                    onKeyDown={e => e.key === 'Enter' && (e.preventDefault(), addPriceTier())}
+                                    disabled={isSaving}
+                                    className="flex-1 min-w-0 bg-white border border-sys-200 rounded-lg py-2 px-3 text-xs outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-100"
+                                />
+                                <button type="button" onClick={addPriceTier} disabled={isSaving} className="bg-orange-500 hover:bg-orange-600 text-white rounded-lg px-2 text-xs font-bold transition-colors shrink-0">
+                                    +
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                )}
 
                 {!formData.isWeighable && (
                     <div className="bg-sys-50 p-3 rounded-xl border border-sys-200 flex items-center justify-between">

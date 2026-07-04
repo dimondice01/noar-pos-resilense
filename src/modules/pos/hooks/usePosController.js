@@ -23,9 +23,38 @@ const NEW_TAB_TEMPLATE = {
     paymentMethod: 'cash'
 };
 
+// 🔥 HELPER: VALIDADOR DE DÍGITO VERIFICADOR EAN-13 ESTÁNDAR
+const isValidEAN13 = (code) => {
+    let sum = 0;
+    for (let i = 0; i < 12; i++) {
+        const digit = code.charCodeAt(i) - 48;
+        sum += (i % 2 === 0) ? digit : digit * 3;
+    }
+    const check = (10 - (sum % 10)) % 10;
+    return check === (code.charCodeAt(12) - 48);
+};
+
 // 🔥 HELPER: PARSER DE CÓDIGOS DE BALANZA (KRETZ / SYSTEL / ETC)
-const parseScaleBarcode = (code) => {
+// `format`: 'LEGACY' (default, KRETZ/SYSTEL - comportamiento histórico sin cambios) | 'EAN13_GRAMS'
+const parseScaleBarcode = (code, format = 'LEGACY') => {
     if (code.length !== 13) return { isScale: false };
+
+    // 🆕 FORMATO EAN13 GRAMOS (opt-in por sucursal desde Configuración > POS > Balanza)
+    // Prefijo 1 dígito '2' + PLU 5 dígitos + peso 6 dígitos (gramos) + dígito verificador EAN-13 real.
+    // Solo corre si la sucursal activa tiene el flag prendido, así los clientes con formato
+    // KRETZ/SYSTEL actual nunca pasan por acá.
+    if (format === 'EAN13_GRAMS' && code[0] === '2' && isValidEAN13(code)) {
+        const pluCode = parseInt(code.substring(1, 6), 10).toString();
+        const weightGrams = parseInt(code.substring(6, 12), 10);
+        if (weightGrams > 0) {
+            return {
+                isScale: true,
+                type: 'weight',
+                pluCode,
+                embeddedWeight: weightGrams / 1000
+            };
+        }
+    }
 
     // CASO SYSTEL / KRETZ - Formato Híbrido Universal
     const prefix = code.substring(0, 2);
@@ -76,18 +105,23 @@ export const usePosController = () => {
     const processingRef = useRef(false); // 🛡️ Sincronización real contra llamadas concurrentes
     const [searchResults, setSearchResults] = useState([]);
 
-    // 🔥 ESTADO DE CONFIGURACIÓN DEL POS (Integrando Surcharges)
+    // 🔥 ESTADO DE CONFIGURACIÓN DEL POS (Integrando Surcharges & Discounts)
     const [posConfig, setPosConfig] = useState({
         isWholesaleEnabled: false,
         wholesalePercentage: null,
         paymentSurcharges: {
-            cash: 0,
-            transfer: 0,
-            mp: 0,
-            card: 0,
-            current_account: 0
-        }
+            cash: 0, transfer: 0, mp: 0, card: 0, current_account: 0
+        },
+        paymentDiscounts: {
+            cash: 0, transfer: 0, mp: 0, card: 0, current_account: 0
+        },
+        scaleBarcodeFormats: {}
     });
+
+    // 🔥 Formato de balanza resuelto para la sucursal activa (default = comportamiento legado)
+    const activeScaleFormat = posConfig.scaleBarcodeFormats?.[activeBranchId] === 'EAN13_GRAMS'
+        ? 'EAN13_GRAMS'
+        : 'LEGACY';
 
     // =================================================================
     // ⚙️ CARGA DE CONFIGURACIÓN DINÁMICA
@@ -104,7 +138,11 @@ export const usePosController = () => {
                         wholesalePercentage: configDoc.value.wholesalePercentage || null,
                         paymentSurcharges: configDoc.value.paymentSurcharges || {
                             cash: 0, transfer: 0, mp: 0, card: 0, current_account: 0
-                        }
+                        },
+                        paymentDiscounts: configDoc.value.paymentDiscounts || {
+                            cash: 0, transfer: 0, mp: 0, card: 0, current_account: 0
+                        },
+                        scaleBarcodeFormats: configDoc.value.scaleBarcodeFormats || {}
                     });
                 }
             } catch (error) {
@@ -127,7 +165,11 @@ export const usePosController = () => {
                         wholesalePercentage: configDoc.value.wholesalePercentage || null,
                         paymentSurcharges: configDoc.value.paymentSurcharges || {
                             cash: 0, transfer: 0, mp: 0, card: 0, current_account: 0
-                        }
+                        },
+                        paymentDiscounts: configDoc.value.paymentDiscounts || {
+                            cash: 0, transfer: 0, mp: 0, card: 0, current_account: 0
+                        },
+                        scaleBarcodeFormats: configDoc.value.scaleBarcodeFormats || {}
                     });
                 }
             } catch (e) { console.error(e); }
@@ -249,10 +291,11 @@ export const usePosController = () => {
     // =================================================================
     
     // 1. Eliminar un item específico
-    const removeFromCart = useCallback((productId) => {
+    // 🔥 tierPlu distingue variantes "anexadas" (mismo product.id, precio/PLU propio)
+    const removeFromCart = useCallback((productId, tierPlu = null) => {
         updateActiveTab(tab => ({
             ...tab,
-            items: tab.items.filter(i => i.id !== productId)
+            items: tab.items.filter(i => !(i.id === productId && (i.tierPlu || null) === (tierPlu || null)))
         }));
     }, [activeTabId]);
 
@@ -377,7 +420,8 @@ export const usePosController = () => {
         if (!product || addingRef.current) return;
         addingRef.current = true;
         updateActiveTab(tab => {
-            const existingIndex = tab.items.findIndex(i => i.id === product.id);
+            // 🔥 tierPlu distingue variantes "anexadas" (mismo product.id, precio/PLU propio)
+            const existingIndex = tab.items.findIndex(i => i.id === product.id && (i.tierPlu || null) === (product.tierPlu || null));
             let newItems = [...tab.items];
             
             if (existingIndex >= 0) {
@@ -423,11 +467,11 @@ export const usePosController = () => {
         Promise.resolve().then(() => { addingRef.current = false; });
     }, [activeTabId]);
 
-    const updateItemQuantity = (productId, newQty) => {
-        if (newQty <= 0) return removeFromCart(productId);
+    const updateItemQuantity = (productId, newQty, tierPlu = null) => {
+        if (newQty <= 0) return removeFromCart(productId, tierPlu);
         updateActiveTab(tab => {
             const newItems = tab.items.map(item => {
-                if (item.id === productId) {
+                if (item.id === productId && (item.tierPlu || null) === (tierPlu || null)) {
                     if (item.appliedWholesale) {
                          return { 
                             ...item, 
@@ -750,8 +794,8 @@ export const usePosController = () => {
                 client: activeTab.client || { name: 'Consumidor Final', fiscalCondition: 'CONSUMIDOR_FINAL' }, 
                 total: totalWithInterest, 
                 subtotal: totals.subtotal,
-                discount: totals.discountAmount,
-                surcharge: parseFloat(paymentData.surcharge || 0), 
+                discount: totals.discountAmount + parseFloat(paymentData.paymentDiscount || 0),
+                surcharge: parseFloat(paymentData.surcharge || 0),
                 
                 payments: finalPayments,
                 payment: finalPayments[0], 
@@ -941,8 +985,8 @@ export const usePosController = () => {
             if (e.key === 'Enter') {
                 if (buffer.length > 2) { 
                     
-                    const scaleInfo = parseScaleBarcode(buffer);
-                    
+                    const scaleInfo = parseScaleBarcode(buffer, activeScaleFormat);
+
                     if (scaleInfo.isScale) {
                         const product = await productRepository.findByCode(scaleInfo.pluCode);
                         if (product) {
@@ -980,7 +1024,7 @@ export const usePosController = () => {
         };
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [activeTabId, addToCart]); 
+    }, [activeTabId, addToCart, activeScaleFormat]);
 
     // 🔥 EXPORTAMOS LAS FUNCIONES Y EL ESTADO (Incluye setTabPaymentMethod)
     return { 

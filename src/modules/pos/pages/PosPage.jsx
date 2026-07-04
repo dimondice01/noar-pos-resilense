@@ -170,7 +170,7 @@ export const PosPage = () => {
     return () => setSidebarCollapsed(false);
   }, [setSidebarCollapsed]);
 
-  const { user } = useAuthStore();
+  const { user, activeBranchId } = useAuthStore();
   
   const {
       tabs,
@@ -254,8 +254,41 @@ export const PosPage = () => {
   // =================================================================
   // ⚖️ LÓGICA DE BALANZAS
   // =================================================================
+  // 🔥 Formato de balanza resuelto para la sucursal activa (default = comportamiento legado KRETZ/SYSTEL)
+  const activeScaleFormat = posConfig.scaleBarcodeFormats?.[activeBranchId] === 'EAN13_GRAMS'
+      ? 'EAN13_GRAMS'
+      : 'LEGACY';
+
+  // 🔥 HELPER: VALIDADOR DE DÍGITO VERIFICADOR EAN-13 ESTÁNDAR
+  const isValidEAN13 = (code) => {
+      let sum = 0;
+      for (let i = 0; i < 12; i++) {
+          const digit = code.charCodeAt(i) - 48;
+          sum += (i % 2 === 0) ? digit : digit * 3;
+      }
+      const check = (10 - (sum % 10)) % 10;
+      return check === (code.charCodeAt(12) - 48);
+  };
+
   const parseScaleBarcode = async (code) => {
       if (code.length !== 13) return false;
+
+      // 🆕 FORMATO EAN13 GRAMOS (opt-in por sucursal desde Configuración > POS > Balanza)
+      // Prefijo 1 dígito '2' + PLU 5 dígitos + peso 6 dígitos (gramos) + dígito verificador EAN-13 real.
+      if (activeScaleFormat === 'EAN13_GRAMS' && code[0] === '2' && isValidEAN13(code)) {
+          const pluCode = parseInt(code.substring(1, 6), 10).toString();
+          const weightGrams = parseInt(code.substring(6, 12), 10);
+          if (weightGrams > 0) {
+              const product = await productRepository.findByCode(pluCode);
+              if (product) {
+                  const detectedQty = weightGrams / 1000;
+                  addToCart(product, detectedQty);
+                  toast.success(`⚖️ Balanza: ${product.name} - ${detectedQty}kg`);
+                  setSearchTerm('');
+                  return true;
+              }
+          }
+      }
 
       const prefix = code.substring(0, 2);
 
@@ -660,24 +693,28 @@ export const PosPage = () => {
                       </div>
                   ) : (
                       <div className="space-y-2">
-                          {activeTab.items.map((item) => (
-                              <div key={item.id} className={cn("group flex items-center gap-3 px-3 py-2.5 bg-white border rounded-xl shadow-sm hover:shadow-md transition-all animate-in fade-in slide-in-from-left-2", item.appliedWholesale ? "border-brand border-2 bg-brand/5" : "border-sys-100")}>
+                          {activeTab.items.map((item) => {
+                          // 🔥 Variantes "anexadas" comparten product.id con el padre — la key/edición
+                          // tiene que distinguirlas por tierPlu o se pisan entre sí en la lista.
+                          const lineKey = item.tierPlu ? `${item.id}_${item.tierPlu}` : item.id;
+                          return (
+                              <div key={lineKey} className={cn("group flex items-center gap-3 px-3 py-2.5 bg-white border rounded-xl shadow-sm hover:shadow-md transition-all animate-in fade-in slide-in-from-left-2", item.appliedWholesale ? "border-brand border-2 bg-brand/5" : "border-sys-100")}>
 
                                   {/* Cantidad editable */}
                                   <div
                                       className="w-14 shrink-0 text-center cursor-pointer rounded-lg hover:bg-sys-100 py-1 transition-colors"
-                                      onClick={(e) => { e.stopPropagation(); setEditingItemId(item.id); }}
+                                      onClick={(e) => { e.stopPropagation(); setEditingItemId(lineKey); }}
                                       title="Click para editar cantidad"
                                   >
-                                      {editingItemId === item.id ? (
+                                      {editingItemId === lineKey ? (
                                           <InlineQuantityEditor
                                               currentQty={item.quantity}
                                               isWeighable={item.isWeighable}
                                               onUpdate={(newQty) => {
                                                   if (typeof updateCartItemQuantity === 'function') {
-                                                      updateCartItemQuantity(item.id, newQty);
+                                                      updateCartItemQuantity(item.id, newQty, item.tierPlu);
                                                   } else {
-                                                      removeFromCart(item.id);
+                                                      removeFromCart(item.id, item.tierPlu);
                                                       setTimeout(() => addToCart(item, newQty), 50);
                                                   }
                                                   setEditingItemId(null);
@@ -719,7 +756,7 @@ export const PosPage = () => {
                                           ${(Number(item.subtotal) || 0).toLocaleString('es-AR', {minimumFractionDigits: 2})}
                                       </div>
                                       <button
-                                          onClick={(e) => { e.stopPropagation(); removeFromCart(item.id); }}
+                                          onClick={(e) => { e.stopPropagation(); removeFromCart(item.id, item.tierPlu); }}
                                           className="text-red-300 hover:text-red-600 hover:bg-red-50 p-1 rounded-lg transition-all"
                                           title="Eliminar"
                                       >
@@ -727,7 +764,7 @@ export const PosPage = () => {
                                       </button>
                                   </div>
                               </div>
-                          ))}
+                          );})}
                       </div>
                   )}
               </div>

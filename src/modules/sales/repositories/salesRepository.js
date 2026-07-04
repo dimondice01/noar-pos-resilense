@@ -242,36 +242,69 @@ export const salesRepository = {
 
         // B. DESCUENTO DE STOCK & KARDEX (Blindado por Sucursal)
         for (const item of enrichedItems) {
-            const inventoryKey = [targetBranchId, item.id];
-            
-            const currentInv = await dbLocal.inventory.get(inventoryKey);
-            const currentStock = currentInv ? parseFloat(currentInv.stock) : 0;
-            const newStock = currentStock - item.quantity;
+            if (item.isCombo && Array.isArray(item.components) && item.components.length > 0) {
+                // Combo: descontar stock de cada componente, no del combo en sí
+                for (const comp of item.components) {
+                    const compQty = comp.qty * item.quantity;
+                    const compKey = [targetBranchId, comp.productId];
+                    const compInv = await dbLocal.inventory.get(compKey);
+                    const compStock = compInv ? parseFloat(compInv.stock) : 0;
 
-            await dbLocal.inventory.put({
-                branchId: targetBranchId,
-                productId: item.id,
-                stock: newStock,
-                stockDelta: -item.quantity,
-                updatedAt: timestamp,
-                syncStatus: 'pending'
-            });
+                    await dbLocal.inventory.put({
+                        branchId: targetBranchId,
+                        productId: comp.productId,
+                        stock: compStock - compQty,
+                        stockDelta: -compQty,
+                        updatedAt: timestamp,
+                        syncStatus: 'pending'
+                    });
 
-            const movement = {
-                id: `mov_${crypto.randomUUID()}`, 
-                productId: item.id, 
-                type: 'STOCK_OUT', 
-                description: `Venta ${finalNumber} ${item.appliedPromo ? '[PROMO]' : ''}`,
-                amount: item.quantity,
-                date: timestamp,
-                user: sale.userName, 
-                refId: saleId,
-                branchId: targetBranchId, 
-                syncStatus: 'pending'
-            };
-            
-            await dbLocal.movements.put(movement);
-            movementsToCreate.push(movement); 
+                    const movement = {
+                        id: `mov_${crypto.randomUUID()}`,
+                        productId: comp.productId,
+                        type: 'STOCK_OUT',
+                        description: `Venta ${finalNumber} [COMBO: ${item.name}]`,
+                        amount: compQty,
+                        date: timestamp,
+                        user: sale.userName,
+                        refId: saleId,
+                        branchId: targetBranchId,
+                        syncStatus: 'pending'
+                    };
+                    await dbLocal.movements.put(movement);
+                    movementsToCreate.push(movement);
+                }
+            } else {
+                const inventoryKey = [targetBranchId, item.id];
+                const currentInv = await dbLocal.inventory.get(inventoryKey);
+                const currentStock = currentInv ? parseFloat(currentInv.stock) : 0;
+                const newStock = currentStock - item.quantity;
+
+                await dbLocal.inventory.put({
+                    branchId: targetBranchId,
+                    productId: item.id,
+                    stock: newStock,
+                    stockDelta: -item.quantity,
+                    updatedAt: timestamp,
+                    syncStatus: 'pending'
+                });
+
+                const movement = {
+                    id: `mov_${crypto.randomUUID()}`,
+                    productId: item.id,
+                    type: 'STOCK_OUT',
+                    description: `Venta ${finalNumber} ${item.appliedPromo ? '[PROMO]' : ''}`,
+                    amount: item.quantity,
+                    date: timestamp,
+                    user: sale.userName,
+                    refId: saleId,
+                    branchId: targetBranchId,
+                    syncStatus: 'pending'
+                };
+
+                await dbLocal.movements.put(movement);
+                movementsToCreate.push(movement);
+            }
         }
 
         // C. REGISTRO DE CAJA (SPLIT PAYMENTS ENGINE)

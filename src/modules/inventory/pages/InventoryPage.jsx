@@ -6,7 +6,7 @@ import {
     Printer, ArrowRightLeft, Calendar, ChevronLeft, ChevronRight, ChevronDown,
     Upload, MoreVertical, MapPin,
     Tag, Percent, Megaphone, MoreHorizontal, LayoutGrid, DollarSign,
-    CalendarClock, Info, Scale, Save, Pencil, Loader2, ArrowDown, ArrowUp, Minus, ShieldAlert, Lock, FileSpreadsheet
+    CalendarClock, Info, Scale, Save, Pencil, Loader2, ArrowDown, ArrowUp, Minus, ShieldAlert, Lock, FileSpreadsheet, ShoppingBag, Link
 } from 'lucide-react';
 import { exportInventoryToExcel, ALL_EXPORT_COLUMNS } from '../../../core/utils/exportInventoryToExcel';
 import toast from 'react-hot-toast';
@@ -18,6 +18,8 @@ import { syncService } from '../../sync/services/syncService';
 import { scaleService } from '../services/scaleService';
 
 import { ProductModal } from '../components/ProductModal';
+import { ComboModal } from '../components/ComboModal';
+import { AnexarModal } from '../components/AnexarModal';
 import { MastersModal } from '../components/MastersModal';
 import { ImportMapperModal } from '../components/ImportMapperModal';
 import { cn } from '../../../core/utils/cn';
@@ -710,6 +712,9 @@ export const InventoryPage = () => {
     const [isScaleModalOpen, setIsScaleModalOpen] = useState(false);
 
     const [editingProduct, setEditingProduct] = useState(null);
+    const [isComboModalOpen, setIsComboModalOpen] = useState(false);
+    const [editingCombo, setEditingCombo] = useState(null);
+    const [anexarProduct, setAnexarProduct] = useState(null);
     const [stockEntryProduct, setStockEntryProduct] = useState(null);
 
     // 🔥 ESTADOS PARA EL MODAL DE AUTORIZACIÓN POR PIN
@@ -1078,6 +1083,23 @@ export const InventoryPage = () => {
     // 🚀 HANDLERS MASIVOS Y KARDEX
     // =================================================================
 
+    const handleSaveCombo = async (comboPayload) => {
+        try {
+            const saved = await productRepository.save(comboPayload);
+            setProducts(prev => {
+                const exists = prev.some(p => p.id === saved.id);
+                return exists
+                    ? prev.map(p => p.id === saved.id ? { ...p, ...saved } : p)
+                    : [{ ...saved }, ...prev];
+            });
+            setIsComboModalOpen(false);
+            toast.success('Combo guardado correctamente');
+        } catch (e) {
+            console.error(e);
+            toast.error('Error al guardar el combo');
+        }
+    };
+
     const handleSaveProduct = async (masterPayload, promoPayload) => {
         try {
             const savedProduct = await productRepository.save(masterPayload);
@@ -1253,6 +1275,17 @@ export const InventoryPage = () => {
                             </Button>
                         )}
 
+                        <Button
+                            onClick={() => {
+                                if (!canChangePrices) return toast.error("⛔ No tienes permisos para crear productos.", { icon: '🔒' });
+                                setEditingCombo(null);
+                                setIsComboModalOpen(true);
+                            }}
+                            variant="outline"
+                            className="ml-2 border-purple-300 text-purple-700 bg-purple-50 hover:bg-purple-600 hover:text-white transition-all"
+                        >
+                            <ShoppingBag size={18} className="mr-2" /> Nuevo Combo
+                        </Button>
                         <Button
                             onClick={() => {
                                 if (!canChangePrices) return toast.error("⛔ No tienes permisos para crear productos.", { icon: '🔒' });
@@ -1574,22 +1607,39 @@ export const InventoryPage = () => {
                                                     </button>
                                                     <button
                                                         onClick={() => {
+                                                            const openEdit = () => {
+                                                                if (p.isCombo) {
+                                                                    setEditingCombo(p);
+                                                                    setIsComboModalOpen(true);
+                                                                } else {
+                                                                    setEditingProduct(p);
+                                                                    setIsProductModalOpen(true);
+                                                                }
+                                                            };
                                                             if (canChangePrices) {
-                                                                setEditingProduct(p);
-                                                                setIsProductModalOpen(true);
+                                                                openEdit();
                                                             } else {
                                                                 setPinAuthData({
                                                                     isOpen: true,
                                                                     actionName: 'Editar Producto',
-                                                                    callback: () => { setEditingProduct(p); setIsProductModalOpen(true); }
+                                                                    callback: openEdit
                                                                 });
                                                             }
                                                         }}
                                                         className="p-2 rounded-xl text-brand hover:bg-brand/5 transition-all"
-                                                        title="Editar Producto"
+                                                        title={p.isCombo ? 'Editar Combo' : 'Editar Producto'}
                                                     >
                                                         <Edit2 size={18} />
                                                     </button>
+                                                    {p.isWeighable && !p.isCombo && canChangePrices && (
+                                                        <button
+                                                            onClick={() => setAnexarProduct(p)}
+                                                            className="p-2 rounded-xl text-indigo-400 hover:text-indigo-700 hover:bg-indigo-50 transition-all"
+                                                            title="Anexar como variante de otro producto"
+                                                        >
+                                                            <Link size={18} />
+                                                        </button>
+                                                    )}
                                                     {isSuperUser && (
                                                         <button
                                                             onClick={() => {
@@ -1642,6 +1692,23 @@ export const InventoryPage = () => {
                 productToEdit={editingProduct}
                 onSave={handleSaveProduct}
                 allProducts={products}
+            />
+            <ComboModal
+                isOpen={isComboModalOpen}
+                onClose={() => setIsComboModalOpen(false)}
+                comboToEdit={editingCombo}
+                onSave={handleSaveCombo}
+            />
+            <AnexarModal
+                isOpen={!!anexarProduct}
+                onClose={() => setAnexarProduct(null)}
+                childProduct={anexarProduct}
+                onSuccess={(childId, updatedParent) => {
+                    setProducts(prev => prev
+                        .filter(p => p.id !== childId)
+                        .map(p => p.id === updatedParent.id ? { ...p, ...updatedParent } : p)
+                    );
+                }}
             />
             <StockEntryModal isOpen={!!stockEntryProduct} onClose={() => setStockEntryProduct(null)} product={stockEntryProduct} onConfirm={handleQuickStockEntry} />
             <BulkUpdateModal
