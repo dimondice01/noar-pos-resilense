@@ -249,12 +249,14 @@ export const salesRepository = {
                     const compKey = [targetBranchId, comp.productId];
                     const compInv = await dbLocal.inventory.get(compKey);
                     const compStock = compInv ? parseFloat(compInv.stock) : 0;
+                    // 🔥 FIX: acumular stockDelta pendiente (mismo motivo que la rama no-combo abajo)
+                    const compPendingDelta = (compInv && compInv.syncStatus === 'pending') ? (parseFloat(compInv.stockDelta) || 0) : 0;
 
                     await dbLocal.inventory.put({
                         branchId: targetBranchId,
                         productId: comp.productId,
                         stock: compStock - compQty,
-                        stockDelta: -compQty,
+                        stockDelta: compPendingDelta - compQty,
                         updatedAt: timestamp,
                         syncStatus: 'pending'
                     });
@@ -279,12 +281,18 @@ export const salesRepository = {
                 const currentInv = await dbLocal.inventory.get(inventoryKey);
                 const currentStock = currentInv ? parseFloat(currentInv.stock) : 0;
                 const newStock = currentStock - item.quantity;
+                // 🔥 FIX: acumular stockDelta pendiente (no pisarlo) — si 2 líneas de la misma venta
+                // (ej: producto padre + variante anexada) comparten productId, el put() anterior
+                // ya escribió su propio delta parcial acá. Si lo reemplazamos en vez de sumarlo,
+                // el push a Firestore (increment(stockDelta)) solo aplica el último delta y el
+                // reconcile posterior pisa el stock local correcto con el valor incompleto de la nube.
+                const pendingDelta = (currentInv && currentInv.syncStatus === 'pending') ? (parseFloat(currentInv.stockDelta) || 0) : 0;
 
                 await dbLocal.inventory.put({
                     branchId: targetBranchId,
                     productId: item.id,
                     stock: newStock,
-                    stockDelta: -item.quantity,
+                    stockDelta: pendingDelta - item.quantity,
                     updatedAt: timestamp,
                     syncStatus: 'pending'
                 });
