@@ -69,13 +69,18 @@ export const InvoiceA4 = ({ sale, companyConfig }) => {
 
   // --- Cálculos de Totales ---
   const total = Number(sale.total) || 0;
-  let neto = total;
-  let iva = 0;
-  
-  if (letra === 'A') {
+  // 🔥 Preferimos el Neto/IVA ya autorizado por AFIP (afip.impNeto/impIVA) antes de recalcular localmente
+  let neto = afip.impNeto !== undefined ? Number(afip.impNeto) : total;
+  let iva = afip.impIVA !== undefined ? Number(afip.impIVA) : 0;
+
+  if (afip.impNeto === undefined && letra === 'A') {
     neto = total / 1.21;
     iva = total - neto;
   }
+
+  // 🔥 Ley 27.743 - Régimen de Transparencia Fiscal al Consumidor: este negocio no vende
+  // productos con impuestos internos, por eso siempre es $0 (el campo debe consignarse igual).
+  const otrosImpuestosIndirectos = 0;
 
   const discountAmount = Number(sale.discountAmount || 0);
 
@@ -202,8 +207,18 @@ export const InvoiceA4 = ({ sale, companyConfig }) => {
           <div className="flex justify-end items-start border-t border-black pt-2 mb-6">
             <div className="w-1/2 text-[11px] text-gray-600 italic">
               {discountAmount > 0 && <p>* Incluye bonificaciones por un total de {formatCurrency(discountAmount)}</p>}
+
+              {/* 🔥 Ley 27.743 - Régimen de Transparencia Fiscal al Consumidor: para Factura B
+                  (venta a Consumidor Final/Exento) va acá, en el espacio inferior izquierdo */}
+              {letra === 'B' && (
+                <div className="not-italic mt-2 text-black text-[10px]">
+                  <p className="font-bold uppercase">Régimen de Transparencia Fiscal al Consumidor (Ley 27.743)</p>
+                  <div className="flex justify-between mt-1"><span>IVA Contenido:</span><span className="font-mono">{formatCurrency(iva)}</span></div>
+                  <div className="flex justify-between"><span>Otros Impuestos Nacionales Indirectos:</span><span className="font-mono">{formatCurrency(otrosImpuestosIndirectos)}</span></div>
+                </div>
+              )}
             </div>
-            
+
             <div className="w-1/2 pl-10 text-xs">
               {letra === 'A' && (
                 <>
@@ -214,6 +229,10 @@ export const InvoiceA4 = ({ sale, companyConfig }) => {
                   <div className="flex justify-between mb-1 text-gray-700">
                     <span className="font-bold">IVA 21%:</span>
                     <span className="font-mono">{formatCurrency(iva)}</span>
+                  </div>
+                  <div className="flex justify-between mb-1 text-gray-700">
+                    <span className="font-bold">Otros Impuestos Nac. Indirectos:</span>
+                    <span className="font-mono">{formatCurrency(otrosImpuestosIndirectos)}</span>
                   </div>
                 </>
               )}

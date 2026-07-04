@@ -253,19 +253,39 @@ const TicketContent = forwardRef(({
                                 </div>
                             )}
 
-                            {/* 🔥 DESGLOSE DE IMPUESTOS */}
+                            {/* 🔥 DESGLOSE DE IMPUESTOS (Factura A: Ley 27.743 Título IV inciso a) punto 1) */}
                             {(afip.cbteLetra === 'A' || data.letra === 'A') && parseFloat(afip.impNeto) > 0 && !isBudget && (
                                 <div className="mt-1 pt-1 border-t border-black border-dashed">
                                     <div className="flex justify-between mb-0.5">
                                         <span>NETO GRAVADO</span>
                                         <span className="font-mono">{formatCurrency(afip.impNeto)}</span>
                                     </div>
-                                    <div className="flex justify-between">
+                                    <div className="flex justify-between mb-0.5">
                                         <span>IVA (21%)</span>
                                         <span className="font-mono">{formatCurrency(afip.impIVA)}</span>
                                     </div>
+                                    <div className="flex justify-between">
+                                        <span>OTROS IMP. NAC. INDIRECTOS</span>
+                                        <span className="font-mono">{formatCurrency(0)}</span>
+                                    </div>
                                 </div>
                             )}
+                        </div>
+                    )}
+
+                    {/* 🔥 LEY 27.743 - RÉGIMEN DE TRANSPARENCIA FISCAL AL CONSUMIDOR
+                        Factura B (venta a Consumidor Final/Exento): Título IV inciso a) punto 2 + Anexo II Apartado B inciso g) */}
+                    {isFiscal && (afip.cbteLetra === 'B') && !isBudget && (
+                        <div className="mt-2 pt-1 border-t border-black border-dashed text-[8px] font-bold">
+                            <p className="uppercase leading-tight mb-0.5">Régimen de Transparencia Fiscal al Consumidor (Ley 27.743)</p>
+                            <div className="flex justify-between text-[9px]">
+                                <span>IVA Contenido</span>
+                                <span className="font-mono">{formatCurrency(afip.impIVA)}</span>
+                            </div>
+                            <div className="flex justify-between text-[9px]">
+                                <span>Otros Imp. Nac. Indirectos</span>
+                                <span className="font-mono">{formatCurrency(0)}</span>
+                            </div>
                         </div>
                     )}
                     
