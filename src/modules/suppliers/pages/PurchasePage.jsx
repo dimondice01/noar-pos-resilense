@@ -586,12 +586,13 @@ export const PurchasePage = () => {
                 onProductCreated={(product) => { addItem(product); setSearchTerm(''); setSearchResults([]); }}
             />
 
-            <SupplierPaymentModal 
+            {/* totals ya es el número final (useMemo en usePurchaseController), no un objeto con .totalFinal */}
+            <SupplierPaymentModal
                 isOpen={isPaymentModalOpen}
                 onClose={() => setIsPaymentModalOpen(false)}
-                total={totals.totalFinal} // 🔥 FIX: Le pasamos el totalFinal (que incluye todo lo ajustado)
+                total={totals}
                 supplierName={supplier?.name || "Proveedor"}
-                hasPriceChanges={priceChangesCount > 0} 
+                hasPriceChanges={priceChangesCount > 0}
                 onConfirm={handleConfirmPayment}
             />
 
