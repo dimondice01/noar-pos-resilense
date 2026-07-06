@@ -62,6 +62,9 @@ const getLocalDate = () => {
     return new Date().toLocaleDateString('sv-SE');
 };
 
+// Sentinel para filtrar productos sin categoría/proveedor asignado
+const UNASSIGNED = '__unassigned__';
+
 // =================================================================
 // 🔐 MODAL: AUTORIZACIÓN POR PIN (SUPERVISOR) 🔥
 // =================================================================
@@ -656,7 +659,7 @@ export const InventoryPage = () => {
     // Search, Filter & Sort
     const [inputValue, setInputValue] = useState('');
     const [searchTerm, setSearchTerm] = useState('');
-    const [filters, setFilters] = useState({ category: '', brand: '' });
+    const [filters, setFilters] = useState({ category: '', brand: '', supplier: '' });
     const [filterCritical, setFilterCritical] = useState(() =>
         new URLSearchParams(location.search).get('filter') === 'critical'
     );
@@ -1014,9 +1017,14 @@ export const InventoryPage = () => {
             const code = (p.code || '').toString().toLowerCase();
             const barcodeStr = Array.isArray(p.barcode) ? p.barcode.join(' ') : (p.barcode || '');
             const matchesSearch = name.includes(term) || code.includes(term) || barcodeStr.toLowerCase().includes(term);
-            const matchesCat = filters.category ? p.category === filters.category : true;
+            const matchesCat = filters.category
+                ? (filters.category === UNASSIGNED ? !p.category : p.category === filters.category)
+                : true;
             const matchesBrand = filters.brand ? p.brand === filters.brand : true;
-            return matchesSearch && matchesCat && matchesBrand;
+            const matchesSupplier = filters.supplier
+                ? (filters.supplier === UNASSIGNED ? !p.supplier : p.supplier === filters.supplier)
+                : true;
+            return matchesSearch && matchesCat && matchesBrand && matchesSupplier;
         });
 
         if (filterCritical) {
@@ -1345,6 +1353,7 @@ export const InventoryPage = () => {
                             onChange={e => setFilters({ ...filters, category: e.target.value })}
                         >
                             <option value="">Categorías</option>
+                            <option value={UNASSIGNED}>Sin asignar</option>
                             {masters.categories.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
                         </select>
                         <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none text-sys-400" size={12}/>
@@ -1369,13 +1378,33 @@ export const InventoryPage = () => {
                         <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none text-sys-400" size={12}/>
                     </div>
 
+                    {/* Proveedor */}
+                    <div className="relative shrink-0">
+                        <ShoppingBag className={cn("absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none transition-colors", filters.supplier ? "text-brand" : "text-sys-400")} size={13}/>
+                        <select
+                            className={cn(
+                                "appearance-none pl-8 pr-7 py-2 border rounded-xl text-xs font-bold outline-none cursor-pointer transition-all min-w-[140px]",
+                                filters.supplier
+                                    ? "border-brand/40 bg-brand/5 text-brand"
+                                    : "border-sys-200 bg-sys-50 text-sys-600 hover:border-sys-300 focus:border-brand"
+                            )}
+                            value={filters.supplier}
+                            onChange={e => setFilters({ ...filters, supplier: e.target.value })}
+                        >
+                            <option value="">Proveedores</option>
+                            <option value={UNASSIGNED}>Sin asignar</option>
+                            {masters.suppliers.map(s => <option key={s.id} value={s.name}>{s.name}</option>)}
+                        </select>
+                        <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none text-sys-400" size={12}/>
+                    </div>
+
                     {/* Pills de filtros activos */}
                     {filters.category && (
                         <button
                             onClick={() => setFilters({ ...filters, category: '' })}
                             className="flex items-center gap-1.5 bg-brand/10 text-brand text-[10px] font-black px-2.5 py-1.5 rounded-lg border border-brand/20 hover:bg-brand/20 transition-all shrink-0"
                         >
-                            <Tag size={9}/> {filters.category} <X size={9}/>
+                            <Tag size={9}/> {filters.category === UNASSIGNED ? 'Sin categoría' : filters.category} <X size={9}/>
                         </button>
                     )}
                     {filters.brand && (
@@ -1384,6 +1413,14 @@ export const InventoryPage = () => {
                             className="flex items-center gap-1.5 bg-brand/10 text-brand text-[10px] font-black px-2.5 py-1.5 rounded-lg border border-brand/20 hover:bg-brand/20 transition-all shrink-0"
                         >
                             <Tag size={9}/> {filters.brand} <X size={9}/>
+                        </button>
+                    )}
+                    {filters.supplier && (
+                        <button
+                            onClick={() => setFilters({ ...filters, supplier: '' })}
+                            className="flex items-center gap-1.5 bg-brand/10 text-brand text-[10px] font-black px-2.5 py-1.5 rounded-lg border border-brand/20 hover:bg-brand/20 transition-all shrink-0"
+                        >
+                            <ShoppingBag size={9}/> {filters.supplier === UNASSIGNED ? 'Sin proveedor' : filters.supplier} <X size={9}/>
                         </button>
                     )}
                     {searchTerm && (
@@ -1395,9 +1432,9 @@ export const InventoryPage = () => {
                         </button>
                     )}
 
-                    {(filters.category || filters.brand || searchTerm || filterCritical) && (
+                    {(filters.category || filters.brand || filters.supplier || searchTerm || filterCritical) && (
                         <button
-                            onClick={() => { setFilters({ category: '', brand: '' }); setInputValue(''); setFilterCritical(false); setSortConfig({ key: 'name', direction: 'asc' }); }}
+                            onClick={() => { setFilters({ category: '', brand: '', supplier: '' }); setInputValue(''); setFilterCritical(false); setSortConfig({ key: 'name', direction: 'asc' }); }}
                             className="flex items-center gap-1 ml-auto text-[10px] font-black text-red-400 hover:text-red-600 hover:bg-red-50 px-2.5 py-1.5 rounded-xl border border-transparent hover:border-red-100 transition-all shrink-0"
                         >
                             <X size={11}/> Limpiar todo
