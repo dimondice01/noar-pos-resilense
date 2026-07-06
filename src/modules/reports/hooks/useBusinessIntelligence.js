@@ -124,7 +124,9 @@ export const useBusinessIntelligence = () => {
 
         salesData.forEach(s => {
             const status = (s.status || '').toUpperCase();
-            if (status === 'CANCELLED' || status === 'ABANDONED') return;
+            // 🔥 FIX: handleAnular marca afip.status='VOIDED' (no status='CANCELLED', que nunca se usa)
+            if (status === 'CANCELLED' || status === 'ABANDONED' || status === 'REFUNDED') return;
+            if (s.afip?.status === 'VOIDED') return;
 
             const total = parseFloat(s.total || 0);
             const totalCost = parseFloat(s.totalCost || 0);
@@ -166,7 +168,14 @@ export const useBusinessIntelligence = () => {
                 const { key, label } = getGroupKeyAndLabel(m.dateObj, period);
                 if (!historyMap[key]) historyMap[key] = { name: label, Ingresos: 0, CostoVenta: 0, Gastos: 0, Compras: 0, order: key };
                 historyMap[key].Compras += amt;
-            } else if (['EXPENSE', 'OUT', 'WITHDRAWAL'].includes(type) && !m.description?.toLowerCase().includes('rendición')) {
+            } else if (['EXPENSE', 'OUT', 'WITHDRAWAL'].includes(type) && !m.description?.toLowerCase().includes('rendición')
+                && m.subtype !== 'REFUND'
+                && !m.description?.toLowerCase().includes('anulación ticket')
+                && !m.description?.toLowerCase().includes('reintegro venta')) {
+                // 🔥 FIX: un reintegro/anulación no es un gasto nuevo, es la reversa de una venta que
+                // ya excluimos de "revenue" arriba (afip.status VOIDED / status REFUNDED). Contarlo acá
+                // restaba dos veces la misma plata. Chequeamos también por descripción para movimientos
+                // viejos (previos a este fix) que no tienen subtype.
                 expenses += amt;
                 const { key, label } = getGroupKeyAndLabel(m.dateObj, period);
                 if (!historyMap[key]) historyMap[key] = { name: label, Ingresos: 0, CostoVenta: 0, Gastos: 0, Compras: 0, order: key };

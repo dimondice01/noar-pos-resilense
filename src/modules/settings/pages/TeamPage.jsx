@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { 
-    Users, UserPlus, Shield, ShieldCheck, Mail, Lock, Info, Building2, Store, 
+import {
+    Users, UserPlus, Shield, ShieldCheck, Mail, Lock, Info, Building2, Store,
     Trash2, CreditCard, Percent, PlusCircle, AlertTriangle, Layers, Tag, Save,
     ChevronDown, ChevronUp, CheckCircle2, MonitorSmartphone, Loader2, ArrowUpRight,
-    Wallet, ReceiptText, ArrowRightCircle, X, ShieldAlert, Package, CloudDownload, Scale
+    Wallet, ReceiptText, ArrowRightCircle, X, ShieldAlert, Package, CloudDownload, Scale,
+    Pencil
 } from 'lucide-react';
 import { Card } from '../../../core/ui/Card';
 import { Button } from '../../../core/ui/Button';
@@ -259,6 +260,220 @@ const LiquidationModal = ({ isOpen, onClose, employee, onLiquidated }) => {
 };
 
 // =================================================================================
+// 🧩 MODAL: EDITAR EMPLEADO (datos y permisos — nunca toca ledgerDebt)
+// =================================================================================
+const EditUserModal = ({ isOpen, onClose, employee, branches, onSaved }) => {
+    const [name, setName] = useState('');
+    const [role, setRole] = useState('CAJERO');
+    const [branchId, setBranchId] = useState('');
+    const [permissions, setPermissions] = useState({
+        canApplyDiscount: false,
+        canVoidSales: false,
+        canWithdrawCash: false,
+        canSeeExpectedCash: false,
+        canAddStock: false,
+        canRemoveStock: false,
+        canChangePrices: false
+    });
+    const [isSaving, setIsSaving] = useState(false);
+
+    useEffect(() => {
+        if (isOpen && employee) {
+            setName(employee.name || '');
+            setRole(employee.role || 'CAJERO');
+            setBranchId(employee.branchId || '');
+            setPermissions({
+                canApplyDiscount: !!employee.permissions?.canApplyDiscount,
+                canVoidSales: !!employee.permissions?.canVoidSales,
+                canWithdrawCash: !!employee.permissions?.canWithdrawCash,
+                canSeeExpectedCash: !!employee.permissions?.canSeeExpectedCash,
+                canAddStock: !!employee.permissions?.canAddStock,
+                canRemoveStock: !!employee.permissions?.canRemoveStock,
+                canChangePrices: !!employee.permissions?.canChangePrices
+            });
+        }
+    }, [isOpen, employee]);
+
+    const togglePermission = (key) => setPermissions(prev => ({ ...prev, [key]: !prev[key] }));
+
+    if (!isOpen || !employee) return null;
+
+    const handleSave = async () => {
+        if (!name.trim()) return toast.error("El nombre no puede estar vacío.");
+        if (role === 'CAJERO' && !branchId) {
+            return toast.error("⚠️ Un CAJERO debe tener una sucursal asignada.");
+        }
+
+        const targetId = employee.uid || employee.id;
+        const finalPermissions = role === 'ADMIN'
+            ? { canApplyDiscount: true, canVoidSales: true, canWithdrawCash: true, canSeeExpectedCash: true, canAddStock: true, canRemoveStock: true, canChangePrices: true }
+            : permissions;
+
+        // 🔥 Solo datos y permisos. NUNCA incluir ledgerDebt acá: la deuda se maneja
+        // exclusivamente vía employeeLedgerRepository (ver LiquidationModal).
+        const updates = { name: name.trim(), role, branchId: branchId || null, permissions: finalPermissions };
+
+        setIsSaving(true);
+        try {
+            await updateDoc(doc(firestoreDB, 'users', targetId), updates);
+
+            try {
+                const dbLocal = await getDB();
+                const existing = await dbLocal.users.get(targetId);
+                await dbLocal.users.put({ ...(existing || {}), ...updates, uid: targetId, id: targetId });
+            } catch (e) {
+                console.warn("Fallo guardado local tras editar usuario", e);
+            }
+
+            toast.success("Usuario actualizado correctamente.");
+            onSaved({ ...employee, ...updates });
+            onClose();
+        } catch (error) {
+            console.error("Error editando usuario:", error);
+            toast.error(`Error al guardar cambios: ${error.message}`);
+        } finally {
+            setIsSaving(false);
+        }
+    };
+
+    return (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-sys-900/60 backdrop-blur-sm p-4 animate-in fade-in zoom-in-95">
+            <div className="bg-white rounded-3xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[85vh]">
+
+                {/* HEADER */}
+                <div className="p-6 border-b border-sys-100 bg-sys-50 flex justify-between items-start shrink-0">
+                    <div>
+                        <div className="flex items-center gap-2 mb-1">
+                            <Pencil className="text-brand" size={22}/>
+                            <h3 className="font-black text-xl text-sys-900 uppercase tracking-tight">Editar Empleado</h3>
+                        </div>
+                        <p className="text-sm font-bold text-sys-600">{employee.email}</p>
+                    </div>
+                    <button onClick={onClose} disabled={isSaving} className="p-2 hover:bg-sys-200 rounded-full transition-colors">
+                        <X size={20} className="text-sys-400" />
+                    </button>
+                </div>
+
+                {/* FORM */}
+                <div className="flex-1 overflow-y-auto p-6 space-y-4 custom-scrollbar">
+                    <div>
+                        <label className="text-[11px] font-bold text-sys-500 uppercase tracking-wider ml-1">Nombre</label>
+                        <input
+                            type="text"
+                            className="w-full bg-sys-50 border border-sys-200 rounded-xl px-3 py-2.5 text-sm outline-none focus:border-brand transition-all"
+                            value={name}
+                            onChange={e => setName(e.target.value)}
+                        />
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4">
+                        <div>
+                            <label className="text-[11px] font-bold text-sys-500 uppercase tracking-wider ml-1">Rol</label>
+                            <div className="flex flex-col gap-2 mt-1">
+                                {['CAJERO', 'ADMIN'].map((r) => (
+                                    <button
+                                        key={r}
+                                        type="button"
+                                        onClick={() => setRole(r)}
+                                        className={cn(
+                                            "py-2 rounded-lg text-xs font-bold transition-all border flex items-center justify-center gap-2",
+                                            role === r
+                                                ? "bg-brand text-white border-brand shadow-md"
+                                                : "bg-white text-sys-500 border-sys-200 hover:bg-sys-50"
+                                        )}
+                                    >
+                                        {r === 'ADMIN' ? <ShieldCheck size={14}/> : <UserPlus size={14}/>} {r}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+
+                        <div>
+                            <label className="text-[11px] font-bold text-sys-500 uppercase tracking-wider ml-1">Sucursal</label>
+                            <div className="relative mt-1">
+                                <Store size={16} className="absolute left-3 top-3 text-sys-400 pointer-events-none" />
+                                <select
+                                    className={cn(
+                                        "w-full bg-sys-50 border border-sys-200 rounded-xl pl-9 pr-2 py-2.5 text-xs outline-none focus:border-brand transition-all appearance-none cursor-pointer font-medium text-sys-700",
+                                        !branchId && role === 'CAJERO' && "border-red-300 bg-red-50"
+                                    )}
+                                    value={branchId}
+                                    onChange={(e) => setBranchId(e.target.value)}
+                                >
+                                    <option value="">Seleccionar...</option>
+                                    {branches.map(b => (
+                                        <option key={b.id} value={b.id}>{b.name}</option>
+                                    ))}
+                                </select>
+                                <div className="absolute right-3 top-3 pointer-events-none">
+                                    <ChevronDown size={14} className="text-sys-400" />
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    {role === 'CAJERO' && (
+                        <div className="pt-2 border-t border-sys-200 mt-2 space-y-4">
+                            <div>
+                                <label className="text-[11px] font-bold text-sys-500 uppercase tracking-wider ml-1 flex items-center gap-1 mb-2">
+                                    <MonitorSmartphone size={14} className="text-blue-500"/> Caja y Ventas
+                                </label>
+                                <div className="space-y-3 bg-sys-50 p-3 rounded-xl border border-sys-200">
+                                    <div className="flex items-center justify-between">
+                                        <p className="text-xs font-bold text-sys-800">Aplicar Descuentos</p>
+                                        <Switch checked={permissions.canApplyDiscount} onCheckedChange={() => togglePermission('canApplyDiscount')} />
+                                    </div>
+                                    <div className="flex items-center justify-between border-t border-sys-200 pt-3">
+                                        <p className="text-xs font-bold text-sys-800">Anular Ventas</p>
+                                        <Switch checked={permissions.canVoidSales} onCheckedChange={() => togglePermission('canVoidSales')} />
+                                    </div>
+                                    <div className="flex items-center justify-between border-t border-sys-200 pt-3">
+                                        <p className="text-xs font-bold text-sys-800">Retirar Efectivo</p>
+                                        <Switch checked={permissions.canWithdrawCash} onCheckedChange={() => togglePermission('canWithdrawCash')} />
+                                    </div>
+                                    <div className="flex items-center justify-between border-t border-sys-200 pt-3">
+                                        <p className="text-xs font-bold text-sys-800">Ver Cierre Z</p>
+                                        <Switch checked={permissions.canSeeExpectedCash} onCheckedChange={() => togglePermission('canSeeExpectedCash')} />
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div>
+                                <label className="text-[11px] font-bold text-sys-500 uppercase tracking-wider ml-1 flex items-center gap-1 mb-2">
+                                    <Package size={14} className="text-emerald-500"/> Gestión de Inventario
+                                </label>
+                                <div className="space-y-3 bg-sys-50 p-3 rounded-xl border border-sys-200">
+                                    <div className="flex items-center justify-between">
+                                        <p className="text-xs font-bold text-sys-800">Cargar Stock</p>
+                                        <Switch checked={permissions.canAddStock} onCheckedChange={() => togglePermission('canAddStock')} />
+                                    </div>
+                                    <div className="flex items-center justify-between border-t border-sys-200 pt-3">
+                                        <p className="text-xs font-bold text-sys-800">Ajuste de Mermas</p>
+                                        <Switch checked={permissions.canRemoveStock} onCheckedChange={() => togglePermission('canRemoveStock')} />
+                                    </div>
+                                    <div className="flex items-center justify-between border-t border-sys-200 pt-3">
+                                        <p className="text-xs font-bold text-sys-800">Cambiar Precios</p>
+                                        <Switch checked={permissions.canChangePrices} onCheckedChange={() => togglePermission('canChangePrices')} />
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                </div>
+
+                {/* FOOTER */}
+                <div className="p-6 bg-sys-50 border-t border-sys-200 flex gap-3 shrink-0">
+                    <Button variant="ghost" onClick={onClose} disabled={isSaving} className="flex-1 rounded-2xl h-12 font-bold bg-white border border-sys-200 hover:bg-sys-100 text-sys-600">Cancelar</Button>
+                    <Button onClick={handleSave} disabled={isSaving} className="flex-1 h-12 shadow-md">
+                        {isSaving ? <Loader2 size={18} className="animate-spin" /> : 'Guardar Cambios'}
+                    </Button>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+// =================================================================================
 // 👑 MAIN PAGE
 // =================================================================================
 export const TeamPage = () => {
@@ -294,6 +509,9 @@ export const TeamPage = () => {
 
   // ESTADO MODAL DE LIQUIDACIÓN
   const [selectedEmployeeForLedger, setSelectedEmployeeForLedger] = useState(null);
+
+  // ESTADO MODAL DE EDICIÓN DE EMPLEADO
+  const [editingUser, setEditingUser] = useState(null);
 
   const { user: currentUser, activeBranchId } = useAuthStore();
 
@@ -1009,7 +1227,15 @@ export const TeamPage = () => {
                                     <ArrowRightCircle size={14} className={cn("opacity-50", hasDebt && "text-red-500")}/>
                                 </button>
 
-                                <button 
+                                <button
+                                    onClick={() => setEditingUser(u)}
+                                    className="p-2 text-sys-300 hover:text-brand hover:bg-brand/10 rounded-full transition-all"
+                                    title="Editar Usuario"
+                                >
+                                    <Pencil size={18} />
+                                </button>
+
+                                <button
                                     onClick={() => handleDeleteUser(u.id || u.uid, u.email, u.role)}
                                     className="p-2 text-sys-300 hover:text-red-500 hover:bg-red-50 rounded-full transition-all"
                                     title="Eliminar Usuario"
@@ -1376,11 +1602,23 @@ export const TeamPage = () => {
       )}
 
       {/* MODAL DE LIQUIDACIÓN DE EMPLEADO */}
-      <LiquidationModal 
+      <LiquidationModal
           isOpen={!!selectedEmployeeForLedger}
           employee={selectedEmployeeForLedger}
           onClose={() => setSelectedEmployeeForLedger(null)}
-          onLiquidated={loadData} 
+          onLiquidated={loadData}
+      />
+
+      {/* MODAL DE EDICIÓN DE EMPLEADO */}
+      <EditUserModal
+          isOpen={!!editingUser}
+          employee={editingUser}
+          branches={branches}
+          onClose={() => setEditingUser(null)}
+          onSaved={(updated) => {
+              const targetId = updated.uid || updated.id;
+              setUsers(prev => prev.map(u => (u.id || u.uid) === targetId ? { ...u, ...updated } : u));
+          }}
       />
     </div>
   );

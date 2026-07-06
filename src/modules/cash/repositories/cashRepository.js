@@ -380,15 +380,16 @@ export const cashRepository = {
         });
     },
 
-    async registerExpense(amount, description, reference = '', user = 'Cajero') {
+    async registerExpense(amount, description, reference = '', user = 'Cajero', subtype = null) {
         const shift = await this.getCurrentShift();
         if (!shift) throw new Error("Caja Cerrada: No se puede registrar gasto.");
 
         return this.addMovement({
             shiftId: shift.id,
             branchId: shift.branchId,
-            type: 'EXPENSE', 
-            method: 'cash', 
+            type: 'EXPENSE',
+            subtype: subtype,
+            method: 'cash',
             amount: parseFloat(amount),
             description: description,
             referenceId: reference,
@@ -566,16 +567,22 @@ export const cashRepository = {
             if (m.subtype === 'OPENING' || m.description?.includes('Fondo Inicial')) return;
             if (m.subtype === 'CLOSING' || m.description?.toLowerCase().includes('rendición de cierre')) return;
             
-            // 2. 🔥 REGLA ANTI-DUPLICACIÓN: 
-            // Si este movimiento tiene como referencia una venta que ya sumamos arriba, LO IGNORAMOS.
-            if (m.type === 'SALE' || m.subtype === 'SALE' || countedSalesIds.has(m.referenceId)) return;
+            // 2. Ignoramos movimientos tipo SALE (ya contados arriba en la sección A)
+            if (m.type === 'SALE' || m.subtype === 'SALE') return;
 
             const amount = Number(m.amount) || 0;
             const methodRaw = String(m.method || 'cash').toLowerCase().trim();
             const isCash = ['cash', 'efectivo'].includes(methodRaw);
-            
+
             const isIncome = m.type === 'IN' || m.type === 'DEPOSIT' || m.type === 'RECEIPT';
             const isOutcome = m.type === 'OUT' || m.type === 'EXPENSE' || m.type === 'WITHDRAWAL' || m.type === 'PURCHASE' || m.type === 'REFUND';
+
+            // 🔥 REGLA ANTI-DUPLICACIÓN (solo para INGRESOS): si este ingreso referencia una venta
+            // que ya sumamos arriba, es un duplicado y lo ignoramos. NO aplica a egresos: un
+            // reintegro/anulación usa referenceId solo para trazabilidad (apunta a la venta que
+            // originó la devolución) y SIEMPRE debe descontarse de la caja, aunque esa venta
+            // siga con status COMPLETED (handleAnular no lo cambia, solo marca afip.status VOIDED).
+            if (isIncome && countedSalesIds.has(m.referenceId)) return;
 
             if (isIncome) {
                 if (isCash) {
@@ -699,7 +706,12 @@ export const cashRepository = {
                 // Ya mostramos el fondo arriba
                 if (m.subtype === 'OPENING' || m.description?.includes('Fondo Inicial')) return;
                 // No duplicar ventas
-                if (m.type === 'SALE' || m.subtype === 'SALE' || countedSalesIds.has(m.referenceId)) return;
+                if (m.type === 'SALE' || m.subtype === 'SALE') return;
+                // 🔥 El chequeo de duplicado por referenceId solo aplica a INGRESOS (un 'IN'/'DEPOSIT'
+                // que redunda con una venta ya listada arriba). NO debe ocultar egresos como
+                // anulaciones/reintegros, que usan referenceId solo para trazabilidad y son
+                // movimientos reales que sí deben verse en el Ticket Z.
+                if (['IN', 'DEPOSIT', 'RECEIPT'].includes(m.type) && countedSalesIds.has(m.referenceId)) return;
                 // La Rendición de Cierre la mostramos al final con tipo especial
                 if (m.subtype === 'CLOSING' || m.description?.toLowerCase().includes('rendición de cierre')) {
                     allOperations.push({ ...m, type: 'TREASURY', _isClosing: true });

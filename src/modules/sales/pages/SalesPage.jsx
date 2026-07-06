@@ -591,7 +591,7 @@ export const SalesPage = () => {
       }
       
       if (cashPaid > 0) {
-          await cashRepository.registerExpense(cashPaid, `Anulación Ticket #${getDisplayNumber(op)} - Motivo: ${reason}`, op.localId, user?.name);
+          await cashRepository.registerExpense(cashPaid, `Anulación Ticket #${getDisplayNumber(op)} - Motivo: ${reason}`, op.localId, user?.name, 'REFUND');
       }
 
       op.notes = `${op.notes || ''} | Anulado por: ${reason}`.trim();
@@ -626,7 +626,7 @@ export const SalesPage = () => {
 
           // 2. Retiro de Efectivo
           if (refundCash) {
-              await cashRepository.registerExpense(refundAmount, `Reintegro Venta #${getDisplayNumber(originalSale)} - Motivo: ${reason}`, originalSale.localId, user?.name);
+              await cashRepository.registerExpense(refundAmount, `Reintegro Venta #${getDisplayNumber(originalSale)} - Motivo: ${reason}`, originalSale.localId, user?.name, 'REFUND');
           }
 
           // 3. Ajuste de Ticket

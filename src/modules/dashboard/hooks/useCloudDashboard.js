@@ -92,9 +92,11 @@ export const useCloudDashboard = () => {
                 const sType = (data.type || '').toUpperCase();
                 const sStatus = (data.status || '').toUpperCase();
 
-                // Ignorar presupuestos, internos, cancelados y abandonados
+                // Ignorar presupuestos, internos, cancelados, abandonados y anulados
+                // 🔥 FIX: handleAnular marca afip.status='VOIDED' (no status='CANCELLED', que nunca se usa)
                 if (sType === 'BUDGET' || sType === 'INTERNAL') return;
-                if (sStatus === 'CANCELLED' || sStatus === 'ABANDONED') return;
+                if (sStatus === 'CANCELLED' || sStatus === 'ABANDONED' || sStatus === 'REFUNDED') return;
+                if (data.afip?.status === 'VOIDED') return;
 
                 const saleTotal = parseFloat(data.total || 0);
                 total += saleTotal;
@@ -248,6 +250,11 @@ export const useCloudDashboard = () => {
                 if (d.type === 'EXPENSE' || d.type === 'WITHDRAWAL' || d.type === 'PURCHASE') {
                     // Ignoramos retiros de cierre para no inflar los "Gastos Operativos" en el Dashboard
                     if (d.subtype === 'CLOSING' || (d.description && d.description.toLowerCase().includes('rendición de cierre'))) return;
+                    // 🔥 FIX: un reintegro/anulación no es un gasto nuevo, es la reversa de una venta que
+                    // ya excluimos de grossProfit arriba. Contarlo acá restaba dos veces (Ganancia Neta negativa falsa).
+                    // Chequeamos también por descripción: movimientos viejos (previos a este fix) no tienen subtype.
+                    const desc = (d.description || '').toLowerCase();
+                    if (d.subtype === 'REFUND' || desc.includes('anulación ticket') || desc.includes('reintegro venta')) return;
                     expenses += parseFloat(d.amount || 0);
                 }
             });
