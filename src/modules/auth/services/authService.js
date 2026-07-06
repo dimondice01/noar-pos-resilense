@@ -177,6 +177,10 @@ export const authService = {
         }
     },
 
+    async getToken() {
+        return await auth.currentUser?.getIdToken();
+    },
+
     // ==========================================
     // 🎧 LISTENER DE ESTADO (Recarga de pág)
     // ==========================================
@@ -250,11 +254,6 @@ export const authService = {
     },
 
     async createUser(newUser) {
-        await this._saveLocalUser({
-            ...newUser,
-            password: btoa(newUser.password) 
-        });
-        
         if (navigator.onLine) {
             try {
                 const token = await auth.currentUser?.getIdToken();
@@ -262,11 +261,11 @@ export const authService = {
 
                 const response = await fetch(`${API_URL}/create-user`, {
                     method: 'POST',
-                    headers: { 
+                    headers: {
                         'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${token}` 
+                        'Authorization': `Bearer ${token}`
                     },
-                    body: JSON.stringify(newUser) 
+                    body: JSON.stringify(newUser)
                 });
 
                 if (!response.ok) {
@@ -277,16 +276,80 @@ export const authService = {
                     } catch (e) {}
                     throw new Error(errorMessage);
                 }
-                
+
                 const data = await response.json();
+
+                // 🔥 FIX: recién acá conocemos el uid real (lo asigna Firebase Auth).
+                // Guardarlo antes rompía el .put() en Dexie (uid es la primary key de 'users').
+                await this._saveLocalUser({
+                    ...newUser,
+                    uid: data.uid,
+                    password: btoa(newUser.password)
+                });
+
                 return { success: true, uid: data.uid };
 
             } catch (error) {
                 console.error("API Error:", error);
-                throw error; 
+                throw error;
             }
         } else {
-            return { success: true, localOnly: true };
+            // 🔥 OFFLINE: no hay forma de obtener un uid real de Firebase Auth sin conexión.
+            // Guardamos con un uid temporal y lo marcamos para reconciliar cuando vuelva la red.
+            const tempUid = `local_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+            await this._saveLocalUser({
+                ...newUser,
+                uid: tempUid,
+                password: btoa(newUser.password),
+                isPendingAuthUser: true
+            });
+            return { success: true, localOnly: true, uid: tempUid };
+        }
+    },
+
+    // 🔥 RECONCILIACIÓN: crea en Firebase Auth los cajeros/usuarios dados de alta offline
+    async syncPendingOfflineUsers() {
+        if (!navigator.onLine) return { synced: 0 };
+        try {
+            const pending = await localDb.users.filter(u => u.isPendingAuthUser === true).toArray();
+            if (pending.length === 0) return { synced: 0 };
+
+            let synced = 0;
+            for (const localUser of pending) {
+                try {
+                    const token = await auth.currentUser?.getIdToken();
+                    if (!token) continue;
+
+                    const plainPassword = atob(localUser.password);
+                    const response = await fetch(`${API_URL}/create-user`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${token}`
+                        },
+                        body: JSON.stringify({ ...localUser, password: plainPassword })
+                    });
+
+                    if (!response.ok) continue;
+                    const data = await response.json();
+
+                    // Reemplazamos el registro temporal (uid local) por el definitivo (uid real)
+                    await localDb.users.delete(localUser.uid);
+                    await this._saveLocalUser({
+                        ...localUser,
+                        uid: data.uid,
+                        isPendingAuthUser: false
+                    });
+
+                    synced++;
+                } catch (err) {
+                    console.warn("Error reconciliando usuario offline:", err);
+                }
+            }
+            return { synced };
+        } catch (e) {
+            console.error("Error en syncPendingOfflineUsers:", e);
+            return { synced: 0 };
         }
     },
 
@@ -339,6 +402,7 @@ export const authService = {
                 subscriptionStatus: user.subscriptionStatus || 'TRIAL',
                 expiryDate: user.expiryDate || null,
                 superAdmin: user.superAdmin || false, // Persistimos el flag maestro
+                isPendingAuthUser: user.isPendingAuthUser || false, // Cajero creado offline, pendiente de reconciliar uid real
                 updatedAt: new Date()
             });
         } catch (e) {

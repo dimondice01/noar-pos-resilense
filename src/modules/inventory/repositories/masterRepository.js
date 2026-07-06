@@ -1,18 +1,19 @@
 import { getDB } from '../../../database/db';
 import { db } from '../../../database/firebase';
-import { 
-    doc, 
-    setDoc, 
-    deleteDoc, 
-    collection, 
-    getDocs, 
-    query, 
+import {
+    doc,
+    setDoc,
+    deleteDoc,
+    updateDoc,
+    collection,
+    getDocs,
+    query,
     serverTimestamp,
     orderBy,
     where,
     limit,
     Timestamp
-} from 'firebase/firestore'; 
+} from 'firebase/firestore';
 import { useAuthStore } from '../../auth/store/useAuthStore'; 
 
 // =================================================================
@@ -33,8 +34,8 @@ export const masterRepository = {
     async getAll(storeName) {
         const dbLocal = await getDB();
         
-        // 1. Retorno inmediato desde IndexedDB
-        let items = await dbLocal.table(storeName).toArray();
+        // 1. Retorno inmediato desde IndexedDB (excluyendo soft-deletes)
+        let items = (await dbLocal.table(storeName).toArray()).filter(i => !i.deleted);
 
         // 2. Disparar Sincronización Incremental en segundo plano
         if (navigator.onLine) {
@@ -114,13 +115,25 @@ export const masterRepository = {
         if (storeName === 'suppliers') {
             item = {
                 ...item,
-                taxId: item.taxId || '', // CUIT
+                docNumber: item.docNumber || '', // CUIT/DNI (usado por SuppliersPage/SupplierDashboard)
                 balance: item.balance || 0, // Cuenta corriente con proveedor
                 paymentTerms: item.paymentTerms || 'Efectivo',
                 contactName: item.contactName || '',
                 phone: item.phone || '',
                 email: item.email || ''
             };
+
+            // Generar ID secuencial visible (solo si el proveedor es nuevo o nunca tuvo uno)
+            if (!item.sequentialId) {
+                try {
+                    const lastSupplier = await dbLocal.table('suppliers').orderBy('sequentialId').reverse().first();
+                    const lastNum = lastSupplier && lastSupplier.sequentialId ? parseInt(lastSupplier.sequentialId, 10) : 0;
+                    item.sequentialId = String(lastNum + 1).padStart(3, '0');
+                } catch (e) {
+                    const count = await dbLocal.table('suppliers').count();
+                    item.sequentialId = String(count + 1).padStart(3, '0');
+                }
+            }
         }
 
         let finalId = item.id;

@@ -9,7 +9,7 @@ import { Card } from '../../../core/ui/Card';
 import { Button } from '../../../core/ui/Button';
 import { Switch } from '../../../core/ui/Switch'; 
 import { authService } from '../../auth/services/authService';
-import { collection, getDocs, query, where, updateDoc, doc, deleteDoc, getDoc, setDoc } from 'firebase/firestore'; 
+import { collection, getDocs, query, where, updateDoc, doc, getDoc, setDoc } from 'firebase/firestore';
 import { db as firestoreDB } from '../../../database/firebase'; // 🔥 Renombrado para no chocar con Dexie
 import { getDB } from '../../../database/db'; // 🔥 Traemos Dexie para persistencia
 import { cn } from '../../../core/utils/cn';
@@ -286,7 +286,9 @@ export const TeamPage = () => {
       },
       // 🔥 Formato de código de barras de balanza por sucursal: { [branchId]: 'EAN13_GRAMS' }
       // Si una sucursal no tiene entrada, usa el formato legado (KRETZ/SYSTEL) sin cambios.
-      scaleBarcodeFormats: {}
+      scaleBarcodeFormats: {},
+      // 🔥 Si está activo, la Facturación Electrónica arranca tildada en cada venta (togglable para desactivarla puntualmente)
+      afipAlwaysOn: false
   });
   const [savingPosConfig, setSavingPosConfig] = useState(false);
 
@@ -320,8 +322,15 @@ export const TeamPage = () => {
         loadData();
         loadFinancials();
         loadPosConfig();
+
+        // 🔥 Reconciliar cajeros creados offline (uid temporal -> uid real de Firebase Auth)
+        if (navigator.onLine) {
+            authService.syncPendingOfflineUsers().then(({ synced }) => {
+                if (synced > 0) loadData();
+            });
+        }
     }
-  }, [currentUser, activeBranchId]); 
+  }, [currentUser, activeBranchId]);
 
   // =================================================================================
   // ⚡ DESCARGA FORZADA (CLOUD PULL) - EL BOTÓN DE RESCATE
@@ -441,7 +450,8 @@ export const TeamPage = () => {
                   paymentDiscounts: data.paymentDiscounts || {
                       cash: 0, transfer: 0, mp: 0, card: 0, current_account: 0
                   },
-                  scaleBarcodeFormats: data.scaleBarcodeFormats || {}
+                  scaleBarcodeFormats: data.scaleBarcodeFormats || {},
+                  afipAlwaysOn: data.afipAlwaysOn || false
               });
           }
       } catch (error) {
@@ -479,30 +489,38 @@ export const TeamPage = () => {
 
       try {
           setLoading(true);
-          await deleteDoc(doc(firestoreDB, 'users', userId));
+
+          // 🔥 FIX: el borrado real lo hace el backend (Admin SDK). Las reglas de
+          // Firestore bloquean a propósito el deleteDoc() directo del cliente para
+          // no-superadmins ("Borrar bloqueado (Solo backend...)"), así que intentarlo
+          // acá primero solo tiraba permission-denied y nunca se llegaba al backend.
+          const token = await authService.getToken();
+          if (!token) throw new Error("No se pudo obtener el token de sesión.");
+
+          const response = await fetch(`${API_URL}/delete-user`, {
+              method: 'POST',
+              headers: {
+                  'Content-Type': 'application/json',
+                  'Authorization': `Bearer ${token}`
+              },
+              body: JSON.stringify({ uid: userId })
+          });
+
+          if (!response.ok) {
+              const errData = await response.json().catch(() => ({}));
+              throw new Error(errData.error || `Error ${response.status}`);
+          }
 
           try {
               const dbLocal = await getDB();
               await dbLocal.users.delete(userId);
           } catch (e) {}
 
-          try {
-              const token = await authService.getToken(); 
-              await fetch(`${API_URL}/delete-user`, {
-                  method: 'POST',
-                  headers: {
-                      'Content-Type': 'application/json',
-                      'Authorization': `Bearer ${token}`
-                  },
-                  body: JSON.stringify({ uid: userId })
-              });
-          } catch (e) { console.warn("Delete auth skipped"); }
-
           toast.success("Usuario eliminado correctamente.");
           loadData();
       } catch (error) {
           console.error("Error eliminando usuario:", error);
-          toast.error("Error al eliminar usuario.");
+          toast.error(`Error al eliminar usuario: ${error.code || error.message || 'desconocido'}`);
       } finally {
           setLoading(false);
       }
@@ -1181,6 +1199,27 @@ export const TeamPage = () => {
                                   onChange={(e) => setPosConfig({...posConfig, wholesalePercentage: parseFloat(e.target.value) || 0})}
                               />
                           </div>
+                      </div>
+                  </Card>
+
+                  {/* BLOQUE: FACTURACIÓN ELECTRÓNICA SIEMPRE ACTIVA */}
+                  <Card className="p-6 border-indigo-100 shadow-lg shadow-indigo-500/5 relative overflow-hidden">
+                      <div className="absolute -right-4 -top-4 w-24 h-24 bg-indigo-50 rounded-full opacity-50 pointer-events-none"></div>
+
+                      <div className="flex items-start justify-between relative z-10">
+                          <div>
+                              <h3 className="font-bold text-lg text-sys-900 flex items-center gap-2">
+                                  <ShieldCheck className="text-indigo-500" size={20} /> Facturación Electrónica Siempre Activa
+                              </h3>
+                              <p className="text-xs text-sys-500 mt-1 max-w-sm">
+                                  Al cobrar, la Facturación Electrónica arranca activada por defecto en cada venta (se puede desactivar puntualmente desde el cobro). Si está apagada, es al revés: hay que activarla venta por venta.
+                              </p>
+                          </div>
+
+                          <Switch
+                              checked={posConfig.afipAlwaysOn}
+                              onCheckedChange={(checked) => setPosConfig({...posConfig, afipAlwaysOn: checked})}
+                          />
                       </div>
                   </Card>
 

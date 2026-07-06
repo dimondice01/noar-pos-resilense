@@ -72,25 +72,33 @@ export const PurchasePage = () => {
         setTimeout(() => searchInputRef.current?.focus(), 100);
     }, [navState, setSupplier]);
 
-    // 2. Buscador con Debounce
+    // 2. Buscador con Debounce (prioriza productos del proveedor seleccionado)
     useEffect(() => {
         const timer = setTimeout(async () => {
             if (searchTerm.length > 2) {
                 setSearchLoading(true);
                 try {
-                    const results = await productRepository.search(searchTerm);
+                    const results = await productRepository.search(searchTerm, supplier?.name);
                     setSearchResults(results);
                 } catch (error) {
                     console.error("Error searching products:", error);
                 } finally {
                     setSearchLoading(false);
                 }
+            } else if (supplier?.name) {
+                // Sin texto: listar por defecto los productos asignados a este proveedor
+                try {
+                    const defaultList = await productRepository.getBySupplier(supplier.name);
+                    setSearchResults(defaultList);
+                } catch (error) {
+                    console.error("Error loading supplier products:", error);
+                }
             } else {
                 setSearchResults([]);
             }
         }, 200);
         return () => clearTimeout(timer);
-    }, [searchTerm]);
+    }, [searchTerm, supplier]);
 
     // 🔥 3. AUTO-FOCO AL AGREGAR ITEM (AHORA EN CANTIDAD - A LA IZQUIERDA)
     useEffect(() => {
@@ -364,7 +372,7 @@ export const PurchasePage = () => {
                         </div>
                     </div>
 
-                    <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-sys-50/20">
+                    <div className="flex-1 overflow-auto p-4 space-y-3 bg-sys-50/20">
                         {items.length === 0 ? (
                             <div className="h-full flex flex-col items-center justify-center opacity-30">
                                 <PackagePlus size={80} strokeWidth={1} className="text-sys-400 mb-4" />
@@ -374,9 +382,9 @@ export const PurchasePage = () => {
                             items.map((item, index) => {
                                 const hasPriceChange = Math.abs(parseFloat(item.product.price) - parseFloat(item.newPrice)) > 0.01;
                                 return (
-                                    <div key={item.product.id} className="bg-white border border-sys-200 rounded-2xl p-4 shadow-sm hover:shadow-md transition-all group animate-in slide-in-from-right-4">
+                                    <div key={item.product.id} className="bg-white border border-sys-200 rounded-2xl p-4 shadow-sm hover:shadow-md transition-all group animate-in slide-in-from-right-4 min-w-[1000px]">
                                         <div className="flex items-center gap-4">
-                                            
+
                                             {/* 🔥 NUEVO: CANTIDAD INPUT A LA IZQUIERDA */}
                                             <div className="w-24 shrink-0">
                                                 <label className="text-[8px] font-black text-brand uppercase mb-1 block text-center">Cantidad</label>
@@ -402,17 +410,17 @@ export const PurchasePage = () => {
                                             </div>
 
                                             {/* BLOQUE CENTRAL DE PRECIOS */}
-                                            <div className="flex-[2] grid grid-cols-4 gap-3 bg-sys-50 p-2.5 rounded-xl border border-sys-100">
+                                            <div className="flex-[2] min-w-[420px] grid grid-cols-4 gap-2.5 bg-sys-50 p-3 rounded-xl border border-sys-100">
                                                 {/* COSTO INPUT */}
                                                 <div>
                                                     <label className="text-[8px] font-black text-sys-400 uppercase mb-1 block">Costo Unit.</label>
                                                     <div className="relative">
-                                                        <span className="absolute left-2 top-1.5 text-sys-400 text-[10px] font-bold">$</span>
-                                                        <input 
+                                                        <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-sys-400 text-xs font-bold pointer-events-none">$</span>
+                                                        <input
                                                             ref={el => rowRefs.current[`${item.product.id}-costInput`] = el}
-                                                            type="number" 
-                                                            className="w-full pl-5 pr-2 py-1 border border-sys-200 rounded-lg font-bold text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/20 transition-all" 
-                                                            value={item.costInput} 
+                                                            type="number"
+                                                            className="w-full pl-6 pr-2 py-2 border border-sys-200 rounded-lg font-bold text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/20 transition-all"
+                                                            value={item.costInput}
                                                             onChange={(e) => updateItem(item.product.id, 'costInput', e.target.value)}
                                                             onKeyDown={(e) => handleRowKeyDown(e, item.product.id, 'costInput', index)}
                                                         />
@@ -422,12 +430,12 @@ export const PurchasePage = () => {
                                                 <div>
                                                     <label className="text-[8px] font-black text-sys-400 uppercase mb-1 block">Margen %</label>
                                                     <div className="relative">
-                                                        <Percent className="absolute right-2 top-2 text-sys-300 pointer-events-none" size={10}/>
-                                                        <input 
+                                                        <Percent className="absolute right-2.5 top-1/2 -translate-y-1/2 text-sys-300 pointer-events-none" size={10}/>
+                                                        <input
                                                             ref={el => rowRefs.current[`${item.product.id}-markup`] = el}
-                                                            type="number" 
-                                                            className="w-full pl-2 pr-5 py-1 border border-sys-200 rounded-lg font-black text-brand text-sm outline-none text-center focus:border-brand focus:ring-2 focus:ring-brand/20 transition-all" 
-                                                            value={item.markup} 
+                                                            type="number"
+                                                            className="w-full pl-2 pr-6 py-2 border border-sys-200 rounded-lg font-black text-brand text-sm outline-none text-center focus:border-brand focus:ring-2 focus:ring-brand/20 transition-all"
+                                                            value={item.markup}
                                                             onChange={(e) => updateItem(item.product.id, 'markup', e.target.value)}
                                                             onKeyDown={(e) => handleRowKeyDown(e, item.product.id, 'markup', index)}
                                                         />
@@ -437,20 +445,20 @@ export const PurchasePage = () => {
                                                 <div>
                                                     <label className="text-[8px] font-black text-emerald-600 uppercase mb-1 block">P. Venta</label>
                                                     <div className="relative">
-                                                        <span className="absolute left-2 top-1.5 text-emerald-400 text-[10px] font-bold">$</span>
-                                                        <input 
+                                                        <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-emerald-400 text-xs font-bold pointer-events-none">$</span>
+                                                        <input
                                                             ref={el => rowRefs.current[`${item.product.id}-newPrice`] = el}
-                                                            type="number" 
-                                                            className="w-full pl-5 pr-2 py-1 border-2 border-emerald-100 bg-white rounded-lg font-black text-emerald-700 text-sm outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-200 transition-all" 
-                                                            value={item.newPrice} 
+                                                            type="number"
+                                                            className="w-full pl-6 pr-2 py-2 border-2 border-emerald-100 bg-white rounded-lg font-black text-emerald-700 text-sm outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-200 transition-all"
+                                                            value={item.newPrice}
                                                             onChange={(e) => updateItem(item.product.id, 'newPrice', e.target.value)}
                                                             onKeyDown={(e) => handleRowKeyDown(e, item.product.id, 'newPrice', index)}
                                                         />
                                                     </div>
                                                 </div>
                                                 {/* SWITCH IVA */}
-                                                <div className="flex flex-col justify-end pb-1 border-l border-sys-200 pl-3">
-                                                    <button onClick={() => updateItem(item.product.id, 'includesTax', !item.includesTax)} className={cn("text-[8px] font-black px-1.5 py-1 rounded border w-full text-center tracking-wider", item.includesTax ? "bg-brand text-white border-brand" : "bg-white text-sys-400 border-sys-200")}>
+                                                <div className="flex flex-col justify-end pb-0.5 border-l border-sys-200 pl-3">
+                                                    <button onClick={() => updateItem(item.product.id, 'includesTax', !item.includesTax)} className={cn("text-[8px] font-black px-1.5 py-2 rounded border w-full text-center tracking-wider", item.includesTax ? "bg-brand text-white border-brand" : "bg-white text-sys-400 border-sys-200")}>
                                                         {item.includesTax ? '+ IVA' : 'NETO'}
                                                     </button>
                                                 </div>
@@ -512,6 +520,18 @@ export const PurchasePage = () => {
                                 <p className="text-sm font-medium text-sys-600">No encontrado en Maestro</p>
                                 <p className="text-xs mt-1">Presiona "Nuevo Producto" para crearlo y agregarlo a la factura.</p>
                             </div>
+                        )}
+
+                        {searchTerm.length <= 2 && supplier && searchResults.length === 0 && (
+                            <div className="text-center py-10 text-sys-400 px-6">
+                                <PackagePlus className="mx-auto mb-2 opacity-50" size={32}/>
+                                <p className="text-sm font-medium text-sys-600">Sin productos asignados</p>
+                                <p className="text-xs mt-1">Este proveedor no tiene productos asignados en su ficha. Asignalos desde el Maestro de Productos.</p>
+                            </div>
+                        )}
+
+                        {searchTerm.length <= 2 && supplier && searchResults.length > 0 && (
+                            <p className="text-[10px] font-black text-sys-400 uppercase px-1 mb-1">Productos de {supplier.name}</p>
                         )}
 
                         {searchResults.map((prod) => {

@@ -115,7 +115,8 @@ export const usePosController = () => {
         paymentDiscounts: {
             cash: 0, transfer: 0, mp: 0, card: 0, current_account: 0
         },
-        scaleBarcodeFormats: {}
+        scaleBarcodeFormats: {},
+        afipAlwaysOn: false
     });
 
     // 🔥 Formato de balanza resuelto para la sucursal activa (default = comportamiento legado)
@@ -142,7 +143,8 @@ export const usePosController = () => {
                         paymentDiscounts: configDoc.value.paymentDiscounts || {
                             cash: 0, transfer: 0, mp: 0, card: 0, current_account: 0
                         },
-                        scaleBarcodeFormats: configDoc.value.scaleBarcodeFormats || {}
+                        scaleBarcodeFormats: configDoc.value.scaleBarcodeFormats || {},
+                        afipAlwaysOn: configDoc.value.afipAlwaysOn || false
                     });
                 }
             } catch (error) {
@@ -169,7 +171,8 @@ export const usePosController = () => {
                         paymentDiscounts: configDoc.value.paymentDiscounts || {
                             cash: 0, transfer: 0, mp: 0, card: 0, current_account: 0
                         },
-                        scaleBarcodeFormats: configDoc.value.scaleBarcodeFormats || {}
+                        scaleBarcodeFormats: configDoc.value.scaleBarcodeFormats || {},
+                        afipAlwaysOn: configDoc.value.afipAlwaysOn || false
                     });
                 }
             } catch (e) { console.error(e); }

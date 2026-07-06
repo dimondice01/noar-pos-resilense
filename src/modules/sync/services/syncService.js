@@ -1287,7 +1287,7 @@ export const syncService = {
                 await setDoc(docRef, {
                      ...this._deepSanitize(masterData),
                      lastUpdated: serverTimestamp(),
-                     updatedAt: nowIso 
+                     updatedAt: serverTimestamp()
                 }, { merge: true });
 
                 await localDb.products.update(product.id, { 
@@ -1312,7 +1312,7 @@ export const syncService = {
                     await setDoc(stockRef, {
                         productId: inv.productId,
                         stock: increment(inv.stockDelta),
-                        updatedAt: nowIso
+                        updatedAt: serverTimestamp()
                     }, { merge: true });
 
                     // 🔄 RECONCILE: lee el valor autoritativo de Firestore y actualiza Dexie
@@ -1330,7 +1330,7 @@ export const syncService = {
                         productId: inv.productId,
                         stock: parseFloat(inv.stock) || 0,
                         promo: inv.promo || null,
-                        updatedAt: nowIso
+                        updatedAt: serverTimestamp()
                     }, { merge: true });
                     await localDb.inventory.update([inv.branchId, inv.productId], {
                         syncStatus: 'synced',
@@ -1369,7 +1369,7 @@ export const syncService = {
                       await setDoc(docRef, {
                           ...this._deepSanitize(cleanItem),
                           firestoreId: safeId,
-                          updatedAt: nowIso
+                          updatedAt: serverTimestamp()
                       }, { merge: true });
 
                       await localDb.table(collectionName).update(item.id, { 
@@ -1415,7 +1415,7 @@ export const syncService = {
                 firestoreId: safeId,
                 branchId: sale.branchId || branchId || 'main',
                 syncedAt: serverTimestamp(),
-                updatedAt: nowIso,
+                updatedAt: serverTimestamp(),
                 origin: 'POS_WEB'
             }, { merge: true });
 
@@ -1522,7 +1522,7 @@ export const syncService = {
               await setDoc(docRef, {
                   ...this._deepSanitize(cleanShift),
                   firestoreId: safeId,
-                  updatedAt: nowIso
+                  updatedAt: serverTimestamp()
               }, { merge: true });
 
               await localDb.shifts.update(shift.id, {
@@ -1562,7 +1562,7 @@ export const syncService = {
               await setDoc(docRef, {
                   ...this._deepSanitize(cleanMov),
                   firestoreId: safeId,
-                  updatedAt: nowIso
+                  updatedAt: serverTimestamp()
               }, { merge: true });
 
               await localDb.cash_movements.update(mov.id, {
@@ -1601,7 +1601,7 @@ export const syncService = {
                   ...this._deepSanitize(cleanPurchase),
                   firestoreId: safeId,
                   syncedAt: serverTimestamp(),
-                  updatedAt: nowIso
+                  updatedAt: serverTimestamp()
               }, { merge: true });
 
               await localDb.purchases.update(purchase.id, { 
@@ -1638,7 +1638,7 @@ export const syncService = {
                   ...this._deepSanitize(cleanMov),
                   firestoreId: safeId,
                   syncedAt: serverTimestamp(),
-                  updatedAt: nowIso
+                  updatedAt: serverTimestamp()
               }, { merge: true });
 
               await localDb.supplier_ledger.update(mov.id, { 
@@ -1675,7 +1675,7 @@ export const syncService = {
                   ...this._deepSanitize(cleanMov),
                   firestoreId: safeId,
                   syncedAt: serverTimestamp(),
-                  updatedAt: nowIso
+                  updatedAt: serverTimestamp()
               }, { merge: true });
 
               await localDb.movements.update(mov.id, { 
@@ -1712,7 +1712,7 @@ export const syncService = {
                   ...this._deepSanitize(cleanMov),
                   firestoreId: safeId,
                   syncedAt: serverTimestamp(),
-                  updatedAt: nowIso
+                  updatedAt: serverTimestamp()
               }, { merge: true });
 
               await localDb.customer_ledger.update(mov.id, { 

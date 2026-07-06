@@ -191,7 +191,9 @@ export const PaymentModal = ({
     // ==========================================
     useEffect(() => {
         if (isOpen) {
-            if (isRI && !disableAfip) setWithAfip(true); 
+            // 🔥 Si el cliente es RI, factura A obligatoria. Si no, respeta la config
+            // "Facturación siempre activa" (TeamPage) como default, pero sigue siendo togglable.
+            if (!disableAfip && (isRI || posConfig?.afipAlwaysOn)) setWithAfip(true);
             else setWithAfip(false);
             
             // Reset Completo
@@ -1085,7 +1087,7 @@ export const PaymentModal = ({
                     </div>
 
                     <div className="mt-6 pt-4 border-t border-sys-100">
-                        {!disableAfip && method !== 'employee_account' && !isSplitMode && !isBudgetMode && !isAccountMode && (
+                        {!disableAfip && method !== 'employee_account' && !isBudgetMode && !isAccountMode && (
                             <div className={cn("flex items-center justify-between mb-4 p-3 rounded-xl border transition-all", isRI ? "bg-indigo-50 border-indigo-200" : "bg-sys-50 border-sys-100")}>
                                 <div className="flex items-center gap-2">
                                     <ShieldCheck className={cn(withAfip ? "text-brand" : "text-sys-300")} size={20}/>

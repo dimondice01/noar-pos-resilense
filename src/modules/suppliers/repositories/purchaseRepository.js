@@ -35,10 +35,13 @@ const triggerOptimisticSync = async (collectionName, data, isDelete = false) => 
             const { syncStatus, localId, ...cloudData } = data;
             await setDoc(doc(db, path, cloudId), {
                 ...cloudData,
+                // 🔥 FIX: forzamos Timestamp real (no string) para no romper los queries
+                // where('updatedAt', '>'/'>=', ...) que usan otras PCs (listeners y delta-sync)
+                ...(cloudData.updatedAt !== undefined ? { updatedAt: serverTimestamp() } : {}),
                 firestoreId: cloudId,
                 syncedAt: new Date().toISOString(),
                 syncStatus: 'synced',
-                lastUpdatedBy: user.uid 
+                lastUpdatedBy: user.uid
             }, { merge: true });
         }
 

@@ -1,13 +1,17 @@
 import React, { useState, useEffect } from 'react';
-import { X, Plus, Trash2, Tag, Truck, Award, Loader2, Search } from 'lucide-react'; // Agregué Loader2 y Search
+import { X, Plus, Trash2, Tag, Truck, Award, Loader2, Search, Pencil, XCircle, Check } from 'lucide-react'; // Agregué Loader2 y Search
 import { Button } from '../../../core/ui/Button';
 import { masterRepository } from '../repositories/masterRepository';
 import { cn } from '../../../core/utils/cn';
+
+const EMPTY_SUPPLIER_FORM = { contactName: '', phone: '', email: '', docNumber: '', paymentTerms: 'Efectivo' };
 
 export const MastersModal = ({ isOpen, onClose }) => {
   const [activeTab, setActiveTab] = useState('categories'); // categories | brands | suppliers
   const [items, setItems] = useState([]);
   const [newItemValue, setNewItemValue] = useState('');
+  const [supplierForm, setSupplierForm] = useState(EMPTY_SUPPLIER_FORM);
+  const [editingId, setEditingId] = useState(null);
   const [loading, setLoading] = useState(false);
   const [filter, setFilter] = useState(''); // Filtro local
 
@@ -16,7 +20,13 @@ export const MastersModal = ({ isOpen, onClose }) => {
   const CONFIG = {
     categories: { title: "Categorías", icon: Tag, placeholder: "Nueva Categoría (Ej: Bebidas)" },
     brands: { title: "Marcas", icon: Award, placeholder: "Nueva Marca (Ej: Coca Cola)" },
-    suppliers: { title: "Proveedores", icon: Truck, placeholder: "Nuevo Proveedor (Ej: Distribuidora Norte)" }
+    suppliers: { title: "Proveedores", icon: Truck, placeholder: "Nombre del Proveedor (Ej: Distribuidora Norte)" }
+  };
+
+  const resetForm = () => {
+    setNewItemValue('');
+    setSupplierForm(EMPTY_SUPPLIER_FORM);
+    setEditingId(null);
   };
 
   // Cargar datos al abrir o cambiar pestaña
@@ -24,7 +34,7 @@ export const MastersModal = ({ isOpen, onClose }) => {
     if (isOpen) {
         loadItems();
         setFilter('');
-        setNewItemValue('');
+        resetForm();
     }
   }, [isOpen, activeTab]);
 
@@ -40,14 +50,20 @@ export const MastersModal = ({ isOpen, onClose }) => {
     }
   };
 
-  const handleAdd = async (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     if (!newItemValue.trim()) return;
 
     try {
         setLoading(true); // Feedback visual rápido
-        await masterRepository.save(activeTab, { name: newItemValue });
-        setNewItemValue('');
+        // Al editar partimos del item original para no perder campos como balance/sequentialId
+        const original = editingId ? items.find(i => i.id === editingId) : null;
+        const payload = { ...(original || {}), name: newItemValue };
+        if (activeTab === 'suppliers') Object.assign(payload, supplierForm);
+        if (editingId) payload.id = editingId;
+
+        await masterRepository.save(activeTab, payload);
+        resetForm();
         await loadItems(); // Recargar lista actualizada
     } catch (error) {
         alert("Error al guardar: " + error.message);
@@ -56,12 +72,27 @@ export const MastersModal = ({ isOpen, onClose }) => {
     }
   };
 
+  const startEdit = (item) => {
+    setEditingId(item.id);
+    setNewItemValue(item.name || '');
+    if (activeTab === 'suppliers') {
+        setSupplierForm({
+            contactName: item.contactName || '',
+            phone: item.phone || '',
+            email: item.email || '',
+            docNumber: item.docNumber || '',
+            paymentTerms: item.paymentTerms || 'Efectivo'
+        });
+    }
+  };
+
   const handleDelete = async (id) => {
     if (!confirm("¿Seguro que deseas eliminar este elemento?")) return;
-    
+
     try {
         // Optimistic UI: Lo sacamos visualmente antes de que termine el proceso
         setItems(prev => prev.filter(i => i.id !== id));
+        if (editingId === id) resetForm();
         await masterRepository.delete(activeTab, id);
     } catch (error) {
         console.error(error);
@@ -126,19 +157,62 @@ export const MastersModal = ({ isOpen, onClose }) => {
                     </div>
                 </div>
 
-                {/* Formulario Agregar */}
-                <form onSubmit={handleAdd} className="flex gap-2 mb-4">
-                    <input 
-                        autoFocus
-                        type="text" 
-                        className="flex-1 p-3 border border-sys-200 rounded-xl focus:border-brand focus:ring-4 focus:ring-brand/10 outline-none text-sm transition-all"
-                        placeholder={CONFIG[activeTab].placeholder}
-                        value={newItemValue}
-                        onChange={(e) => setNewItemValue(e.target.value)}
-                    />
-                    <Button type="submit" className="px-4 shadow-lg shadow-brand/20 h-auto rounded-xl" disabled={!newItemValue.trim() || loading}>
-                        {loading ? <Loader2 className="animate-spin" /> : <Plus size={20} />}
-                    </Button>
+                {/* Formulario Agregar / Editar */}
+                <form onSubmit={handleSubmit} className="mb-4">
+                    {editingId && (
+                        <div className="flex items-center justify-between mb-2 px-1">
+                            <span className="text-[10px] font-bold text-brand uppercase">Editando elemento</span>
+                            <button type="button" onClick={resetForm} className="text-[10px] font-bold text-sys-400 hover:text-red-500 flex items-center gap-1">
+                                <XCircle size={12}/> Cancelar
+                            </button>
+                        </div>
+                    )}
+                    <div className="flex gap-2">
+                        <input
+                            autoFocus
+                            type="text"
+                            className="flex-1 p-3 border border-sys-200 rounded-xl focus:border-brand focus:ring-4 focus:ring-brand/10 outline-none text-sm transition-all"
+                            placeholder={CONFIG[activeTab].placeholder}
+                            value={newItemValue}
+                            onChange={(e) => setNewItemValue(e.target.value)}
+                        />
+                        <Button type="submit" className="px-4 shadow-lg shadow-brand/20 h-auto rounded-xl" disabled={!newItemValue.trim() || loading}>
+                            {loading ? <Loader2 className="animate-spin" /> : (editingId ? <Check size={20}/> : <Plus size={20} />)}
+                        </Button>
+                    </div>
+
+                    {activeTab === 'suppliers' && (
+                        <div className="grid grid-cols-2 gap-2 mt-2">
+                            <input
+                                type="text"
+                                className="p-2.5 border border-sys-200 rounded-xl outline-none focus:border-brand text-xs"
+                                placeholder="Persona de contacto"
+                                value={supplierForm.contactName}
+                                onChange={(e) => setSupplierForm(prev => ({ ...prev, contactName: e.target.value }))}
+                            />
+                            <input
+                                type="text"
+                                className="p-2.5 border border-sys-200 rounded-xl outline-none focus:border-brand text-xs"
+                                placeholder="Teléfono"
+                                value={supplierForm.phone}
+                                onChange={(e) => setSupplierForm(prev => ({ ...prev, phone: e.target.value }))}
+                            />
+                            <input
+                                type="email"
+                                className="p-2.5 border border-sys-200 rounded-xl outline-none focus:border-brand text-xs"
+                                placeholder="Email"
+                                value={supplierForm.email}
+                                onChange={(e) => setSupplierForm(prev => ({ ...prev, email: e.target.value }))}
+                            />
+                            <input
+                                type="text"
+                                className="p-2.5 border border-sys-200 rounded-xl outline-none focus:border-brand text-xs"
+                                placeholder="CUIT / DNI"
+                                value={supplierForm.docNumber}
+                                onChange={(e) => setSupplierForm(prev => ({ ...prev, docNumber: e.target.value }))}
+                            />
+                        </div>
+                    )}
                 </form>
 
                 {/* Barra de Búsqueda Interna */}
@@ -167,15 +241,32 @@ export const MastersModal = ({ isOpen, onClose }) => {
                         </div>
                     ) : (
                         filteredItems.map((item) => (
-                            <div key={item.id} className="flex justify-between items-center p-3 bg-white hover:bg-sys-50 rounded-xl border border-sys-100 hover:border-sys-200 group transition-all animate-in slide-in-from-bottom-1 duration-200">
-                                <span className="text-sm text-sys-800 font-medium pl-1">{item.name}</span>
-                                <button 
-                                    onClick={() => handleDelete(item.id)}
-                                    className="p-2 rounded-lg text-sys-300 hover:text-red-500 hover:bg-red-50 opacity-0 group-hover:opacity-100 transition-all"
-                                    title="Eliminar"
-                                >
-                                    <Trash2 size={16} />
-                                </button>
+                            <div key={item.id} className={cn(
+                                "flex justify-between items-center p-3 bg-white hover:bg-sys-50 rounded-xl border group transition-all animate-in slide-in-from-bottom-1 duration-200",
+                                editingId === item.id ? "border-brand ring-2 ring-brand/10" : "border-sys-100 hover:border-sys-200"
+                            )}>
+                                <div className="flex flex-col pl-1 min-w-0">
+                                    <span className="text-sm text-sys-800 font-medium truncate">{item.name}</span>
+                                    {activeTab === 'suppliers' && item.phone && (
+                                        <span className="text-[10px] text-sys-400 truncate">{item.phone}</span>
+                                    )}
+                                </div>
+                                <div className="flex items-center gap-1 shrink-0">
+                                    <button
+                                        onClick={() => startEdit(item)}
+                                        className="p-2 rounded-lg text-sys-300 hover:text-brand hover:bg-brand/10 opacity-0 group-hover:opacity-100 transition-all"
+                                        title="Editar"
+                                    >
+                                        <Pencil size={16} />
+                                    </button>
+                                    <button
+                                        onClick={() => handleDelete(item.id)}
+                                        className="p-2 rounded-lg text-sys-300 hover:text-red-500 hover:bg-red-50 opacity-0 group-hover:opacity-100 transition-all"
+                                        title="Eliminar"
+                                    >
+                                        <Trash2 size={16} />
+                                    </button>
+                                </div>
                             </div>
                         ))
                     )}

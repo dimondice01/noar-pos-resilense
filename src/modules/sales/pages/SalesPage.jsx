@@ -652,7 +652,11 @@ export const SalesPage = () => {
               total: newTotal,
               subtotal: newSubtotal,
               refundedAmount: (originalSale.refundedAmount || 0) + refundAmount,
-              notes: `${originalSale.notes || ''} | Devolución: -$${refundAmount} (${reason})`.trim()
+              notes: `${originalSale.notes || ''} | Devolución: -$${refundAmount} (${reason})`.trim(),
+              // 🔥 FIX: sin esto, el registro queda como 'synced' sin haber subido el cambio real,
+              // y el listener en tiempo real lo pisa con la versión vieja (cantidad completa),
+              // haciendo que una Anulación posterior reintegre stock ya devuelto.
+              syncStatus: 'pending'
           };
 
           if (newTotal <= 0) {

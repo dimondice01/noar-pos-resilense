@@ -6,6 +6,7 @@ import {
     ArrowRight, Phone, Mail, Building2, User
 } from 'lucide-react';
 import { masterRepository } from '../../inventory/repositories/masterRepository';
+import { db as firestoreDB } from '../../../database/firebase';
 import { useAuthStore } from '../../auth/store/useAuthStore';
 import { Card } from '../../../core/ui/Card';
 import { Button } from '../../../core/ui/Button';
@@ -34,8 +35,8 @@ export const SuppliersPage = () => {
                 
                 if (pendingSuppliers.length > 0) {
                     console.log(`[Auto-Heal] Empujando ${pendingSuppliers.length} proveedores locales a Firebase...`);
-                    const { doc, setDoc } = await import('firebase/firestore');
-                    
+                    const { doc, setDoc, serverTimestamp } = await import('firebase/firestore');
+
                     const batchPromesas = pendingSuppliers.map(async (sup) => {
                         try {
                             const cloudId = String(sup.firestoreId || sup.id);
@@ -45,7 +46,7 @@ export const SuppliersPage = () => {
                             await setDoc(docRef, {
                                 ...cleanSup,
                                 firestoreId: cloudId,
-                                updatedAt: new Date().toISOString(),
+                                updatedAt: serverTimestamp(),
                                 syncStatus: 'synced'
                             }, { merge: true });
 
@@ -77,14 +78,14 @@ export const SuppliersPage = () => {
         let unsub = null;
 
         const setupListener = async () => {
-            const { collection, query, where, onSnapshot } = await import('firebase/firestore');
+            const { collection, query, where, onSnapshot, Timestamp } = await import('firebase/firestore');
             const { db: firestoreDB } = await import('../../../database/firebase');
             const { getDB } = await import('../../../database/db');
 
             const liveStart = new Date(); liveStart.setHours(0, 0, 0, 0);
             const liveQ = query(
                 collection(firestoreDB, `companies/${user.companyId}/suppliers`),
-                where('updatedAt', '>=', liveStart.toISOString())
+                where('updatedAt', '>=', Timestamp.fromDate(liveStart))
             );
 
             unsub = onSnapshot(liveQ, async (snap) => {
@@ -287,15 +288,16 @@ export const SuppliersPage = () => {
                                                 >
                                                     <FileText size={14} className="mr-1.5"/> Historial
                                                 </Button>
-                                                <Button 
-                                                    size="sm" 
-                                                    className="bg-brand/10 text-brand border-none hover:bg-brand hover:text-white shadow-none"
+                                                <Button
+                                                    size="sm"
+                                                    className="bg-brand/10 text-brand border-none hover:bg-brand hover:text-white shadow-none font-bold"
+                                                    title="Comprar a este proveedor"
                                                     onClick={(e) => {
-                                                        e.stopPropagation(); 
+                                                        e.stopPropagation();
                                                         goToNewPurchase(sup);
                                                     }}
                                                 >
-                                                    <ShoppingBag size={14}/>
+                                                    <ShoppingBag size={14} className="mr-1.5"/> Comprar
                                                 </Button>
                                             </div>
                                         </td>

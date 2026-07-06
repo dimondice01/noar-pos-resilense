@@ -208,7 +208,8 @@ export const productRepository = {
         return null;
     },
 
-    async search(query) {
+    // 🔥 supplierName: el combo de proveedor en ProductModal guarda el NOMBRE (mismo patrón que category/brand), no el id
+    async search(query, supplierName = null) {
         const dbLocal = await getDB();
         const { activeBranchId } = useAuthStore.getState();
         const term = query.toLowerCase().trim();
@@ -231,7 +232,31 @@ export const productRepository = {
             .toArray();
 
         const processedResults = await Promise.all(results.map(p => checkAndActivatePrice(p, dbLocal)));
-        return await _injectBranchData(processedResults, activeBranchId, dbLocal);
+        const enriched = await _injectBranchData(processedResults, activeBranchId, dbLocal);
+
+        // 🔥 Prioriza (sin excluir) los productos del proveedor seleccionado en la compra
+        if (supplierName) {
+            return [...enriched].sort((a, b) => {
+                const aMatch = a.supplier === supplierName ? 0 : 1;
+                const bMatch = b.supplier === supplierName ? 0 : 1;
+                return aMatch - bMatch;
+            });
+        }
+        return enriched;
+    },
+
+    // 🔥 Listado por defecto de productos asignados a un proveedor (para pantalla de Compras)
+    async getBySupplier(supplierName) {
+        if (!supplierName) return [];
+        const dbLocal = await getDB();
+        const { activeBranchId } = useAuthStore.getState();
+
+        const results = await dbLocal.products
+            .filter(p => !p.deleted && p.supplier === supplierName)
+            .limit(50)
+            .toArray();
+
+        return await _injectBranchData(results, activeBranchId, dbLocal);
     },
 
     // ==========================================
@@ -262,6 +287,7 @@ export const productRepository = {
             categoryId: product.categoryId || existingProduct.categoryId || 'general',
             brand: product.brand || existingProduct.brand || 'GENERICO',
             brandId: product.brandId || existingProduct.brandId || null,
+            supplier: product.supplier !== undefined ? product.supplier : (existingProduct.supplier || ''),
             unit: product.unit || existingProduct.unit || 'UN',
             isWeighable: product.isWeighable !== undefined ? product.isWeighable : !!existingProduct.isWeighable,
             taxRate: parseFloat(product.taxRate) || existingProduct.taxRate || 21,
