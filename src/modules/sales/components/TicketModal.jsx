@@ -354,10 +354,10 @@ const TicketContent = forwardRef(({
                 {/* --- FOOTER FISCAL --- */}
                 {isFiscal && !isBudget && cae && (
                     <div className="mt-2 text-center border-t border-black border-dashed pt-2">
-                        <div className="flex justify-center mb-1">
-                            {qrData && <QRCode value={qrData} size={90} level="M" />}
+                        <div className="flex justify-center mb-1.5">
+                            {qrData && <QRCode value={qrData} size={150} level="M" />}
                         </div>
-                        <div className="w-full flex flex-col text-[9px] font-mono font-bold mt-1">
+                        <div className="w-full flex flex-col text-[9px] font-mono font-bold mt-1.5">
                             <span>CAE: {cae}</span>
                             <span>VTO: {formatAfipDate(vto)}</span>
                         </div>

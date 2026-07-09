@@ -880,7 +880,7 @@ export const InventoryPage = () => {
     };
 
 
-    const handleScaleExport = (brand) => {
+    const handleScaleExport = async (brand) => {
         try {
             const weighableProducts = products.filter(p => p.isWeighable);
 
@@ -890,9 +890,14 @@ export const InventoryPage = () => {
             }
 
             const fileContent = scaleService.generateScaleFile(weighableProducts, brand);
-            scaleService.downloadFile(fileContent, brand);
+            const result = await scaleService.saveFile(fileContent, brand);
 
-            toast.success(`Exportado para ${brand}: ${weighableProducts.length} productos.`);
+            if (result.mode === 'cancelled') return;
+
+            const msg = result.mode === 'filesystem'
+                ? `Actualizado en la carpeta de la balanza: ${weighableProducts.length} productos.`
+                : `Exportado para ${brand}: ${weighableProducts.length} productos.`;
+            toast.success(msg);
             setIsScaleModalOpen(false);
         } catch (e) {
             console.error(e);
@@ -1017,10 +1022,14 @@ export const InventoryPage = () => {
             const code = (p.code || '').toString().toLowerCase();
             const barcodeStr = Array.isArray(p.barcode) ? p.barcode.join(' ') : (p.barcode || '');
             const matchesSearch = name.includes(term) || code.includes(term) || barcodeStr.toLowerCase().includes(term);
+            // 🔥 productRepository.save() defaultea category/brand a 'GENERAL'/'GENERICO' cuando no se asignan
+            // (nunca quedan vacíos) — por eso "Sin asignar" también debe matchear ese valor por defecto.
             const matchesCat = filters.category
-                ? (filters.category === UNASSIGNED ? !p.category : p.category === filters.category)
+                ? (filters.category === UNASSIGNED ? (!p.category || p.category === 'GENERAL') : p.category === filters.category)
                 : true;
-            const matchesBrand = filters.brand ? p.brand === filters.brand : true;
+            const matchesBrand = filters.brand
+                ? (filters.brand === UNASSIGNED ? (!p.brand || p.brand === 'GENERICO') : p.brand === filters.brand)
+                : true;
             const matchesSupplier = filters.supplier
                 ? (filters.supplier === UNASSIGNED ? !p.supplier : p.supplier === filters.supplier)
                 : true;
@@ -1373,6 +1382,7 @@ export const InventoryPage = () => {
                             onChange={e => setFilters({ ...filters, brand: e.target.value })}
                         >
                             <option value="">Marcas</option>
+                            <option value={UNASSIGNED}>Sin asignar</option>
                             {masters.brands.map(b => <option key={b.id} value={b.name}>{b.name}</option>)}
                         </select>
                         <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none text-sys-400" size={12}/>
@@ -1412,7 +1422,7 @@ export const InventoryPage = () => {
                             onClick={() => setFilters({ ...filters, brand: '' })}
                             className="flex items-center gap-1.5 bg-brand/10 text-brand text-[10px] font-black px-2.5 py-1.5 rounded-lg border border-brand/20 hover:bg-brand/20 transition-all shrink-0"
                         >
-                            <Tag size={9}/> {filters.brand} <X size={9}/>
+                            <Tag size={9}/> {filters.brand === UNASSIGNED ? 'Sin marca' : filters.brand} <X size={9}/>
                         </button>
                     )}
                     {filters.supplier && (

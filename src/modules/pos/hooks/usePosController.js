@@ -189,13 +189,33 @@ export const usePosController = () => {
         if (!product) return { applied: false, totalLine: 0, finalPrice: 0 };
         const promo = product.promo;
         const price = parseFloat(product.price) || 0;
-        
+
         let result = {
             applied: false,
             totalLine: price * quantity,
             promoLabel: '',
-            finalPrice: price 
+            finalPrice: price
         };
+
+        // 🔥 PRECIO MAYORISTA POR CANTIDAD: gana sobre cualquier Promoción si hay un tramo aplicable
+        const wholesaleTiers = Array.isArray(product.wholesalePricing) ? product.wholesalePricing : [];
+        if (wholesaleTiers.length > 0) {
+            const matchingTier = wholesaleTiers
+                .filter(t => quantity >= (parseFloat(t.minQty) || Infinity))
+                .sort((a, b) => (parseFloat(b.minQty) || 0) - (parseFloat(a.minQty) || 0))[0];
+
+            if (matchingTier) {
+                const tierPrice = parseFloat(matchingTier.price) || 0;
+                if (tierPrice > 0) {
+                    return {
+                        applied: true,
+                        finalPrice: tierPrice,
+                        totalLine: tierPrice * quantity,
+                        promoLabel: `MAYORISTA x${matchingTier.minQty}+`
+                    };
+                }
+            }
+        }
 
         if (!promo || !promo.type || !promo.startDate || !promo.endDate) return result;
         

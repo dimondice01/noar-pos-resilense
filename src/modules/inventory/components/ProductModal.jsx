@@ -130,6 +130,8 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave, allProduc
   const [tempTierPlu, setTempTierPlu] = useState('');
   const [tempTierLabel, setTempTierLabel] = useState('');
   const [tempTierPrice, setTempTierPrice] = useState('');
+  const [tempWholesaleQty, setTempWholesaleQty] = useState('');
+  const [tempWholesalePrice, setTempWholesalePrice] = useState('');
   const [caseSearch, setCaseSearch] = useState('');
   const [caseResults, setCaseResults] = useState([]);
   const [caseSearching, setCaseSearching] = useState(false);
@@ -169,6 +171,8 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave, allProduc
     unitsPerCase: 12,
     // PRECIOS DE BALANZA
     priceTiers: [],
+    // PRECIO MAYORISTA POR CANTIDAD
+    wholesalePricing: [],
   });
 
   // Cargar Listas
@@ -245,6 +249,7 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave, allProduc
             caseProductId: productToEdit.caseProductId || '',
             unitsPerCase: productToEdit.unitsPerCase || 12,
             priceTiers: Array.isArray(productToEdit.priceTiers) ? productToEdit.priceTiers : [],
+            wholesalePricing: Array.isArray(productToEdit.wholesalePricing) ? productToEdit.wholesalePricing : [],
         });
       } else {
         setFormData({ 
@@ -260,11 +265,13 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave, allProduc
             caseProductId: '',
             unitsPerCase: 12,
             priceTiers: [],
+            wholesalePricing: [],
         });
       }
       setActiveTab('general');
       setTempBarcode('');
       setTempTierPlu(''); setTempTierLabel(''); setTempTierPrice('');
+      setTempWholesaleQty(''); setTempWholesalePrice('');
       setCaseSearch('');
       setCaseResults([]);
       setIsSaving(false);
@@ -409,6 +416,35 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave, allProduc
       setFormData(prev => ({ ...prev, priceTiers: prev.priceTiers.filter(t => t.plu !== plu) }));
   };
 
+  const updatePriceTierPrice = (plu, rawValue) => {
+      setFormData(prev => ({
+          ...prev,
+          priceTiers: prev.priceTiers.map(t => t.plu === plu ? { ...t, price: rawValue } : t)
+      }));
+  };
+
+  // PRECIO MAYORISTA POR CANTIDAD
+  const addWholesaleTier = () => {
+      const minQty = parseFloat(String(tempWholesaleQty).replace(',', '.'));
+      const price = parseFloat(String(tempWholesalePrice).replace(',', '.'));
+      if (isNaN(minQty) || minQty <= 1 || isNaN(price) || price <= 0) return;
+      if (formData.wholesalePricing.some(t => Number(t.minQty) === minQty)) return;
+      const next = [...formData.wholesalePricing, { minQty, price }].sort((a, b) => a.minQty - b.minQty);
+      setFormData(prev => ({ ...prev, wholesalePricing: next }));
+      setTempWholesaleQty(''); setTempWholesalePrice('');
+  };
+
+  const updateWholesaleTierPrice = (minQty, rawValue) => {
+      setFormData(prev => ({
+          ...prev,
+          wholesalePricing: prev.wholesalePricing.map(t => t.minQty === minQty ? { ...t, price: rawValue } : t)
+      }));
+  };
+
+  const removeWholesaleTier = (minQty) => {
+      setFormData(prev => ({ ...prev, wholesalePricing: prev.wholesalePricing.filter(t => t.minQty !== minQty) }));
+  };
+
   // 🔥 SPRINT 1: Función para alternar métodos de pago permitidos en la oferta
   const togglePromoMethod = (methodId) => {
       setFormData(prev => {
@@ -475,7 +511,13 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave, allProduc
             minStock: parseFloat(String(formData.minStock).replace(',', '.')) || 0,
             taxRate: parseFloat(String(formData.taxRate).replace(',', '.')) || 21,
             isWeighable: Boolean(formData.isWeighable),
-            priceTiers: formData.isWeighable ? (formData.priceTiers || []) : [],
+            priceTiers: formData.isWeighable
+                ? (formData.priceTiers || []).map(t => ({ ...t, price: parseFloat(String(t.price).replace(',', '.')) || 0 }))
+                : [],
+            wholesalePricing: (formData.wholesalePricing || [])
+                .map(t => ({ minQty: parseFloat(t.minQty) || 0, price: parseFloat(String(t.price).replace(',', '.')) || 0 }))
+                .filter(t => t.minQty > 1 && t.price > 0)
+                .sort((a, b) => a.minQty - b.minQty),
             isCase: Boolean(formData.isCase),
             caseProductId: formData.isCase ? (formData.caseProductId || null) : null,
             unitsPerCase: formData.isCase ? (Number(formData.unitsPerCase) || 1) : 1,
@@ -695,7 +737,17 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave, allProduc
                                     <span className="text-xs font-bold text-sys-800 flex-1 truncate">
                                         {formData.name ? `${formData.name.toUpperCase()} ` : ''}{tier.label ? tier.label.toUpperCase() : <span className="text-sys-400 font-normal">sin tipo</span>}
                                     </span>
-                                    <span className="text-xs font-bold text-green-700 shrink-0">${parseFloat(tier.price).toLocaleString('es-AR')}</span>
+                                    <div className="flex items-center gap-0.5 shrink-0">
+                                        <span className="text-xs font-bold text-green-700">$</span>
+                                        <input
+                                            type="number"
+                                            step="0.01"
+                                            value={tier.price}
+                                            onChange={e => updatePriceTierPrice(tier.plu, e.target.value)}
+                                            disabled={isSaving}
+                                            className="w-16 bg-transparent text-xs font-bold text-green-700 text-right outline-none border-b border-transparent focus:border-green-400"
+                                        />
+                                    </div>
                                     <button type="button" onClick={() => removePriceTier(tier.plu)} disabled={isSaving} className="text-sys-300 hover:text-red-500 transition-colors shrink-0">
                                         <X size={14}/>
                                     </button>
@@ -901,6 +953,85 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave, allProduc
                         rightIcon={<span className="text-brand font-bold">$</span>}
                         disabled={isSaving}
                     />
+                </div>
+
+                {formData.isWeighable && formData.priceTiers.length > 0 && (
+                    <div className="p-4 bg-orange-50 border border-orange-200 rounded-xl space-y-2">
+                        <p className="text-[10px] font-bold text-orange-700 uppercase tracking-wider flex items-center gap-1">
+                            <Scale size={12}/> Otras Presentaciones (PLU Balanza)
+                        </p>
+                        {formData.priceTiers.map(tier => (
+                            <div key={tier.plu} className="flex items-center gap-2 bg-white border border-orange-200 rounded-lg px-3 py-2">
+                                <span className="text-[10px] font-mono font-bold text-orange-700 w-14 shrink-0">PLU {tier.plu}</span>
+                                <span className="text-xs font-bold text-sys-800 flex-1 truncate">
+                                    {tier.label ? tier.label.toUpperCase() : <span className="text-sys-400 font-normal">sin tipo</span>}
+                                </span>
+                                <span className="text-xs font-bold text-green-700 shrink-0">$</span>
+                                <input
+                                    type="number"
+                                    step="0.01"
+                                    value={tier.price}
+                                    onChange={e => updatePriceTierPrice(tier.plu, e.target.value)}
+                                    disabled={isSaving}
+                                    className="w-20 bg-sys-50 border border-sys-200 rounded-lg py-1 px-2 text-xs font-bold text-green-700 text-right outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-100"
+                                />
+                            </div>
+                        ))}
+                    </div>
+                )}
+
+                <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-xl space-y-3">
+                    <p className="text-[10px] font-bold text-emerald-700 uppercase tracking-wider flex items-center gap-1">
+                        <Layers size={12}/> Precio Mayorista por Cantidad
+                    </p>
+                    <p className="text-[10px] text-emerald-600">
+                        Al llevar la cantidad indicada <strong>o más</strong>, se cobra ese precio final por unidad (reemplaza cualquier Promoción activa).
+                    </p>
+
+                    {formData.wholesalePricing.map(tier => (
+                        <div key={tier.minQty} className="flex items-center gap-2 bg-white border border-emerald-200 rounded-lg px-3 py-2">
+                            <span className="text-xs font-bold text-sys-700 shrink-0">Desde {tier.minQty} un.</span>
+                            <span className="flex-1" />
+                            <span className="text-xs font-bold text-emerald-700 shrink-0">$</span>
+                            <input
+                                type="number"
+                                step="0.01"
+                                value={tier.price}
+                                onChange={e => updateWholesaleTierPrice(tier.minQty, e.target.value)}
+                                disabled={isSaving}
+                                className="w-20 bg-sys-50 border border-sys-200 rounded-lg py-1 px-2 text-xs font-bold text-emerald-700 text-right outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"
+                            />
+                            <button type="button" onClick={() => removeWholesaleTier(tier.minQty)} disabled={isSaving} className="text-sys-300 hover:text-red-500 transition-colors shrink-0">
+                                <X size={14}/>
+                            </button>
+                        </div>
+                    ))}
+
+                    <div className="grid grid-cols-3 gap-2">
+                        <input
+                            type="number"
+                            placeholder="Cant. mínima"
+                            value={tempWholesaleQty}
+                            onChange={e => setTempWholesaleQty(e.target.value)}
+                            onKeyDown={e => e.key === 'Enter' && (e.preventDefault(), addWholesaleTier())}
+                            disabled={isSaving}
+                            className="bg-white border border-sys-200 rounded-lg py-2 px-3 text-xs outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"
+                        />
+                        <div className="col-span-2 flex gap-1">
+                            <input
+                                type="number"
+                                placeholder="Precio final por unidad"
+                                value={tempWholesalePrice}
+                                onChange={e => setTempWholesalePrice(e.target.value)}
+                                onKeyDown={e => e.key === 'Enter' && (e.preventDefault(), addWholesaleTier())}
+                                disabled={isSaving}
+                                className="flex-1 min-w-0 bg-white border border-sys-200 rounded-lg py-2 px-3 text-xs outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"
+                            />
+                            <button type="button" onClick={addWholesaleTier} disabled={isSaving} className="bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg px-2 text-xs font-bold transition-colors shrink-0">
+                                +
+                            </button>
+                        </div>
+                    </div>
                 </div>
 
                 {parseFloat(formData.cost) > parseFloat(formData.price) && (

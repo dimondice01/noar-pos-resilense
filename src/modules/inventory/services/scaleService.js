@@ -1,4 +1,45 @@
+const HANDLE_DB_NAME = 'noar-scale-handles';
+const HANDLE_STORE_NAME = 'handles';
+
+function openHandleDb() {
+    return new Promise((resolve, reject) => {
+        const req = indexedDB.open(HANDLE_DB_NAME, 1);
+        req.onupgradeneeded = () => req.result.createObjectStore(HANDLE_STORE_NAME);
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+    });
+}
+
+async function getStoredHandle(brand) {
+    const db = await openHandleDb();
+    return new Promise((resolve, reject) => {
+        const tx = db.transaction(HANDLE_STORE_NAME, 'readonly');
+        const req = tx.objectStore(HANDLE_STORE_NAME).get(brand);
+        req.onsuccess = () => resolve(req.result || null);
+        req.onerror = () => reject(req.error);
+    });
+}
+
+async function setStoredHandle(brand, handle) {
+    const db = await openHandleDb();
+    return new Promise((resolve, reject) => {
+        const tx = db.transaction(HANDLE_STORE_NAME, 'readwrite');
+        tx.objectStore(HANDLE_STORE_NAME).put(handle, brand);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+    });
+}
+
+async function verifyPermission(handle) {
+    const opts = { mode: 'readwrite' };
+    if ((await handle.queryPermission(opts)) === 'granted') return true;
+    if ((await handle.requestPermission(opts)) === 'granted') return true;
+    return false;
+}
+
 export const scaleService = {
+    supportsFileSystemAccess: () => typeof window !== 'undefined' && 'showSaveFilePicker' in window,
+
     generateScaleFile: (products, brand) => {
         if (!products || products.length === 0) return null;
 
@@ -76,5 +117,49 @@ export const scaleService = {
         link.click();
         document.body.removeChild(link);
         window.URL.revokeObjectURL(url);
+    },
+
+    // Guarda siempre en la misma ubicación elegida por el cliente, reemplazando el archivo anterior.
+    // Si el navegador no soporta File System Access API (o el usuario cancela el picker), cae a downloadFile.
+    saveFile: async (content, brand) => {
+        if (!content) return { ok: false, mode: 'empty' };
+        const filename = brand === 'KRETZ' ? 'novedades.txt' : 'productos_systel.csv';
+
+        if (scaleService.supportsFileSystemAccess()) {
+            try {
+                let handle = await getStoredHandle(brand);
+                if (handle && !(await verifyPermission(handle))) handle = null;
+
+                if (!handle) {
+                    handle = await window.showSaveFilePicker({
+                        suggestedName: filename,
+                        types: [{ description: 'Archivo de balanza', accept: { 'text/plain': ['.txt', '.csv'] } }],
+                    });
+                    await setStoredHandle(brand, handle);
+                }
+
+                const writable = await handle.createWritable();
+                await writable.write(content);
+                await writable.close();
+                return { ok: true, mode: 'filesystem' };
+            } catch (err) {
+                if (err?.name === 'AbortError') return { ok: false, mode: 'cancelled' };
+                console.warn('scaleService: fallback a descarga por error de File System Access', err);
+            }
+        }
+
+        scaleService.downloadFile(content, brand);
+        return { ok: true, mode: 'download' };
+    },
+
+    // Olvida la ubicación guardada para que la próxima exportación vuelva a preguntar dónde guardar.
+    forgetSavedLocation: async (brand) => {
+        const db = await openHandleDb();
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction(HANDLE_STORE_NAME, 'readwrite');
+            tx.objectStore(HANDLE_STORE_NAME).delete(brand);
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => reject(tx.error);
+        });
     }
 };

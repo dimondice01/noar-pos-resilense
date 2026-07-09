@@ -306,6 +306,7 @@ export const productRepository = {
             caseProductId: product.caseProductId !== undefined ? product.caseProductId : (existingProduct.caseProductId || null),
             unitsPerCase: product.unitsPerCase !== undefined ? Number(product.unitsPerCase) : (existingProduct.unitsPerCase || 1),
             priceTiers: Array.isArray(product.priceTiers) ? product.priceTiers : (existingProduct.priceTiers || []),
+            wholesalePricing: Array.isArray(product.wholesalePricing) ? product.wholesalePricing : (existingProduct.wholesalePricing || []),
             isCombo: product.isCombo !== undefined ? product.isCombo : (existingProduct.isCombo || false),
             components: Array.isArray(product.components) ? product.components : (existingProduct.components || []),
 
