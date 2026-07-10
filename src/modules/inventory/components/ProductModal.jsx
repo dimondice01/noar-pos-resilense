@@ -196,61 +196,74 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave, allProduc
   useEffect(() => {
     if (isOpen) {
       if (productToEdit) {
-        let calculatedMarkup = productToEdit.markup;
-        let cNeto = '';
-        let cFinal = productToEdit.cost || '';
-        let tax = productToEdit.taxRate || '21';
-        
-        if (cFinal) {
-            const taxMult = 1 + (parseFloat(tax) / 100);
-            cNeto = (parseFloat(cFinal) / taxMult).toFixed(2);
-        }
+        (async () => {
+          // 🔥 Releemos directo de Dexie (fuente de verdad offline-first) al abrir para editar.
+          // El array de productos en memoria de la tabla puede tardar en reflejar el último
+          // guardado (timing de sync/estado), y eso hacía que el modal mostrara datos viejos.
+          let source = productToEdit;
+          if (productToEdit.id) {
+              try {
+                  const fresh = await productRepository.getById(productToEdit.id);
+                  if (fresh) source = fresh;
+              } catch (err) { console.error("Error refrescando producto para editar:", err); }
+          }
 
-        if (!calculatedMarkup && cFinal && productToEdit.price) {
-           const c = parseFloat(cFinal);
-           const p = parseFloat(productToEdit.price);
-           if (c > 0) calculatedMarkup = ((p - c) / c * 100).toFixed(2);
-        }
+          let calculatedMarkup = source.markup;
+          let cNeto = '';
+          let cFinal = source.cost || '';
+          let tax = source.taxRate || '21';
 
-        const loadedBarcodes = Array.isArray(productToEdit.barcode) 
-          ? productToEdit.barcode 
-          : (productToEdit.barcode ? [productToEdit.barcode] : []);
+          if (cFinal) {
+              const taxMult = 1 + (parseFloat(tax) / 100);
+              cNeto = (parseFloat(cFinal) / taxMult).toFixed(2);
+          }
 
-        const promo = productToEdit.promo || {};
-        const hasPromo = !!productToEdit.promo;
+          if (!calculatedMarkup && cFinal && source.price) {
+             const c = parseFloat(cFinal);
+             const p = parseFloat(source.price);
+             if (c > 0) calculatedMarkup = ((p - c) / c * 100).toFixed(2);
+          }
 
-        setFormData({
-            ...productToEdit,
-            name: productToEdit.name || '', 
-            code: productToEdit.code || '',
-            barcodes: loadedBarcodes,
-            category: productToEdit.category || '',
-            brand: productToEdit.brand || '',
-            supplier: productToEdit.supplier || '',
-            minStock: productToEdit.minStock || '5',
-            stock: productToEdit.stock || '', 
-            isWeighable: productToEdit.isWeighable === true,
-            
-            taxRate: String(tax),
-            costNeto: cNeto,
-            cost: String(cFinal),
-            markup: String(calculatedMarkup || '40'),
-            price: String(productToEdit.price || ''),
-            
-            promoActive: hasPromo,
-            promoType: hasPromo ? (promo.type || 'PERCENTAGE') : 'PERCENTAGE',
-            promoValue: hasPromo ? String(promo.value || '') : '', 
-            promoDiscount: hasPromo ? String(promo.discountValue || '') : '',
-            promoPayValue: hasPromo ? String(promo.payValue || '') : '',
-            promoStartDate: hasPromo ? (promo.startDate || '') : new Date().toISOString().split('T')[0],
-            promoEndDate: hasPromo ? (promo.endDate || '') : '',
-            promoAllowedMethods: hasPromo ? (promo.allowedMethods || []) : [],
-            isCase: productToEdit.isCase || false,
-            caseProductId: productToEdit.caseProductId || '',
-            unitsPerCase: productToEdit.unitsPerCase || 12,
-            priceTiers: Array.isArray(productToEdit.priceTiers) ? productToEdit.priceTiers : [],
-            wholesalePricing: Array.isArray(productToEdit.wholesalePricing) ? productToEdit.wholesalePricing : [],
-        });
+          const loadedBarcodes = Array.isArray(source.barcode)
+            ? source.barcode
+            : (source.barcode ? [source.barcode] : []);
+
+          const promo = source.promo || {};
+          const hasPromo = !!source.promo;
+
+          setFormData({
+              ...source,
+              name: source.name || '',
+              code: source.code || '',
+              barcodes: loadedBarcodes,
+              category: source.category || '',
+              brand: source.brand || '',
+              supplier: source.supplier || '',
+              minStock: source.minStock || '5',
+              stock: source.stock || '',
+              isWeighable: source.isWeighable === true,
+
+              taxRate: String(tax),
+              costNeto: cNeto,
+              cost: String(cFinal),
+              markup: String(calculatedMarkup || '40'),
+              price: String(source.price || ''),
+
+              promoActive: hasPromo,
+              promoType: hasPromo ? (promo.type || 'PERCENTAGE') : 'PERCENTAGE',
+              promoValue: hasPromo ? String(promo.value || '') : '',
+              promoDiscount: hasPromo ? String(promo.discountValue || '') : '',
+              promoPayValue: hasPromo ? String(promo.payValue || '') : '',
+              promoStartDate: hasPromo ? (promo.startDate || '') : new Date().toISOString().split('T')[0],
+              promoEndDate: hasPromo ? (promo.endDate || '') : '',
+              promoAllowedMethods: hasPromo ? (promo.allowedMethods || []) : [],
+              isCase: source.isCase || false,
+              caseProductId: source.caseProductId || '',
+              unitsPerCase: source.unitsPerCase || 12,
+              priceTiers: Array.isArray(source.priceTiers) ? source.priceTiers : [],
+              wholesalePricing: Array.isArray(source.wholesalePricing) ? source.wholesalePricing : [],
+          });
+        })();
       } else {
         setFormData({ 
             name: '', code: '', barcodes: [], category: '', brand: '',
@@ -985,7 +998,7 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave, allProduc
                         <Layers size={12}/> Precio Mayorista por Cantidad
                     </p>
                     <p className="text-[10px] text-emerald-600">
-                        Al llevar la cantidad indicada <strong>o más</strong>, se cobra ese precio final por unidad (reemplaza cualquier Promoción activa).
+                        Al llevar la cantidad indicada <strong>o más</strong>, se cobra ese precio final por unidad. Solo aplica si no hay una <strong>Promoción</strong> vigente para ese producto (la Promoción tiene prioridad).
                     </p>
 
                     {formData.wholesalePricing.map(tier => (

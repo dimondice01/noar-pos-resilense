@@ -40,6 +40,7 @@ export const PurchasePage = () => {
     const [searchTerm, setSearchTerm] = useState('');
     const [searchResults, setSearchResults] = useState([]);
     const [searchLoading, setSearchLoading] = useState(false);
+    const [searchAllProducts, setSearchAllProducts] = useState(false);
     
     // Modales
     const [isNewProductModalOpen, setIsNewProductModalOpen] = useState(false);
@@ -72,20 +73,21 @@ export const PurchasePage = () => {
         setTimeout(() => searchInputRef.current?.focus(), 100);
     }, [navState, setSupplier]);
 
-    // 2. Buscador con Debounce (prioriza productos del proveedor seleccionado)
+    // 2. Buscador con Debounce (exclusivo al proveedor seleccionado, salvo que se pida buscar en todos)
     useEffect(() => {
         const timer = setTimeout(async () => {
             if (searchTerm.length > 2) {
                 setSearchLoading(true);
                 try {
-                    const results = await productRepository.search(searchTerm, supplier?.name);
+                    const exclusive = !!(supplier?.name && !searchAllProducts);
+                    const results = await productRepository.search(searchTerm, supplier?.name, exclusive);
                     setSearchResults(results);
                 } catch (error) {
                     console.error("Error searching products:", error);
                 } finally {
                     setSearchLoading(false);
                 }
-            } else if (supplier?.name) {
+            } else if (supplier?.name && !searchAllProducts) {
                 // Sin texto: listar por defecto los productos asignados a este proveedor
                 try {
                     const defaultList = await productRepository.getBySupplier(supplier.name);
@@ -98,7 +100,12 @@ export const PurchasePage = () => {
             }
         }, 200);
         return () => clearTimeout(timer);
-    }, [searchTerm, supplier]);
+    }, [searchTerm, supplier, searchAllProducts]);
+
+    // 🔥 Al cambiar de proveedor, volvemos a la búsqueda acotada por defecto
+    useEffect(() => {
+        setSearchAllProducts(false);
+    }, [supplier?.id]);
 
     // 🔥 3. AUTO-FOCO AL AGREGAR ITEM (AHORA EN CANTIDAD - A LA IZQUIERDA)
     useEffect(() => {
@@ -504,8 +511,27 @@ export const PurchasePage = () => {
                             />
                             {searchLoading && <RefreshCw className="absolute right-3.5 top-3.5 text-brand animate-spin" size={18} />}
                         </div>
-                        <Button 
-                            variant="secondary" 
+
+                        {supplier && (
+                            <div className="flex items-center justify-between gap-2 mt-3 px-1">
+                                <p className="text-[10px] font-bold text-sys-500 truncate">
+                                    {searchAllProducts
+                                        ? <>Buscando en <span className="text-sys-700">todos los productos</span></>
+                                        : <>Buscando en <span className="text-brand">"{supplier.name}"</span></>
+                                    }
+                                </p>
+                                <button
+                                    type="button"
+                                    onClick={() => setSearchAllProducts(v => !v)}
+                                    className="shrink-0 text-[10px] font-black uppercase text-sys-400 hover:text-brand underline underline-offset-2 transition-colors"
+                                >
+                                    {searchAllProducts ? `Solo ${supplier.name}` : 'Buscar en todos'}
+                                </button>
+                            </div>
+                        )}
+
+                        <Button
+                            variant="secondary"
                             className="w-full mt-4 bg-white border-sys-200 text-sys-700 font-bold h-11 hover:bg-sys-50 hover:border-brand/30"
                             onClick={() => { setNewProductBarcode(''); setIsNewProductModalOpen(true); }}
                         >
@@ -517,8 +543,17 @@ export const PurchasePage = () => {
                         {searchTerm.length > 2 && searchResults.length === 0 && !searchLoading && (
                             <div className="text-center py-10 text-sys-400 px-6">
                                 <AlertCircle className="mx-auto mb-2 opacity-50" size={32}/>
-                                <p className="text-sm font-medium text-sys-600">No encontrado en Maestro</p>
+                                <p className="text-sm font-medium text-sys-600">No encontrado {supplier && !searchAllProducts ? `en productos de ${supplier.name}` : 'en Maestro'}</p>
                                 <p className="text-xs mt-1">Presiona "Nuevo Producto" para crearlo y agregarlo a la factura.</p>
+                                {supplier && !searchAllProducts && (
+                                    <button
+                                        type="button"
+                                        onClick={() => setSearchAllProducts(true)}
+                                        className="mt-3 text-xs font-bold text-brand underline underline-offset-2"
+                                    >
+                                        Buscar en todos los productos
+                                    </button>
+                                )}
                             </div>
                         )}
 

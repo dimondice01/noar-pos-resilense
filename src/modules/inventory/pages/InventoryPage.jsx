@@ -22,6 +22,7 @@ import { ComboModal } from '../components/ComboModal';
 import { AnexarModal } from '../components/AnexarModal';
 import { MastersModal } from '../components/MastersModal';
 import { ImportMapperModal } from '../components/ImportMapperModal';
+import { BatchMermaModal } from '../components/BatchMermaModal';
 import { cn } from '../../../core/utils/cn';
 import { Button } from '../../../core/ui/Button';
 
@@ -719,6 +720,7 @@ export const InventoryPage = () => {
     const [editingCombo, setEditingCombo] = useState(null);
     const [anexarProduct, setAnexarProduct] = useState(null);
     const [stockEntryProduct, setStockEntryProduct] = useState(null);
+    const [isBatchMermaOpen, setIsBatchMermaOpen] = useState(false);
 
     // 🔥 ESTADOS PARA EL MODAL DE AUTORIZACIÓN POR PIN
     const [pinAuthData, setPinAuthData] = useState(null); // { isOpen, actionName, callback }
@@ -1123,7 +1125,14 @@ export const InventoryPage = () => {
 
             let updatedPromo = promoPayload;
             if (promoPayload !== undefined) {
-                await productRepository.setPromotion(savedProduct.id, promoPayload);
+                try {
+                    await productRepository.setPromotion(savedProduct.id, promoPayload);
+                } catch (promoError) {
+                    // 🛡️ No abortar el guardado del producto si falla la promo (ej: vista "Todas las sucursales")
+                    console.error(promoError);
+                    updatedPromo = undefined; // no tocar el promo actual en el estado
+                    toast.error(promoError.message || "No se pudo aplicar la promoción. Seleccioná una sucursal específica.");
+                }
             }
 
             // ACTUALIZACIÓN ATÓMICA DEL ESTADO
@@ -1161,6 +1170,27 @@ export const InventoryPage = () => {
             console.error(e);
             toast.error("Error al ajustar stock");
         }
+    };
+
+    // 🔥 Mermas en lote: mismo motor (addStock) que el ajuste individual, uno por producto
+    const handleBatchMerma = async (items, reason) => {
+        const userName = user?.name || user?.email || 'Sistema';
+        let okCount = 0;
+        const failed = [];
+
+        for (const item of items) {
+            try {
+                const newStock = await productRepository.addStock(item.productId, -Math.abs(item.qty), reason, userName, activeBranchId, 'MERMA');
+                setProducts(prev => prev.map(p => p.id === item.productId ? { ...p, stock: newStock } : p));
+                okCount++;
+            } catch (e) {
+                console.error(e);
+                failed.push(item.productId);
+            }
+        }
+
+        if (okCount > 0) toast.success(`Merma registrada: ${okCount} producto${okCount !== 1 ? 's' : ''}`);
+        if (failed.length > 0) toast.error(`${failed.length} producto(s) no se pudieron registrar`);
     };
 
     const executeBulkUpdate = async (targetProducts, draftValues, activationDate = null) => {
@@ -1276,6 +1306,16 @@ export const InventoryPage = () => {
                         <Button variant="secondary" className="border-blue-200 text-blue-700 bg-blue-50" onClick={goToMovements}>
                             <ArrowRightLeft size={18} className="mr-2" /> Kardex
                         </Button>
+
+                        {(canAddStock || canRemoveStock) && (
+                            <Button
+                                variant="secondary"
+                                className="border-red-200 text-red-700 bg-red-50 hover:bg-red-100"
+                                onClick={() => setIsBatchMermaOpen(true)}
+                            >
+                                <ShieldAlert size={18} className="mr-2" /> Mermas en Lote
+                            </Button>
+                        )}
 
                         {isSuperUser && (
                             <>
@@ -1758,6 +1798,7 @@ export const InventoryPage = () => {
                 }}
             />
             <StockEntryModal isOpen={!!stockEntryProduct} onClose={() => setStockEntryProduct(null)} product={stockEntryProduct} onConfirm={handleQuickStockEntry} />
+            <BatchMermaModal isOpen={isBatchMermaOpen} onClose={() => setIsBatchMermaOpen(false)} onConfirm={handleBatchMerma} />
             <BulkUpdateModal
                 isOpen={isBulkUpdateOpen}
                 onClose={() => setIsBulkUpdateOpen(false)}

@@ -76,6 +76,7 @@ export const syncService = {
           minStock: parseFloat(data.minStock) || 5,
           isWeighable: data.isWeighable === true,
           priceTiers: Array.isArray(data.priceTiers) ? data.priceTiers : [],
+          wholesalePricing: Array.isArray(data.wholesalePricing) ? data.wholesalePricing : [],
           isCombo: data.isCombo === true,
           components: Array.isArray(data.components) ? data.components : [],
           isCase: data.isCase === true,
@@ -337,12 +338,19 @@ export const syncService = {
 
         if (!snapshot.empty) {
             const allDocs = snapshot.docs.map(doc => ({ id: doc.id, data: doc.data() }));
-            
-            const toDelete = allDocs.filter(d => d.data.deleted === true).map(d => d.id);
-            const toUpsert = allDocs.filter(d => d.data.deleted !== true).map(d => this._sanitizeCloudProduct(d.data, d.id));
+
+            // 🛡️ Nunca sobreescribir productos con cambios locales pendientes de subir
+            const pendingSet = new Set(
+                (await localDb.products.where('syncStatus').equals('pending').toArray()).map(p => p.id)
+            );
+
+            const toDelete = allDocs.filter(d => d.data.deleted === true && !pendingSet.has(d.id)).map(d => d.id);
+            const toUpsert = allDocs
+                .filter(d => d.data.deleted !== true && !pendingSet.has(d.id))
+                .map(d => this._sanitizeCloudProduct(d.data, d.id));
 
             if (toDelete.length > 0) await localDb.products.bulkDelete(toDelete);
-            
+
             if (toUpsert.length > 0) {
                 await localDb.products.bulkPut(toUpsert);
                 console.log(`✅ [Sync-Audit] ${toUpsert.length} productos guardados con éxito.`);
@@ -998,9 +1006,15 @@ export const syncService = {
         const localDb = await getDB();
         const itemsToPut = [];
 
+        // 🛡️ Nunca sobreescribir productos con cambios locales pendientes de subir
+        const pendingSet = new Set(
+            (await localDb.products.where('syncStatus').equals('pending').toArray()).map(p => p.id)
+        );
+
         snapshot.docChanges().forEach(change => {
             if (change.type === 'added' || change.type === 'modified') {
                 if (change.doc.metadata.hasPendingWrites) return;
+                if (pendingSet.has(change.doc.id)) return;
                 const data = change.doc.data();
                 const sanitized = this._sanitizeCloudProduct(data, change.doc.id);
                 itemsToPut.push(sanitized);

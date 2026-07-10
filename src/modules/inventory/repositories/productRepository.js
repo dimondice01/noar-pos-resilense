@@ -13,6 +13,15 @@ import {
 import { useAuthStore } from '../../auth/store/useAuthStore'; 
 
 // ==========================================
+// 🔤 HELPER: BÚSQUEDA POR INICIALES ("JV" → "Jamón Viena")
+// ==========================================
+const _matchesInitials = (name, term) => {
+    if (!name || !term || term.length < 2) return false;
+    const initials = name.trim().split(/\s+/).map(w => w[0]).join('').toLowerCase();
+    return initials.includes(term);
+};
+
+// ==========================================
 // 🕒 HELPER: ACTIVADOR DE PRECIOS (JIT - TIMEZONE SAFE)
 // ==========================================
 const checkAndActivatePrice = async (product, dbLocal) => {
@@ -124,6 +133,17 @@ export const productRepository = {
         return await _injectBranchData(products, activeBranchId, dbLocal);
     },
 
+    // 🔥 Lectura directa por id, sin pasar por el array en memoria de la UI (fuente de verdad = Dexie)
+    async getById(id) {
+        if (!id) return null;
+        const dbLocal = await getDB();
+        const { activeBranchId } = useAuthStore.getState();
+        const product = await dbLocal.products.get(id);
+        if (!product || product.deleted) return null;
+        const enriched = await _injectBranchData([product], activeBranchId, dbLocal);
+        return enriched[0] || null;
+    },
+
     async getAllByBranch(branchId) {
         const dbLocal = await getDB();
         let products = await dbLocal.products.filter(p => !p.deleted).toArray();
@@ -209,7 +229,7 @@ export const productRepository = {
     },
 
     // 🔥 supplierName: el combo de proveedor en ProductModal guarda el NOMBRE (mismo patrón que category/brand), no el id
-    async search(query, supplierName = null) {
+    async search(query, supplierName = null, exclusive = false) {
         const dbLocal = await getDB();
         const { activeBranchId } = useAuthStore.getState();
         const term = query.toLowerCase().trim();
@@ -218,7 +238,11 @@ export const productRepository = {
         let results = await dbLocal.products
             .filter(p => {
                 if (p.deleted) return false;
+                // 🔥 Búsqueda exclusiva: solo productos del proveedor seleccionado
+                if (exclusive && supplierName && p.supplier !== supplierName) return false;
                 if (p.name.toLowerCase().includes(term)) return true;
+                // 🔥 Búsqueda por iniciales: "JV" también matchea "Jamón Viena"
+                if (_matchesInitials(p.name, term)) return true;
                 if (p.code && p.code.toString().toLowerCase().includes(term)) return true;
                 if (Array.isArray(p.barcode)) {
                     return p.barcode.some(b => b.includes(term));
@@ -235,7 +259,7 @@ export const productRepository = {
         const enriched = await _injectBranchData(processedResults, activeBranchId, dbLocal);
 
         // 🔥 Prioriza (sin excluir) los productos del proveedor seleccionado en la compra
-        if (supplierName) {
+        if (supplierName && !exclusive) {
             return [...enriched].sort((a, b) => {
                 const aMatch = a.supplier === supplierName ? 0 : 1;
                 const bMatch = b.supplier === supplierName ? 0 : 1;
@@ -291,7 +315,8 @@ export const productRepository = {
             unit: product.unit || existingProduct.unit || 'UN',
             isWeighable: product.isWeighable !== undefined ? product.isWeighable : !!existingProduct.isWeighable,
             taxRate: parseFloat(product.taxRate) || existingProduct.taxRate || 21,
-            
+            minStock: product.minStock !== undefined ? (parseFloat(product.minStock) || 0) : (existingProduct.minStock || 0),
+
             cost: parseFloat(product.cost) || 0,
             price: parseFloat(product.price) || 0,
             minPrice: parseFloat(product.minPrice) || 0,

@@ -185,6 +185,28 @@ export const usePosController = () => {
     // 🧮 MOTOR DE PROMOCIONES COMPLEJAS (🔥 BLINDADO POR MÉTODO DE PAGO)
     // =================================================================
     
+    // 🔥 PRECIO MAYORISTA POR CANTIDAD: fallback, solo si no hay Promoción vigente aplicada
+    const _applyWholesaleFallback = (product, quantity, baseResult) => {
+        const wholesaleTiers = Array.isArray(product.wholesalePricing) ? product.wholesalePricing : [];
+        if (wholesaleTiers.length === 0) return baseResult;
+
+        const matchingTier = wholesaleTiers
+            .filter(t => quantity >= (parseFloat(t.minQty) || Infinity))
+            .sort((a, b) => (parseFloat(b.minQty) || 0) - (parseFloat(a.minQty) || 0))[0];
+
+        if (!matchingTier) return baseResult;
+
+        const tierPrice = parseFloat(matchingTier.price) || 0;
+        if (tierPrice <= 0) return baseResult;
+
+        return {
+            applied: true,
+            finalPrice: tierPrice,
+            totalLine: tierPrice * quantity,
+            promoLabel: `MAYORISTA x${matchingTier.minQty}+`
+        };
+    };
+
     const _calculatePromo = (product, quantity, currentPaymentMethod = 'cash') => {
         if (!product) return { applied: false, totalLine: 0, finalPrice: 0 };
         const promo = product.promo;
@@ -197,45 +219,26 @@ export const usePosController = () => {
             finalPrice: price
         };
 
-        // 🔥 PRECIO MAYORISTA POR CANTIDAD: gana sobre cualquier Promoción si hay un tramo aplicable
-        const wholesaleTiers = Array.isArray(product.wholesalePricing) ? product.wholesalePricing : [];
-        if (wholesaleTiers.length > 0) {
-            const matchingTier = wholesaleTiers
-                .filter(t => quantity >= (parseFloat(t.minQty) || Infinity))
-                .sort((a, b) => (parseFloat(b.minQty) || 0) - (parseFloat(a.minQty) || 0))[0];
-
-            if (matchingTier) {
-                const tierPrice = parseFloat(matchingTier.price) || 0;
-                if (tierPrice > 0) {
-                    return {
-                        applied: true,
-                        finalPrice: tierPrice,
-                        totalLine: tierPrice * quantity,
-                        promoLabel: `MAYORISTA x${matchingTier.minQty}+`
-                    };
-                }
-            }
-        }
-
-        if (!promo || !promo.type || !promo.startDate || !promo.endDate) return result;
+        // 🔥 PROMOCIÓN: prioritaria sobre el precio por cantidad si aplica (ver fallback mayorista al final)
+        if (!promo || !promo.type || !promo.startDate || !promo.endDate) return _applyWholesaleFallback(product, quantity, result);
         
         const now = new Date();
         const start = new Date(promo.startDate + 'T00:00:00');
         const end = new Date(promo.endDate + 'T23:59:59');
         
-        if (now < start || now > end) return result;
+        if (now < start || now > end) return _applyWholesaleFallback(product, quantity, result);
 
         // 🔥 FIX DEFINITIVO: Validación estricta del método de pago
         if (Array.isArray(promo.allowedMethods) && promo.allowedMethods.length > 0) {
-            
+
             // 1. Si es modo "split" (pago combinado), las ofertas exclusivas se anulan instantáneamente.
             if (currentPaymentMethod === 'split') {
-                return result; 
+                return _applyWholesaleFallback(product, quantity, result);
             }
 
             // 2. Si el método actual NO ESTÁ en el array de permitidos, anulamos.
             if (!promo.allowedMethods.includes(currentPaymentMethod)) {
-                return result;
+                return _applyWholesaleFallback(product, quantity, result);
             }
         }
 
@@ -287,7 +290,7 @@ export const usePosController = () => {
             default:
                 break;
         }
-        return result;
+        return result.applied ? result : _applyWholesaleFallback(product, quantity, result);
     };
 
     // =================================================================

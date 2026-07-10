@@ -202,10 +202,10 @@ async function emitirFactura(total, cliente = {}, esNotaCredito = false, comprob
       docTipo = docNro.length === 11 ? 80 : 96; // 80=CUIT, 96=DNI
   }
 
-  // 🔥 REGLA AFIP: Si el total supera el límite, exige DNI para Consumidor Final.
-  // Límite actual aproximado: $344.000. Ponemos una validación de seguridad a $100.000 para atajarlo antes de que AFIP rechace.
-  if (total >= 100000 && docTipo === 99) {
-      throw new Error(`Para facturas mayores a $100.000, AFIP exige identificar al cliente con DNI o CUIT.`);
+  // 🔥 REGLA ARCA: Si el total supera el límite, exige DNI para Consumidor Final.
+  // Límite real vigente (portal ARCA): $10.000.000 aprox. Dejamos el margen de seguridad en $500.000.
+  if (total >= 500000 && docTipo === 99) {
+      throw new Error(`Para facturas mayores a $500.000, ARCA exige identificar al cliente con DNI o CUIT.`);
   }
 
   // 🔥 CEREBRO: Determinar A, B o C
