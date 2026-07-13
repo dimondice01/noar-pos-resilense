@@ -344,7 +344,7 @@ const StockEntryModal = ({ isOpen, onClose, product, onConfirm }) => {
 // =================================================================
 // 2. SCALE EXPORT MODAL 
 // =================================================================
-const ScaleExportModal = ({ isOpen, onClose, onExport }) => {
+const ScaleExportModal = ({ isOpen, onClose, onExport, onChangeLocation }) => {
     if (!isOpen) return null;
 
     return (
@@ -382,10 +382,16 @@ const ScaleExportModal = ({ isOpen, onClose, onExport }) => {
                         <span className="text-[10px] text-sys-400 font-mono bg-sys-100 px-2 py-1 rounded">Qendra / Cuora</span>
                     </button>
                 </div>
-                <div className="px-6 pb-6 text-center">
+                <div className="px-6 pb-6 text-center space-y-2">
                     <p className="text-[10px] text-sys-400 bg-yellow-50 text-yellow-700 p-2 rounded-lg border border-yellow-100">
                         ⚠️ Al descargar, guarde el archivo en la carpeta monitoreada por el software de la balanza.
                     </p>
+                    <button
+                        onClick={onChangeLocation}
+                        className="text-xs font-bold text-sys-500 hover:text-brand underline"
+                    >
+                        Cambiar nombre/ubicación del archivo
+                    </button>
                 </div>
             </div>
         </div>
@@ -905,6 +911,14 @@ export const InventoryPage = () => {
             console.error(e);
             toast.error("Error exportando balanza: " + e.message);
         }
+    };
+
+    const handleChangeScaleLocation = async () => {
+        await Promise.all([
+            scaleService.forgetSavedLocation('KRETZ'),
+            scaleService.forgetSavedLocation('SYSTEL'),
+        ]);
+        toast.info("Ubicación olvidada. Elija nombre/carpeta en la próxima exportación.", { icon: 'ℹ️' });
     };
 
     // 🔥 EL MANEJADOR INLINE AHORA ESTÁ BLINDADO
@@ -1811,6 +1825,7 @@ export const InventoryPage = () => {
                 isOpen={isScaleModalOpen}
                 onClose={() => setIsScaleModalOpen(false)}
                 onExport={handleScaleExport}
+                onChangeLocation={handleChangeScaleLocation}
             />
             <MastersModal isOpen={isMastersModalOpen} onClose={() => setIsMastersModalOpen(false)} />
             <ImportMapperModal isOpen={isImportModalOpen} onClose={() => setIsImportModalOpen(false)} branchId={activeBranchId} onSuccess={loadData} />
