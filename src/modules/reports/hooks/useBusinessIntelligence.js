@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
-import { collection, query, where, getDocs, Timestamp } from 'firebase/firestore';
+import { collection, query, where, getDocs, limit, Timestamp } from 'firebase/firestore';
 import { db } from '../../../database/firebase';
 import { getDB } from '../../../database/db';
 import { useAuthStore } from '../../auth/store/useAuthStore';
@@ -86,10 +86,13 @@ export const useBusinessIntelligence = () => {
                 }
 
                 // 3. Sin datos locales o refresh forzado → bajar de Firestore por 'date' (cubre ventas sin updatedAt)
-                let salesQ = query(collection(db, companyPath, 'sales'), where('date', '>=', start.toISOString()), where('date', '<=', end.toISOString()));
+                // 🔥 limit() para acotar el costo de esta lectura de respaldo (mismo criterio que
+                // masterRepository.js/syncService.js) — evita una lectura sin tope en dispositivos
+                // sin historial local (ej: revisión remota desde otro dispositivo).
+                let salesQ = query(collection(db, companyPath, 'sales'), where('date', '>=', start.toISOString()), where('date', '<=', end.toISOString()), limit(1000));
                 if (activeBranchId && activeBranchId !== 'ALL') salesQ = query(salesQ, where('branchId', '==', activeBranchId));
 
-                let movQ = query(collection(db, companyPath, 'cashMovements'), where('date', '>=', start.toISOString()), where('date', '<=', end.toISOString()));
+                let movQ = query(collection(db, companyPath, 'cashMovements'), where('date', '>=', start.toISOString()), where('date', '<=', end.toISOString()), limit(1000));
                 if (activeBranchId && activeBranchId !== 'ALL') movQ = query(movQ, where('branchId', '==', activeBranchId));
 
                 const [sSnap, mSnap] = await Promise.all([getDocs(salesQ), getDocs(movQ)]);

@@ -11,7 +11,8 @@ import {
     where,
     getDocs,
     onSnapshot,
-    Timestamp
+    Timestamp,
+    limit
 } from 'firebase/firestore';
 import { useAuthStore } from '../../auth/store/useAuthStore'; 
 import { productRepository } from '../../inventory/repositories/productRepository';
@@ -409,6 +410,54 @@ export const salesRepository = {
     const end = new Date();
     end.setHours(23,59,59,999);
     return this.getOperationsByDateRange(start, end);
+  },
+
+  // ==========================================
+  // ☁️ FALLBACK BAJO DEMANDA (DISPOSITIVO SIN HISTORIAL LOCAL)
+  // ==========================================
+  // 🔥 Solo debe llamarse cuando Dexie ya devolvió 0 resultados para el rango exacto
+  // (ej: dueño revisando reportes desde un dispositivo que nunca hizo la sync inicial).
+  // NO reemplaza ni modifica syncInitialSales/syncService — es una lectura puntual,
+  // acotada por fecha + limit(), que además cachea el resultado en Dexie para que
+  // la próxima consulta del mismo rango sea gratis (0 lecturas).
+  async fetchRemoteSalesRange(startDate, endDate, { limit: maxDocs = 500 } = {}) {
+      const { user, activeBranchId } = useAuthStore.getState();
+      const companyId = user?.companyId || user?.tenantId;
+      if (!companyId) return [];
+
+      try {
+          const salesRef = collection(db, 'companies', companyId, 'sales');
+          let q = query(
+              salesRef,
+              where('date', '>=', startDate.toISOString()),
+              where('date', '<=', endDate.toISOString()),
+              limit(maxDocs)
+          );
+          if (activeBranchId && activeBranchId !== 'ALL') {
+              q = query(q, where('branchId', '==', activeBranchId));
+          }
+
+          const snapshot = await getDocs(q);
+          if (snapshot.empty) return [];
+
+          const dbLocal = await getDB();
+          const pendingSet = new Set(
+              (await dbLocal.sales.where('syncStatus').equals('pending').toArray()).map(s => s.id)
+          );
+
+          const cloudSales = snapshot.docs
+              .filter(docSnap => !pendingSet.has(docSnap.id))
+              .map(docSnap => ({ ...docSnap.data(), id: docSnap.id, syncStatus: 'synced' }));
+
+          if (cloudSales.length > 0) {
+              await dbLocal.sales.bulkPut(cloudSales);
+          }
+
+          return cloudSales.sort((a, b) => new Date(b.date) - new Date(a.date));
+      } catch (error) {
+          console.warn('fetchRemoteSalesRange error:', error);
+          return [];
+      }
   },
 
   // ==========================================

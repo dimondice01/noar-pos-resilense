@@ -22,7 +22,8 @@ import { BranchSelector } from '../components/BranchSelector';
 import { Card } from '../../../core/ui/Card';
 import { Button } from '../../../core/ui/Button';
 import { cn } from '../../../core/utils/cn';
-import { TicketZModal } from '../../reports/components/TicketZModal'; 
+import { TicketZModal } from '../../reports/components/TicketZModal';
+import { TopProductsModal } from '../components/TopProductsModal';
 
 // Modales Operativos
 import { ExpenseModal } from '../../cash/components/ExpenseModal';
@@ -451,7 +452,7 @@ const QuickActionsPanel = ({ navigate, onExpenseClick, onWithdrawalClick, isAdmi
 );
 
 // 🔥 VISTA ADMIN: ENTERPRISE COMMAND CENTER (SPRINT 6)
-const AdminDashboardView = ({ metrics, money, navigate, loadIntelligence, handleUpdatePin, allShifts, cloudLoading, activeBranchId, activeBranchName, pendingShifts, handleOpenShift, onTriggerClose, onExpenseClick, onWithdrawalClick, resolveName }) => (
+const AdminDashboardView = ({ metrics, money, navigate, loadIntelligence, handleUpdatePin, allShifts, cloudLoading, activeBranchId, activeBranchName, pendingShifts, handleOpenShift, onTriggerClose, onExpenseClick, onWithdrawalClick, onTopProductsClick, resolveName }) => (
     <div className="space-y-6 pb-20 animate-in fade-in">
         
         {/* ROW 1: KPIs Principales (Ventas, Ganancia, Deudas) */}
@@ -488,6 +489,12 @@ const AdminDashboardView = ({ metrics, money, navigate, loadIntelligence, handle
             <Card className="col-span-1 md:col-span-2 p-0 overflow-hidden border border-border-default shadow-sm bg-white flex flex-col h-full">
                 <div className="p-3 bg-sys-50 border-b border-border-subtle flex justify-between items-center">
                     <h4 className="font-bold text-xs text-sys-800 flex items-center gap-2"><TrendingUp size={14} className="text-brand"/> Top 5 Más Vendidos</h4>
+                    <button
+                        onClick={onTopProductsClick}
+                        className="text-[9px] font-black text-sys-500 hover:text-sys-900 flex items-center gap-0.5 hover:underline transition-colors"
+                    >
+                        Ver más <ArrowRight size={10}/>
+                    </button>
                 </div>
                 <div className="p-4 flex-1 flex flex-col justify-center">
                     {metrics.topProducts?.length > 0 ? (
@@ -603,7 +610,8 @@ export const DashboardPage = () => {
     });
 
     const [isExpenseModalOpen, setIsExpenseModalOpen] = useState(false);
-    const [isWithdrawalModalOpen, setIsWithdrawalModalOpen] = useState(false); 
+    const [isWithdrawalModalOpen, setIsWithdrawalModalOpen] = useState(false);
+    const [isTopProductsModalOpen, setIsTopProductsModalOpen] = useState(false);
     const [shiftToClose, setShiftToClose] = useState(null); 
     const [cashiersList, setCashiersList] = useState([]); 
     const [dbStatus, setDbStatus] = useState({ checked: false, hasBranches: false });
@@ -781,6 +789,7 @@ export const DashboardPage = () => {
                     handleOpenShift={handleOpenShift} onTriggerClose={triggerCloseShift}
                     onExpenseClick={() => setIsExpenseModalOpen(true)}
                     onWithdrawalClick={() => setIsWithdrawalModalOpen(true)}
+                    onTopProductsClick={() => setIsTopProductsModalOpen(true)}
                     resolveName={resolveCashierName}
                 />
             ) : (
@@ -794,6 +803,7 @@ export const DashboardPage = () => {
 
             <ExpenseModal isOpen={isExpenseModalOpen} onClose={() => setIsExpenseModalOpen(false)} onConfirm={handleRegisterExpense} />
             <WithdrawalModal isOpen={isWithdrawalModalOpen} onClose={() => setIsWithdrawalModalOpen(false)} onConfirm={handleRegisterWithdrawal} />
+            <TopProductsModal isOpen={isTopProductsModalOpen} onClose={() => setIsTopProductsModalOpen(false)} />
             
             {shiftToClose && (
                 <CashClosingWrapper 
