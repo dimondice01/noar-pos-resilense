@@ -10,7 +10,7 @@ import {
     writeBatch,
     getDoc
 } from 'firebase/firestore'; 
-import { useAuthStore } from '../../auth/store/useAuthStore'; 
+import { useAuthStore } from '../../auth/store/useAuthStore';
 
 // ==========================================
 // 🔤 HELPER: BÚSQUEDA POR INICIALES ("JV" → "Jamón Viena")

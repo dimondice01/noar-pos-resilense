@@ -410,7 +410,8 @@ export const usePosController = () => {
                 const item = updatedItems[idx];
                 if (item.code === 'MANUAL') continue;
 
-                const freshProduct = await productRepository.findByCode(item.code);
+                // 🔥 FIX: si es una variante anexada, revalidar por su PLU propio (no el code del padre)
+                const freshProduct = await productRepository.findByCode(item.tierPlu || item.code);
 
                 if (freshProduct && Math.abs(freshProduct.price - item.originalPrice) > 0.01 && !item.appliedWholesale) {
                     updatedCount++;
