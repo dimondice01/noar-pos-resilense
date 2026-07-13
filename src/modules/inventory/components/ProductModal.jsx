@@ -251,6 +251,8 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave, allProduc
 
               promoActive: hasPromo,
               promoType: hasPromo ? (promo.type || 'PERCENTAGE') : 'PERCENTAGE',
+              promoValueMode: hasPromo ? (promo.valueMode || 'PERCENT') : 'PERCENT',
+              promoFixedAmount: hasPromo ? String(promo.fixedAmount || '') : '',
               promoValue: hasPromo ? String(promo.value || '') : '',
               promoDiscount: hasPromo ? String(promo.discountValue || '') : '',
               promoPayValue: hasPromo ? String(promo.payValue || '') : '',
@@ -270,7 +272,7 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave, allProduc
             costNeto: '', cost: '', markup: '40', price: '', taxRate: '21',
             stock: '', minStock: '5', supplier: '', 
             isWeighable: false,
-            promoActive: false, promoType: 'PERCENTAGE', promoValue: '', promoDiscount: '', promoPayValue: '',
+            promoActive: false, promoType: 'PERCENTAGE', promoValueMode: 'PERCENT', promoFixedAmount: '', promoValue: '', promoDiscount: '', promoPayValue: '',
             promoStartDate: new Date().toISOString().split('T')[0],
             promoEndDate: '',
             promoAllowedMethods: [],
@@ -496,7 +498,18 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave, allProduc
     }
 
     if (formData.promoActive) {
-        if (!formData.promoValue) {
+        const usesFixedAmount = formData.promoValueMode === 'FIXED' && ['PERCENTAGE', 'BULK_THRESHOLD'].includes(formData.promoType);
+
+        if (formData.promoType === 'BULK_THRESHOLD') {
+            if (!formData.promoValue) {
+                setActiveTab('promociones');
+                return toast.error("⚠️ Falta la cantidad mínima de la promoción");
+            }
+            if (usesFixedAmount ? !formData.promoFixedAmount : !formData.promoDiscount) {
+                setActiveTab('promociones');
+                return toast.error("⚠️ Falta el descuento de la promoción");
+            }
+        } else if (usesFixedAmount ? !formData.promoFixedAmount : !formData.promoValue) {
             setActiveTab('promociones');
             return toast.error("⚠️ Falta el valor de la promoción");
         }
@@ -556,16 +569,23 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave, allProduc
 
         let promoPayload = null;
         if (formData.promoActive) {
+            const usesFixedAmount = formData.promoValueMode === 'FIXED' && ['PERCENTAGE', 'BULK_THRESHOLD'].includes(formData.promoType);
+            const isPctFixed = formData.promoType === 'PERCENTAGE' && usesFixedAmount;
+            const isBulkFixed = formData.promoType === 'BULK_THRESHOLD' && usesFixedAmount;
             promoPayload = {
                 type: formData.promoType,
+                valueMode: ['PERCENTAGE', 'BULK_THRESHOLD'].includes(formData.promoType) ? formData.promoValueMode : 'PERCENT',
+                fixedAmount: parseFloat(String(formData.promoFixedAmount).replace(',', '.')) || 0,
                 value: parseFloat(String(formData.promoValue).replace(',', '.')) || 0,
                 discountValue: parseFloat(String(formData.promoDiscount).replace(',', '.')) || 0,
                 payValue: parseFloat(String(formData.promoPayValue).replace(',', '.')) || 0,
                 startDate: formData.promoStartDate,
                 endDate: formData.promoEndDate,
                 allowedMethods: formData.promoAllowedMethods || [], // 🔥 Guardamos los métodos permitidos
-                name: 
+                name:
+                    isPctFixed ? `$${formData.promoFixedAmount} PRECIO FIJO` :
                     formData.promoType === 'PERCENTAGE' ? `${formData.promoValue}% OFF` :
+                    isBulkFixed ? `Llevando ${formData.promoValue}+: $${formData.promoFixedAmount} c/u` :
                     formData.promoType === 'BULK_THRESHOLD' ? `Llevando ${formData.promoValue}+: ${formData.promoDiscount}% OFF` :
                     formData.promoType === 'QUANTITY_LIMIT' ? `Primeras ${formData.promoValue} un. al ${formData.promoDiscount}%` :
                     formData.promoType === 'BUNDLE_DEAL' ? `${formData.promoValue}x${formData.promoPayValue}` : 'Oferta'
@@ -1100,8 +1120,14 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave, allProduc
 
                 {formData.promoActive && (
                     <div className="p-4 border border-purple-100 rounded-xl bg-white shadow-sm space-y-4">
-                        
-                        <PremiumSelect 
+
+                        {formData.isWeighable && (
+                            <div className="bg-blue-50 border border-blue-100 rounded-lg px-3 py-2 text-[11px] text-blue-700 font-medium">
+                                ⚖️ Producto pesable: las cantidades de esta promo se interpretan en <strong>Kg</strong> y el "$ Precio Fijo" es el <strong>precio final por Kg</strong> (no un descuento, y no el total de la venta).
+                            </div>
+                        )}
+
+                        <PremiumSelect
                             label="Tipo de Regla"
                             icon={Layers}
                             options={promoOptions}
@@ -1111,36 +1137,127 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave, allProduc
 
                         <div className="grid grid-cols-2 gap-4">
                             {formData.promoType === 'PERCENTAGE' && (
-                                <div className="col-span-2">
-                                    <PremiumInput 
-                                        label="Porcentaje de Descuento *" type="number"
-                                        className="text-purple-700 font-bold"
-                                        value={formData.promoValue}
-                                        onChange={e => setFormData({...formData, promoValue: e.target.value})}
-                                        rightIcon={<span className="text-purple-400 font-bold">% OFF</span>}
-                                        disabled={isSaving}
-                                    />
+                                <div className="col-span-2 space-y-3">
+                                    <div className="bg-sys-100 p-1 rounded-xl flex">
+                                        <button
+                                            type="button"
+                                            onClick={() => setFormData({...formData, promoValueMode: 'PERCENT'})}
+                                            disabled={isSaving}
+                                            className={cn(
+                                                "flex-1 py-2 rounded-lg text-xs font-bold transition-colors",
+                                                formData.promoValueMode !== 'FIXED'
+                                                    ? 'bg-white text-purple-700 shadow-sm'
+                                                    : 'text-sys-500'
+                                            )}
+                                        >
+                                            % Porcentaje
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => setFormData({...formData, promoValueMode: 'FIXED'})}
+                                            disabled={isSaving}
+                                            className={cn(
+                                                "flex-1 py-2 rounded-lg text-xs font-bold transition-colors",
+                                                formData.promoValueMode === 'FIXED'
+                                                    ? 'bg-white text-purple-700 shadow-sm'
+                                                    : 'text-sys-500'
+                                            )}
+                                        >
+                                            $ Precio Fijo
+                                        </button>
+                                    </div>
+
+                                    {formData.promoValueMode === 'FIXED' ? (
+                                        <>
+                                            <PremiumInput
+                                                label={formData.isWeighable ? "Precio Final Fijo (por Kg) *" : "Precio Final Fijo *"} type="number"
+                                                className="text-purple-700 font-bold"
+                                                value={formData.promoFixedAmount}
+                                                onChange={e => setFormData({...formData, promoFixedAmount: e.target.value})}
+                                                rightIcon={<span className="text-purple-400 font-bold">$ FINAL</span>}
+                                                disabled={isSaving}
+                                            />
+                                            <p className="text-[10px] text-sys-400 -mt-2">
+                                                ⚠️ Este es el <strong>precio final</strong> que paga el cliente {formData.isWeighable ? 'por Kg' : 'por unidad'}, no un descuento a restar.
+                                            </p>
+                                        </>
+                                    ) : (
+                                        <PremiumInput
+                                            label="Porcentaje de Descuento *" type="number"
+                                            className="text-purple-700 font-bold"
+                                            value={formData.promoValue}
+                                            onChange={e => setFormData({...formData, promoValue: e.target.value})}
+                                            rightIcon={<span className="text-purple-400 font-bold">% OFF</span>}
+                                            disabled={isSaving}
+                                        />
+                                    )}
                                 </div>
                             )}
 
                             {formData.promoType === 'BULK_THRESHOLD' && (
-                                <>
-                                    <PremiumInput 
-                                        label="Cantidad Mínima (Unidades) *" type="number"
-                                        placeholder="Ej: 6"
+                                <div className="col-span-2 space-y-3">
+                                    <PremiumInput
+                                        label={formData.isWeighable ? "Cantidad Mínima (Kg) *" : "Cantidad Mínima (Unidades) *"} type="number"
+                                        placeholder={formData.isWeighable ? "Ej: 0.5" : "Ej: 6"}
                                         value={formData.promoValue}
                                         onChange={e => setFormData({...formData, promoValue: e.target.value})}
                                         disabled={isSaving}
                                     />
-                                    <PremiumInput 
-                                        label="Descuento a aplicar (%) *" type="number"
-                                        placeholder="Ej: 10"
-                                        value={formData.promoDiscount}
-                                        onChange={e => setFormData({...formData, promoDiscount: e.target.value})}
-                                        rightIcon={<span className="text-xs text-purple-400">%</span>}
-                                        disabled={isSaving}
-                                    />
-                                </>
+
+                                    <div className="bg-sys-100 p-1 rounded-xl flex">
+                                        <button
+                                            type="button"
+                                            onClick={() => setFormData({...formData, promoValueMode: 'PERCENT'})}
+                                            disabled={isSaving}
+                                            className={cn(
+                                                "flex-1 py-2 rounded-lg text-xs font-bold transition-colors",
+                                                formData.promoValueMode !== 'FIXED'
+                                                    ? 'bg-white text-purple-700 shadow-sm'
+                                                    : 'text-sys-500'
+                                            )}
+                                        >
+                                            % Porcentaje
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => setFormData({...formData, promoValueMode: 'FIXED'})}
+                                            disabled={isSaving}
+                                            className={cn(
+                                                "flex-1 py-2 rounded-lg text-xs font-bold transition-colors",
+                                                formData.promoValueMode === 'FIXED'
+                                                    ? 'bg-white text-purple-700 shadow-sm'
+                                                    : 'text-sys-500'
+                                            )}
+                                        >
+                                            $ Precio Fijo
+                                        </button>
+                                    </div>
+
+                                    {formData.promoValueMode === 'FIXED' ? (
+                                        <>
+                                            <PremiumInput
+                                                label={formData.isWeighable ? "Precio Final Fijo (por Kg) *" : "Precio Final Fijo (por unidad) *"} type="number"
+                                                placeholder="Ej: 500"
+                                                value={formData.promoFixedAmount}
+                                                onChange={e => setFormData({...formData, promoFixedAmount: e.target.value})}
+                                                rightIcon={<span className="text-purple-400 font-bold">$ FINAL</span>}
+                                                disabled={isSaving}
+                                            />
+                                            <p className="text-[10px] text-sys-400 -mt-2">
+                                                ⚠️ Al llegar a la cantidad mínima, se cobra este <strong>precio final</strong> {formData.isWeighable ? 'por Kg' : 'por unidad'} — no es un descuento a restar.
+                                            </p>
+                                        </>
+                                    ) : (
+                                        <PremiumInput
+                                            label="Descuento a aplicar (%) *" type="number"
+                                            placeholder="Ej: 10"
+                                            value={formData.promoDiscount}
+                                            onChange={e => setFormData({...formData, promoDiscount: e.target.value})}
+                                            rightIcon={<span className="text-xs text-purple-400">%</span>}
+                                            disabled={isSaving}
+                                        />
+                                    )}
+                                </div>
                             )}
 
                             {formData.promoType === 'QUANTITY_LIMIT' && (

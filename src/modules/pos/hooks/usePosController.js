@@ -246,7 +246,15 @@ export const usePosController = () => {
 
         switch (promo.type) {
             case 'PERCENTAGE':
-                if (val > 0) {
+                if (promo.valueMode === 'FIXED') {
+                    const fixedPrice = parseFloat(promo.fixedAmount) || 0;
+                    if (fixedPrice > 0) {
+                        result.applied = true;
+                        result.finalPrice = fixedPrice;
+                        result.totalLine = fixedPrice * quantity;
+                        result.promoLabel = `$${fixedPrice} PRECIO FIJO`;
+                    }
+                } else if (val > 0) {
                     result.applied = true;
                     result.finalPrice = price * (1 - val / 100);
                     result.totalLine = result.finalPrice * quantity;
@@ -255,11 +263,18 @@ export const usePosController = () => {
                 break;
             case 'BULK_THRESHOLD':
                 if (quantity >= val) {
-                    const disc = parseFloat(promo.discountValue) || 0;
                     result.applied = true;
-                    result.finalPrice = price * (1 - disc / 100);
-                    result.totalLine = result.finalPrice * quantity;
-                    result.promoLabel = `Llevando ${val}+: ${disc}% OFF`;
+                    if (promo.valueMode === 'FIXED') {
+                        const fixedPrice = parseFloat(promo.fixedAmount) || 0;
+                        result.finalPrice = fixedPrice;
+                        result.totalLine = fixedPrice * quantity;
+                        result.promoLabel = `Llevando ${val}+: $${fixedPrice} c/u`;
+                    } else {
+                        const disc = parseFloat(promo.discountValue) || 0;
+                        result.finalPrice = price * (1 - disc / 100);
+                        result.totalLine = result.finalPrice * quantity;
+                        result.promoLabel = `Llevando ${val}+: ${disc}% OFF`;
+                    }
                 }
                 break;
             case 'QUANTITY_LIMIT':
