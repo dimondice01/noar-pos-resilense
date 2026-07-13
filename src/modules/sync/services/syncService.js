@@ -1295,26 +1295,37 @@ export const syncService = {
     let totalSynced = 0;
 
     if (pendingProducts.length > 0) {
-        for (const product of pendingProducts) {
-            try {
-                if (!product.id) continue;
+        // 🔒 Batch atómico (chunks de 450, límite Firestore 500 ops): si un merge padre-hijo
+        // (mergeAsVariant) quedó pendiente offline, padre y hijo suben juntos en el mismo commit.
+        // Subirlos con setDoc sueltos deja una ventana donde otra sucursal ve al padre con el
+        // tier nuevo pero al hijo todavía "vivo" (o viceversa), duplicando filas en la exportación a balanza.
+        const chunkSize = 450;
+        for (let i = 0; i < pendingProducts.length; i += chunkSize) {
+            const chunk = pendingProducts.filter(p => p.id).slice(i, i + chunkSize);
+            if (chunk.length === 0) continue;
+
+            const batch = writeBatch(db);
+            const nowIso = new Date().toISOString();
+
+            for (const product of chunk) {
                 const docRef = doc(collection(db, 'companies', companyId, 'products'), String(product.id));
-                const { syncStatus, stock, promo, ...masterData } = product; 
-                const nowIso = new Date().toISOString();
-
-                await setDoc(docRef, {
-                     ...this._deepSanitize(masterData),
-                     lastUpdated: serverTimestamp(),
-                     updatedAt: serverTimestamp()
+                const { syncStatus, stock, promo, ...masterData } = product;
+                batch.set(docRef, {
+                    ...this._deepSanitize(masterData),
+                    lastUpdated: serverTimestamp(),
+                    updatedAt: serverTimestamp()
                 }, { merge: true });
+            }
 
-                await localDb.products.update(product.id, { 
-                    syncStatus: 'synced', 
-                    updatedAt: nowIso 
-                });
-                totalSynced++;
+            try {
+                await batch.commit();
+                await Promise.all(chunk.map(p => localDb.products.update(p.id, {
+                    syncStatus: 'synced',
+                    updatedAt: nowIso
+                })));
+                totalSynced += chunk.length;
             } catch (err) {
-                console.warn(`❌ Error sinc. producto ${product.id || '?'}:`, err);
+                console.warn(`❌ Error sinc. batch de productos:`, err);
             }
         }
     }

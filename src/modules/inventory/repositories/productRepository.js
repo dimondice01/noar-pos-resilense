@@ -475,8 +475,14 @@ export const productRepository = {
 
         if (navigator.onLine && user?.companyId) {
             const { stock, syncStatus, ...cloudParent } = updatedParent;
-            setDoc(doc(db, `companies/${user.companyId}/products`, parentId), { ...cloudParent, updatedAt: serverTimestamp() }, { merge: true }).catch(() => {});
-            setDoc(doc(db, `companies/${user.companyId}/products`, childId), { deleted: true, updatedAt: serverTimestamp() }, { merge: true }).catch(() => {});
+            // 🔒 Batch atómico: el update del padre (nuevo tier) y el delete del hijo deben
+            // llegar juntos a los listeners de otras sucursales. Con setDoc separados hay una
+            // ventana donde otra sucursal ve al padre con el tier pero al hijo todavía "vivo"
+            // (o viceversa), duplicando o faltando filas en la exportación a balanza.
+            const batch = writeBatch(db);
+            batch.set(doc(db, `companies/${user.companyId}/products`, parentId), { ...cloudParent, updatedAt: serverTimestamp() }, { merge: true });
+            batch.set(doc(db, `companies/${user.companyId}/products`, childId), { deleted: true, updatedAt: serverTimestamp() }, { merge: true });
+            batch.commit().catch(() => {});
         }
 
         return updatedParent;
