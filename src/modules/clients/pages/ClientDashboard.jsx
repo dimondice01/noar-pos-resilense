@@ -28,9 +28,23 @@ export const ClientDashboard = ({ clientId, onBack }) => {
   const [client, setClient] = useState(null);
   const [ledger, setLedger] = useState([]);
   const [loading, setLoading] = useState(true);
-  // 🔥 ESTADO DE SALDO CALCULADO EN VIVO
-  const [calculatedDebt, setCalculatedDebt] = useState(0);
-  
+
+  // 🔥 CÁLCULO EN VIVO: suma los tickets/movimientos reales del ledger
+  // (ya rehidratado completo desde la nube en cada loadData), en vez de
+  // confiar ciegamente en el acumulador client.balance.
+  const currentDebt = useMemo(() => {
+    let total = 0;
+    ledger.forEach(mov => {
+        const amount = parseFloat(mov.amount) || 0;
+        if (mov.type === 'PAYMENT' || mov.type === 'REFUND' || mov.type === 'LIQUIDATION') {
+            total -= amount;
+        } else if (mov.type === 'SALE_DEBT') {
+            total += amount;
+        }
+    });
+    return Math.max(0, total);
+  }, [ledger]);
+
   // Estados UI
   const [isPaymentOpen, setIsPaymentOpen] = useState(false);
   const [ticketData, setTicketData] = useState(null);
@@ -64,19 +78,6 @@ export const ClientDashboard = ({ clientId, onBack }) => {
     });
   }, [ledger, filterType, filterMonth, filterYear, dateFrom, dateTo]);
 
-  const calculateTotalDebt = (movements) => {
-        let totalDebt = 0;
-        movements.forEach(mov => {
-            const amount = parseFloat(mov.amount) || 0;
-            if (mov.type === 'PAYMENT' || mov.type === 'REFUND' || mov.type === 'LIQUIDATION') {
-                totalDebt -= amount;
-            } else if (mov.type === 'SALE_DEBT') {
-                totalDebt += amount;
-            }
-        });
-        return Math.max(0, totalDebt);
-  };
-
   const loadData = async () => {
     setLoading(true);
     
@@ -86,8 +87,10 @@ export const ClientDashboard = ({ clientId, onBack }) => {
 
         let movements = await clientRepository.getLedger(clientId);
 
-        // 🔥 AUTO-HIDRATACIÓN SILENCIOSA O FORZADA DE NUBE
-        if (movements.length === 0 && navigator.onLine && user?.companyId) {
+        // 🔥 AUTO-HIDRATACIÓN: refresca el ledger completo de este cliente
+        // en cada entrada (no solo si está vacío), acotado por clientId,
+        // para que el cálculo en vivo de la deuda nunca parta de datos incompletos.
+        if (navigator.onLine && user?.companyId) {
             try {
                 const dbLocal = await getDB();
                 const q = query(
@@ -138,9 +141,6 @@ export const ClientDashboard = ({ clientId, onBack }) => {
         const sortedLedger = [...movements, ...paidEntries]
             .sort((a, b) => new Date(b.date) - new Date(a.date));
         setLedger(sortedLedger);
-
-        // Deuda real: solo SALE_DEBT, ignora SALE_PAID
-        setCalculatedDebt(calculateTotalDebt(movements));
 
     } catch (error) {
         console.error(error);
@@ -214,7 +214,7 @@ export const ClientDashboard = ({ clientId, onBack }) => {
           );
 
           // 3. Generar Objeto Recibo para imprimir
-          const newBalance = Math.max(0, calculatedDebt - totalCapitalPaid); // Calculado en memoria para el recibo rápido
+          const newBalance = Math.max(0, currentDebt - totalCapitalPaid); // Calculado en memoria para el recibo rápido
           
           const receiptObj = {
               localId: referenceId,
@@ -227,8 +227,9 @@ export const ClientDashboard = ({ clientId, onBack }) => {
               surcharge: parseFloat(paymentData.surcharge || 0),
               baseAmount: totalCapitalPaid,
               totalSale: totalMoneyInBox,
+              userName: user.name || user.email || 'Cajero',
               companySnapshot: {
-                  nombre: activeBranchName || 'Sucursal Central', 
+                  nombre: activeBranchName || 'Sucursal Central',
               }
           };
 
@@ -265,8 +266,9 @@ export const ClientDashboard = ({ clientId, onBack }) => {
                   client: client,
                   amount: mov.amount,
                   newBalance: mov.newBalance,
-                  method: 'CTA CTE', 
+                  method: 'CTA CTE',
                   type: 'RECEIPT',
+                  userName: mov.userName || 'Cajero',
                   companySnapshot: { nombre: activeBranchName }
               };
               setTicketData({ receipt: receipt });
@@ -323,25 +325,25 @@ export const ClientDashboard = ({ clientId, onBack }) => {
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
           
           {/* TARJETA DE SALDO CALCULADO */}
-          <Card className={cn("border-l-8 flex flex-col justify-between relative overflow-hidden h-40", calculatedDebt > 0.01 ? "border-l-red-500 bg-red-50/20" : "border-l-emerald-500 bg-emerald-50/20")}>
+          <Card className={cn("border-l-8 flex flex-col justify-between relative overflow-hidden h-40", currentDebt > 0.01 ? "border-l-red-500 bg-red-50/20" : "border-l-emerald-500 bg-emerald-50/20")}>
               <div className="z-10 h-full flex flex-col justify-between">
                   <div>
-                      <p className={cn("text-xs font-black uppercase tracking-wider mb-1 flex items-center gap-1.5", calculatedDebt > 0.01 ? "text-red-500" : "text-emerald-600")}>
-                          {calculatedDebt > 0.01 ? <TrendingDown size={14}/> : <CheckCircle2 size={14}/>}
+                      <p className={cn("text-xs font-black uppercase tracking-wider mb-1 flex items-center gap-1.5", currentDebt > 0.01 ? "text-red-500" : "text-emerald-600")}>
+                          {currentDebt > 0.01 ? <TrendingDown size={14}/> : <CheckCircle2 size={14}/>}
                           Saldo Actual (Deuda)
                       </p>
-                      <p className={cn("text-4xl font-black tracking-tighter", calculatedDebt > 0.01 ? "text-red-600" : "text-emerald-600")}>
-                          {formatCurrency(calculatedDebt)}
+                      <p className={cn("text-4xl font-black tracking-tighter", currentDebt > 0.01 ? "text-red-600" : "text-emerald-600")}>
+                          {formatCurrency(currentDebt)}
                       </p>
                   </div>
                   <div className="mt-4">
-                      <p className={cn("text-xs font-bold uppercase tracking-widest", calculatedDebt > 0.01 ? "text-red-400" : "text-emerald-500")}>
-                          {calculatedDebt > 0.01 ? "Saldo pendiente de cobro" : "Al día — sin deuda"}
+                      <p className={cn("text-xs font-bold uppercase tracking-widest", currentDebt > 0.01 ? "text-red-400" : "text-emerald-500")}>
+                          {currentDebt > 0.01 ? "Saldo pendiente de cobro" : "Al día — sin deuda"}
                       </p>
                   </div>
               </div>
-              <div className={cn("absolute -right-4 -bottom-4 opacity-10 transform rotate-12", calculatedDebt > 0.01 ? "text-red-500" : "text-emerald-500")}>
-                  {calculatedDebt > 0.01 ? <TrendingDown size={140} /> : <CheckCircle2 size={140} />}
+              <div className={cn("absolute -right-4 -bottom-4 opacity-10 transform rotate-12", currentDebt > 0.01 ? "text-red-500" : "text-emerald-500")}>
+                  {currentDebt > 0.01 ? <TrendingDown size={140} /> : <CheckCircle2 size={140} />}
               </div>
           </Card>
 
@@ -534,17 +536,17 @@ export const ClientDashboard = ({ clientId, onBack }) => {
           <div className="w-px h-6 bg-sys-200" />
           <button
               onClick={() => setIsPaymentOpen(true)}
-              disabled={calculatedDebt <= 0.01}
+              disabled={currentDebt <= 0.01}
               className={cn(
                   "flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-black border transition-all",
-                  calculatedDebt > 0.01
+                  currentDebt > 0.01
                       ? "bg-red-500 text-white border-red-600 hover:bg-red-600 shadow-sm"
                       : "bg-sys-100 text-sys-400 border-sys-200 cursor-not-allowed opacity-60"
               )}
           >
               <DollarSign size={16}/>
               Registrar Pago
-              {calculatedDebt > 0.01 && <span className="ml-1 bg-white/20 px-1.5 py-0.5 rounded-lg text-xs font-black">{formatCurrency(calculatedDebt)}</span>}
+              {currentDebt > 0.01 && <span className="ml-1 bg-white/20 px-1.5 py-0.5 rounded-lg text-xs font-black">{formatCurrency(currentDebt)}</span>}
           </button>
       </div>
 
@@ -620,7 +622,7 @@ export const ClientDashboard = ({ clientId, onBack }) => {
       <PaymentModal 
         isOpen={isPaymentOpen}
         onClose={() => setIsPaymentOpen(false)}
-        total={calculatedDebt} 
+        total={currentDebt} 
         client={client} 
         onConfirm={handlePaymentConfirm}
         disableAfip={true} 

@@ -345,6 +345,7 @@ const StockEntryModal = ({ isOpen, onClose, product, onConfirm }) => {
 // 2. SCALE EXPORT MODAL 
 // =================================================================
 const ScaleExportModal = ({ isOpen, onClose, onExport, onChangeLocation }) => {
+    const [forceCategory, setForceCategory] = useState(false);
     if (!isOpen) return null;
 
     return (
@@ -359,9 +360,23 @@ const ScaleExportModal = ({ isOpen, onClose, onExport, onChangeLocation }) => {
                     </div>
                     <button onClick={onClose} className="p-2 hover:bg-sys-200 rounded-full"><X size={20} className="text-sys-400" /></button>
                 </div>
+                <div className="px-6 pt-4">
+                    <label className="flex items-start gap-2 p-3 bg-sys-50 border border-sys-200 rounded-xl cursor-pointer select-none">
+                        <input
+                            type="checkbox"
+                            checked={forceCategory}
+                            onChange={e => setForceCategory(e.target.checked)}
+                            className="w-4 h-4 mt-0.5 accent-brand rounded"
+                        />
+                        <span className="text-xs">
+                            <span className="font-black text-sys-800 block">Forzar categoría</span>
+                            <span className="text-sys-500">Todos los productos exportados adoptan la categoría del primer producto. Solo aplica al formato SYSTEL (KRETZ no usa categorías).</span>
+                        </span>
+                    </label>
+                </div>
                 <div className="p-6 grid grid-cols-2 gap-4">
                     <button
-                        onClick={() => onExport('KRETZ')}
+                        onClick={() => onExport('KRETZ', forceCategory)}
                         className="flex flex-col items-center justify-center gap-3 p-6 border-2 border-sys-200 rounded-2xl hover:border-brand hover:bg-brand/5 hover:scale-[1.02] transition-all group"
                     >
                         <div className="w-12 h-12 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center group-hover:bg-brand group-hover:text-white transition-colors">
@@ -372,7 +387,7 @@ const ScaleExportModal = ({ isOpen, onClose, onExport, onChangeLocation }) => {
                     </button>
 
                     <button
-                        onClick={() => onExport('SYSTEL')}
+                        onClick={() => onExport('SYSTEL', forceCategory)}
                         className="flex flex-col items-center justify-center gap-3 p-6 border-2 border-sys-200 rounded-2xl hover:border-purple-500 hover:bg-purple-50 hover:scale-[1.02] transition-all group"
                     >
                         <div className="w-12 h-12 rounded-full bg-purple-100 text-purple-600 flex items-center justify-center group-hover:bg-purple-600 group-hover:text-white transition-colors">
@@ -888,7 +903,7 @@ export const InventoryPage = () => {
     };
 
 
-    const handleScaleExport = async (brand) => {
+    const handleScaleExport = async (brand, forceCategory) => {
         try {
             const weighableProducts = products.filter(p => p.isWeighable);
 
@@ -897,7 +912,7 @@ export const InventoryPage = () => {
                 return;
             }
 
-            const fileContent = scaleService.generateScaleFile(weighableProducts, brand);
+            const fileContent = scaleService.generateScaleFile(weighableProducts, brand, { forceCategory });
             const result = await scaleService.saveFile(fileContent, brand);
 
             if (result.mode === 'cancelled') return;

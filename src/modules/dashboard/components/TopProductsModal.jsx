@@ -1,7 +1,8 @@
 import React from 'react';
-import { X, Search, Calendar, TrendingUp } from 'lucide-react';
+import { X, Search, Calendar, TrendingUp, FileSpreadsheet } from 'lucide-react';
 import { cn } from '../../../core/utils/cn';
 import { useTopProductsExplorer } from '../hooks/useTopProductsExplorer';
+import { exportTopProductsToExcel } from '../../../core/utils/exportTopProductsToExcel';
 
 const money = (val) => (val || 0).toLocaleString('es-AR', { minimumFractionDigits: 2 });
 
@@ -24,12 +25,27 @@ export function TopProductsModal({ isOpen, onClose }) {
 
     if (!isOpen) return null;
 
+    const handleExport = () => {
+        const periodLabel = PERIODS.find(p => p.id === period)?.label || period;
+        exportTopProductsToExcel(items, { periodLabel, search: searchTerm });
+    };
+
     return (
         <div className="fixed inset-0 z-[90] flex items-center justify-center bg-sys-900/60 backdrop-blur-sm p-4 animate-in fade-in zoom-in-95">
             <div className="bg-white rounded-3xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[85vh]">
                 <div className="p-5 bg-sys-900 text-white flex justify-between items-center shrink-0">
                     <h3 className="font-bold flex items-center gap-2 text-lg"><TrendingUp size={20} /> Productos Más Vendidos</h3>
-                    <button onClick={onClose} className="hover:bg-white/20 p-1.5 rounded-full transition-colors"><X size={20} /></button>
+                    <div className="flex items-center gap-2">
+                        <button
+                            onClick={handleExport}
+                            disabled={items.length === 0}
+                            title="Exportar a Excel"
+                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed text-xs font-bold transition-colors"
+                        >
+                            <FileSpreadsheet size={14} /> Exportar
+                        </button>
+                        <button onClick={onClose} className="hover:bg-white/20 p-1.5 rounded-full transition-colors"><X size={20} /></button>
+                    </div>
                 </div>
 
                 <div className="p-4 border-b border-sys-200 shrink-0 space-y-3">

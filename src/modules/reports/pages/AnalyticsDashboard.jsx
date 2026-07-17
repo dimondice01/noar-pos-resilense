@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import { useBusinessIntelligence } from '../hooks/useBusinessIntelligence';
 import { useAuthStore } from '../../auth/store/useAuthStore';
+import { CashFlowExplorerModal } from '../components/CashFlowExplorerModal';
 
 const COLORS = {
     sales: '#2563eb',
@@ -26,6 +27,7 @@ const formatCurrency = (val) => {
 export const AnalyticsDashboard = () => {
     const { activeBranchId, activeBranchName } = useAuthStore();
     const [viewMode, setViewMode] = useState('ECONOMIC');
+    const [cashFlowModal, setCashFlowModal] = useState({ open: false, tab: 'expenses' });
 
     const { metrics, loading, period, setPeriod, refetch } = useBusinessIntelligence();
 
@@ -33,6 +35,7 @@ export const AnalyticsDashboard = () => {
     const payments   = metrics.paymentChart  || [];
     const suppliers  = metrics.topSuppliers  || [];
     const products   = metrics.topProfit     || [];
+    const expenseList = metrics.expenseDetails || [];
 
     const historyData = useMemo(() => {
         const rawChart = metrics.historyChart || [];
@@ -232,13 +235,21 @@ export const AnalyticsDashboard = () => {
             </div>
 
             {/* RANKINGS */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pb-10">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 pb-10">
 
                 {/* TOP PROVEEDORES */}
                 <div className="bg-white p-6 rounded-2xl border border-sys-200 shadow-sm">
-                    <h4 className="text-sm font-black text-sys-900 uppercase mb-4 flex items-center gap-2">
-                        <Truck size={16} className="text-amber-500" /> Mayores Pagos a Proveedores
-                    </h4>
+                    <div className="flex items-center justify-between mb-4">
+                        <h4 className="text-sm font-black text-sys-900 uppercase flex items-center gap-2">
+                            <Truck size={16} className="text-amber-500" /> Mayores Pagos a Proveedores
+                        </h4>
+                        <button
+                            onClick={() => setCashFlowModal({ open: true, tab: 'suppliers' })}
+                            className="text-[10px] font-black text-brand hover:underline uppercase tracking-wide"
+                        >
+                            Ver más
+                        </button>
+                    </div>
                     <div className="space-y-3">
                         {suppliers.length > 0 ? suppliers.map((s, i) => (
                             <div key={i} className="flex items-center justify-between px-4 py-3 bg-sys-50 rounded-xl border border-sys-100">
@@ -270,7 +281,41 @@ export const AnalyticsDashboard = () => {
                     </div>
                 </div>
 
+                {/* DETALLE DE GASTOS */}
+                <div className="bg-white p-6 rounded-2xl border border-sys-200 shadow-sm">
+                    <div className="flex items-center justify-between mb-4">
+                        <h4 className="text-sm font-black text-sys-900 uppercase flex items-center gap-2">
+                            <HandCoins size={16} className="text-rose-500" /> Detalle de Gastos
+                        </h4>
+                        <button
+                            onClick={() => setCashFlowModal({ open: true, tab: 'expenses' })}
+                            className="text-[10px] font-black text-brand hover:underline uppercase tracking-wide"
+                        >
+                            Ver más
+                        </button>
+                    </div>
+                    <div className="space-y-3 max-h-80 overflow-y-auto pr-1">
+                        {expenseList.length > 0 ? expenseList.map((e, i) => (
+                            <div key={i} className="flex items-center justify-between px-4 py-3 bg-sys-50 rounded-xl border border-sys-100">
+                                <div className="min-w-0">
+                                    <p className="font-bold text-sys-700 text-xs truncate">{e.description}</p>
+                                    <p className="text-[10px] text-sys-400 font-mono mt-0.5">
+                                        {new Date(e.date).toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit', year: '2-digit' })} · {e.user}
+                                    </p>
+                                </div>
+                                <span className="font-black text-rose-600 text-sm font-mono shrink-0 ml-3">-{formatCurrency(e.amount)}</span>
+                            </div>
+                        )) : <p className="text-center text-sys-400 italic py-8 text-sm">Sin gastos registrados</p>}
+                    </div>
+                </div>
+
             </div>
+
+            <CashFlowExplorerModal
+                isOpen={cashFlowModal.open}
+                initialTab={cashFlowModal.tab}
+                onClose={() => setCashFlowModal(prev => ({ ...prev, open: false }))}
+            />
 
         </div>
     );

@@ -466,8 +466,9 @@ export const purchaseRepository = {
                         date: timestamp,
                         branchId: branchId,
                         userId: user.uid,
+                        user: user.name,
                         companyId: user.companyId,
-                        supplierName: purchaseHeader.supplierName, 
+                        supplierName: purchaseHeader.supplierName,
                         referenceId: purchaseId,
                         syncStatus: 'pending'
                     };
@@ -582,8 +583,9 @@ export const purchaseRepository = {
                         date: timestamp,
                         branchId: branchId,
                         userId: user.uid,
+                        user: user.name,
                         companyId: user.companyId,
-                        supplierName: supplierName, 
+                        supplierName: supplierName,
                         referenceId: refId || null,
                         syncStatus: 'pending'
                     };
@@ -592,7 +594,7 @@ export const purchaseRepository = {
             }
         });
 
-        // 🔥 Disparo Seguro de Sincronización 
+        // 🔥 Disparo Seguro de Sincronización
         if (updatedPurchase) triggerOptimisticSync('purchases', updatedPurchase);
         if (updatedSupplier) triggerOptimisticSync('suppliers', updatedSupplier);
         if (newLedgerEntry) triggerOptimisticSync('supplier_ledger', newLedgerEntry);

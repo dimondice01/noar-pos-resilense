@@ -40,8 +40,9 @@ async function verifyPermission(handle) {
 export const scaleService = {
     supportsFileSystemAccess: () => typeof window !== 'undefined' && 'showSaveFilePicker' in window,
 
-    generateScaleFile: (products, brand) => {
+    generateScaleFile: (products, brand, options = {}) => {
         if (!products || products.length === 0) return null;
+        const { forceCategory = false } = options;
 
         const normalizeName = (name) =>
             name.normalize("NFD").replace(/[̀-ͯ]/g, "")
@@ -79,9 +80,12 @@ export const scaleService = {
         if (brand === 'SYSTEL') {
             // Formato 8 columnas: Categoria;CodInterno;Nombre;PLU;Precio;Precio;P/U;0
             // price en noar es el precio final que va al ticket → va directo en ambas columnas de precio
+            const forcedCategory = forceCategory
+                ? (products[0].category || 'GENERAL').replace(/;/g, '').toUpperCase()
+                : null;
             const rows = [];
             for (const p of products) {
-                const category = (p.category || 'GENERAL').replace(/;/g, '').toUpperCase();
+                const category = forcedCategory ?? (p.category || 'GENERAL').replace(/;/g, '').toUpperCase();
                 const pu = p.isWeighable ? 'P' : 'U';
                 const tiers = Array.isArray(p.priceTiers) && p.priceTiers.length > 0 ? p.priceTiers : null;
                 const baseName = p.name.substring(0, 18).replace(/;/g, '').toUpperCase();

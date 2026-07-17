@@ -74,10 +74,12 @@ export const useTopProductsExplorer = (isOpen) => {
                 (sale.items || []).forEach(item => {
                     const key = item.id || item.name || 'n/a';
                     if (!productMap[key]) {
-                        productMap[key] = { productId: item.id || null, name: item.name || 'Producto', quantity: 0, revenue: 0 };
+                        productMap[key] = { productId: item.id || null, name: item.name || 'Producto', quantity: 0, revenue: 0, cost: 0 };
                     }
-                    productMap[key].quantity += parseFloat(item.quantity || 0);
+                    const qty = parseFloat(item.quantity || 0);
+                    productMap[key].quantity += qty;
                     productMap[key].revenue += parseFloat(item.subtotal || 0);
+                    productMap[key].cost += parseFloat(item.cost || 0) * qty;
                 });
             });
 

@@ -164,8 +164,9 @@ export const clientRepository = {
             newBalance: newBalance,
             description,
             referenceId,
-            branchId: currentBranch, 
-            userId: user.uid,        
+            branchId: currentBranch,
+            userId: user.uid,
+            userName: user.name || user.email || 'Cajero',
             syncStatus: 'pending'
         };
 
