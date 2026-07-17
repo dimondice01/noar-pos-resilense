@@ -115,14 +115,6 @@ export const useCashFlowExplorer = (isOpen) => {
         fetchMovements();
     }, [isOpen, fetchMovements]);
 
-    // 🔄 REACTIVO: recalcular ante nuevos movimientos locales o bajados del cloud
-    useEffect(() => {
-        if (!isOpen) return;
-        const handler = () => fetchMovements();
-        window.addEventListener('noar:cash-movements-synced', handler);
-        return () => window.removeEventListener('noar:cash-movements-synced', handler);
-    }, [isOpen, fetchMovements]);
-
     const term = searchTerm.trim().toLowerCase();
 
     const expenseItems = useMemo(() => {
