@@ -3,6 +3,7 @@ import { X, Lock, DollarSign, Calculator, AlertTriangle, ArrowRight, Wallet, Pri
 import { Button } from '../../../core/ui/Button';
 import { cn } from '../../../core/utils/cn';
 import { useReactToPrint } from 'react-to-print';
+import toast from 'react-hot-toast';
 import { useAuthStore } from '../../auth/store/useAuthStore'; // 🔥 IMPORTAMOS PARA VER LOS PERMISOS
 
 // Helper de Moneda
@@ -27,7 +28,13 @@ export const CashClosingModal = ({ isOpen, onClose, onConfirm, systemTotals, use
     const [declaredCash, setDeclaredCash] = useState(''); 
     
     // Paso 2: Cuánto dejo para cambio (Remanente)
-    const [leftInCash, setLeftInCash] = useState(''); 
+    const [leftInCash, setLeftInCash] = useState('');
+
+    // 🔥 GUARD DE DIFERENCIA GRANDE: si el desvío supera el umbral, exige un
+    // checkbox explícito antes de habilitar el cierre — evita que un cierre con
+    // una diferencia absurda (ej. admin declarando "0" sin darse cuenta) pase
+    // desapercibido, sin importar por qué salió mal el "esperado".
+    const [overrideConfirmed, setOverrideConfirmed] = useState(false);
 
     const ticketRef = useRef(null);
 
@@ -37,6 +44,7 @@ export const CashClosingModal = ({ isOpen, onClose, onConfirm, systemTotals, use
             setStep(1);
             setDeclaredCash('');
             setLeftInCash('');
+            setOverrideConfirmed(false);
         }
     }, [isOpen]);
 
@@ -53,19 +61,33 @@ export const CashClosingModal = ({ isOpen, onClose, onConfirm, systemTotals, use
     const valLeft = leftInCash === '' ? 0 : parseFloat(leftInCash);
     const totalWithdrawal = Math.max(0, valDeclared - valLeft);
     
-    // VARIABLES DEL SISTEMA 
-    const expectedCash = systemTotals?.totalCash || 0; 
+    // VARIABLES DEL SISTEMA
+    const expectedCash = systemTotals?.totalCash || 0;
     const expectedDigital = systemTotals?.totalDigital || 0;
-    const difference = valDeclared - expectedCash; 
+    const difference = valDeclared - expectedCash;
+
+    // Umbral de diferencia "grande": el mayor entre un piso fijo y un % del esperado.
+    const BIG_DIFF_THRESHOLD = Math.max(5000, Math.abs(expectedCash) * 0.05);
+    const requiresOverride = Math.abs(difference) > BIG_DIFF_THRESHOLD;
+    const canConfirmClose = !requiresOverride || overrideConfirmed;
 
     const handleSubmit = () => {
+        // 🔥 Antes esto era un botón silenciosamente deshabilitado: el cajero
+        // imprimía el ticket (botón aparte, siempre activo) y se iba pensando
+        // que había cerrado, sin notar el check pendiente. Ahora el botón
+        // siempre responde y avisa explícitamente qué falta.
+        if (!canConfirmClose) {
+            toast.error("⚠️ Diferencia grande sin verificar: marcá el check antes de confirmar el cierre.");
+            return;
+        }
         onConfirm({
-            declaredCash: valDeclared,  
-            leftInCash: valLeft,        
-            expectedCash: expectedCash, 
+            declaredCash: valDeclared,
+            leftInCash: valLeft,
+            expectedCash: expectedCash,
             expectedDigital: expectedDigital,
             withdrawal: totalWithdrawal,
-            difference: difference
+            difference: difference,
+            overrideConfirmed: requiresOverride ? overrideConfirmed : false
         });
     };
 
@@ -268,11 +290,38 @@ export const CashClosingModal = ({ isOpen, onClose, onConfirm, systemTotals, use
                                 </div>
                             </div>
 
+                            {requiresOverride && (
+                                <div className="bg-red-50 border-2 border-red-200 p-4 rounded-xl text-red-800 text-xs space-y-2">
+                                    <div className="flex gap-2 items-start font-bold">
+                                        <AlertTriangle size={16} className="shrink-0 mt-0.5"/>
+                                        <p>Diferencia grande detectada: {formatMoney(Math.abs(difference))} de {difference >= 0 ? 'sobrante' : 'faltante'}. Verifique el arqueo antes de continuar.</p>
+                                    </div>
+                                    <label className="flex items-center gap-2 cursor-pointer select-none pt-1">
+                                        <input
+                                            type="checkbox"
+                                            checked={overrideConfirmed}
+                                            onChange={e => setOverrideConfirmed(e.target.checked)}
+                                            className="w-4 h-4 accent-red-600"
+                                        />
+                                        <span className="font-bold">Confirmo que revisé la diferencia y es correcta</span>
+                                    </label>
+                                </div>
+                            )}
+
                             <div className="grid grid-cols-2 gap-3 mt-auto">
                                <Button variant="secondary" onClick={handlePrintTicket} className="h-12 font-bold text-sys-600 border border-sys-200">
                                    <Printer size={18} className="mr-2"/> Imprimir
                                </Button>
-                               <Button variant="danger" onClick={handleSubmit} className="h-12 shadow-xl shadow-red-500/20 bg-red-600 hover:bg-red-700 text-white font-black tracking-wider text-xs uppercase">
+                               <Button
+                                   variant="danger"
+                                   onClick={handleSubmit}
+                                   className={cn(
+                                       "h-12 shadow-xl font-black tracking-wider text-xs uppercase",
+                                       canConfirmClose
+                                           ? "shadow-red-500/20 bg-red-600 hover:bg-red-700 text-white"
+                                           : "shadow-none bg-sys-200 hover:bg-sys-300 text-sys-500"
+                                   )}
+                               >
                                    Confirmar Cierre
                                </Button>
                             </div>

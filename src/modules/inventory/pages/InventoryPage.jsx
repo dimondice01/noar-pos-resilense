@@ -757,7 +757,11 @@ export const InventoryPage = () => {
         let lastKeyTime = Date.now();
 
         const handleGlobalScan = (e) => {
-            if (['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName)) return;
+            const active = document.activeElement;
+            // 🔥 Dejamos pasar el buscador: sin esto, escanear con el buscador enfocado
+            // no abría el modal de producto (nuevo/editar), y sin foco no se veía la búsqueda en vivo.
+            const isSearchBox = active === searchInputRef.current;
+            if (!isSearchBox && ['INPUT', 'TEXTAREA'].includes(active.tagName)) return;
 
             const now = Date.now();
             if (now - lastKeyTime > 200) buffer = '';

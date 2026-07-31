@@ -123,9 +123,11 @@ const PremiumInput = ({ label, icon: Icon, rightIcon, className, readOnly, ...pr
 
 export const ProductModal = ({ isOpen, onClose, productToEdit, onSave, allProducts = [] }) => {
   const { user, activeBranchName } = useAuthStore();
-  const [activeTab, setActiveTab] = useState('general'); 
+  const [activeTab, setActiveTab] = useState('general');
   const [lists, setLists] = useState({ categories: [], brands: [], suppliers: [] });
   const [isSaving, setIsSaving] = useState(false);
+  // 🔥 Evita mostrar el formulario vacío mientras se trae el producto fresco desde Dexie
+  const [isLoadingProduct, setIsLoadingProduct] = useState(false);
   const [tempBarcode, setTempBarcode] = useState('');
   const [tempTierPlu, setTempTierPlu] = useState('');
   const [tempTierLabel, setTempTierLabel] = useState('');
@@ -196,6 +198,7 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave, allProduc
   useEffect(() => {
     if (isOpen) {
       if (productToEdit) {
+        setIsLoadingProduct(true);
         (async () => {
           // 🔥 Releemos directo de Dexie (fuente de verdad offline-first) al abrir para editar.
           // El array de productos en memoria de la tabla puede tardar en reflejar el último
@@ -265,9 +268,11 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave, allProduc
               priceTiers: Array.isArray(source.priceTiers) ? source.priceTiers : [],
               wholesalePricing: Array.isArray(source.wholesalePricing) ? source.wholesalePricing : [],
           });
+          setIsLoadingProduct(false);
         })();
       } else {
-        setFormData({ 
+        setIsLoadingProduct(false);
+        setFormData({
             name: '', code: '', barcodes: [], category: '', brand: '',
             costNeto: '', cost: '', markup: '40', price: '', taxRate: '21',
             stock: '', minStock: '5', supplier: '', 
@@ -640,6 +645,13 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave, allProduc
           </button>
         </div>
 
+        {isLoadingProduct ? (
+          <div className="flex-1 flex flex-col items-center justify-center gap-3 p-16 text-sys-400">
+            <Loader2 size={32} className="animate-spin text-brand" />
+            <span className="text-xs font-bold uppercase tracking-widest">Cargando producto...</span>
+          </div>
+        ) : (
+        <>
         {/* Tabs */}
         <div className="px-6 pt-4 pb-2 bg-white">
             <div className="flex p-1 bg-sys-100 rounded-xl">
@@ -651,8 +663,8 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave, allProduc
                         disabled={isSaving}
                         className={cn(
                             "flex-1 py-2 text-xs font-bold rounded-lg transition-all duration-200 capitalize",
-                            activeTab === tab 
-                                ? "bg-white text-sys-900 shadow-sm" 
+                            activeTab === tab
+                                ? "bg-white text-sys-900 shadow-sm"
                                 : "text-sys-500 hover:text-sys-700 hover:bg-sys-200/50",
                             isSaving && "opacity-50 cursor-not-allowed"
                         )}
@@ -664,7 +676,7 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave, allProduc
         </div>
 
         <form onSubmit={handleSubmit} className="p-6 overflow-y-auto custom-scrollbar flex-1 bg-white">
-          
+
           {/* --- TAB GENERAL --- */}
           {activeTab === 'general' && (
              <div className="space-y-6 animate-in slide-in-from-right-8 duration-300 fade-in">
@@ -1374,6 +1386,8 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave, allProduc
                 )}
             </Button>
         </div>
+        </>
+        )}
 
       </div>
     </div>

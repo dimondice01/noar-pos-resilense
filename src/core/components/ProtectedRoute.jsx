@@ -42,9 +42,10 @@ export const ProtectedRoute = () => {
   
   // A. Seguridad básica: Si no tiene empresa asignada, intentamos refrescar perfil antes de rebotar
   if (!user.companyId) {
-      console.warn("⚠️ Usuario detectado sin empresa. Intentando reparación de perfil...");
-      const { initAuthListener } = useAuthStore.getState();
-      initAuthListener(); // Esto dispara el fetch a Firestore
+      console.warn("⚠️ Usuario detectado sin empresa. Esperando resolución del perfil...");
+      // 🛡️ NO reinicializar el listener acá (causaba listeners duplicados en cada
+      // render y un crash de React "removeChild" al reconciliar árboles distintos).
+      // El listener único de App.jsx ya está resolviendo companyId en segundo plano.
       return (
         <div className="h-screen w-screen flex items-center justify-center bg-sys-50">
             <Loader2 className="animate-spin text-brand" size={40} />

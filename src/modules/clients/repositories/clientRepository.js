@@ -1,7 +1,8 @@
 import { getDB } from '../../../database/db';
 import { db } from '../../../database/firebase';
-import { doc, setDoc, deleteDoc } from 'firebase/firestore';
-import { useAuthStore } from '../../auth/store/useAuthStore'; 
+import { doc, setDoc, deleteDoc, collection, getDocs, writeBatch, serverTimestamp } from 'firebase/firestore';
+import { useAuthStore } from '../../auth/store/useAuthStore';
+import { pushLedgerMovementWithBalanceIncrement } from '../services/customerLedgerService';
 
 // 🔥 HELPER UNIVERSAL: Generador de IDs que funciona en cualquier navegador (reemplaza a crypto.randomUUID)
 const generateId = (prefix) => `${prefix}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
@@ -16,7 +17,10 @@ const triggerOptimisticSync = async (collectionName, data) => {
   if (!user || !user.companyId) return;
 
   try {
-    const { syncStatus, localId, ...cloudData } = data;
+    // 🔥 balance SOLO se muta vía customerLedgerService (transacción con increment()).
+    // Re-subir el objeto 'client' local con ese campo pisaría el valor ya incrementado
+    // en el servidor (merge reemplaza el campo entero, no lo combina con increment()).
+    const { syncStatus, localId, balance, ...cloudData } = data;
     const path = `companies/${user.companyId}/${collectionName}`;
     
     // 🔥 FIX CRÍTICO: Firebase crashea si el ID es numérico. Lo forzamos a String.
@@ -130,6 +134,7 @@ export const clientRepository = {
     if (!user) throw new Error("Usuario no autenticado");
 
     let newBalance = 0;
+    let movement = null; // 🔥 se llena dentro de la transacción, se usa después para el push atómico
     const movementId = generateId('ledger'); // ID Blindado
     const timestamp = new Date().toISOString();
     const currentBranch = activeBranchId || user.branchId || 'main';
@@ -154,7 +159,7 @@ export const clientRepository = {
             ? currentBalance + parsedAmount 
             : currentBalance - parsedAmount;
 
-        const movement = {
+        movement = {
             id: movementId,
             clientId,
             date: timestamp,
@@ -180,37 +185,27 @@ export const clientRepository = {
         };
         await dbLocal.clients.put(updatedClient);
 
-        // 🔥 IMPACTO EN CAJA: Si el cliente PAGA deuda, entra dinero al cajero
-        if (type === 'PAYMENT' && paymentMethod !== 'debt') {
-            const activeShift = await dbLocal.shifts
-                .where('status').equals('OPEN')
-                .filter(s => s.userId === user.uid && s.branchId === currentBranch)
-                .first();
-
-            if (activeShift) {
-                const cashMovement = {
-                    id: generateId('cm'), // 🔥 ID Blindado
-                    shiftId: activeShift.id,
-                    type: 'RECEIPT', // 🔥 Tipo "RECEIPT" = Cobro de Deuda (Ingreso)
-                    method: paymentMethod,
-                    amount: parsedAmount,
-                    description: `Cobro Cta.Cte.: ${client.name} - ${description}`,
-                    date: timestamp,
-                    branchId: currentBranch,
-                    userId: user.uid,
-                    companyId: user.companyId,
-                    referenceId: movementId,
-                    syncStatus: 'pending'
-                };
-                await dbLocal.cash_movements.put(cashMovement);
-                triggerOptimisticSync('cash_movements', cashMovement);
-            }
-        }
-
-        // Sincronización en segundo plano
-        triggerOptimisticSync('clients', updatedClient);
-        triggerOptimisticSync('customer_ledger', movement);
+        // 🔥 NOTA: registerMovement NO mueve caja. El caller es responsable de
+        // llamar cashRepository.registerIncome() antes, si corresponde (así lo
+        // hace hoy ClientDashboard.handlePaymentConfirm). Antes existía acá un
+        // segundo cash_movement tipo RECEIPT para el mismo cobro — duplicaba el
+        // efectivo esperado en caja (contado dos veces al cerrar turno). Eliminado.
     });
+
+    // 🔥 CONTADOR ATÓMICO: escribe el movimiento e incrementa clients/{id}.balance
+    // en la misma transacción (ver customerLedgerService) — idempotente frente a
+    // reintentos, no depende de qué dispositivo tiene el balance más reciente.
+    // Si falla o está offline, syncPendingCustomerLedger lo reintenta después.
+    if (navigator.onLine && user.companyId) {
+        pushLedgerMovementWithBalanceIncrement(user.companyId, movement)
+            .then(async () => {
+                try {
+                    const dbLocal2 = await getDB();
+                    await dbLocal2.customer_ledger.update(movementId, { syncStatus: 'synced' });
+                } catch (e) { /* la cola de reintento lo toma después */ }
+            })
+            .catch(err => console.warn('☁️ Sync optimista (customer_ledger) falló, background sync lo tomará.', err));
+    }
 
     return newBalance;
   },
@@ -294,5 +289,108 @@ export const clientRepository = {
             console.error("Error borrando cliente nube:", e);
         }
     }
+  },
+
+  // ==========================================
+  // 🩹 REPARACIÓN DE SALDOS (AUTOSERVICIO POR EMPRESA)
+  // ==========================================
+  // Recalcula clients/{id}.balance desde customer_ledger completo (sin límite
+  // de paginación), con la misma regla de signo que ClientDashboard.currentDebt
+  // (la única fuente que nunca estuvo corrompida). Scopeado automáticamente a
+  // la empresa de la sesión activa — cada admin corrige solo sus propios clientes.
+
+  async previewBalanceRecalculation() {
+      const { user } = useAuthStore.getState();
+      if (!user?.companyId) throw new Error("Sin sesión de empresa.");
+      if (user.role !== 'ADMIN' && user.role !== 'OWNER') {
+          throw new Error("Solo un administrador puede recalcular saldos.");
+      }
+
+      const clientsSnap = await getDocs(collection(db, `companies/${user.companyId}/clients`));
+      const ledgerSnap = await getDocs(collection(db, `companies/${user.companyId}/customer_ledger`));
+
+      // Suma con signo por cliente — misma regla que ClientDashboard.currentDebt
+      const sumsByClient = new Map();
+      ledgerSnap.docs.forEach(docSnap => {
+          const d = docSnap.data();
+          if (!d.clientId) return;
+          const amount = parseFloat(d.amount) || 0;
+          const delta = d.type === 'SALE_DEBT' ? amount : -amount;
+          sumsByClient.set(d.clientId, (sumsByClient.get(d.clientId) || 0) + delta);
+      });
+
+      const diffs = [];
+      clientsSnap.docs.forEach(docSnap => {
+          const client = docSnap.data();
+          const clientId = docSnap.id;
+          const correctBalance = Math.max(0, sumsByClient.get(clientId) || 0);
+          const oldBalance = parseFloat(client.balance || 0);
+          const delta = correctBalance - oldBalance;
+
+          // Umbral de $1 — ignora ruido de redondeo, mismo criterio que
+          // hasDriftWarning en cashRepository._calculateShiftState.
+          if (Math.abs(delta) > 1) {
+              diffs.push({
+                  clientId,
+                  name: client.name || 'Cliente sin nombre',
+                  oldBalance,
+                  newBalance: correctBalance,
+                  delta
+              });
+          }
+      });
+
+      return diffs.sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
+  },
+
+  async applyBalanceRecalculation(diffs) {
+      const { user } = useAuthStore.getState();
+      if (!user?.companyId) throw new Error("Sin sesión de empresa.");
+      if (user.role !== 'ADMIN' && user.role !== 'OWNER') {
+          throw new Error("Solo un administrador puede recalcular saldos.");
+      }
+      if (!Array.isArray(diffs) || diffs.length === 0) return { applied: 0 };
+
+      const dbLocal = await getDB();
+      const nowIso = new Date().toISOString();
+      let applied = 0;
+
+      // Tandas de 225 correcciones (2 writes c/u: cliente + log de auditoría)
+      // para no pasar el límite de 500 operaciones por batch de Firestore.
+      const CHUNK_SIZE = 225;
+      for (let i = 0; i < diffs.length; i += CHUNK_SIZE) {
+          const chunk = diffs.slice(i, i + CHUNK_SIZE);
+          const batch = writeBatch(db);
+
+          for (const d of chunk) {
+              const clientRef = doc(db, `companies/${user.companyId}/clients`, String(d.clientId));
+              batch.set(clientRef, { balance: d.newBalance, updatedAt: serverTimestamp() }, { merge: true });
+
+              // 🔥 Auditoría: qué se corrigió, de cuánto a cuánto, quién y cuándo —
+              // ningún documento histórico del ledger se toca ni se modifica.
+              const repairRef = doc(collection(db, `companies/${user.companyId}/balance_repairs`));
+              batch.set(repairRef, {
+                  clientId: d.clientId,
+                  clientName: d.name,
+                  oldBalance: d.oldBalance,
+                  newBalance: d.newBalance,
+                  delta: d.delta,
+                  appliedBy: user.uid,
+                  appliedByName: user.name || user.email || 'Admin',
+                  timestamp: nowIso
+              });
+          }
+
+          await batch.commit();
+          applied += chunk.length;
+
+          for (const d of chunk) {
+              try {
+                  await dbLocal.clients.update(d.clientId, { balance: d.newBalance, updatedAt: nowIso, syncStatus: 'synced' });
+              } catch (e) { /* no crítico: el próximo pull de clientes lo trae igual */ }
+          }
+      }
+
+      return { applied };
   }
 };

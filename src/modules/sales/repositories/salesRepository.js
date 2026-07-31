@@ -14,9 +14,10 @@ import {
     Timestamp,
     limit
 } from 'firebase/firestore';
-import { useAuthStore } from '../../auth/store/useAuthStore'; 
+import { useAuthStore } from '../../auth/store/useAuthStore';
 import { productRepository } from '../../inventory/repositories/productRepository';
 import { cashRepository } from '../../cash/repositories/cashRepository';
+import { pushCashMovementWithShiftCounter } from '../../cash/services/shiftLedgerService';
 
 // ==========================================
 // ☁️ HELPER: SYNC OPTIMISTA NEXUS CORE
@@ -64,6 +65,24 @@ const triggerOptimisticSync = async (collectionName, data, companyId) => {
         }).catch(err => console.warn(`☁️ Sync optimista falló (${collectionName}), background sync lo tomará.`));
     } catch (err) {
         console.warn(`Error trigger sync`, err);
+    }
+};
+
+// =========================================================================
+// ☁️ SYNC OPTIMISTA DE CASH_MOVEMENTS (CONTADOR ATÓMICO DE CAJA)
+// =========================================================================
+// A diferencia de triggerOptimisticSync, este push va por shiftLedgerService:
+// escribe el cash_movement y, si corresponde, incrementa shifts/{shiftId}.runningTotals
+// atómicamente en la misma transacción — así el "esperado" de un turno no depende
+// de qué dispositivo tiene replicadas localmente las ventas de otro.
+const pushCashMovementOptimistic = async (cm, companyId) => {
+    if (!navigator.onLine || !companyId || !cm) return;
+    try {
+        await pushCashMovementWithShiftCounter(companyId, cm);
+        const dbLocal = await getDB();
+        await dbLocal.cash_movements.update(cm.id, { syncStatus: 'synced' });
+    } catch (err) {
+        console.warn('☁️ Sync optimista (cash_movements) falló, background sync lo tomará.', err);
     }
 };
 
@@ -354,7 +373,7 @@ export const salesRepository = {
     triggerOptimisticSync('sales', sale, user.companyId);
     
     if (!isBudget) {
-        cashMovementsToCreate.forEach(cm => triggerOptimisticSync('cash_movements', cm, user.companyId));
+        cashMovementsToCreate.forEach(cm => pushCashMovementOptimistic(cm, user.companyId));
     }
 
     return sale;

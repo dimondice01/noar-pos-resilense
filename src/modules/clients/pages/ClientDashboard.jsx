@@ -140,7 +140,25 @@ export const ClientDashboard = ({ clientId, onBack }) => {
 
         const sortedLedger = [...movements, ...paidEntries]
             .sort((a, b) => new Date(b.date) - new Date(a.date));
-        setLedger(sortedLedger);
+
+        // 🔥 SALDO CORRIDO POR FILA (autorreparable): se recalcula desde los
+        // hechos crudos (amount/type/date, nunca corrompidos) en vez de confiar
+        // en el newBalance guardado en cada doc — mismo criterio de signo que
+        // currentDebt. Se calcula sobre el historial COMPLETO sin filtrar, en
+        // orden cronológico ascendente, para que arrastre bien el saldo previo
+        // sin importar el filtro de período aplicado después en la tabla.
+        const chronological = [...sortedLedger].sort((a, b) => new Date(a.date) - new Date(b.date));
+        let running = 0;
+        const balanceById = new Map();
+        chronological.forEach(mov => {
+            const amount = parseFloat(mov.amount) || 0;
+            if (mov.type === 'SALE_DEBT') running += amount;
+            else if (mov.type === 'PAYMENT' || mov.type === 'REFUND' || mov.type === 'LIQUIDATION') running -= amount;
+            balanceById.set(mov.id, running);
+        });
+        const ledgerWithBalances = sortedLedger.map(mov => ({ ...mov, computedBalance: balanceById.get(mov.id) }));
+
+        setLedger(ledgerWithBalances);
 
     } catch (error) {
         console.error(error);
@@ -493,7 +511,7 @@ export const ClientDashboard = ({ clientId, onBack }) => {
                                       </td>
 
                                       <td className="px-4 py-3 text-right font-mono text-sys-700 text-sm font-bold bg-sys-50/40 border-l border-sys-100">
-                                          {mov.type === 'SALE_PAID' ? <span className="text-sys-300">—</span> : formatCurrency(mov.newBalance)}
+                                          {mov.type === 'SALE_PAID' ? <span className="text-sys-300">—</span> : formatCurrency(mov.computedBalance)}
                                       </td>
 
                                       <td className="px-4 py-3 text-center">

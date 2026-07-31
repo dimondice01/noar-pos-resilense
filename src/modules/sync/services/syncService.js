@@ -14,9 +14,11 @@ import {
     Timestamp,
     increment
 } from 'firebase/firestore'; 
-import { db } from '../../../database/firebase'; 
-import { getDB } from '../../../database/db'; 
-import { useAuthStore } from '../../auth/store/useAuthStore'; 
+import { db } from '../../../database/firebase';
+import { getDB } from '../../../database/db';
+import { useAuthStore } from '../../auth/store/useAuthStore';
+import { pushCashMovementWithShiftCounter } from '../../cash/services/shiftLedgerService';
+import { pushLedgerMovementWithBalanceIncrement } from '../../clients/services/customerLedgerService';
 
 const SYNC_KEYS = {}; // Deprecated: Usamos Dexie como fuente de verdad del estado de sync.
 
@@ -176,7 +178,10 @@ export const syncService = {
           expectedDigital: parseFloat(data.expectedDigital || 0),
           withdrawn: parseFloat(data.withdrawn || 0),
           audited: data.audited === true,
-          auditSnapshot: data.auditSnapshot || null, 
+          auditSnapshot: data.auditSnapshot || null,
+          // 🔥 Contador atómico de caja — solo lectura acá, nunca se re-sube tal
+          // cual (ver exclusión en syncPendingShifts / cashRepository._syncToCloud).
+          runningTotals: data.runningTotals || null,
           updatedAt: data.updatedAt?.toDate ? data.updatedAt.toDate().toISOString() : (data.updatedAt || new Date().toISOString()),
           syncStatus: 'synced'
       };
@@ -1545,7 +1550,10 @@ export const syncService = {
               const safeId = this._ensureValidCloudId(shift, `shift_${shift.branchId || 'b'}`);
               const docRef = doc(colRef, safeId);
 
-              const { localId, syncStatus, syncRetries, id, ...cleanShift } = shift;
+              // 🔥 runningTotals SOLO se muta vía shiftLedgerService (transacción con
+              // increment()). Re-subir el objeto shift local completo con ese campo
+              // pisaría el valor ya incrementado en el servidor — se excluye acá.
+              const { localId, syncStatus, syncRetries, id, runningTotals, ...cleanShift } = shift;
               const nowIso = new Date().toISOString();
 
               await setDoc(docRef, {
@@ -1578,26 +1586,22 @@ export const syncService = {
       if (pendingMovs.length === 0) return { synced: 0 };
 
       let totalSynced = 0;
-      const colRef = collection(db, 'companies', companyId, 'cash_movements');
 
       for (const mov of pendingMovs) {
           try {
               if (!mov.id) continue;
               const safeId = this._ensureValidCloudId(mov, 'cash');
-              const docRef = doc(colRef, safeId);
-              const { syncStatus, syncRetries, localId, id, ...cleanMov } = mov;
-              const nowIso = new Date().toISOString();
 
-              await setDoc(docRef, {
-                  ...this._deepSanitize(cleanMov),
-                  firestoreId: safeId,
-                  updatedAt: serverTimestamp()
-              }, { merge: true });
+              // 🔥 CONTADOR ATÓMICO DE CAJA: escribe el movimiento e incrementa
+              // shifts/{shiftId}.runningTotals en la misma transacción (ver
+              // shiftLedgerService) — idempotente frente a reintentos duplicados,
+              // incluso si este mismo doc ya se había subido antes desde otro ciclo.
+              await pushCashMovementWithShiftCounter(companyId, { ...mov, id: safeId });
 
               await localDb.cash_movements.update(mov.id, {
                   syncStatus: 'synced',
                   firestoreId: safeId,
-                  updatedAt: nowIso
+                  updatedAt: new Date().toISOString()
               });
               totalSynced++;
           } catch (err) {
@@ -1723,31 +1727,27 @@ export const syncService = {
   async syncPendingCustomerLedger(companyId) {
       const localDb = await getDB();
       const pendingLedger = await localDb.customer_ledger.filter(c => c.syncStatus !== 'synced').toArray();
-      
+
       if (pendingLedger.length === 0) return { synced: 0 };
 
       let totalSynced = 0;
-      const colRef = collection(db, 'companies', companyId, 'customer_ledger');
 
       for (const mov of pendingLedger) {
           try {
               if (!mov.id) continue;
               const safeId = this._ensureValidCloudId(mov, 'cledg');
-              const docRef = doc(colRef, safeId); 
-              const { syncStatus, localId, id, ...cleanMov } = mov;
-              const nowIso = new Date().toISOString();
 
-              await setDoc(docRef, {
-                  ...this._deepSanitize(cleanMov),
+              // 🔥 CONTADOR ATÓMICO DE SALDO: escribe el movimiento e incrementa
+              // clients/{clientId}.balance en la misma transacción (ver
+              // customerLedgerService) — idempotente frente a reintentos. Esta
+              // cola es el único camino de reintento confiable para el balance
+              // (no existe syncPendingClients).
+              await pushLedgerMovementWithBalanceIncrement(companyId, { ...mov, id: safeId });
+
+              await localDb.customer_ledger.update(mov.id, {
+                  syncStatus: 'synced',
                   firestoreId: safeId,
-                  syncedAt: serverTimestamp(),
-                  updatedAt: serverTimestamp()
-              }, { merge: true });
-
-              await localDb.customer_ledger.update(mov.id, { 
-                  syncStatus: 'synced', 
-                  firestoreId: safeId, 
-                  updatedAt: nowIso 
+                  updatedAt: new Date().toISOString()
               });
               totalSynced++;
           } catch (err) {

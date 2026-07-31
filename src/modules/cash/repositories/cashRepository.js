@@ -1,8 +1,9 @@
 import { getDB } from '../../../database/db';
 import { db } from '../../../database/firebase';
-import { doc, setDoc, collection, query, where, getDocs, limit, orderBy } from 'firebase/firestore';
-import { useAuthStore } from '../../auth/store/useAuthStore'; 
+import { doc, setDoc, getDoc, collection, query, where, getDocs, limit, orderBy } from 'firebase/firestore';
+import { useAuthStore } from '../../auth/store/useAuthStore';
 import { syncService } from '../../sync/services/syncService'; // 🔥 IMPORTACIÓN FALTANTE
+import { pushCashMovementWithShiftCounter } from '../services/shiftLedgerService';
 
 // 🔥 GENERADOR DE ID GLOBAL ÚNICO (Blindaje Multi-Caja)
 const generateGlobalId = (prefix) => {
@@ -60,14 +61,24 @@ export const cashRepository = {
             initialAmount: parseFloat(initialAmount),
             
             // Valores que se llenan al cerrar
-            expectedCash: 0,     
-            finalCash: 0,       
-            leftInCash: 0, 
-            withdrawn: 0,  
-            difference: 0,       
-            
+            expectedCash: 0,
+            finalCash: 0,
+            leftInCash: 0,
+            withdrawn: 0,
+            difference: 0,
+
+            // 🔥 CONTADOR ATÓMICO DE CAJA (ver shiftLedgerService) — arranca en cero,
+            // se incrementa transaccionalmente en cada cash_movement, nunca se re-sube
+            // completo (ver exclusión en _syncToCloud) para no pisar el valor del servidor.
+            runningTotals: {
+                cash: 0,
+                digital: 0,
+                byMethod: {},
+                movementsCount: 0
+            },
+
             audited: false,
-            syncStatus: 'pending' 
+            syncStatus: 'pending'
         };
 
         // Movimiento inicial de "Fondo de Caja"
@@ -94,8 +105,8 @@ export const cashRepository = {
 
         // 3. Sincronización en Segundo Plano (No bloqueante)
         this._syncToCloud('shifts', shift);
-        this._syncToCloud('cash_movements', initialMovement);
-        
+        this._pushCashMovement(initialMovement);
+
         return shift;
     },
 
@@ -121,10 +132,18 @@ export const cashRepository = {
                 await Promise.all([
                     syncService.syncInitialSales(user.companyId, branchId, user.role),
                     syncService.syncInitialMovements(user.companyId, branchId, user.role),
-                    // También bajamos cash_movements específicos si existiera una función dedicada 
+                    // También bajamos cash_movements específicos si existiera una función dedicada
                     // (syncInitialMovements ya baja kardex, bajamos cash_movements por si acaso)
                     this.getCurrentShift() // Esto ayuda a refrescar estado local
                 ]);
+
+                // 🔥 CONTADOR DE CAJA: traemos runningTotals directo de Firestore (no
+                // depender del listener) justo antes de calcular — es el momento crítico
+                // donde vale la pena pagar el round-trip extra.
+                const freshShiftSnap = await getDoc(doc(db, `companies/${user.companyId}/shifts`, shiftId));
+                if (freshShiftSnap.exists() && freshShiftSnap.data().runningTotals) {
+                    await dbLocal.shifts.update(shiftId, { runningTotals: freshShiftSnap.data().runningTotals });
+                }
             } catch (syncErr) { console.warn("Sync preventivo falló, usando datos locales:", syncErr); }
         }
 
@@ -181,11 +200,22 @@ export const cashRepository = {
                 
                 expectedCash: currentAudit.expectedCash,
                 initialAmount: currentAudit.initialAmount,
-                
+
+                // 🔥 EVIDENCIA DE DRIFT: si el contador remoto (fuente de verdad) difirió
+                // del detalle sumado localmente en este dispositivo, queda registrado acá
+                // para siempre — esto es justo lo que hubiera evitado el incidente real.
+                totalCashLocalCrossCheck: currentAudit.totalCashLocalCrossCheck,
+                totalCashDrift: currentAudit.totalCashDrift,
+                hasDriftWarning: currentAudit.hasDriftWarning,
+
                 declaredCash: declared,
                 leftInCash: left,
                 difference: difference,
-                
+
+                // 🔥 Trazabilidad: si hubo que tildar el checkbox de "diferencia grande"
+                // en CashClosingModal, queda registrado permanentemente acá.
+                overrideConfirmed: !!closingData.overrideConfirmed,
+
                 generatedAt: new Date().toISOString()
             },
 
@@ -229,7 +259,7 @@ export const cashRepository = {
                 .toArray();
             
             for (const mov of pendingMovs) {
-                await this._syncToCloud('cash_movements', mov);
+                await this._pushCashMovement(mov);
             }
         } catch (e) {
             console.warn("⚠️ Error en sync forzado previo al cierre:", e);
@@ -238,7 +268,7 @@ export const cashRepository = {
         // Sync Background del turno cerrado
         this._syncToCloud('shifts', closedShift);
         if (withdrawalMovement) {
-            this._syncToCloud('cash_movements', withdrawalMovement);
+            this._pushCashMovement(withdrawalMovement);
         }
 
         return closedShift;
@@ -279,12 +309,15 @@ export const cashRepository = {
     // 🔥 SYNC INTERNO (BACKGROUND)
     // =========================================
     async _syncToCloud(collectionName, data) {
-        if (!navigator.onLine) return; 
+        if (!navigator.onLine) return;
         const { user } = useAuthStore.getState();
         if (!user || !user.companyId) return;
 
         try {
-            const { syncStatus, localId, ...cloudData } = data;
+            // 🔥 runningTotals SOLO se muta vía shiftLedgerService (transacción con increment()).
+            // Si un objeto 'shift' local se re-sube acá con un runningTotals plano, PISA el valor
+            // ya incrementado en el servidor (merge reemplaza el subcampo entero, no lo combina).
+            const { syncStatus, localId, runningTotals, ...cloudData } = data;
             const path = `companies/${user.companyId}/${collectionName}`;
             
             // Forzamos String para evitar bugs de Firebase
@@ -302,8 +335,28 @@ export const cashRepository = {
             const dbLocal = await getDB();
             await dbLocal.table(collectionName).update(data.id, { syncStatus: 'synced', firestoreId: cloudId });
 
-        } catch (e) { 
-            console.warn(`Sync start error ${collectionName}:`, e); 
+        } catch (e) {
+            console.warn(`Sync start error ${collectionName}:`, e);
+        }
+    },
+
+    // =========================================
+    // 🔥 SYNC DE CASH_MOVEMENTS (CONTADOR ATÓMICO)
+    // =========================================
+    // Reemplaza _syncToCloud para 'cash_movements': escribe el movimiento y, si
+    // corresponde, incrementa shifts/{shiftId}.runningTotals atómicamente (ver
+    // shiftLedgerService). Idempotente frente a reintentos duplicados.
+    async _pushCashMovement(movement) {
+        if (!navigator.onLine) return;
+        const { user } = useAuthStore.getState();
+        if (!user || !user.companyId) return;
+
+        try {
+            await pushCashMovementWithShiftCounter(user.companyId, movement);
+            const dbLocal = await getDB();
+            await dbLocal.cash_movements.update(movement.id, { syncStatus: 'synced' });
+        } catch (e) {
+            console.warn('Background Sync Error (cash_movements):', e);
         }
     },
 
@@ -357,7 +410,7 @@ export const cashRepository = {
         };
 
         await dbLocal.cash_movements.put(newMov);
-        this._syncToCloud('cash_movements', newMov);
+        this._pushCashMovement(newMov);
         return newMov;
     },
 
@@ -616,16 +669,33 @@ export const cashRepository = {
             }
         });
 
-        // C. CÁLCULO FINAL DE CAJA TEÓRICA 🔥 (AHORA SÍ ES PERFECTO)
-        // Fondo Inicial + Ventas Efectivo + Ingresos Manuales (Efectivo) - Salidas Manuales/Proveedores (Efectivo)
-        state.totalCash = state.initialAmount + state.salesCash + state.manualIn - state.manualOut;
-
+        // C. CÁLCULO LOCAL (detalle/auditoría — ya NO es la fuente de verdad del total,
+        // ver runningTotals abajo. Se conserva como cross-check: si diverge del contador
+        // remoto, es señal de que este dispositivo tiene datos incompletos.)
         // Redondeo de seguridad para evitar bugs de coma flotante de JS
         const round = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
-        state.totalCash = round(state.totalCash);
+        const localTotalCash = round(state.initialAmount + state.salesCash + state.manualIn - state.manualOut);
+
+        state.totalCashLocalCrossCheck = localTotalCash;
+        state.totalCashDrift = 0;
+        state.hasDriftWarning = false;
+
+        // 🔥 CONTADOR ATÓMICO (shiftLedgerService): fuente de verdad de expectedCash.
+        // No depende de qué filas tenga replicadas ESTE dispositivo — se actualiza
+        // atómicamente en el servidor con cada cash_movement, sin importar la PC de origen.
+        if (shift?.runningTotals && typeof shift.runningTotals.cash === 'number') {
+            const counterTotalCash = round(state.initialAmount + shift.runningTotals.cash);
+            state.totalCash = counterTotalCash;
+            state.totalCashDrift = round(counterTotalCash - localTotalCash);
+            state.hasDriftWarning = Math.abs(state.totalCashDrift) > 1; // tolerancia $1 por redondeo
+        } else {
+            // Turno legado sin runningTotals (o todavía no sincronizado): fallback al cálculo local.
+            state.totalCash = localTotalCash;
+        }
+
         state.totalSales = round(state.totalSales);
         state.totalDigital = round(state.totalDigital + state.digitalIn);
-        
+
         return state;
     },
 
@@ -785,7 +855,11 @@ export const cashRepository = {
                 totalDigital: state.totalDigital,
                 
                 expectedCash: state.totalCash, // 🔥 EL NÚMERO MÁGICO DE CAJA PERFECTO
-                
+
+                totalCashLocalCrossCheck: state.totalCashLocalCrossCheck,
+                totalCashDrift: state.totalCashDrift,
+                hasDriftWarning: state.hasDriftWarning,
+
                 leftInCash: Number(shift.leftInCash) || 0,
                 declaredCash: Number(shift.finalCash) || 0,
                 withdrawn: Number(shift.withdrawn) || 0

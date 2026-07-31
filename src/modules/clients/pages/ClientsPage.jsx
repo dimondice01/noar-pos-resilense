@@ -1,29 +1,43 @@
-import React, { useEffect, useState } from 'react';
-import { Plus, Search, Edit2, Trash2, Users, CreditCard, ChevronRight, AlertCircle, Phone, Mail, Loader2 } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { Plus, Search, Edit2, Trash2, Users, CreditCard, ChevronRight, AlertCircle, Phone, Mail, Loader2, ShieldCheck } from 'lucide-react';
 import { clientRepository } from '../repositories/clientRepository';
 import { Card } from '../../../core/ui/Card';
 import { Button } from '../../../core/ui/Button';
 import { ClientModal } from '../components/ClientModal';
-import { ClientDashboard } from './ClientDashboard'; 
+import { RecalculateBalancesModal } from '../components/RecalculateBalancesModal';
+import { ClientDashboard } from './ClientDashboard';
 import { cn } from '../../../core/utils/cn';
-import { useAuthStore } from '../../auth/store/useAuthStore'; 
+import { useAuthStore } from '../../auth/store/useAuthStore';
 import toast from 'react-hot-toast';
 
 export const ClientsPage = () => {
   const { user } = useAuthStore();
+  const isSuperUser = user?.role === 'ADMIN' || user?.role === 'OWNER';
   const [clients, setClients] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
-  
+
   // Navigation State (Router interno)
-  const [selectedClientId, setSelectedClientId] = useState(null); 
+  const [selectedClientId, setSelectedClientId] = useState(null);
 
   // Modal State
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingClient, setEditingClient] = useState(null);
+  const [isRecalcOpen, setIsRecalcOpen] = useState(false);
+
+  // 🔥 GUARD ANTI-CARRERA: loadClients() se dispara desde varios lugares
+  // (montaje, listener de sync, búsqueda vacía) casi al mismo tiempo. Sin esto,
+  // una llamada que arranca antes pero tarda más (por la auto-sanación, que
+  // hace round-trips de red) puede resolver DESPUÉS de una más rápida y
+  // pisarle el resultado con datos viejos — el síntoma era "solo veo 1 de 2
+  // clientes" de forma intermitente. Solo se aplica el resultado de la
+  // invocación más reciente; cualquier respuesta más vieja que llegue tarde
+  // se descarta.
+  const loadRequestId = useRef(0);
 
   // Carga Inicial & Auto-Sanación
   const loadClients = async () => {
+    const requestId = ++loadRequestId.current;
     try {
       setLoading(true);
       const data = await clientRepository.getAll();
@@ -37,7 +51,7 @@ export const ClientsPage = () => {
               const { db: firestoreDB } = await import('../../../database/firebase');
               const { getDB } = await import('../../../database/db');
               const dbLocal = await getDB();
-              
+
               const batchPromesas = pendingClients.map(async (client) => {
                   try {
                       const cloudId = String(client.firestoreId || client.id);
@@ -58,11 +72,11 @@ export const ClientsPage = () => {
           }
       }
 
-      setClients(data);
+      if (requestId === loadRequestId.current) setClients(data);
     } catch (error) {
       console.error("Error cargando clientes:", error);
     } finally {
-      setLoading(false);
+      if (requestId === loadRequestId.current) setLoading(false);
     }
   };
 
@@ -187,6 +201,16 @@ export const ClientsPage = () => {
         </div>
         
         <div className="flex items-center gap-3">
+            {isSuperUser && (
+                <Button
+                    variant="outline"
+                    onClick={() => setIsRecalcOpen(true)}
+                    className="border-brand/30 text-brand bg-brand/5 hover:bg-brand hover:text-white transition-all"
+                    title="Recalcular saldos de cuenta corriente desde el historial completo"
+                >
+                    <ShieldCheck size={18} className="mr-2" /> Actualizar Saldos
+                </Button>
+            )}
             <Button onClick={() => { setEditingClient(null); setIsModalOpen(true); }} className="shadow-lg shadow-brand/20">
                 <Plus size={20} className="mr-2" /> Nuevo Cliente
             </Button>
@@ -337,11 +361,17 @@ export const ClientsPage = () => {
         </div>
       </Card>
 
-      <ClientModal 
+      <ClientModal
         isOpen={isModalOpen}
         onClose={() => setIsModalOpen(false)}
         clientToEdit={editingClient}
         onSave={handleSave}
+      />
+
+      <RecalculateBalancesModal
+        isOpen={isRecalcOpen}
+        onClose={() => setIsRecalcOpen(false)}
+        onApplied={loadClients}
       />
     </div>
   );
