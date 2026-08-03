@@ -30,7 +30,10 @@ const app = initializeApp(firebaseConfig);
 export const db = initializeFirestore(app, {
   localCache: persistentLocalCache({
     tabManager: persistentMultipleTabManager()
-  })
+  }),
+  // Auto-detecta si el canal streaming falla (proxies, navegadores viejos como Supermium/Win8.1)
+  // y cae a long-polling solo en esos casos. No afecta a clientes con conexión normal.
+  experimentalAutoDetectLongPolling: true
 });
 
 // 3. Exportar servicios

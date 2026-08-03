@@ -412,6 +412,7 @@ export const syncService = {
               };
           });
           if (inventoryItems.length > 0) {
+              window.dispatchEvent(new CustomEvent('noar:inventory-sync-progress', { detail: { total: inventoryItems.length } }));
               // Nunca sobreescribir registros con ventas pendientes de subir
               const pendingSet = new Set(
                   (await localDb.inventory.where('syncStatus').equals('pending').toArray())
@@ -431,6 +432,7 @@ export const syncService = {
                   updatedAt: new Date().toISOString(),
                   syncStatus: 'synced'
                }));
+               window.dispatchEvent(new CustomEvent('noar:inventory-sync-progress', { detail: { total: allItems.length } }));
                // Nunca sobreescribir registros con ventas pendientes de subir
                const pendingSet = new Set(
                    (await localDb.inventory.where('syncStatus').equals('pending').toArray())

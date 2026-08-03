@@ -17,8 +17,9 @@ import { db } from '../database/firebase';
 
 // 🔥 REPOSITORIOS LOCALES
 import { getDB } from '../database/db'; 
-import { CashClosingModal } from '../modules/cash/components/CashClosingModal'; 
+import { CashClosingModal } from '../modules/cash/components/CashClosingModal';
 import { cashRepository } from '../modules/cash/repositories/cashRepository';
+import { syncService } from '../modules/sync/services/syncService';
 
 import defaultLogo from '../assets/logo.png'; 
 
@@ -163,17 +164,38 @@ const PinRequestModal = ({ isOpen, onClose, onSuccess }) => {
 // 3. WRAPPER CIERRE CAJA
 // ============================================================================
 const CloseShiftModalWrapper = ({ isOpen, onClose, onShiftClosed }) => {
+    const { user, activeBranchId } = useAuthStore();
     const [balance, setBalance] = useState(null);
     const [shift, setShift] = useState(null);
     const [loading, setLoading] = useState(false);
-    const [processing, setProcessing] = useState(false); 
+    const [processing, setProcessing] = useState(false);
 
     useEffect(() => {
         if (isOpen) {
             const fetchShiftData = async () => {
                 setLoading(true);
                 try {
-                    const currentShift = await cashRepository.getCurrentShift(); 
+                    // 🔥 Refrescar shift + cash_movements desde la nube ANTES de calcular el balance.
+                    // Evita que el cierre se calcule con datos locales desactualizados (ej: initialAmount
+                    // corregido por un admin, o movimientos manuales cargados desde otro dispositivo).
+                    if (navigator.onLine && user?.companyId) {
+                        try {
+                            const dbLocal = await getDB();
+                            // Timeout corto: en redes lentas/inestables no debe bloquear el cierre.
+                            // Si no llega a tiempo, seguimos con lo que ya haya en Dexie (igual que offline).
+                            await Promise.race([
+                                Promise.all([
+                                    cashRepository._fetchHistoryFromCloud(dbLocal, user),
+                                    syncService.syncInitialCashMovements(user.companyId, activeBranchId)
+                                ]),
+                                new Promise((resolve) => setTimeout(resolve, 6000))
+                            ]);
+                        } catch (syncErr) {
+                            console.warn("No se pudo refrescar caja desde la nube antes de cerrar:", syncErr);
+                        }
+                    }
+
+                    const currentShift = await cashRepository.getCurrentShift();
                     if (currentShift) {
                         setShift(currentShift);
                         const currentBalance = await cashRepository.getShiftBalance(currentShift.id);

@@ -671,6 +671,15 @@ export const InventoryPage = () => {
     const [products, setProducts] = useState([]);
     const [loading, setLoading] = useState(true);
     const [loadingMessage, setLoadingMessage] = useState('Iniciando...');
+
+    // Progreso de descarga de stock: confirma al usuario que el sync está avanzando (útil en hardware lento)
+    useEffect(() => {
+        const onSyncProgress = (e) => {
+            setLoadingMessage(`Descargando Stock... (${e.detail.total} productos)`);
+        };
+        window.addEventListener('noar:inventory-sync-progress', onSyncProgress);
+        return () => window.removeEventListener('noar:inventory-sync-progress', onSyncProgress);
+    }, []);
     const [masters, setMasters] = useState({ categories: [], brands: [], suppliers: [] });
 
     // Matrix Global State
