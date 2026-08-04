@@ -138,3 +138,45 @@ export async function pushCashMovementWithShiftCounter(companyId, movement) {
 
     return { counted };
 }
+
+/**
+ * Cierra un turno de forma atómica e idempotente vía transacción Firestore.
+ * Si otro dispositivo ya cerró este turno primero, NO lo pisa (evita el
+ * last-write-wins de un setDoc plano) — devuelve { won:false, remoteShift }
+ * para que el caller converja su Dexie local al cierre real.
+ * `closedShiftPayload.closeAttemptId` distingue "ya cerrado por otro" de
+ * "reintento de mi propio cierre" (mismo dispositivo, offline -> online).
+ */
+export async function closeShiftAtomic(companyId, shiftId, closedShiftPayload) {
+    if (!companyId || !shiftId) {
+        throw new Error('closeShiftAtomic: faltan companyId o shiftId');
+    }
+
+    const shiftRef = doc(db, `companies/${companyId}/shifts`, String(shiftId));
+    // eslint-disable-next-line no-unused-vars
+    const { syncStatus, syncRetries, localId, id, runningTotals, ...cleanShift } = closedShiftPayload;
+    const nowIso = new Date().toISOString();
+
+    return await runTransaction(db, async (tx) => {
+        // Única lectura antes de cualquier escritura (regla de Firestore transactions).
+        const snap = await tx.get(shiftRef);
+
+        const remoteAlreadyClosed = snap.exists() && snap.data()?.status === 'CLOSED';
+        const isOurOwnRetry = remoteAlreadyClosed && snap.data()?.closeAttemptId === closedShiftPayload.closeAttemptId;
+
+        if (remoteAlreadyClosed && !isOurOwnRetry) {
+            // Otro dispositivo cerró primero. No pisamos su cierre.
+            return { won: false, remoteShift: snap.data() };
+        }
+
+        tx.set(shiftRef, {
+            ...stripUndefined(cleanShift),
+            firestoreId: String(shiftId),
+            updatedAt: nowIso,
+            syncedAt: nowIso,
+            syncStatus: 'synced'
+        }, { merge: true });
+
+        return { won: true };
+    });
+}

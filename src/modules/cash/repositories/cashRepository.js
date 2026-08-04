@@ -3,7 +3,7 @@ import { db } from '../../../database/firebase';
 import { doc, setDoc, getDoc, collection, query, where, getDocs, limit, orderBy } from 'firebase/firestore';
 import { useAuthStore } from '../../auth/store/useAuthStore';
 import { syncService } from '../../sync/services/syncService'; // 🔥 IMPORTACIÓN FALTANTE
-import { pushCashMovementWithShiftCounter } from '../services/shiftLedgerService';
+import { pushCashMovementWithShiftCounter, closeShiftAtomic } from '../services/shiftLedgerService';
 
 // 🔥 GENERADOR DE ID GLOBAL ÚNICO (Blindaje Multi-Caja)
 const generateGlobalId = (prefix) => {
@@ -117,6 +117,7 @@ export const cashRepository = {
         const dbLocal = await getDB();
         const shift = await dbLocal.shifts.get(shiftId);
         if (!shift) throw new Error("Turno no encontrado");
+        if (shift.status === 'CLOSED') throw new Error("Este turno ya fue cerrado.");
 
         const { user } = useAuthStore.getState();
         
@@ -161,6 +162,7 @@ export const cashRepository = {
             ...shift,
             status: 'CLOSED',
             closedAt: new Date().toISOString(),
+            closeAttemptId: generateGlobalId('close'), // 🔥 distingue "ya cerrado por otro" de "reintento propio"
             
             // Valores Finales
             finalCash: declared,      // Lo que dijo el cajero que hay
@@ -265,8 +267,8 @@ export const cashRepository = {
             console.warn("⚠️ Error en sync forzado previo al cierre:", e);
         }
 
-        // Sync Background del turno cerrado
-        this._syncToCloud('shifts', closedShift);
+        // Sync Background del turno cerrado (atómico, vía transacción — ver _syncShiftCloseToCloud)
+        this._syncShiftCloseToCloud(closedShift);
         if (withdrawalMovement) {
             this._pushCashMovement(withdrawalMovement);
         }
@@ -305,6 +307,33 @@ export const cashRepository = {
         return auditedShift;
     },
     
+    // =========================================
+    // 🔥 CIERRE ATÓMICO — SYNC ESPECÍFICO (BACKGROUND)
+    // =========================================
+    // No usa _syncToCloud genérico (setDoc plano): un cierre necesita
+    // transacción para no pisar el cierre de otro dispositivo (last-write-wins).
+    async _syncShiftCloseToCloud(closedShift) {
+        if (!navigator.onLine) return; // offline: queda 'pending', lo retoma syncPendingShifts
+        const { user } = useAuthStore.getState();
+        if (!user?.companyId) return;
+        try {
+            const result = await closeShiftAtomic(user.companyId, closedShift.id, closedShift);
+            const dbLocal = await getDB();
+            if (result.won) {
+                await dbLocal.shifts.update(closedShift.id, { syncStatus: 'synced', firestoreId: String(closedShift.id) });
+            } else {
+                // Perdimos la carrera: convergemos al cierre ganador remoto para no dejar
+                // un auditSnapshot fantasma en este dispositivo.
+                const winner = { ...result.remoteShift, id: closedShift.id, syncStatus: 'synced', firestoreId: String(closedShift.id) };
+                await dbLocal.shifts.put(winner);
+                console.warn('⚠️ Cierre en carrera: otro dispositivo cerró primero.', closedShift.id);
+                window.dispatchEvent(new CustomEvent('noar:shift-close-conflict', { detail: { shiftId: closedShift.id, winner } }));
+            }
+        } catch (e) {
+            console.warn('Sync start error (closeShift):', e); // queda 'pending' local, lo retoma syncPendingShifts
+        }
+    },
+
     // =========================================
     // 🔥 SYNC INTERNO (BACKGROUND)
     // =========================================

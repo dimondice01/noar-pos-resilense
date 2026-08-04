@@ -20,6 +20,7 @@ import { getDB } from '../database/db';
 import { CashClosingModal } from '../modules/cash/components/CashClosingModal';
 import { cashRepository } from '../modules/cash/repositories/cashRepository';
 import { syncService } from '../modules/sync/services/syncService';
+import { useShiftStore } from '../modules/cash/store/useShiftStore';
 
 import defaultLogo from '../assets/logo.png'; 
 
@@ -215,6 +216,19 @@ const CloseShiftModalWrapper = ({ isOpen, onClose, onShiftClosed }) => {
             fetchShiftData();
         }
     }, [isOpen]);
+
+    // 🔥 Si otro dispositivo cerró este mismo turno primero (carrera de cierre),
+    // avisar y salir en vez de dejar que el usuario siga operando sobre un cierre fantasma.
+    useEffect(() => {
+        const onCloseConflict = (e) => {
+            if (!isOpen || !shift || e.detail?.shiftId !== shift.id) return;
+            alert("⚠️ Este turno ya fue cerrado desde otro dispositivo. Se sincronizó el cierre real.");
+            useShiftStore.getState().clearShift();
+            onClose();
+        };
+        window.addEventListener('noar:shift-close-conflict', onCloseConflict);
+        return () => window.removeEventListener('noar:shift-close-conflict', onCloseConflict);
+    }, [isOpen, shift, onClose]);
 
     const handleConfirm = async (data) => {
         if (!shift || processing) return;

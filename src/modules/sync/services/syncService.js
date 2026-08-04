@@ -17,7 +17,7 @@ import {
 import { db } from '../../../database/firebase';
 import { getDB } from '../../../database/db';
 import { useAuthStore } from '../../auth/store/useAuthStore';
-import { pushCashMovementWithShiftCounter } from '../../cash/services/shiftLedgerService';
+import { pushCashMovementWithShiftCounter, closeShiftAtomic } from '../../cash/services/shiftLedgerService';
 import { pushLedgerMovementWithBalanceIncrement } from '../../clients/services/customerLedgerService';
 
 const SYNC_KEYS = {}; // Deprecated: Usamos Dexie como fuente de verdad del estado de sync.
@@ -1551,12 +1551,27 @@ export const syncService = {
               if (!shift.id) continue;
               const safeId = this._ensureValidCloudId(shift, `shift_${shift.branchId || 'b'}`);
               const docRef = doc(colRef, safeId);
+              const nowIso = new Date().toISOString();
+
+              // 🔥 Turnos CERRADOS: nunca un setDoc plano (last-write-wins). Enrutamos por
+              // la misma transacción atómica que usa el cierre online — si otro dispositivo
+              // ya cerró este turno primero, convergemos a su cierre en vez de pisarlo.
+              if (shift.status === 'CLOSED') {
+                  const result = await closeShiftAtomic(companyId, safeId, shift);
+                  if (!result.won) {
+                      await localDb.shifts.put({ ...result.remoteShift, id: shift.id, syncStatus: 'synced', firestoreId: safeId });
+                      window.dispatchEvent(new CustomEvent('noar:shift-close-conflict', { detail: { shiftId: shift.id, winner: result.remoteShift } }));
+                  } else {
+                      await localDb.shifts.update(shift.id, { syncStatus: 'synced', firestoreId: safeId, updatedAt: nowIso });
+                  }
+                  totalSynced++;
+                  continue;
+              }
 
               // 🔥 runningTotals SOLO se muta vía shiftLedgerService (transacción con
               // increment()). Re-subir el objeto shift local completo con ese campo
               // pisaría el valor ya incrementado en el servidor — se excluye acá.
               const { localId, syncStatus, syncRetries, id, runningTotals, ...cleanShift } = shift;
-              const nowIso = new Date().toISOString();
 
               await setDoc(docRef, {
                   ...this._deepSanitize(cleanShift),

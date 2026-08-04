@@ -435,11 +435,17 @@ export const CashPage = () => {
 
     useEffect(() => {
         const refresh = () => loadInitialData();
+        const onCloseConflict = (e) => {
+            toast.error(`⚠️ Cierre en carrera detectado en turno ${e.detail?.shiftId} — se conservó el cierre de otro dispositivo.`);
+            loadInitialData();
+        };
         window.addEventListener('noar:shifts-synced', refresh);
         window.addEventListener('noar:cash-movements-synced', refresh);
+        window.addEventListener('noar:shift-close-conflict', onCloseConflict);
         return () => {
             window.removeEventListener('noar:shifts-synced', refresh);
             window.removeEventListener('noar:cash-movements-synced', refresh);
+            window.removeEventListener('noar:shift-close-conflict', onCloseConflict);
         };
     }, [user?.companyId]);
 
