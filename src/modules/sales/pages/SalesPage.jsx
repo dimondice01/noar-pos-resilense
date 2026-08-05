@@ -242,7 +242,7 @@ export const SalesPage = () => {
   const [displayLimit, setDisplayLimit] = useState(150); 
   const [hasMore, setHasMore] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [periodTotals, setPeriodTotals] = useState({ gross: 0, netProfit: 0 }); 
+  const [periodTotals, setPeriodTotals] = useState({ gross: 0, netProfit: 0, count: 0 });
   
   const [filterPeriod, setFilterPeriod] = useState('today'); 
   const [customStart, setCustomStart] = useState(toInputDate(new Date()));
@@ -263,6 +263,9 @@ export const SalesPage = () => {
 
   // Ref para evitar stale closure en event listeners de sync
   const fetchOperationsRef = useRef(null);
+  // Rangos ya reconciliados con Firestore en esta sesión (evita re-consultar
+  // el mismo rango en cada evento de sync mientras se está viendo esa fecha)
+  const reconciledRangesRef = useRef(new Set());
 
   // 1. CARGAR LISTA DE CAJEROS
   useEffect(() => {
@@ -326,6 +329,11 @@ export const SalesPage = () => {
           } else if (filterPeriod === 'custom') {
               start = new Date(customStart + 'T00:00:00');
               end = new Date(customEnd + 'T23:59:59');
+              // 🛡️ Si el usuario solo tocó uno de los dos inputs y el rango quedó
+              // invertido (desde > hasta), normalizamos para no devolver vacío.
+              if (start.getTime() > end.getTime()) {
+                  [start, end] = [new Date(customEnd + 'T00:00:00'), new Date(customStart + 'T23:59:59')];
+              }
           }
 
           const { getDB } = await import('../../../database/db');
@@ -341,12 +349,62 @@ export const SalesPage = () => {
           const startTime = start.getTime();
           const endTime = end.getTime();
           
+          const currentCompanyId = user?.companyId || user?.tenantId;
+
           let filteredByDate = rawData.filter(op => {
+              // 🛡️ Defensivo multi-tenant: solo excluye si companyId está presente y no matchea.
+              // No excluye por ausencia para no romper registros cacheados de antes de este fix.
+              if (op.companyId && currentCompanyId && op.companyId !== currentCompanyId) return false;
               const opDateRaw = op.date || op.createdAt || op.syncedAt || op.updatedAt;
               if (!opDateRaw) return false;
               const opTime = new Date(opDateRaw).getTime();
               return opTime >= startTime && opTime <= endTime;
           });
+
+          // 🔥 Reconciliación con Firestore para rangos históricos: el local puede
+          // tener SOLO una parte de las ventas del rango (las que por algún motivo
+          // quedaron con updatedAt tipo Timestamp y sí bajaron por el delta sync),
+          // no necesariamente estar vacío. Por eso no alcanza con chequear
+          // filteredByDate.length === 0 — reconciliamos siempre que no sea "hoy"
+          // (que ya está cubierto por el listener en tiempo real) y haya conexión.
+          // fetchRemoteSalesRange filtra por 'date' (inmune al bug) y cachea en Dexie.
+          const isHistorical = filterPeriod !== 'today' && navigator.onLine;
+
+          // 🧮 Totales exactos vía agregación server-side: barato (no depende del
+          // volumen ni de ningún limit()), así que se recalcula en cada
+          // fetchOperations, sin el gate de sesión que sí aplica a la lista de
+          // tickets (esa sigue siendo la parte cara). Si falla o no aplica
+          // (offline/"hoy"), fetchRemoteSalesTotals devuelve null y se usa el
+          // reduce() client-side de siempre como fallback.
+          const totalsPromise = isHistorical
+              ? salesRepository.fetchRemoteSalesTotals(start, end, { filterAfip })
+              : Promise.resolve(null);
+
+          // 🛡️ La lista de tickets sí queda gateada: una sola reconciliación por
+          // rango+sucursal por sesión, para no re-leer Firestore en cada evento
+          // noar:sales-synced mientras se está viendo una fecha pasada.
+          const reconcileKey = `${start.toISOString()}_${end.toISOString()}_${activeBranchId}`;
+          let rangePromise = Promise.resolve([]);
+          if (isHistorical && !reconciledRangesRef.current.has(reconcileKey)) {
+              reconciledRangesRef.current.add(reconcileKey);
+              // 🛡️ Límite fijo: el total exacto ya viene de la agregación server-side
+              // (arriba), así que esta lista NO necesita ser casi-completa para sostener
+              // ningún número — solo alcanza con mostrar tickets. 500 cubre con margen
+              // el techo físico real (~300 ventas/día por sucursal con 1-2 cajas). Si el
+              // día de mañana hay sucursales de volumen mucho mayor, esto pide paginación
+              // real con cursor (startAfter) en vez de subir este número.
+              const remoteLimit = 500;
+              console.log(`🔎 [SalesPage] Reconciliando lista de tickets con Firestore ${start.toISOString()} → ${end.toISOString()} (branch: ${activeBranchId}, local: ${filteredByDate.length}, limit: ${remoteLimit})...`);
+              rangePromise = salesRepository.fetchRemoteSalesRange(start, end, { limit: remoteLimit });
+          }
+
+          const [exactTotals, remoteSales] = await Promise.all([totalsPromise, rangePromise]);
+
+          if (remoteSales.length > 0) {
+              console.log(`🔎 [SalesPage] fetchRemoteSalesRange devolvió ${remoteSales.length} ventas.`);
+              const localIds = new Set(filteredByDate.map(op => op.id));
+              filteredByDate = filteredByDate.concat(remoteSales.filter(s => !localIds.has(s.id)));
+          }
 
           filteredByDate.sort((a, b) => {
               const timeA = new Date(a.date || a.createdAt || 0).getTime();
@@ -354,17 +412,26 @@ export const SalesPage = () => {
               return timeB - timeA;
           });
 
-          // 🔥 TOTALES REALES: Excluimos anulados, devueltos, presupuestos y SINIESTROS
-          const validForTotals = filteredByDate.filter(op =>
-              op.afip?.status !== 'VOIDED' &&
-              op.status !== 'REFUNDED' &&
-              op.status !== 'ABANDONED' &&
-              op.type !== 'BUDGET' &&
-              (!filterAfip || op.afip?.status === 'APPROVED')
-          );
-          const gross = validForTotals.reduce((acc, op) => acc + (parseFloat(op.total) || 0), 0);
-          const netProfit = validForTotals.reduce((acc, op) => acc + (parseFloat(op.netProfit) || 0), 0);
-          setPeriodTotals({ gross, netProfit });
+          if (exactTotals) {
+              // ✅ Camino exacto: agregación server-side, no depende de displayLimit
+              // ni de cuántos docs bajó fetchRemoteSalesRange.
+              console.log(`🔎 [SalesPage] Totales exactos vía agregación: count=${exactTotals.count} gross=${exactTotals.gross}`);
+              setPeriodTotals({ gross: exactTotals.gross, netProfit: exactTotals.netProfit, count: exactTotals.count });
+          } else {
+              // 🛡️ Fallback: offline, filtro "hoy", o falló la agregación —
+              // misma lógica de siempre, reduce() sobre lo que haya en filteredByDate.
+              // 🔥 TOTALES REALES: Excluimos anulados, devueltos, presupuestos y SINIESTROS
+              const validForTotals = filteredByDate.filter(op =>
+                  op.afip?.status !== 'VOIDED' &&
+                  op.status !== 'REFUNDED' &&
+                  op.status !== 'ABANDONED' &&
+                  op.type !== 'BUDGET' &&
+                  (!filterAfip || op.afip?.status === 'APPROVED')
+              );
+              const gross = validForTotals.reduce((acc, op) => acc + (parseFloat(op.total) || 0), 0);
+              const netProfit = validForTotals.reduce((acc, op) => acc + (parseFloat(op.netProfit) || 0), 0);
+              setPeriodTotals({ gross, netProfit, count: validForTotals.length });
+          }
 
           const finalData = filteredByDate.slice(0, displayLimit);
 
@@ -763,6 +830,9 @@ export const SalesPage = () => {
                             </p>
                             <p className="text-xl font-black text-sys-900">
                                 $ {periodTotals.gross.toLocaleString('es-AR', {minimumFractionDigits: 2})}
+                            </p>
+                            <p className="text-[10px] text-sys-400 font-semibold mt-0.5">
+                                Ventas: {periodTotals.count.toLocaleString('es-AR')}
                             </p>
                         </div>
                         <div className="border-l border-sys-100 pl-6 hidden sm:block">

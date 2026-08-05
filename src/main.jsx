@@ -31,6 +31,12 @@ if (import.meta.env.DEV) {
     window.__noarClear = m.clearSeed;
     console.info('%c🌱 NOAR Seeder listo%c  →  window.__noarSeed()  /  window.__noarClear()', 'color:#22c55e;font-weight:bold', 'color:#888');
   });
+  // 🔧 DEBUG: consulta cruda a Firestore para auditar ventas por fecha/branch
+  import('./modules/sales/repositories/salesRepository.js').then(m => {
+    window.__noarDebugSales = m.salesRepository.debugSalesRange;
+    window.__noarDebugTotals = m.salesRepository.debugTotalsParity;
+    console.info('%c🔧 Debug Ventas listo%c  →  window.__noarDebugSales("2026-08-01","2026-08-01")  /  window.__noarDebugTotals("2026-08-01","2026-08-01")', 'color:#3b82f6;font-weight:bold', 'color:#888');
+  });
 }
 
 // 🚀 ARRANQUE DE REACT

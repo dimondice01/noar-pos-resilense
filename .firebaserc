@@ -1,6 +1,6 @@
 {
   "projects": {
-    "default": "noar-pos-prod",
+    "default": "salvadorpos1",
     "laesquina": "laesquina-pos",
     "produ": "salvadorpos1"
   },

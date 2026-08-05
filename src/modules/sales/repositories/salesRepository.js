@@ -10,9 +10,10 @@ import {
     query,
     where,
     getDocs,
-    onSnapshot,
-    Timestamp,
-    limit
+    limit,
+    getAggregateFromServer,
+    count,
+    sum
 } from 'firebase/firestore';
 import { useAuthStore } from '../../auth/store/useAuthStore';
 import { productRepository } from '../../inventory/repositories/productRepository';
@@ -48,7 +49,7 @@ const triggerOptimisticSync = async (collectionName, data, companyId) => {
         setDoc(doc(db, `companies/${companyId}/${collectionName}`, docId), {
             ...cleanData,
             firestoreId: docId,
-            updatedAt: nowIso,
+            updatedAt: serverTimestamp(),
             syncedAt: nowIso,
             origin: 'POS_WEB',
             syncStatus: 'synced'
@@ -86,8 +87,21 @@ const pushCashMovementOptimistic = async (cm, companyId) => {
     }
 };
 
+// ==========================================
+// 🧮 DOMINIO DE ESTADOS/TIPOS VÁLIDOS PARA TOTALES (Auditoría)
+// ==========================================
+// 🔥 Espejo exacto del filtro client-side histórico (validForTotals en SalesPage.jsx).
+// Firestore exige inclusión ('in'/'==') en vez de exclusión ('!=') para poder
+// combinarse con el rango de 'date' en la misma query (todas las desigualdades
+// de una query deben apuntar al mismo campo). Si se agrega un nuevo valor de
+// `status` o `type` a una venta (en createSale, refund, anulación, etc.), HAY
+// QUE ACTUALIZAR ESTA LISTA EN EL MISMO COMMIT — si no, esas ventas quedan
+// excluidas SILENCIOSAMENTE de los totales agregados.
+export const SALES_TOTALS_INCLUDED_STATUS = ['COMPLETED'];
+export const SALES_TOTALS_INCLUDED_TYPES = ['SALE', 'RECEIPT', 'INTERNAL', 'ABANDONED_CART'];
+
 export const salesRepository = {
-  
+
   // ==========================================
   // 🔢 GENERADOR DE NÚMEROS (ALBA SEQUENCE)
   // ==========================================
@@ -456,7 +470,9 @@ export const salesRepository = {
               q = query(q, where('branchId', '==', activeBranchId));
           }
 
+          console.log(`🔎 [fetchRemoteSalesRange] companyId=${companyId} branchId=${activeBranchId} date>=${startDate.toISOString()} date<=${endDate.toISOString()}`);
           const snapshot = await getDocs(q);
+          console.log(`🔎 [fetchRemoteSalesRange] Firestore devolvió ${snapshot.size} docs.`);
           if (snapshot.empty) return [];
 
           const dbLocal = await getDB();
@@ -477,6 +493,161 @@ export const salesRepository = {
           console.warn('fetchRemoteSalesRange error:', error);
           return [];
       }
+  },
+
+  // ==========================================
+  // 🧮 TOTALES EXACTOS VÍA AGREGACIÓN SERVER-SIDE
+  // ==========================================
+  // 🔥 count()/sum() de Firestore facturan por entradas de índice escaneadas
+  // (no por documento bajado a memoria), así que da el total EXACTO de un rango
+  // sin importar el volumen, sin el techo de limit() de fetchRemoteSalesRange.
+  // Nunca lanza: si algo falla (offline, falta índice, permisos) devuelve null
+  // y el llamador debe caer al reduce() client-side existente.
+  async fetchRemoteSalesTotals(startDate, endDate, { filterAfip = false } = {}) {
+      const { user, activeBranchId } = useAuthStore.getState();
+      const companyId = user?.companyId || user?.tenantId;
+      if (!companyId) return null;
+
+      try {
+          const salesRef = collection(db, 'companies', companyId, 'sales');
+          const baseClauses = [
+              where('date', '>=', startDate.toISOString()),
+              where('date', '<=', endDate.toISOString()),
+              where('status', 'in', SALES_TOTALS_INCLUDED_STATUS),
+              where('type', 'in', SALES_TOTALS_INCLUDED_TYPES),
+          ];
+          if (activeBranchId && activeBranchId !== 'ALL') {
+              baseClauses.push(where('branchId', '==', activeBranchId));
+          }
+
+          const aggSpec = { count: count(), gross: sum('total'), netProfit: sum('netProfit') };
+
+          if (filterAfip) {
+              // Caso simple: afip.status=='APPROVED' es una igualdad directa,
+              // no choca con el rango de date -> 1 sola query de agregación.
+              const q = query(salesRef, ...baseClauses, where('afip.status', '==', 'APPROVED'));
+              const snap = await getAggregateFromServer(q, aggSpec);
+              const d = snap.data();
+              return { count: d.count || 0, gross: d.gross || 0, netProfit: d.netProfit || 0 };
+          }
+
+          // Caso general: no se puede excluir afip.status=='VOIDED' con un where
+          // directo (sería una 2da desigualdad sobre otro campo, prohibido junto
+          // al rango de date). Se resuelve restando: la sub-query VOIDED comparte
+          // exactamente los mismos where de status/type que la principal, así que
+          // es un subconjunto exacto de ella -> restar una vez no duplica ni
+          // descuenta de más (los REFUNDED, que también quedan con afip.status
+          // VOIDED, ya están excluidos de AMBAS queries por el where('status','in',...)).
+          const mainQ = query(salesRef, ...baseClauses);
+          const voidedQ = query(salesRef, ...baseClauses, where('afip.status', '==', 'VOIDED'));
+
+          const [mainSnap, voidedSnap] = await Promise.all([
+              getAggregateFromServer(mainQ, aggSpec),
+              getAggregateFromServer(voidedQ, aggSpec)
+          ]);
+          const m = mainSnap.data();
+          const v = voidedSnap.data();
+
+          return {
+              count: (m.count || 0) - (v.count || 0),
+              gross: (m.gross || 0) - (v.gross || 0),
+              netProfit: (m.netProfit || 0) - (v.netProfit || 0)
+          };
+      } catch (error) {
+          console.warn('fetchRemoteSalesTotals error (fallback a reduce local):', error);
+          return null;
+      }
+  },
+
+  // 🔧 DEBUG DEV: consulta cruda a Firestore por rango de fecha, SIN filtrar por
+  // branchId, y desglosa el conteo por branchId encontrado. Uso: window.__noarDebugSales('2026-08-01','2026-08-01')
+  async debugSalesRange(startStr, endStr) {
+      const { user } = useAuthStore.getState();
+      const companyId = user?.companyId || user?.tenantId;
+      if (!companyId) { console.warn('[debugSalesRange] No hay companyId en sesión'); return []; }
+
+      const start = new Date(startStr + 'T00:00:00');
+      const end = new Date(endStr + 'T23:59:59');
+      const salesRef = collection(db, 'companies', companyId, 'sales');
+      const q = query(
+          salesRef,
+          where('date', '>=', start.toISOString()),
+          where('date', '<=', end.toISOString())
+      );
+      const snapshot = await getDocs(q);
+      const docs = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+
+      const byBranch = {};
+      docs.forEach(s => {
+          const b = s.branchId || '(sin branchId)';
+          byBranch[b] = (byBranch[b] || 0) + 1;
+      });
+
+      console.log(`[debugSalesRange] companyId=${companyId} rango=${start.toISOString()}..${end.toISOString()} → total=${docs.length}`);
+      console.table(byBranch);
+
+      // 🔎 Replica el filtro pendingSet que usa fetchRemoteSalesRange, para ver
+      // cuántos docs cloud están siendo descartados por creer que son pendientes locales.
+      const dbLocal = await getDB();
+      const localPending = await dbLocal.sales.where('syncStatus').equals('pending').toArray();
+      const pendingSet = new Set(localPending.map(s => s.id));
+      const excluded = docs.filter(d => pendingSet.has(d.id));
+      const wouldReturn = docs.filter(d => !pendingSet.has(d.id));
+
+      console.log(`[debugSalesRange] Dexie local total 'pending': ${localPending.length}`);
+      console.log(`[debugSalesRange] De los ${docs.length} docs cloud, ${excluded.length} están marcados 'pending' en Dexie local y SE EXCLUYEN. Quedarían: ${wouldReturn.length}`);
+      if (excluded.length > 0) {
+          console.log('[debugSalesRange] Ejemplo de local "pending" que bloquea un doc cloud real:', localPending.find(p => pendingSet.has(p.id)));
+      }
+
+      return docs;
+  },
+
+  // 🔧 DEBUG DEV: compara el total exacto (agregación server-side) contra el
+  // reduce() client-side sobre TODOS los docs del rango, y avisa si hay
+  // documentos con total/netProfit no-numérico (sum() los ignora en silencio).
+  // Uso: window.__noarDebugTotals('2026-08-01','2026-08-01')
+  async debugTotalsParity(startStr, endStr, { filterAfip = false } = {}) {
+      const { user, activeBranchId } = useAuthStore.getState();
+      const companyId = user?.companyId || user?.tenantId;
+      if (!companyId) { console.warn('[debugTotalsParity] No hay companyId en sesión'); return; }
+
+      const start = new Date(startStr + 'T00:00:00');
+      const end = new Date(endStr + 'T23:59:59');
+
+      const exact = await salesRepository.fetchRemoteSalesTotals(start, end, { filterAfip });
+
+      const salesRef = collection(db, 'companies', companyId, 'sales');
+      let q = query(salesRef, where('date', '>=', start.toISOString()), where('date', '<=', end.toISOString()));
+      if (activeBranchId && activeBranchId !== 'ALL') q = query(q, where('branchId', '==', activeBranchId));
+      const snapshot = await getDocs(q);
+      const docs = snapshot.docs.map(d => d.data());
+
+      const validForTotals = docs.filter(op =>
+          op.afip?.status !== 'VOIDED' &&
+          op.status !== 'REFUNDED' &&
+          op.status !== 'ABANDONED' &&
+          op.type !== 'BUDGET' &&
+          (!filterAfip || op.afip?.status === 'APPROVED')
+      );
+      const gross = validForTotals.reduce((acc, op) => acc + (parseFloat(op.total) || 0), 0);
+      const netProfit = validForTotals.reduce((acc, op) => acc + (parseFloat(op.netProfit) || 0), 0);
+      const clientSide = { count: validForTotals.length, gross, netProfit };
+
+      console.log('[debugTotalsParity] Agregación server-side:', exact);
+      console.log('[debugTotalsParity] Reduce client-side (todos los docs del rango):', clientSide);
+      if (exact) {
+          console.log(`[debugTotalsParity] Delta count=${exact.count - clientSide.count} gross=${(exact.gross - clientSide.gross).toFixed(2)} netProfit=${(exact.netProfit - clientSide.netProfit).toFixed(2)} (debería ser 0)`);
+      }
+
+      const badTypeDocs = docs.filter(op => typeof op.total !== 'number' || typeof op.netProfit !== 'number');
+      if (badTypeDocs.length > 0) {
+          console.warn(`[debugTotalsParity] ⚠️ ${badTypeDocs.length} docs con total/netProfit NO numérico — sum() los ignora en silencio, esto explica cualquier delta.`, badTypeDocs.slice(0, 5));
+      } else {
+          console.log('[debugTotalsParity] ✅ Todos los docs del rango tienen total/netProfit numérico.');
+      }
+
+      return { exact, clientSide, badTypeCount: badTypeDocs.length };
   },
 
   // ==========================================
@@ -590,51 +761,6 @@ export const salesRepository = {
       console.warn("Error saving sale from cloud:", e);
       return null;
     }
-  },
-
-  // ==========================================
-  // ☁️ DELTA SYNC INICIAL (últimas 48h)
-  // ==========================================
-  async syncInitialSales(companyId, branchId) {
-    if (!navigator.onLine || !companyId || !branchId) return;
-    try {
-      const margin = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-      const q = query(
-        collection(db, `companies/${companyId}/sales`),
-        where('branchId', '==', branchId),
-        where('updatedAt', '>', Timestamp.fromDate(margin))
-      );
-      const snap = await getDocs(q);
-      for (const d of snap.docs) {
-        await salesRepository.saveFromCloud(d.data());
-      }
-      window.dispatchEvent(new CustomEvent('noar:sales-synced'));
-    } catch (e) {
-      console.warn('☁️ syncInitialSales falló (offline?):', e);
-    }
-  },
-
-  // ==========================================
-  // 📡 LISTENER REAL-TIME (ventas nuevas/modificadas)
-  // ==========================================
-  startSalesListener(companyId, branchId) {
-    if (!companyId || !branchId) return () => {};
-    const liveStart = Timestamp.now();
-    const q = query(
-      collection(db, `companies/${companyId}/sales`),
-      where('branchId', '==', branchId),
-      where('updatedAt', '>=', liveStart)
-    );
-    return onSnapshot(q, (snap) => {
-      snap.docChanges().forEach(async (change) => {
-        if (change.type === 'added' || change.type === 'modified') {
-          await salesRepository.saveFromCloud(change.doc.data());
-        }
-      });
-      if (!snap.empty) {
-        window.dispatchEvent(new CustomEvent('noar:sales-synced'));
-      }
-    }, (err) => console.warn('📡 salesListener error:', err));
   },
 
   async getSalesByClientId(clientId) {

@@ -105,15 +105,17 @@ export const syncService = {
       }
 
       return {
-          id: id, 
-          localId: data.localId || id, 
+          id: id,
+          localId: data.localId || id,
           firestoreId: id,
-          branchId: data.branchId || 'main', 
+          companyId: data.companyId || null,
+          branchId: data.branchId || 'main',
           number: finalNum || null,
           ticketNumber: finalNum || null,
           invoiceNumber: finalNum || null,
-          shiftId: data.shiftId || null, 
+          shiftId: data.shiftId || null,
           date: data.date || new Date().toISOString(),
+          createdAt: data.createdAt || data.date || null,
           total: parseFloat(data.total) || 0,
           baseAmount: parseFloat(data.baseAmount) || 0, 
           surcharge: parseFloat(data.surcharge) || 0,
@@ -1040,11 +1042,15 @@ export const syncService = {
     try {
         let salesQuery;
         const salesRef = collection(db, 'companies', companyId, 'sales');
+        // 🔥 Mismo patrón que el listener de productos (líneas ~1004-1011):
+        // where('updatedAt', '>=', Timestamp) evita el problema de tipos mixtos
+        // y no depende de un limit() que se queda corto en sucursales de alto volumen.
+        const liveStartSales = new Date(Date.now() - 60000); // 1 min de superposición
 
         if (user?.role === 'OWNER' && (!activeBranchId || activeBranchId === 'ALL')) {
-            salesQuery = query(salesRef, orderBy('date', 'desc'), limit(30));
+            salesQuery = query(salesRef, where('updatedAt', '>=', Timestamp.fromDate(liveStartSales)));
         } else if (activeBranchId) {
-            salesQuery = query(salesRef, where('branchId', '==', activeBranchId), orderBy('date', 'desc'), limit(30));
+            salesQuery = query(salesRef, where('branchId', '==', activeBranchId), where('updatedAt', '>=', Timestamp.fromDate(liveStartSales)));
         }
 
         if (salesQuery) {
@@ -1053,21 +1059,24 @@ export const syncService = {
                 const pendingIds = await localDb.sales.filter(s => s.syncStatus !== 'synced').primaryKeys();
                 const pendingSet = new Set(pendingIds);
                 const salesToPut = [];
-                
+
                 snapshot.docChanges().forEach(change => {
                     if (change.type === 'added' || change.type === 'modified') {
+                        if (change.doc.metadata.hasPendingWrites) return;
                         const cloudData = change.doc.data();
                         const isPendingLocally = pendingSet.has(change.doc.id);
-                        
-                        const hasAfipData = cloudData.afip && (cloudData.afip.status === 'APPROVED' || cloudData.afip.cae);
-                        const hasFinalNumber = cloudData.number || cloudData.ticketNumber;
 
-                        if (!isPendingLocally || hasAfipData || hasFinalNumber) {
+                        // 🛡️ hasFinalNumber se saca del guard: el ticket se numera localmente
+                        // ANTES de subir la venta, por lo que casi todo doc cloud lo cumple y
+                        // anulaba la protección "no pisar pendientes" sin aportar señal real.
+                        const hasAfipData = cloudData.afip && (cloudData.afip.status === 'APPROVED' || cloudData.afip.cae);
+
+                        if (!isPendingLocally || hasAfipData) {
                             salesToPut.push(this._sanitizeCloudSale(cloudData, change.doc.id));
                         }
                     }
                 });
-                
+
                 if (salesToPut.length > 0) {
                     await localDb.sales.bulkPut(salesToPut);
                     window.dispatchEvent(new CustomEvent('noar:sales-synced'));
