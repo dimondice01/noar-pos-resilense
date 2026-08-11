@@ -403,6 +403,7 @@ export const authService = {
                 expiryDate: user.expiryDate || null,
                 superAdmin: user.superAdmin || false, // Persistimos el flag maestro
                 isPendingAuthUser: user.isPendingAuthUser || false, // Cajero creado offline, pendiente de reconciliar uid real
+                permissions: user.permissions || {},
                 updatedAt: new Date()
             });
         } catch (e) {
@@ -441,6 +442,7 @@ export const authService = {
              superAdmin: localUser.superAdmin || false,
              subscriptionStatus: localUser.subscriptionStatus || 'TRIAL',
              expiryDate: localUser.expiryDate || null,
+             permissions: localUser.permissions || {},
              mode: 'OFFLINE'
            };
         }

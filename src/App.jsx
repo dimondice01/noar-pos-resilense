@@ -17,6 +17,7 @@ import { ValeriaRegisterPage } from './modules/auth/pages/ValeriaRegisterPage';
 import { PaymentRequiredPage } from './modules/auth/pages/PaymentRequiredPage';
 import { ProtectedRoute } from './core/components/ProtectedRoute';
 import { SubscriptionGuard } from './core/guards/SubscriptionGuard';
+import { ModuleAccessGuard } from './core/components/ModuleAccessGuard';
 
 // ✅ LANDING PAGE (Informativa en /info)
 import { LandingPage } from './modules/landing/pages/LandingPage';
@@ -150,8 +151,16 @@ function App() {
                         <Route path="suppliers" element={<SuppliersPage />} />
                         {/* 🔥 NUEVA RUTA: Dashboard individual del proveedor */}
                         <Route path="suppliers/dashboard/:supplierId" element={<SupplierDashboard />} />
-                        <Route path="suppliers/purchases" element={<PurchaseHistoryPage />} />
-                        <Route path="suppliers/purchases/new" element={<PurchasePage />} />
+                        <Route path="suppliers/purchases" element={
+                            <ModuleAccessGuard requiredPermission="canAddStock" actionName="Historial de Compras">
+                                <PurchaseHistoryPage />
+                            </ModuleAccessGuard>
+                        } />
+                        <Route path="suppliers/purchases/new" element={
+                            <ModuleAccessGuard requiredPermission="canAddStock" actionName="Cargar Compra">
+                                <PurchasePage />
+                            </ModuleAccessGuard>
+                        } />
 
                         <Route path="clients" element={<ClientsPage />} />
                         <Route path="settings" element={<TeamPage />} />

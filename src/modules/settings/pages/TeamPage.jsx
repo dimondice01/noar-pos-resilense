@@ -15,10 +15,46 @@ import { db as firestoreDB } from '../../../database/firebase'; // 🔥 Renombra
 import { getDB } from '../../../database/db'; // 🔥 Traemos Dexie para persistencia
 import { cn } from '../../../core/utils/cn';
 import { useAuthStore } from '../../auth/store/useAuthStore'; 
-import { employeeLedgerRepository } from '../repositories/employeeLedgerRepository'; 
+import { employeeLedgerRepository } from '../repositories/employeeLedgerRepository';
 import toast from 'react-hot-toast';
+import { PERMISSION_KEYS, PERMISSION_DEFINITIONS, DEFAULT_PERMISSIONS, getFullPermissions } from '../config/permissions';
 
 const API_URL = import.meta.env.VITE_API_URL || "https://us-central1-salvadorpos1.cloudfunctions.net/api";
+
+// =================================================================================
+// 🧩 SWITCHES DE PERMISOS (compartido entre alta y edición de empleado)
+// =================================================================================
+const PERMISSION_GROUP_ICONS = {
+    'Caja y Ventas': { Icon: MonitorSmartphone, color: 'text-blue-500' },
+    'Gestión de Inventario': { Icon: Package, color: 'text-emerald-500' },
+};
+
+const PermissionsSwitchGroups = ({ permissions, togglePermission }) => {
+    const groups = [...new Set(PERMISSION_KEYS.map(key => PERMISSION_DEFINITIONS[key].group))];
+    return (
+        <>
+            {groups.map(group => {
+                const keys = PERMISSION_KEYS.filter(key => PERMISSION_DEFINITIONS[key].group === group);
+                const { Icon, color } = PERMISSION_GROUP_ICONS[group] || {};
+                return (
+                    <div key={group}>
+                        <label className="text-[11px] font-bold text-sys-500 uppercase tracking-wider ml-1 flex items-center gap-1 mb-2">
+                            {Icon && <Icon size={14} className={color} />} {group}
+                        </label>
+                        <div className="space-y-3 bg-sys-50 p-3 rounded-xl border border-sys-200">
+                            {keys.map((key, idx) => (
+                                <div key={key} className={cn("flex items-center justify-between", idx > 0 && "border-t border-sys-200 pt-3")}>
+                                    <p className="text-xs font-bold text-sys-800">{PERMISSION_DEFINITIONS[key].label}</p>
+                                    <Switch checked={permissions[key]} onCheckedChange={() => togglePermission(key)} />
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                );
+            })}
+        </>
+    );
+};
 
 // =================================================================================
 // 🧩 MODAL: LIQUIDACIÓN DE EMPLEADO (LEDGER) - MATEMÁTICA EN VIVO
@@ -266,15 +302,7 @@ const EditUserModal = ({ isOpen, onClose, employee, branches, onSaved }) => {
     const [name, setName] = useState('');
     const [role, setRole] = useState('CAJERO');
     const [branchId, setBranchId] = useState('');
-    const [permissions, setPermissions] = useState({
-        canApplyDiscount: false,
-        canVoidSales: false,
-        canWithdrawCash: false,
-        canSeeExpectedCash: false,
-        canAddStock: false,
-        canRemoveStock: false,
-        canChangePrices: false
-    });
+    const [permissions, setPermissions] = useState(DEFAULT_PERMISSIONS);
     const [isSaving, setIsSaving] = useState(false);
 
     useEffect(() => {
@@ -282,15 +310,7 @@ const EditUserModal = ({ isOpen, onClose, employee, branches, onSaved }) => {
             setName(employee.name || '');
             setRole(employee.role || 'CAJERO');
             setBranchId(employee.branchId || '');
-            setPermissions({
-                canApplyDiscount: !!employee.permissions?.canApplyDiscount,
-                canVoidSales: !!employee.permissions?.canVoidSales,
-                canWithdrawCash: !!employee.permissions?.canWithdrawCash,
-                canSeeExpectedCash: !!employee.permissions?.canSeeExpectedCash,
-                canAddStock: !!employee.permissions?.canAddStock,
-                canRemoveStock: !!employee.permissions?.canRemoveStock,
-                canChangePrices: !!employee.permissions?.canChangePrices
-            });
+            setPermissions({ ...DEFAULT_PERMISSIONS, ...(employee.permissions || {}) });
         }
     }, [isOpen, employee]);
 
@@ -305,9 +325,7 @@ const EditUserModal = ({ isOpen, onClose, employee, branches, onSaved }) => {
         }
 
         const targetId = employee.uid || employee.id;
-        const finalPermissions = role === 'ADMIN'
-            ? { canApplyDiscount: true, canVoidSales: true, canWithdrawCash: true, canSeeExpectedCash: true, canAddStock: true, canRemoveStock: true, canChangePrices: true }
-            : permissions;
+        const finalPermissions = getFullPermissions(role, permissions);
 
         // 🔥 Solo datos y permisos. NUNCA incluir ledgerDebt acá: la deuda se maneja
         // exclusivamente vía employeeLedgerRepository (ver LiquidationModal).
@@ -414,49 +432,7 @@ const EditUserModal = ({ isOpen, onClose, employee, branches, onSaved }) => {
 
                     {role === 'CAJERO' && (
                         <div className="pt-2 border-t border-sys-200 mt-2 space-y-4">
-                            <div>
-                                <label className="text-[11px] font-bold text-sys-500 uppercase tracking-wider ml-1 flex items-center gap-1 mb-2">
-                                    <MonitorSmartphone size={14} className="text-blue-500"/> Caja y Ventas
-                                </label>
-                                <div className="space-y-3 bg-sys-50 p-3 rounded-xl border border-sys-200">
-                                    <div className="flex items-center justify-between">
-                                        <p className="text-xs font-bold text-sys-800">Aplicar Descuentos</p>
-                                        <Switch checked={permissions.canApplyDiscount} onCheckedChange={() => togglePermission('canApplyDiscount')} />
-                                    </div>
-                                    <div className="flex items-center justify-between border-t border-sys-200 pt-3">
-                                        <p className="text-xs font-bold text-sys-800">Anular Ventas</p>
-                                        <Switch checked={permissions.canVoidSales} onCheckedChange={() => togglePermission('canVoidSales')} />
-                                    </div>
-                                    <div className="flex items-center justify-between border-t border-sys-200 pt-3">
-                                        <p className="text-xs font-bold text-sys-800">Retirar Efectivo</p>
-                                        <Switch checked={permissions.canWithdrawCash} onCheckedChange={() => togglePermission('canWithdrawCash')} />
-                                    </div>
-                                    <div className="flex items-center justify-between border-t border-sys-200 pt-3">
-                                        <p className="text-xs font-bold text-sys-800">Ver Cierre Z</p>
-                                        <Switch checked={permissions.canSeeExpectedCash} onCheckedChange={() => togglePermission('canSeeExpectedCash')} />
-                                    </div>
-                                </div>
-                            </div>
-
-                            <div>
-                                <label className="text-[11px] font-bold text-sys-500 uppercase tracking-wider ml-1 flex items-center gap-1 mb-2">
-                                    <Package size={14} className="text-emerald-500"/> Gestión de Inventario
-                                </label>
-                                <div className="space-y-3 bg-sys-50 p-3 rounded-xl border border-sys-200">
-                                    <div className="flex items-center justify-between">
-                                        <p className="text-xs font-bold text-sys-800">Cargar Stock</p>
-                                        <Switch checked={permissions.canAddStock} onCheckedChange={() => togglePermission('canAddStock')} />
-                                    </div>
-                                    <div className="flex items-center justify-between border-t border-sys-200 pt-3">
-                                        <p className="text-xs font-bold text-sys-800">Ajuste de Mermas</p>
-                                        <Switch checked={permissions.canRemoveStock} onCheckedChange={() => togglePermission('canRemoveStock')} />
-                                    </div>
-                                    <div className="flex items-center justify-between border-t border-sys-200 pt-3">
-                                        <p className="text-xs font-bold text-sys-800">Cambiar Precios</p>
-                                        <Switch checked={permissions.canChangePrices} onCheckedChange={() => togglePermission('canChangePrices')} />
-                                    </div>
-                                </div>
-                            </div>
+                            <PermissionsSwitchGroups permissions={permissions} togglePermission={togglePermission} />
                         </div>
                     )}
                 </div>
@@ -524,15 +500,7 @@ export const TeamPage = () => {
       password: '', 
       role: 'CAJERO',
       branchId: '',
-      permissions: {
-          canApplyDiscount: false, 
-          canVoidSales: false,     
-          canWithdrawCash: false,  
-          canSeeExpectedCash: false,
-          canAddStock: false,
-          canRemoveStock: false,
-          canChangePrices: false
-      }
+      permissions: DEFAULT_PERMISSIONS
   });
 
   useEffect(() => {
@@ -753,56 +721,47 @@ export const TeamPage = () => {
         return toast.error("⚠️ Atención: Un CAJERO debe tener una sucursal asignada obligatoriamente.");
     }
 
-    // Validar permisos ilógicos
-    if (formData.role === 'ADMIN') {
-        formData.permissions = {
-            canApplyDiscount: true, 
-            canVoidSales: true, 
-            canWithdrawCash: true, 
-            canSeeExpectedCash: true,
-            canAddStock: true, 
-            canRemoveStock: true, 
-            canChangePrices: true
-        };
-    }
+    // Roles elevados obtienen bypass total de permisos, igual que en EditUserModal
+    const finalPermissions = getFullPermissions(formData.role, formData.permissions);
 
     setIsCreating(true);
     const toastId = toast.loading("Creando credenciales...");
     try {
       const newEmployeeData = {
           ...formData,
-          companyId: currentUser.companyId, 
+          permissions: finalPermissions,
+          companyId: currentUser.companyId,
           status: 'ACTIVE',
           createdAt: new Date().toISOString(),
           branchId: formData.branchId || null,
-          ledgerDebt: 0 
+          ledgerDebt: 0
       };
 
       await authService.createUser(newEmployeeData);
-      
+
       const q = query(
-          collection(firestoreDB, 'users'), 
+          collection(firestoreDB, 'users'),
           where('email', '==', formData.email),
           where('companyId', '==', currentUser.companyId)
       );
-      
+
       const querySnapshot = await getDocs(q);
-      
+
       if (!querySnapshot.empty) {
           const userDoc = querySnapshot.docs[0];
           await updateDoc(userDoc.ref, {
               branchId: formData.branchId || null,
               role: formData.role,
-              permissions: formData.permissions,
+              permissions: finalPermissions,
               ledgerDebt: 0
           });
       }
 
       toast.success(`Usuario ${formData.name} creado exitosamente.`, { id: toastId });
-      setFormData({ 
+      setFormData({
           name: '', email: '', password: '', role: 'CAJERO', branchId: '',
-          permissions: { canApplyDiscount: false, canVoidSales: false, canWithdrawCash: false, canSeeExpectedCash: false, canAddStock: false, canRemoveStock: false, canChangePrices: false }
-      }); 
+          permissions: DEFAULT_PERMISSIONS
+      });
       
       // Forzamos actualización visual rápida
       handleForceCloudSync();
@@ -1091,67 +1050,7 @@ export const TeamPage = () => {
                   {/* 🔥 BLOQUE DE PERMISOS */}
                   {formData.role === 'CAJERO' && (
                       <div className="pt-2 border-t border-sys-200 mt-4 space-y-4">
-                          
-                          {/* Permisos de Caja y Ventas */}
-                          <div>
-                              <label className="text-[11px] font-bold text-sys-500 uppercase tracking-wider ml-1 flex items-center gap-1 mb-2">
-                                  <MonitorSmartphone size={14} className="text-blue-500"/> Caja y Ventas
-                              </label>
-                              <div className="space-y-3 bg-sys-50 p-3 rounded-xl border border-sys-200">
-                                  <div className="flex items-center justify-between">
-                                      <div>
-                                          <p className="text-xs font-bold text-sys-800">Aplicar Descuentos</p>
-                                      </div>
-                                      <Switch checked={formData.permissions.canApplyDiscount} onCheckedChange={() => togglePermission('canApplyDiscount')} />
-                                  </div>
-                                  <div className="flex items-center justify-between border-t border-sys-200 pt-3">
-                                      <div>
-                                          <p className="text-xs font-bold text-sys-800">Anular Ventas</p>
-                                      </div>
-                                      <Switch checked={formData.permissions.canVoidSales} onCheckedChange={() => togglePermission('canVoidSales')} />
-                                  </div>
-                                  <div className="flex items-center justify-between border-t border-sys-200 pt-3">
-                                      <div>
-                                          <p className="text-xs font-bold text-sys-800">Retirar Efectivo</p>
-                                      </div>
-                                      <Switch checked={formData.permissions.canWithdrawCash} onCheckedChange={() => togglePermission('canWithdrawCash')} />
-                                  </div>
-                                  <div className="flex items-center justify-between border-t border-sys-200 pt-3">
-                                      <div>
-                                          <p className="text-xs font-bold text-sys-800">Ver Cierre Z</p>
-                                      </div>
-                                      <Switch checked={formData.permissions.canSeeExpectedCash} onCheckedChange={() => togglePermission('canSeeExpectedCash')} />
-                                  </div>
-                              </div>
-                          </div>
-
-                          {/* Permisos de Inventario */}
-                          <div>
-                              <label className="text-[11px] font-bold text-sys-500 uppercase tracking-wider ml-1 flex items-center gap-1 mb-2">
-                                  <Package size={14} className="text-emerald-500"/> Gestión de Inventario
-                              </label>
-                              <div className="space-y-3 bg-sys-50 p-3 rounded-xl border border-sys-200">
-                                  <div className="flex items-center justify-between">
-                                      <div>
-                                          <p className="text-xs font-bold text-sys-800">Cargar Stock</p>
-                                      </div>
-                                      <Switch checked={formData.permissions.canAddStock} onCheckedChange={() => togglePermission('canAddStock')} />
-                                  </div>
-                                  <div className="flex items-center justify-between border-t border-sys-200 pt-3">
-                                      <div>
-                                          <p className="text-xs font-bold text-sys-800">Ajuste de Mermas</p>
-                                      </div>
-                                      <Switch checked={formData.permissions.canRemoveStock} onCheckedChange={() => togglePermission('canRemoveStock')} />
-                                  </div>
-                                  <div className="flex items-center justify-between border-t border-sys-200 pt-3">
-                                      <div>
-                                          <p className="text-xs font-bold text-sys-800">Cambiar Precios</p>
-                                      </div>
-                                      <Switch checked={formData.permissions.canChangePrices} onCheckedChange={() => togglePermission('canChangePrices')} />
-                                  </div>
-                              </div>
-                          </div>
-
+                          <PermissionsSwitchGroups permissions={formData.permissions} togglePermission={togglePermission} />
                       </div>
                   )}
 

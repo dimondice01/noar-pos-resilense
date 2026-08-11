@@ -2,135 +2,15 @@ import React, { useState, useEffect, useRef } from 'react';
 import { X, ArrowDownCircle, ArrowUpCircle, Banknote, User, FileText, Loader2, Save, Printer, Lock } from 'lucide-react';
 import { Button } from '../../../core/ui/Button';
 import { cn } from '../../../core/utils/cn';
-import { collection, query, where, getDocs, doc, getDoc } from 'firebase/firestore';
+import { collection, query, where, getDocs } from 'firebase/firestore';
 import { db } from '../../../database/firebase';
-import { getDB } from '../../../database/db';
 import { useAuthStore } from '../../auth/store/useAuthStore';
 import { useShiftStore } from '../../cash/store/useShiftStore';
 import { cashRepository } from '../../cash/repositories/cashRepository';
 import { employeeLedgerRepository } from '../../settings/repositories/employeeLedgerRepository';
+import { PinAuthModal } from '../../security/components/PinAuthModal';
 import toast from 'react-hot-toast';
 import { useReactToPrint } from 'react-to-print';
-
-// =================================================================
-// 🔐 MODAL: AUTORIZACIÓN POR PIN (SUPERVISOR) 🔥
-// =================================================================
-const PinVerificationModal = ({ isOpen, onClose, onSuccess, actionName }) => {
-    const [pin, setPin] = useState('');
-    const [error, setError] = useState(false);
-    const inputRef = useRef(null);
-    const { user, activeBranchId } = useAuthStore();
-
-    useEffect(() => {
-        if (isOpen) {
-            setPin('');
-            setError(false);
-            setTimeout(() => inputRef.current?.focus(), 100);
-        }
-    }, [isOpen]);
-
-    const handleVerify = async (e) => {
-        e.preventDefault();
-        setError(false);
-
-        if (!user?.companyId || !activeBranchId) {
-            toast.error("Error de configuración de sucursal.");
-            return;
-        }
-
-        try {
-            // 1. Intento local primero (offline-safe) 🛡️
-            const dbLocal = await getDB();
-            const cachedBranch = await dbLocal.config.get(`branch_config_${activeBranchId}`);
-            if (cachedBranch?.value?.pin === pin || cachedBranch?.value?.adminPin === pin) {
-                onSuccess();
-                onClose();
-                return;
-            }
-
-            // 2. Si online, verificar en Firestore (PIN puede haber cambiado)
-            if (!navigator.onLine) {
-                setError(true);
-                setPin('');
-                inputRef.current?.focus();
-                return;
-            }
-
-            const branchRef = doc(db, 'companies', user.companyId, 'branches', activeBranchId);
-            const branchSnap = await getDoc(branchRef);
-
-            if (branchSnap.exists()) {
-                const branchData = branchSnap.data();
-                if (branchData.pin === pin || branchData.adminPin === pin) {
-                    onSuccess();
-                    onClose();
-                } else {
-                    setError(true);
-                    setPin('');
-                    inputRef.current?.focus();
-                }
-            } else {
-                toast.error("No se encontró configuración para esta sucursal.");
-                onClose();
-            }
-        } catch (err) {
-            console.error(err);
-            toast.error("Error de conexión al validar PIN.");
-        }
-    };
-
-    if (!isOpen) return null;
-
-    return (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-sys-900/80 p-4 animate-in fade-in zoom-in-95">
-            <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden p-6 text-center">
-                <div className="w-16 h-16 bg-red-50 text-red-500 rounded-full flex items-center justify-center mx-auto mb-4 border border-red-100">
-                    <Lock size={32} />
-                </div>
-                <h3 className="text-xl font-black text-sys-900 mb-1">Autorización Requerida</h3>
-                <p className="text-xs text-sys-500 font-bold mb-6 uppercase tracking-wider">
-                    Permiso necesario para: <span className="text-brand">{actionName}</span>
-                </p>
-
-                <form onSubmit={handleVerify} className="space-y-4">
-                    <div>
-                        <input 
-                            ref={inputRef}
-                            type="password" 
-                            maxLength={6}
-                            placeholder="Ingrese PIN del Encargado" 
-                            className={cn(
-                                "w-full text-center text-2xl tracking-[0.5em] font-black p-4 bg-sys-50 border-2 rounded-2xl outline-none transition-all",
-                                error ? "border-red-500 text-red-500 bg-red-50 animate-shake" : "border-sys-200 focus:border-brand"
-                            )}
-                            value={pin}
-                            onChange={(e) => {
-                                setError(false);
-                                setPin(e.target.value.replace(/\D/g, '')); // Solo números
-                            }}
-                        />
-                        {error && <p className="text-xs font-bold text-red-500 mt-2">PIN Incorrecto</p>}
-                    </div>
-                    
-                    <div className="flex gap-2">
-                        <Button variant="secondary" onClick={onClose} type="button" className="flex-1 border-sys-200">Cancelar</Button>
-                        <Button type="submit" disabled={pin.length < 4} className="flex-1 bg-sys-900 hover:bg-black text-white shadow-xl">Autorizar</Button>
-                    </div>
-                </form>
-                
-                <style>{`
-                    @keyframes shake {
-                        0%, 100% { transform: translateX(0); }
-                        25% { transform: translateX(-5px); }
-                        50% { transform: translateX(5px); }
-                        75% { transform: translateX(-5px); }
-                    }
-                    .animate-shake { animation: shake 0.3s ease-in-out; }
-                `}</style>
-            </div>
-        </div>
-    );
-};
 
 // =================================================================
 // 🖨️ COMPONENTE OCULTO PARA IMPRESIÓN DEL COMPROBANTE
@@ -472,10 +352,10 @@ export const CashOperationsModal = ({ isOpen, onClose }) => {
             </div>
 
             {/* 🔥 MODAL DE PIN (SUPERPUESTO AL DE CAJA) */}
-            <PinVerificationModal 
-                isOpen={isPinModalOpen} 
-                actionName="Retiro de Efectivo" 
-                onClose={() => setIsPinModalOpen(false)} 
+            <PinAuthModal
+                isOpen={isPinModalOpen}
+                actionName="Retiro de Efectivo"
+                onClose={() => setIsPinModalOpen(false)}
                 onSuccess={() => executeOperation()}
             />
         </div>

@@ -1,9 +1,9 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { NavLink, useNavigate, useLocation, useParams } from 'react-router-dom'; 
 import {
     LayoutDashboard, ShoppingCart, Package, Settings,
     FileText, Cloud, RefreshCw, LogOut, User, ShieldCheck, Wallet,
-    Users, Lock, ArrowRight, X, Loader2, Plug,
+    Users, Lock, Loader2, Plug,
     Building, Truck, Unlock, WifiOff, ChevronLeft, ChevronRight
 } from 'lucide-react';
 
@@ -11,7 +11,8 @@ import { cn } from '../core/utils/cn';
 import { useUiStore } from '../core/store/useUiStore';
 import { useAutoSync } from '../core/hooks/useAutoSync';
 import { useAuthStore } from '../modules/auth/store/useAuthStore';
-import { securityService } from '../modules/security/services/securityService';
+import { PinAuthModal } from '../modules/security/components/PinAuthModal';
+import { hasPermission } from '../modules/settings/config/permissions';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../database/firebase';
 
@@ -69,100 +70,7 @@ const MenuLink = ({ to, icon: Icon, label, onClick, isRestricted }) => {
 };
 
 // ============================================================================
-// 2. COMPONENTE: MODAL PIN (NECESARIO PARA INVENTARIO CAJEROS)
-// ============================================================================
-const PinRequestModal = ({ isOpen, onClose, onSuccess }) => {
-    const [pin, setPin] = useState('');
-    const [error, setError] = useState(false);
-    const [verifying, setVerifying] = useState(false); 
-    const inputRef = useRef(null);
-
-    useEffect(() => {
-        if (isOpen) {
-            setPin('');
-            setError(false);
-            setVerifying(false);
-            setTimeout(() => inputRef.current?.focus(), 100);
-        }
-    }, [isOpen]);
-
-    const handleSubmit = async (e) => {
-        e.preventDefault();
-        if (verifying) return; 
-
-        setVerifying(true);
-        setError(false);
-
-        try {
-            if (typeof securityService.verifyPin !== 'function') {
-                throw new Error("El servicio de seguridad no está configurado correctamente (verifyPin missing).");
-            }
-
-            const isValid = await securityService.verifyPin(pin);
-            
-            if (isValid === true) {
-                onSuccess();
-            } else {
-                setError(true);
-                setPin('');
-                setTimeout(() => inputRef.current?.focus(), 50);
-            }
-        } catch (err) {
-            console.error("Error validando PIN:", err);
-            alert("Error al validar el PIN: " + err.message);
-        } finally {
-            setVerifying(false);
-        }
-    };
-
-    if (!isOpen) return null;
-
-    return (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-sys-900/40 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-xs overflow-hidden transform transition-all scale-100">
-                <div className="p-5 flex justify-between items-center border-b border-sys-100">
-                    <h3 className="font-bold text-sys-800 flex items-center gap-2">
-                        <ShieldCheck size={18} className="text-brand"/> Acceso Restringido
-                    </h3>
-                    <button onClick={onClose} className="text-sys-400 hover:text-sys-600"><X size={18}/></button>
-                </div>
-                <form onSubmit={handleSubmit} className="p-6">
-                    <p className="text-xs text-sys-500 mb-4">Esta sección requiere autorización de un Supervisor.</p>
-                    <div className="relative mb-4">
-                        <input 
-                            ref={inputRef}
-                            type="password" 
-                            autoComplete="off"
-                            className={cn(
-                                "w-full text-center text-2xl font-black tracking-widest py-3 rounded-xl border-2 outline-none transition-all placeholder:text-2xl placeholder:tracking-normal",
-                                error 
-                                    ? "border-red-300 bg-red-50 text-red-600 focus:border-red-500 animate-shake" 
-                                    : "border-sys-200 bg-sys-50 text-sys-900 focus:border-brand focus:bg-white"
-                            )}
-                            placeholder="••••"
-                            maxLength={6}
-                            value={pin}
-                            onChange={(e) => { setError(false); setPin(e.target.value.replace(/\D/g, '')); }}
-                        />
-                    </div>
-                    <button 
-                        type="submit" 
-                        disabled={pin.length < 4 || verifying}
-                        className={cn(
-                            "w-full py-3 text-white font-bold rounded-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed flex justify-center items-center gap-2 shadow-lg",
-                            verifying ? "bg-sys-600" : "bg-sys-900 hover:bg-black shadow-sys-900/20"
-                        )}
-                    >
-                        {verifying ? (<>Verificando <Loader2 size={16} className="animate-spin"/></>) : (<>Autorizar <ArrowRight size={16}/></>)}
-                    </button>
-                </form>
-            </div>
-        </div>
-    );
-};
-
-// ============================================================================
-// 3. WRAPPER CIERRE CAJA
+// 2. WRAPPER CIERRE CAJA
 // ============================================================================
 const CloseShiftModalWrapper = ({ isOpen, onClose, onShiftClosed }) => {
     const { user, activeBranchId } = useAuthStore();
@@ -293,6 +201,11 @@ export const Sidebar = () => {
     const isOwner = user?.role === 'OWNER';
     const isAdmin = user?.role === 'ADMIN';
     const canManage = isOwner || isAdmin;
+    // Cajero con cualquiera de los permisos de inventario puede entrar sin PIN
+    const canAccessInventory = canManage
+        || hasPermission(user, 'canAddStock')
+        || hasPermission(user, 'canRemoveStock')
+        || hasPermission(user, 'canChangePrices');
 
     const [companyInfo, setCompanyInfo] = useState({ 
         name: 'MI NEGOCIO', 
@@ -425,7 +338,7 @@ export const Sidebar = () => {
 
     // Navegación Protegida (Inventario para cajeros)
     const handleRestrictedNavigation = (route) => {
-        if (canManage) {
+        if (canAccessInventory) {
             navigate(route);
         } else {
             setPendingRoute(route);
@@ -532,7 +445,7 @@ export const Sidebar = () => {
                             label="Inventario" 
                             icon={Package} 
                             onClick={() => handleRestrictedNavigation(getLink('inventory'))}
-                            isRestricted={!canManage} 
+                            isRestricted={!canAccessInventory}
                         />
 
                         {/* 🔥 MENÚS SOLO PARA ADMINS Y OWNERS */}
@@ -602,8 +515,8 @@ export const Sidebar = () => {
             </aside>
 
             {/* MODALES */}
-            <PinRequestModal 
-                isOpen={isPinModalOpen} 
+            <PinAuthModal
+                isOpen={isPinModalOpen}
                 onClose={() => { setIsPinModalOpen(false); setPendingRoute(null); }}
                 onSuccess={handlePinSuccess}
             />
