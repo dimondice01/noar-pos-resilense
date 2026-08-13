@@ -74,7 +74,7 @@ export const useTopProductsExplorer = (isOpen) => {
                 (sale.items || []).forEach(item => {
                     const key = item.id || item.name || 'n/a';
                     if (!productMap[key]) {
-                        productMap[key] = { productId: item.id || null, name: item.name || 'Producto', quantity: 0, revenue: 0, cost: 0 };
+                        productMap[key] = { productId: item.id || null, name: item.name || 'Producto', code: item.code || item.barcode || '', quantity: 0, revenue: 0, cost: 0 };
                     }
                     const qty = parseFloat(item.quantity || 0);
                     productMap[key].quantity += qty;
@@ -112,7 +112,10 @@ export const useTopProductsExplorer = (isOpen) => {
     const items = useMemo(() => {
         const term = searchTerm.trim().toLowerCase();
         if (!term) return rawProducts;
-        return rawProducts.filter(p => p.name.toLowerCase().includes(term));
+        return rawProducts.filter(p =>
+            p.name.toLowerCase().includes(term) ||
+            (p.code && p.code.toLowerCase().includes(term))
+        );
     }, [rawProducts, searchTerm]);
 
     return {

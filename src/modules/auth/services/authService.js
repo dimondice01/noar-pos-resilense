@@ -1,8 +1,12 @@
-import { 
-    createUserWithEmailAndPassword, 
-    signInWithEmailAndPassword, 
-    signOut, 
-    onAuthStateChanged 
+import {
+    createUserWithEmailAndPassword,
+    signInWithEmailAndPassword,
+    signOut,
+    onAuthStateChanged,
+    sendPasswordResetEmail,
+    EmailAuthProvider,
+    reauthenticateWithCredential,
+    updatePassword
 } from 'firebase/auth';
 import { 
     doc, 
@@ -174,6 +178,39 @@ export const authService = {
             await signOut(auth);
         } catch (error) {
             console.error("Error Logout:", error);
+        }
+    },
+
+    // ==========================================
+    // 🔑 RECUPERACIÓN DE CONTRASEÑA (Self-service)
+    // ==========================================
+    // Firebase maneja el mail + la página de "elegir nueva contraseña".
+    // No confirmamos acá si el email existe o no (se propaga el error tal cual
+    // para que el llamador decida cómo mostrarlo, evitando enumeración de cuentas).
+    async sendPasswordReset(email) {
+        await sendPasswordResetEmail(auth, email);
+    },
+
+    // ==========================================
+    // 🔑 CAMBIO DE CONTRASEÑA (Usuario logueado, sabe la actual)
+    // ==========================================
+    // Firebase exige reautenticar antes de updatePassword si la sesión no es
+    // "reciente" (auth/requires-recent-login) — reautenticamos siempre para
+    // no depender de cuánto hace que el usuario inició sesión, y de paso esto
+    // sirve como verificación de que la contraseña actual ingresada es correcta.
+    async changePassword(currentPassword, newPassword) {
+        const firebaseUser = auth.currentUser;
+        if (!firebaseUser?.email) throw new Error('No hay sesión activa.');
+
+        const credential = EmailAuthProvider.credential(firebaseUser.email, currentPassword);
+        await reauthenticateWithCredential(firebaseUser, credential);
+        await updatePassword(firebaseUser, newPassword);
+
+        // Mantenemos el cache local (login offline) en sintonía con la nueva contraseña
+        try {
+            await localDb.users.update(firebaseUser.uid, { password: btoa(newPassword) });
+        } catch (e) {
+            console.warn('No se pudo actualizar el cache local de contraseña:', e);
         }
     },
 

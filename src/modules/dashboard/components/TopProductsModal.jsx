@@ -79,7 +79,7 @@ export function TopProductsModal({ isOpen, onClose }) {
                         <input
                             type="text"
                             className="w-full pl-10 pr-4 py-2.5 bg-sys-50 border-2 border-transparent rounded-xl outline-none focus:border-brand focus:bg-white transition-all font-bold text-sm"
-                            placeholder="Buscar producto..."
+                            placeholder="Buscar por nombre o código de barras..."
                             value={searchTerm}
                             onChange={e => setSearchTerm(e.target.value)}
                         />
@@ -96,7 +96,10 @@ export function TopProductsModal({ isOpen, onClose }) {
                             {items.map((p, idx) => (
                                 <div key={p.productId || p.name} className="flex items-center gap-3 bg-sys-50 border border-sys-200 rounded-xl px-3 py-2.5">
                                     <div className="w-6 h-6 bg-sys-900 text-white rounded-full flex items-center justify-center shrink-0 text-[10px] font-bold">{idx + 1}</div>
-                                    <span className="flex-1 text-sm font-bold text-sys-800 truncate" title={p.name}>{p.name}</span>
+                                    <div className="flex-1 min-w-0">
+                                        <span className="block text-sm font-bold text-sys-800 truncate" title={p.name}>{p.name}</span>
+                                        {p.code && <span className="block text-[10px] font-mono text-sys-400 truncate">{p.code}</span>}
+                                    </div>
                                     <span className="text-xs font-black text-brand shrink-0">{p.quantity} un.</span>
                                     <span className="text-xs font-bold text-emerald-600 w-24 text-right shrink-0">$ {money(p.revenue)}</span>
                                 </div>

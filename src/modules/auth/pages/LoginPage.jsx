@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { useAuthStore } from '../store/useAuthStore';
-import { useNavigate, useParams } from 'react-router-dom'; 
-import { ArrowRight, AlertCircle, Loader2 } from 'lucide-react';
+import { authService } from '../services/authService';
+import { useNavigate, useParams } from 'react-router-dom';
+import { ArrowRight, AlertCircle, CheckCircle2, Loader2 } from 'lucide-react';
 import { Button } from '../../../core/ui/Button';
 
 // Firebase 
@@ -13,8 +14,13 @@ export const LoginPage = () => {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
-  
-  const { companySlug } = useParams(); 
+
+  // Recuperación de contraseña
+  const [resetLoading, setResetLoading] = useState(false);
+  const [resetSent, setResetSent] = useState(false);
+  const [resetError, setResetError] = useState('');
+
+  const { companySlug } = useParams();
   
   const [branding, setBranding] = useState({
       name: 'NOAR',
@@ -118,7 +124,33 @@ export const LoginPage = () => {
           setError("Credenciales incorrectas o error de conexión.");
       }
       setIsSubmitting(false); // Desbloqueamos el botón
-    } 
+    }
+  };
+
+  const handlePasswordReset = async () => {
+    setResetError('');
+    setResetSent(false);
+
+    if (!email) {
+      setResetError('Escribí tu email arriba y volvé a tocar el link.');
+      return;
+    }
+
+    setResetLoading(true);
+    try {
+      await authService.sendPasswordReset(email);
+    } catch (err) {
+      // 🔒 No revelamos si el email existe o no (evita enumeración de cuentas).
+      // Solo cortamos el flujo si el formato del email es inválido.
+      if (err.code === 'auth/invalid-email') {
+        setResetError('El email ingresado no es válido.');
+        setResetLoading(false);
+        return;
+      }
+      console.warn('Error enviando reset de contraseña:', err.code);
+    }
+    setResetLoading(false);
+    setResetSent(true);
   };
 
   return (
@@ -186,7 +218,31 @@ export const LoginPage = () => {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
             />
+            <div className="flex justify-end mt-2">
+              <button
+                type="button"
+                onClick={handlePasswordReset}
+                disabled={resetLoading}
+                className="text-xs font-bold text-brand hover:underline disabled:opacity-50"
+              >
+                {resetLoading ? 'Enviando...' : '¿Olvidaste tu contraseña?'}
+              </button>
+            </div>
           </div>
+
+          {resetSent && (
+            <div className="flex items-center gap-2 p-3 bg-emerald-50 text-emerald-700 rounded-xl text-xs font-medium border border-emerald-100 animate-in fade-in slide-in-from-top-2">
+              <CheckCircle2 size={16} className="shrink-0" />
+              Si el email existe, te enviamos un link para restablecer la contraseña. Revisá tu bandeja (y spam).
+            </div>
+          )}
+
+          {resetError && (
+            <div className="flex items-center gap-2 p-3 bg-red-50 text-red-600 rounded-xl text-xs font-medium border border-red-100 animate-in fade-in slide-in-from-top-2">
+              <AlertCircle size={16} className="shrink-0" />
+              {resetError}
+            </div>
+          )}
 
           {error && (
             <div className="flex items-center gap-2 p-3 bg-red-50 text-red-600 rounded-xl text-xs font-medium border border-red-100 animate-in fade-in slide-in-from-top-2">

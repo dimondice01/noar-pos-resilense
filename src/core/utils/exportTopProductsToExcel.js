@@ -3,6 +3,7 @@ import ExcelJS from 'exceljs';
 const COLUMNS = [
     { key: 'rank',     label: '#',              width: 6,  numeric: true  },
     { key: 'name',     label: 'Producto',       width: 36, numeric: false },
+    { key: 'code',     label: 'Código',         width: 16, numeric: false },
     { key: 'quantity', label: 'Cant. Vendida',  width: 14, numeric: true  },
     { key: 'avgPrice', label: 'Precio Prom.',   width: 14, numeric: true, numFmt: '"$"#,##0.00' },
     { key: 'revenue',  label: 'Ingresos ($)',   width: 15, numeric: true, numFmt: '"$"#,##0.00' },
@@ -22,6 +23,7 @@ export const exportTopProductsToExcel = async (items, filtersInfo = {}) => {
         return {
             rank: idx + 1,
             name: p.name,
+            code: p.code || '',
             quantity: p.quantity || 0,
             avgPrice: p.quantity > 0 ? revenue / p.quantity : 0,
             revenue,

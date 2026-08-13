@@ -3,7 +3,7 @@ import { NavLink, useNavigate, useLocation, useParams } from 'react-router-dom';
 import {
     LayoutDashboard, ShoppingCart, Package, Settings,
     FileText, Cloud, RefreshCw, LogOut, User, ShieldCheck, Wallet,
-    Users, Lock, Loader2, Plug,
+    Users, Lock, KeyRound, Loader2, Plug,
     Building, Truck, Unlock, WifiOff, ChevronLeft, ChevronRight
 } from 'lucide-react';
 
@@ -12,6 +12,7 @@ import { useUiStore } from '../core/store/useUiStore';
 import { useAutoSync } from '../core/hooks/useAutoSync';
 import { useAuthStore } from '../modules/auth/store/useAuthStore';
 import { PinAuthModal } from '../modules/security/components/PinAuthModal';
+import { ChangePasswordModal } from '../modules/auth/components/ChangePasswordModal';
 import { hasPermission } from '../modules/settings/config/permissions';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../database/firebase';
@@ -192,6 +193,7 @@ export const Sidebar = () => {
     const [isCloseModalOpen, setIsCloseModalOpen] = useState(false);
     const [isPinModalOpen, setIsPinModalOpen] = useState(false);
     const [pendingRoute, setPendingRoute] = useState(null);
+    const [isChangePasswordOpen, setIsChangePasswordOpen] = useState(false);
 
     const { user, logout, activeBranchId, switchBranch } = useAuthStore();
     const navigate = useNavigate();
@@ -398,6 +400,9 @@ export const Sidebar = () => {
                                     <p className="text-[11px] font-bold text-white truncate leading-tight">{user?.name || user?.email}</p>
                                     <p className="text-[9px] text-sys-400 truncate font-mono uppercase leading-tight">{user?.role || 'Cajero'}</p>
                                 </div>
+                                <button onClick={() => setIsChangePasswordOpen(true)} className="text-sys-500 hover:text-brand transition-colors p-1 rounded-lg hover:bg-sys-700" title="Cambiar Contraseña">
+                                    <KeyRound size={14} />
+                                </button>
                                 <button onClick={handleLogout} className="text-sys-500 hover:text-red-400 transition-colors p-1 rounded-lg hover:bg-sys-700" title="Cerrar Sesión">
                                     <LogOut size={14} />
                                 </button>
@@ -519,6 +524,11 @@ export const Sidebar = () => {
                 isOpen={isPinModalOpen}
                 onClose={() => { setIsPinModalOpen(false); setPendingRoute(null); }}
                 onSuccess={handlePinSuccess}
+            />
+
+            <ChangePasswordModal
+                isOpen={isChangePasswordOpen}
+                onClose={() => setIsChangePasswordOpen(false)}
             />
 
             <CloseShiftModalWrapper 
