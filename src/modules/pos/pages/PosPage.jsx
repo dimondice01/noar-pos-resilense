@@ -533,8 +533,17 @@ export const PosPage = () => {
               case 'F2': e.preventDefault(); refocusInput(); break;
               case 'F3': e.preventDefault(); setIsClientSelectorOpen(true); break;
               case 'F4': e.preventDefault(); if(confirm('¿Anular ticket actual?')) clearCart(); break;
-              case 'F6': e.preventDefault(); applyWholesaleToLastItem(); break; 
-              case 'F8': e.preventDefault(); setIsCashOpsOpen(true); break; 
+              case 'F6': e.preventDefault(); applyWholesaleToLastItem(); break;
+              case 'F7': {
+                  e.preventDefault();
+                  const lastItem = activeTab.items[activeTab.items.length - 1];
+                  if (lastItem) {
+                      const lastKey = lastItem.tierPlu ? `${lastItem.id}_${lastItem.tierPlu}` : lastItem.id;
+                      setEditingItemId(lastKey);
+                  }
+                  break;
+              }
+              case 'F8': e.preventDefault(); setIsCashOpsOpen(true); break;
               case 'F9': e.preventDefault(); setIsMiscItemOpen(true); break; 
               case 'F12': e.preventDefault(); if (activeTab.items.length > 0) setIsPaymentOpen(true); break;
               case 'Escape': 
@@ -885,6 +894,7 @@ export const PosPage = () => {
               <span className="hover:text-emerald-300 transition-colors cursor-default"><strong className="text-emerald-500">F9</strong> ART. LIBRE</span>
               <span className="hover:text-blue-300 transition-colors cursor-default hidden sm:inline"><strong className="text-blue-400">F8</strong> CAJA</span>
               <span className="hover:text-orange-300 transition-colors cursor-default hidden md:inline"><strong className="text-orange-400">F6</strong> MAYORISTA</span>
+              <span className="hover:text-white transition-colors cursor-default hidden md:inline"><strong className="text-brand">F7</strong> CANTIDAD</span>
           </div>
           <div className="flex items-center gap-5 shrink-0">
               <span className="hover:text-white transition-colors cursor-default"><strong className="text-sys-400">ESC</strong> LIMPIAR</span>

@@ -330,15 +330,45 @@ export const usePosController = () => {
     // =================================================================
     // 🛒 LÓGICA DEL CARRITO (Movida arriba para evitar ReferenceError)
     // =================================================================
-    
+
+    // 🔥 AUDITORÍA NEXUS: historial de ítems sacados de a uno por pestaña, para
+    // reconstruir el carrito completo si termina en 0 vía eliminaciones individuales.
+    const removedHistoryRef = useRef({});
+
     // 1. Eliminar un item específico
     // 🔥 tierPlu distingue variantes "anexadas" (mismo product.id, precio/PLU propio)
     const removeFromCart = useCallback((productId, tierPlu = null) => {
+        const tab = tabs.find(t => t.id === activeTabId);
+        if (tab) {
+            const removedItem = tab.items.find(i => i.id === productId && (i.tierPlu || null) === (tierPlu || null));
+            const remaining = tab.items.filter(i => !(i.id === productId && (i.tierPlu || null) === (tierPlu || null)));
+
+            if (removedItem) {
+                // 🔥 AUDITORÍA NEXUS: acumulamos cada ítem sacado de a uno, para que si el
+                // carrito termina en 0 se audite TODO lo que pasó por él (no solo el último).
+                if (!removedHistoryRef.current[activeTabId]) removedHistoryRef.current[activeTabId] = [];
+                removedHistoryRef.current[activeTabId].push(removedItem);
+            }
+
+            if (remaining.length === 0 && tab.items.length > 0) {
+                const historyItems = removedHistoryRef.current[activeTabId] || [];
+                const subtotal = historyItems.reduce((acc, item) => acc + item.subtotal, 0);
+                salesRepository.registerAbandonedCart({
+                    items: historyItems,
+                    total: subtotal,
+                    subtotal: subtotal,
+                    client: tab.client,
+                    tabName: tab.name || 'Caja'
+                }, 'items_removed_individually');
+                delete removedHistoryRef.current[activeTabId];
+            }
+        }
+
         updateActiveTab(tab => ({
             ...tab,
             items: tab.items.filter(i => !(i.id === productId && (i.tierPlu || null) === (tierPlu || null)))
         }));
-    }, [activeTabId]);
+    }, [activeTabId, tabs]);
 
     // 2. Limpiar todo el carrito (Auditoría Nexus)
     const clearCart = useCallback((targetTabId = activeTabId, reason = 'clear_cart', skipAudit = false) => {
@@ -355,6 +385,10 @@ export const usePosController = () => {
                 tabName: tabToClear.name || 'Caja'
             }, reason);
         }
+
+        // 🔥 El id de la pestaña se recicla al vaciar/completar venta — limpiamos su
+        // historial acumulado para que no se mezcle con la próxima venta en esa pestaña.
+        delete removedHistoryRef.current[targetTabId];
 
         setTabs(prev => prev.map(tab => {
             if (tab.id === targetTabId) return { ...NEW_TAB_TEMPLATE, id: targetTabId, name: tab.name };
@@ -378,8 +412,10 @@ export const usePosController = () => {
             }, 'tab_removed');
         }
 
+        delete removedHistoryRef.current[tabId];
+
         if (tabs.length === 1) return clearCart(tabId, 'clear_cart', skipAudit);
-        
+
         const newTabs = tabs.filter(t => t.id !== tabId);
         setTabs(newTabs);
         if (activeTabId === tabId) setActiveTabId(newTabs[newTabs.length - 1].id);

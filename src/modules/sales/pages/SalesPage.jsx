@@ -157,6 +157,74 @@ const RefundModal = ({ isOpen, onClose, sale, onConfirm, isProcessing }) => {
 // 🚨 MODAL DE SINIESTROS (AUDITORÍA DE ABANDONOS)
 // =================================================================
 const SiniestrosModal = ({ isOpen, onClose, siniestros }) => {
+    const [filterCashier, setFilterCashier] = useState('ALL');
+    const [datePeriod, setDatePeriod] = useState('today');
+    const [customStart, setCustomStart] = useState(toInputDate(new Date()));
+    const [customEnd, setCustomEnd] = useState(toInputDate(new Date()));
+    const [historicalSiniestros, setHistoricalSiniestros] = useState(null); // null => usar `siniestros` (live, hoy)
+    const [loadingHistorical, setLoadingHistorical] = useState(false);
+
+    // 🔥 Los siniestros SÍ se persisten (sales con type: 'ABANDONED_CART'), pero el
+    // hook useCloudDashboard que alimenta `siniestros` solo escucha "hoy" en tiempo real.
+    // Para otros rangos, traemos on-demand del histórico ya sincronizado en Firestore.
+    useEffect(() => {
+        if (!isOpen) return;
+        if (datePeriod === 'today') { setHistoricalSiniestros(null); return; }
+
+        let cancelled = false;
+        const fetchHistorical = async () => {
+            setLoadingHistorical(true);
+            try {
+                let start = new Date();
+                let end = new Date();
+                if (datePeriod === 'yesterday') {
+                    start.setDate(start.getDate() - 1); start.setHours(0, 0, 0, 0);
+                    end.setDate(end.getDate() - 1); end.setHours(23, 59, 59, 999);
+                } else if (datePeriod === 'week') {
+                    const day = start.getDay() || 7;
+                    if (day !== 1) start.setDate(start.getDate() - (day - 1));
+                    start.setHours(0, 0, 0, 0); end.setHours(23, 59, 59, 999);
+                } else if (datePeriod === 'month') {
+                    start.setDate(1); start.setHours(0, 0, 0, 0); end.setHours(23, 59, 59, 999);
+                } else if (datePeriod === 'custom') {
+                    start = new Date(customStart + 'T00:00:00');
+                    end = new Date(customEnd + 'T23:59:59');
+                    if (start.getTime() > end.getTime()) {
+                        [start, end] = [new Date(customEnd + 'T00:00:00'), new Date(customStart + 'T23:59:59')];
+                    }
+                }
+                // Reusamos fetchRemoteSalesRange (ya trae todo lo del rango+sucursal) y
+                // filtramos client-side, así evitamos requerir un índice compuesto nuevo.
+                const rangeSales = await salesRepository.fetchRemoteSalesRange(start, end, { limit: 500 });
+                const abandoned = rangeSales
+                    .filter(s => s.type === 'ABANDONED_CART' || s.status === 'ABANDONED')
+                    .sort((a, b) => new Date(b.date) - new Date(a.date));
+                if (!cancelled) setHistoricalSiniestros(abandoned);
+            } catch (e) {
+                console.error("Error cargando siniestros históricos:", e);
+                if (!cancelled) setHistoricalSiniestros([]);
+            } finally {
+                if (!cancelled) setLoadingHistorical(false);
+            }
+        };
+        fetchHistorical();
+        return () => { cancelled = true; };
+    }, [isOpen, datePeriod, customStart, customEnd]);
+
+    const displaySiniestros = useMemo(() => {
+        return datePeriod === 'today' ? siniestros : (historicalSiniestros || []);
+    }, [datePeriod, siniestros, historicalSiniestros]);
+
+    const cashierOptions = useMemo(() => {
+        const names = new Set(displaySiniestros.map(s => s.userName).filter(Boolean));
+        return Array.from(names).sort();
+    }, [displaySiniestros]);
+
+    const filteredSiniestros = useMemo(() => {
+        if (filterCashier === 'ALL') return displaySiniestros;
+        return displaySiniestros.filter(s => s.userName === filterCashier);
+    }, [displaySiniestros, filterCashier]);
+
     if (!isOpen) return null;
 
     return (
@@ -169,20 +237,66 @@ const SiniestrosModal = ({ isOpen, onClose, siniestros }) => {
                         </div>
                         <div>
                             <h3 className="font-black text-xl text-sys-900 tracking-tight">Auditoría de Siniestros</h3>
-                            <p className="text-xs text-sys-500 font-bold uppercase tracking-widest mt-0.5">Carritos vaciados hoy</p>
+                            <p className="text-xs text-sys-500 font-bold uppercase tracking-widest mt-0.5">Carritos abandonados</p>
                         </div>
                     </div>
                     <button onClick={onClose} className="p-2.5 hover:bg-white hover:shadow-md rounded-xl transition-all text-sys-400 hover:text-sys-900"><X size={20}/></button>
                 </div>
-                
+
+                <div className="px-6 py-3 border-b border-sys-100 bg-white flex flex-wrap items-center gap-2">
+                    <div className="flex bg-sys-50 rounded-lg border border-sys-200 p-1">
+                        {[{ id: 'today', label: 'Hoy' }, { id: 'yesterday', label: 'Ayer' }, { id: 'week', label: 'Semana' }, { id: 'month', label: 'Mes' }, { id: 'custom', label: 'Custom' }].map(p => (
+                            <button key={p.id} onClick={() => setDatePeriod(p.id)} className={cn("px-2.5 py-1 rounded-md text-[10px] font-bold transition-all whitespace-nowrap", datePeriod === p.id ? "bg-sys-900 text-white shadow-sm" : "text-sys-500 hover:bg-white")}>
+                                {p.label}
+                            </button>
+                        ))}
+                    </div>
+
+                    {datePeriod === 'custom' && (
+                        <div className="flex items-center gap-1.5 bg-sys-50 px-2 py-1 rounded-lg border border-sys-200">
+                            <input type="date" value={customStart} onChange={e => setCustomStart(e.target.value)} className="text-[11px] bg-transparent border-none outline-none font-medium text-sys-700"/>
+                            <span className="text-sys-300">-</span>
+                            <input type="date" value={customEnd} onChange={e => setCustomEnd(e.target.value)} className="text-[11px] bg-transparent border-none outline-none font-medium text-sys-700"/>
+                        </div>
+                    )}
+
+                    {cashierOptions.length > 0 && (
+                        <div className="flex items-center gap-1.5 flex-1 min-w-[160px]">
+                            <User size={14} className="text-sys-400 shrink-0" />
+                            <select
+                                className="flex-1 bg-sys-50 border border-sys-200 text-sys-700 text-xs font-bold rounded-lg px-3 py-1.5 outline-none focus:border-brand"
+                                value={filterCashier}
+                                onChange={e => setFilterCashier(e.target.value)}
+                            >
+                                <option value="ALL">Todos los cajeros ({displaySiniestros.length})</option>
+                                {cashierOptions.map(name => (
+                                    <option key={name} value={name}>
+                                        {name} ({displaySiniestros.filter(s => s.userName === name).length})
+                                    </option>
+                                ))}
+                            </select>
+                        </div>
+                    )}
+                </div>
+
                 <div className="flex-1 overflow-y-auto p-6 space-y-4 custom-scrollbar">
-                    {siniestros.length === 0 ? (
+                    {loadingHistorical ? (
+                        <div className="text-center py-10 opacity-40">
+                            <RefreshCw size={32} className="mx-auto text-sys-400 mb-4 animate-spin" />
+                            <p className="text-sys-500 font-bold text-sm">Cargando histórico...</p>
+                        </div>
+                    ) : displaySiniestros.length === 0 ? (
                         <div className="text-center py-10 opacity-40">
                             <CheckCircle size={48} className="mx-auto text-emerald-500 mb-4 opacity-20" />
-                            <p className="text-sys-500 font-bold">No se detectaron siniestros hoy.</p>
+                            <p className="text-sys-500 font-bold">No se detectaron siniestros en este período.</p>
+                        </div>
+                    ) : filteredSiniestros.length === 0 ? (
+                        <div className="text-center py-10 opacity-40">
+                            <Search size={48} className="mx-auto text-sys-400 mb-4 opacity-20" />
+                            <p className="text-sys-500 font-bold">Sin siniestros para "{filterCashier}".</p>
                         </div>
                     ) : (
-                        siniestros.map(item => (
+                        filteredSiniestros.map(item => (
                             <div key={item.id} className="p-4 rounded-2xl border border-sys-100 bg-sys-50/30 hover:bg-white hover:shadow-xl hover:shadow-sys-200/50 transition-all duration-300">
                                 <div className="flex justify-between items-start mb-3">
                                     <div className="flex gap-3">
@@ -192,7 +306,7 @@ const SiniestrosModal = ({ isOpen, onClose, siniestros }) => {
                                         <div>
                                             <p className="font-black text-sys-900 leading-tight">{item.userName}</p>
                                             <p className="text-[10px] text-sys-400 font-bold uppercase tracking-tighter">
-                                                {new Date(item.date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })} • {item.tabName || 'Caja'}
+                                                {new Date(item.date).toLocaleDateString()} {new Date(item.date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })} • {item.tabName || 'Caja'}
                                             </p>
                                         </div>
                                     </div>
@@ -489,6 +603,10 @@ export const SalesPage = () => {
               // 🔥 FILTRO ESPECÍFICO
               if (filterType === 'ABANDONED') {
                   if (op.status !== 'ABANDONED' && op.type !== 'ABANDONED_CART') return false;
+              } else if (filterType === 'VOIDED') {
+                  if (op.afip?.status !== 'VOIDED') return false;
+              } else if (filterType === 'REFUNDED') {
+                  if (op.status !== 'REFUNDED' && op.status !== 'PARTIAL_REFUND' && !(parseFloat(op.refundedAmount) > 0)) return false;
               } else if (op.type !== filterType) {
                   return false;
               }
@@ -548,6 +666,23 @@ export const SalesPage = () => {
           return true;
       });
   }, [operations, filterType, filterCashier, filterPaymentMethod, searchTerm, cashiersList, activeBranchId, filterAfip]);
+
+  // 🔥 TOTAL DESGLOSADO POR MEDIO DE PAGO (solo cuando hay un método específico seleccionado)
+  const PAYMENT_METHOD_LABELS = {
+      CASH: 'EFECTIVO', CARD: 'TARJETAS', TRANSFER: 'TRANSFERENCIAS', MP: 'MERCADOPAGO',
+      CURRENT_ACCOUNT: 'CTA. CORRIENTE', EMPLOYEE_ACCOUNT: 'CTA. PERSONAL', SPLIT: 'COMBINADO', BUDGET: 'PRESUPUESTO'
+  };
+  const paymentMethodTotal = useMemo(() => {
+      if (filterPaymentMethod === 'ALL') return null;
+      return visibleOperations.reduce((acc, op) => {
+          const isVoided = op.afip?.status === 'VOIDED';
+          const isRefunded = op.status === 'REFUNDED' || op.status === 'PARTIAL_REFUND' || parseFloat(op.refundedAmount) > 0;
+          const isAbandoned = op.status === 'ABANDONED';
+          const isBudget = op.type === 'BUDGET';
+          if (isVoided || isRefunded || isAbandoned || isBudget) return acc;
+          return acc + (parseFloat(op.total) || 0);
+      }, 0);
+  }, [visibleOperations, filterPaymentMethod]);
 
   const totalPages = Math.ceil(visibleOperations.length / itemsPerPage);
   const paginatedOperations = useMemo(() => {
@@ -843,6 +978,16 @@ export const SalesPage = () => {
                                 $ {periodTotals.netProfit.toLocaleString('es-AR', {minimumFractionDigits: 2})}
                             </p>
                         </div>
+                        {paymentMethodTotal !== null && (
+                            <div className="border-l border-sys-100 pl-6 hidden sm:block">
+                                <p className="text-[10px] text-indigo-600 uppercase font-bold tracking-wider flex items-center gap-1">
+                                    <CreditCard size={10}/> {PAYMENT_METHOD_LABELS[filterPaymentMethod] || filterPaymentMethod}
+                                </p>
+                                <p className="text-xl font-black text-indigo-600">
+                                    $ {paymentMethodTotal.toLocaleString('es-AR', {minimumFractionDigits: 2})}
+                                </p>
+                            </div>
+                        )}
                     </Card>
                 )}
             </div>
@@ -891,6 +1036,8 @@ export const SalesPage = () => {
                       <option value="SALE">Ventas</option>
                       <option value="RECEIPT">Cobros</option>
                       <option value="BUDGET">Presupuestos</option>
+                      <option value="VOIDED">❌ Anuladas</option>
+                      <option value="REFUNDED">↩️ Devoluciones</option>
                       {isAdmin && <option value="ABANDONED">🛒 Abandonos</option>}
                   </select>
 
