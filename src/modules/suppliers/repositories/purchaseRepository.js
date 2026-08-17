@@ -477,27 +477,33 @@ export const purchaseRepository = {
             }
         });
 
-        // 4. 🔥 FIREBASE CLOUD: ACTUALIZACIÓN ATÓMICA DE STOCK EN LA NUBE 🔥
-        if (navigator.onLine && user?.companyId) {
-            items.forEach(item => {
-                const stockRef = doc(db, `companies/${user.companyId}/branches/${branchId}/inventory`, String(item.id || item.productId));
-                setDoc(stockRef, {
-                    stock: increment(parseFloat(item.qty)), 
-                    updatedAt: serverTimestamp()
-                }, { merge: true }).catch(err => console.error("Error atomic stock increment:", err));
-            });
-        }
+        // 4 y 5. 🔥 SYNC A LA NUBE EN SEGUNDO PLANO (SECUENCIAL)
+        // 🔧 FIX: disparar N escrituras a Firestore en paralelo sin await (una por item + una por triggerOptimisticSync)
+        // satura la cola de mutaciones offline del SDK y produce "INTERNAL ASSERTION FAILED: Unexpected state".
+        // Se serializa (await uno por uno) sin bloquear el guardado local, que ya devolvió arriba.
+        (async () => {
+            if (navigator.onLine && user?.companyId) {
+                for (const item of items) {
+                    const stockRef = doc(db, `companies/${user.companyId}/branches/${branchId}/inventory`, String(item.id || item.productId));
+                    try {
+                        await setDoc(stockRef, {
+                            stock: increment(parseFloat(item.qty)),
+                            updatedAt: serverTimestamp()
+                        }, { merge: true });
+                    } catch (err) { console.error("Error atomic stock increment:", err); }
+                }
+            }
 
-        // 5. 🔥 SYNC OPTIMISTA BACKGROUND (CUBRIMOS TODO)
-        triggerOptimisticSync('purchases', purchase);
-        productsToUpdate.forEach(p => triggerOptimisticSync('products', p));
-        newProductsToCreate.forEach(p => triggerOptimisticSync('products', p));
-        movementsToCreate.forEach(m => triggerOptimisticSync('movements', m));
-        
-        if (updatedSupplier) triggerOptimisticSync('suppliers', updatedSupplier);
-        if (newLedgerEntry) triggerOptimisticSync('supplier_ledger', newLedgerEntry);
-        if (paymentLedgerEntry) triggerOptimisticSync('supplier_ledger', paymentLedgerEntry);
-        if (newCashMovement) triggerOptimisticSync('cash_movements', newCashMovement);
+            await triggerOptimisticSync('purchases', purchase);
+            for (const p of productsToUpdate) await triggerOptimisticSync('products', p);
+            for (const p of newProductsToCreate) await triggerOptimisticSync('products', p);
+            for (const m of movementsToCreate) await triggerOptimisticSync('movements', m);
+
+            if (updatedSupplier) await triggerOptimisticSync('suppliers', updatedSupplier);
+            if (newLedgerEntry) await triggerOptimisticSync('supplier_ledger', newLedgerEntry);
+            if (paymentLedgerEntry) await triggerOptimisticSync('supplier_ledger', paymentLedgerEntry);
+            if (newCashMovement) await triggerOptimisticSync('cash_movements', newCashMovement);
+        })();
 
         return purchase;
     },
@@ -675,24 +681,25 @@ export const purchaseRepository = {
             await dbLocal.purchases.update(purchaseId, purchase);
         });
 
-        // 🔥 RESTAURAR STOCK ATÓMICO EN LA NUBE 🔥
-        if (navigator.onLine && user?.companyId) {
-            if (purchase.items && Array.isArray(purchase.items)) {
-                purchase.items.forEach(item => {
+        // 🔥 RESTAURAR STOCK EN LA NUBE + SYNC OPTIMISTA (SECUENCIAL, ver fix en registerPurchase)
+        (async () => {
+            if (navigator.onLine && user?.companyId && purchase.items && Array.isArray(purchase.items)) {
+                for (const item of purchase.items) {
                     const stockRef = doc(db, `companies/${user.companyId}/branches/${branchId}/inventory`, String(item.id || item.productId));
-                    setDoc(stockRef, {
-                        stock: increment(-parseFloat(item.qty || item.quantity || 0)), 
-                        updatedAt: serverTimestamp()
-                    }, { merge: true }).catch(err => console.error("Error atomic stock decrement:", err));
-                });
+                    try {
+                        await setDoc(stockRef, {
+                            stock: increment(-parseFloat(item.qty || item.quantity || 0)),
+                            updatedAt: serverTimestamp()
+                        }, { merge: true });
+                    } catch (err) { console.error("Error atomic stock decrement:", err); }
+                }
             }
-        }
 
-        // 🔥 SYNC OPTIMISTA
-        triggerOptimisticSync('purchases', purchase);
-        productsToUpdate.forEach(p => triggerOptimisticSync('products', p));
-        if (updatedSupplier) triggerOptimisticSync('suppliers', updatedSupplier);
-        if (newLedgerEntry) triggerOptimisticSync('supplier_ledger', newLedgerEntry);
+            await triggerOptimisticSync('purchases', purchase);
+            for (const p of productsToUpdate) await triggerOptimisticSync('products', p);
+            if (updatedSupplier) await triggerOptimisticSync('suppliers', updatedSupplier);
+            if (newLedgerEntry) await triggerOptimisticSync('supplier_ledger', newLedgerEntry);
+        })();
 
         return true;
     },
@@ -848,27 +855,29 @@ export const purchaseRepository = {
             if (newCashMovement) await dbLocal.cash_movements.put(newCashMovement);
         });
 
-        // 6. 🔥 RESTAR STOCK ATÓMICO EN LA NUBE 🔥
-        if (navigator.onLine && user?.companyId) {
-            Object.keys(returnMap).forEach(itemId => {
-                const qty = returnMap[itemId];
-                if (qty > 0) {
+        // 6 y 7. 🔥 RESTAR STOCK EN LA NUBE + SYNC OPTIMISTA (SECUENCIAL, ver fix en registerPurchase)
+        (async () => {
+            if (navigator.onLine && user?.companyId) {
+                for (const itemId of Object.keys(returnMap)) {
+                    const qty = returnMap[itemId];
+                    if (qty <= 0) continue;
                     const stockRef = doc(db, `companies/${user.companyId}/branches/${branchId}/inventory`, String(itemId));
-                    setDoc(stockRef, {
-                        stock: increment(-parseFloat(qty)), 
-                        updatedAt: serverTimestamp()
-                    }, { merge: true }).catch(e => console.error("Atomic decrement error", e));
+                    try {
+                        await setDoc(stockRef, {
+                            stock: increment(-parseFloat(qty)),
+                            updatedAt: serverTimestamp()
+                        }, { merge: true });
+                    } catch (e) { console.error("Atomic decrement error", e); }
                 }
-            });
-        }
+            }
 
-        // 7. SYNC OPTIMISTA
-        triggerOptimisticSync('purchases', updatedPurchase);
-        productsToUpdate.forEach(p => triggerOptimisticSync('products', p));
-        movementsToCreate.forEach(m => triggerOptimisticSync('movements', m));
-        if (updatedSupplier) triggerOptimisticSync('suppliers', updatedSupplier);
-        if (newLedgerEntry) triggerOptimisticSync('supplier_ledger', newLedgerEntry);
-        if (newCashMovement) triggerOptimisticSync('cash_movements', newCashMovement);
+            await triggerOptimisticSync('purchases', updatedPurchase);
+            for (const p of productsToUpdate) await triggerOptimisticSync('products', p);
+            for (const m of movementsToCreate) await triggerOptimisticSync('movements', m);
+            if (updatedSupplier) await triggerOptimisticSync('suppliers', updatedSupplier);
+            if (newLedgerEntry) await triggerOptimisticSync('supplier_ledger', newLedgerEntry);
+            if (newCashMovement) await triggerOptimisticSync('cash_movements', newCashMovement);
+        })();
 
         return updatedPurchase;
     }
