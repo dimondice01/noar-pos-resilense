@@ -5,7 +5,7 @@ import {
 } from 'recharts';
 import {
     TrendingUp, DollarSign, Package,
-    ArrowUpRight, Truck, Wallet, Activity, HandCoins, RefreshCw
+    ArrowUpRight, Truck, Wallet, Activity, HandCoins, RefreshCw, Calendar
 } from 'lucide-react';
 import { useBusinessIntelligence } from '../hooks/useBusinessIntelligence';
 import { useAuthStore } from '../../auth/store/useAuthStore';
@@ -28,8 +28,18 @@ export const AnalyticsDashboard = () => {
     const { activeBranchId, activeBranchName } = useAuthStore();
     const [viewMode, setViewMode] = useState('ECONOMIC');
     const [cashFlowModal, setCashFlowModal] = useState({ open: false, tab: 'expenses' });
+    const [customOpen, setCustomOpen] = useState(false);
+    const [customFrom, setCustomFrom] = useState('');
+    const [customTo, setCustomTo] = useState('');
 
-    const { metrics, loading, period, setPeriod, refetch } = useBusinessIntelligence();
+    const { metrics, loading, period, setPeriod, customRange, setCustomRange, refetch } = useBusinessIntelligence();
+
+    const applyCustomRange = () => {
+        if (!customFrom || !customTo) return;
+        setCustomRange({ start: customFrom, end: customTo });
+        setPeriod('custom');
+        setCustomOpen(false);
+    };
 
     const stats      = metrics.global       || {};
     const payments   = metrics.paymentChart  || [];
@@ -103,6 +113,55 @@ export const AnalyticsDashboard = () => {
                             </button>
                         ))}
                     </div>
+
+                    <div className="relative">
+                        <button
+                            onClick={() => setCustomOpen(o => !o)}
+                            className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-black border transition-all ${
+                                period === 'custom'
+                                ? 'bg-brand text-white border-brand shadow-sm'
+                                : 'bg-white border-sys-200 text-sys-500 hover:bg-sys-100'
+                            }`}
+                        >
+                            <Calendar size={14} />
+                            {period === 'custom' && customRange.start && customRange.end
+                                ? `${new Date(customRange.start).toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit' })} - ${new Date(customRange.end).toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit' })}`
+                                : 'Personalizado'}
+                        </button>
+
+                        {customOpen && (
+                            <div className="absolute right-0 mt-2 z-20 bg-white border border-sys-200 rounded-xl shadow-lg p-4 flex flex-col gap-3 w-64">
+                                <div className="flex flex-col gap-1">
+                                    <label className="text-[10px] font-black text-sys-400 uppercase tracking-wide">Desde</label>
+                                    <input
+                                        type="date"
+                                        value={customFrom}
+                                        max={customTo || undefined}
+                                        onChange={e => setCustomFrom(e.target.value)}
+                                        className="border border-sys-200 rounded-lg px-2 py-1.5 text-sm font-bold text-sys-700"
+                                    />
+                                </div>
+                                <div className="flex flex-col gap-1">
+                                    <label className="text-[10px] font-black text-sys-400 uppercase tracking-wide">Hasta</label>
+                                    <input
+                                        type="date"
+                                        value={customTo}
+                                        min={customFrom || undefined}
+                                        onChange={e => setCustomTo(e.target.value)}
+                                        className="border border-sys-200 rounded-lg px-2 py-1.5 text-sm font-bold text-sys-700"
+                                    />
+                                </div>
+                                <button
+                                    onClick={applyCustomRange}
+                                    disabled={!customFrom || !customTo}
+                                    className="mt-1 px-3 py-2 rounded-lg bg-brand text-white text-xs font-black uppercase tracking-wide disabled:opacity-40"
+                                >
+                                    Aplicar
+                                </button>
+                            </div>
+                        )}
+                    </div>
+
                     <button
                         onClick={refetch}
                         title="Actualizar"

@@ -4,13 +4,18 @@ import { db } from '../../../database/firebase';
 import { getDB } from '../../../database/db';
 import { useAuthStore } from '../../auth/store/useAuthStore';
 
-const getDateRange = (period) => {
+const getDateRange = (period, customRange) => {
+    if (period === 'custom' && customRange?.start && customRange?.end) {
+        const start = new Date(customRange.start); start.setHours(0, 0, 0, 0);
+        const end = new Date(customRange.end); end.setHours(23, 59, 59, 999);
+        return { start, end };
+    }
     const start = new Date(); start.setHours(0, 0, 0, 0);
     const end = new Date(); end.setHours(23, 59, 59, 999);
     switch (period) {
-        case 'today': break; 
+        case 'today': break;
         case 'week':
-            const day = start.getDay() || 7; 
+            const day = start.getDay() || 7;
             if (day !== 1) start.setDate(start.getDate() - (day - 1));
             break;
         case 'month': start.setDate(1); break;
@@ -30,12 +35,18 @@ const getGroupKeyAndLabel = (dateObj, period) => {
         const m = dateObj.getMonth() + 1;
         return { key: `${dateObj.getFullYear()}-${m}`, label: `${m}/${dateObj.getFullYear().toString().slice(-2)}` };
     }
+    if (period === 'custom') {
+        const d = dateObj.getDate().toString().padStart(2, '0');
+        const m = (dateObj.getMonth() + 1).toString().padStart(2, '0');
+        return { key: `${dateObj.getFullYear()}-${m}-${d}`, label: `${d}/${m}` };
+    }
     return { key: 'T', label: 'TOTAL' };
 };
 
 export const useBusinessIntelligence = () => {
     const { user, activeBranchId } = useAuthStore();
     const [period, setPeriod] = useState('month');
+    const [customRange, setCustomRange] = useState({ start: null, end: null });
     const [forceRefresh, setForceRefresh] = useState(0);
     const [salesData, setSalesData] = useState([]);
     const [movementsData, setMovementsData] = useState([]);
@@ -53,32 +64,21 @@ export const useBusinessIntelligence = () => {
             if (!user?.companyId) return;
             setLoading(true);
             try {
-                const { start, end } = getDateRange(period);
+                if (period === 'custom' && (!customRange.start || !customRange.end)) { setLoading(false); return; }
+                const { start, end } = getDateRange(period, customRange);
                 const companyPath = `companies/${user.companyId}`;
-                const isForced = forceRefresh > 0;
                 const localDb = await getDB();
 
-                // 1. DEXIE FIRST: ventas locales del rango
-                let localSales = await localDb.sales
-                    .where('date').between(start.toISOString(), end.toISOString(), true, true)
-                    .toArray();
-                if (activeBranchId && activeBranchId !== 'ALL') {
-                    localSales = localSales.filter(s => s.branchId === activeBranchId);
-                }
-
-                const needsCloudSales = localSales.length === 0 || isForced;
-                if (!needsCloudSales) setSalesData(localSales.map(s => ({ ...s, dateObj: parseDate(s.date || s.createdAt) })));
-
-                // 2. Ventas: lo que falte, bajarlo de Firestore (cubre registros sin updatedAt)
-                // 🔥 limit() para acotar el costo de esta lectura de respaldo (mismo criterio que
-                // masterRepository.js/syncService.js) — evita una lectura sin tope en dispositivos
-                // sin historial local (ej: revisión remota desde otro dispositivo).
-                let salesSnapPromise = Promise.resolve(null);
-                if (needsCloudSales) {
-                    let salesQ = query(collection(db, companyPath, 'sales'), where('date', '>=', start.toISOString()), where('date', '<=', end.toISOString()), limit(1000));
-                    if (activeBranchId && activeBranchId !== 'ALL') salesQ = query(salesQ, where('branchId', '==', activeBranchId));
-                    salesSnapPromise = getDocs(salesQ);
-                }
+                // 1 y 2. Ventas: SIEMPRE se confirman contra la nube para el rango pedido (mismo
+                // criterio que cash_movements más abajo) — no confiar en "hay algo en Dexie" como
+                // señal de que está completo, porque el delta-sync general no garantiza historial
+                // completo en dispositivos que recién visitan un rango viejo (ver fix de movimientos
+                // debajo, mismo bug pattern).
+                // 🔥 limit() para acotar el costo de esta lectura (mismo criterio que
+                // masterRepository.js/syncService.js).
+                let salesQ = query(collection(db, companyPath, 'sales'), where('date', '>=', start.toISOString()), where('date', '<=', end.toISOString()), limit(1000));
+                if (activeBranchId && activeBranchId !== 'ALL') salesQ = query(salesQ, where('branchId', '==', activeBranchId));
+                const salesSnapPromise = getDocs(salesQ);
 
                 // 3. Movimientos de caja (gastos, compras, retiros): SIEMPRE se confirman contra la
                 // nube (acotado a rango + limit), nunca solo con lo que haya en Dexie.
@@ -95,22 +95,28 @@ export const useBusinessIntelligence = () => {
 
                 const [sSnap, mSnap] = await Promise.all([salesSnapPromise, getDocs(movQ)]);
 
-                if (sSnap) {
-                    const cloudSales = sSnap.docs.map(doc => ({ ...doc.data(), id: doc.id, dateObj: parseDate(doc.data().date || doc.data().createdAt) }));
+                const cloudSales = sSnap.docs.map(doc => ({ ...doc.data(), id: doc.id }));
 
-                    // Nunca sobreescribir ventas con syncStatus: 'pending' (creadas offline aún no subidas)
-                    if (cloudSales.length > 0) {
-                        const pendingSet = new Set(
-                            (await localDb.sales.where('syncStatus').equals('pending').toArray())
-                                .map(s => s.id)
-                        );
-                        const safeItems = cloudSales
-                            .filter(s => !pendingSet.has(s.id))
-                            .map(({ dateObj, ...s }) => ({ ...s, syncStatus: 'synced' }));
-                        if (safeItems.length > 0) await localDb.sales.bulkPut(safeItems);
-                    }
-                    setSalesData(cloudSales);
+                // Nunca sobreescribir ventas con syncStatus: 'pending' (creadas offline aún no subidas)
+                if (cloudSales.length > 0) {
+                    const pendingSet = new Set(
+                        (await localDb.sales.where('syncStatus').equals('pending').toArray())
+                            .map(s => s.id)
+                    );
+                    const safeItems = cloudSales
+                        .filter(s => !pendingSet.has(s.id))
+                        .map(s => ({ ...s, syncStatus: 'synced' }));
+                    if (safeItems.length > 0) await localDb.sales.bulkPut(safeItems);
                 }
+
+                // Releemos Dexie ya mergeado (incluye lo recién bajado + lo 'pending' local sin subir)
+                let finalSales = await localDb.sales
+                    .where('date').between(start.toISOString(), end.toISOString(), true, true)
+                    .toArray();
+                if (activeBranchId && activeBranchId !== 'ALL') {
+                    finalSales = finalSales.filter(s => s.branchId === activeBranchId);
+                }
+                setSalesData(finalSales.map(s => ({ ...s, dateObj: parseDate(s.date || s.createdAt) })));
 
                 const cloudMovements = mSnap.docs.map(doc => ({ ...doc.data(), id: doc.id }));
 
@@ -138,7 +144,7 @@ export const useBusinessIntelligence = () => {
             } catch (err) { setError(err.message); } finally { setLoading(false); }
         };
         fetchBI();
-    }, [user?.companyId, period, activeBranchId, forceRefresh, parseDate]);
+    }, [user?.companyId, period, activeBranchId, forceRefresh, parseDate, customRange.start, customRange.end]);
 
     const metrics = useMemo(() => {
         let revenue = 0; let cost = 0; let expenses = 0; let purchases = 0;
@@ -225,5 +231,5 @@ export const useBusinessIntelligence = () => {
         };
     }, [salesData, movementsData, period]);
 
-    return { metrics, loading, error, period, setPeriod, refetch: () => setForceRefresh(n => n + 1), activeBranchId };
+    return { metrics, loading, error, period, setPeriod, customRange, setCustomRange, refetch: () => setForceRefresh(n => n + 1), activeBranchId };
 };
