@@ -720,10 +720,11 @@ export const productRepository = {
             const invRef = doc(db, `companies/${user.companyId}/branches/${activeBranchId}/inventory`, productId);
             
             // 🔥 FIRE AND FORGET
-            setDoc(invRef, { 
+            setDoc(invRef, {
                 promo: promoRule,
                 updatedAt: serverTimestamp()
             }, { merge: true })
+            .then(() => dbLocal.inventory.update([activeBranchId, productId], { syncStatus: 'synced' }))
             .catch(e => console.error("Error syncing promo:", e));
         }
     },

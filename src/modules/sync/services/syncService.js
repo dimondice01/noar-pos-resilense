@@ -864,7 +864,13 @@ export const syncService = {
             });
 
         if (changes.length > 0) {
-            await localDb.inventory.bulkPut(changes);
+            // Nunca sobreescribir registros con cambios locales pendientes de subir (ej: promo recién aplicada)
+            const pendingSet = new Set(
+                (await localDb.inventory.where('syncStatus').equals('pending').toArray())
+                    .map(i => `${i.branchId}_${i.productId}`)
+            );
+            const safeChanges = changes.filter(c => !pendingSet.has(`${c.branchId}_${c.productId}`));
+            if (safeChanges.length > 0) await localDb.inventory.bulkPut(safeChanges);
         }
     });
   },
