@@ -354,10 +354,12 @@ export const purchaseRepository = {
 
             productsToUpdate.push(productUpdate);
 
+            const currentBranchInv = await dbLocal.inventory.get([branchId, productId]);
             inventoryToUpdate.push({
                 productId: productId,
                 branchId: branchId,
                 stock: currentStock + newQty,
+                promo: currentBranchInv?.promo || null,
                 updatedAt: timestamp,
                 syncStatus: 'pending_stock'
             });
@@ -744,9 +746,11 @@ export const purchaseRepository = {
                 const newStock = Math.max(0, currentStock - qtyToReturn);
 
                 productsToUpdate.push({ ...product, stock: newStock, syncStatus: 'pending' });
-                
+
+                const currentBranchInv = await dbLocal.inventory.get([branchId, itemId]);
                 inventoryToUpdate.push({
                     productId: String(itemId), branchId, stock: newStock,
+                    promo: currentBranchInv?.promo || null,
                     updatedAt: timestamp, syncStatus: 'pending_stock'
                 });
 

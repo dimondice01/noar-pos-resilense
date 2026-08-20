@@ -48,17 +48,25 @@ export const useAutoSync = (intervalMs = 30000) => {
                 if (snapshot.docChanges().length === 0) return;
 
                 await dbLocal.transaction('rw', [dbLocal.products, dbLocal.inventory], async () => {
+                    // Nunca sobreescribir registros con cambios locales pendientes de subir (ej: promo recién aplicada)
+                    const pendingSet = new Set(
+                        (await dbLocal.inventory.where('syncStatus').equals('pending').toArray())
+                            .map(i => `${i.branchId}_${i.productId}`)
+                    );
+
                     for (const change of snapshot.docChanges()) {
                         const inv = change.doc.data();
                         const prodId = inv.productId || change.doc.id;
 
-                        if (change.type !== 'removed') {
+                        if (change.type !== 'removed' && !pendingSet.has(`${currentBranchId}_${prodId}`)) {
                             // 1. Guardar en tabla Inventory (Realidad Física)
                             await dbLocal.inventory.put({
                                 branchId: currentBranchId,
                                 productId: prodId,
                                 stock: inv.stock,
-                                updatedAt: inv.updatedAt
+                                promo: inv.promo || null,
+                                updatedAt: inv.updatedAt,
+                                syncStatus: 'synced'
                             });
 
                             // 2. Actualizar campo 'stock' visual en Productos

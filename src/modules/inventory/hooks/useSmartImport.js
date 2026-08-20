@@ -110,6 +110,9 @@ export const useSmartImport = () => {
                         const existingProducts = await localDB.products.toArray();
                         const productCodeMap = new Map(existingProducts.map(p => [String(p.code).trim().toUpperCase(), p]));
 
+                        const existingBranchInventory = await localDB.inventory.where('branchId').equals(branchId).toArray();
+                        const inventoryMap = new Map(existingBranchInventory.map(i => [i.productId, i]));
+
                         const newCategories = [];
                         const newBrands = [];
                         const productsToUpsert = [];
@@ -221,6 +224,7 @@ export const useSmartImport = () => {
                                     branchId: branchId,
                                     productId: productId,
                                     stock: stockQty,
+                                    promo: inventoryMap.get(productId)?.promo || null,
                                     updatedAt: new Date().toISOString(),
                                     syncStatus: 'pending'
                                 });

@@ -291,6 +291,7 @@ export const salesRepository = {
                         productId: comp.productId,
                         stock: compStock - compQty,
                         stockDelta: compPendingDelta - compQty,
+                        promo: compInv?.promo || null,
                         updatedAt: timestamp,
                         syncStatus: 'pending'
                     });
@@ -327,6 +328,7 @@ export const salesRepository = {
                     productId: item.id,
                     stock: newStock,
                     stockDelta: pendingDelta - item.quantity,
+                    promo: currentInv?.promo || null,
                     updatedAt: timestamp,
                     syncStatus: 'pending'
                 });
