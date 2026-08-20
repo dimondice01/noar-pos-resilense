@@ -5,6 +5,7 @@ export const ALL_EXPORT_COLUMNS = [
     { key: 'name',     label: 'Nombre',      width: 36, numeric: false, required: true },
     { key: 'category', label: 'Categoría',   width: 18, numeric: false },
     { key: 'brand',    label: 'Marca',       width: 16, numeric: false },
+    { key: 'supplier', label: 'Proveedor',   width: 20, numeric: false },
     { key: 'cost',     label: 'Costo ($)',   width: 13, numeric: true,  numFmt: '"$"#,##0.00' },
     { key: 'price',    label: 'Precio ($)',  width: 13, numeric: true,  numFmt: '"$"#,##0.00' },
     { key: 'margin',   label: 'Margen (%)',  width: 13, numeric: true,  numFmt: '0"%"' },
