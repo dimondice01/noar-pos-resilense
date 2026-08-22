@@ -1,8 +1,8 @@
 import React, { useEffect, useState, useMemo, useCallback } from 'react';
-import { 
-    Search, Filter, ArrowDownLeft, ArrowUpRight, 
+import {
+    Search, Filter, ArrowDownLeft, ArrowUpRight,
     History, DollarSign, Tag, AlertCircle, CheckCircle2, Package,
-    BarChart3, List, Users, Calendar, Layers, X, MapPin, Loader2, CloudDownload, FileArchive, Link as LinkIcon, Printer
+    BarChart3, List, Users, Calendar, Layers, X, MapPin, Loader2, CloudDownload, FileArchive, Link as LinkIcon, Printer, ShieldAlert
 } from 'lucide-react';
 
 // Repositorios y Stores
@@ -33,13 +33,17 @@ const TYPE_CONFIG = {
   'OUT': { label: 'Salida Manual', icon: AlertCircle, color: 'text-red-600', bg: 'bg-red-50', border: 'border-red-200' },
   'CREATION': { label: 'Alta Producto', icon: Package, color: 'text-purple-600', bg: 'bg-purple-50', border: 'border-purple-200' },
   'STOCK_OUT': { label: 'Venta', icon: ArrowUpRight, color: 'text-sys-600', bg: 'bg-sys-100', border: 'border-sys-200' },
+  'MERMA': { label: 'Merma', icon: ShieldAlert, color: 'text-red-600', bg: 'bg-red-50', border: 'border-red-200' },
   'BUDGET': { label: 'Presupuesto', icon: FileArchive, color: 'text-gray-500', bg: 'bg-gray-100', border: 'border-gray-200' },
 };
+
+// Tipos cuya cantidad se muestra como salida (rojo, con signo -)
+const OUTFLOW_TYPES = new Set(['MERMA']);
 
 // Solo estos tipos aparecen en el Feed de Auditoría — ventas (STOCK_OUT) y presupuestos quedan excluidos
 const AUDIT_TYPES = new Set([
     'STOCK_IN', 'IN', 'STOCK_ADJUST_IN', 'STOCK_ADJUST_OUT',
-    'OUT', 'PRICE_CHANGE', 'COST_CHANGE', 'CREATION'
+    'OUT', 'PRICE_CHANGE', 'COST_CHANGE', 'CREATION', 'MERMA'
 ]);
 
 // =================================================================
@@ -220,11 +224,14 @@ const ProductHistoryModal = ({ productData, movements, onClose, onViewDocument }
                                                 </div>
                                             </td>
                                             <td className="px-4 py-3 text-right">
-                                                {mov.amount && (
-                                                    <span className={cn("text-base font-black tracking-tight", isBudget ? "text-gray-400" : (mov.type.includes('OUT') || mov.amount < 0) ? "text-red-600" : "text-green-600")}>
-                                                        {(mov.type.includes('OUT') || mov.amount < 0) ? '-' : '+'}{Math.abs(Number(mov.amount))}
-                                                    </span>
-                                                )}
+                                                {mov.amount && (() => {
+                                                    const isOut = mov.type.includes('OUT') || OUTFLOW_TYPES.has(mov.type) || mov.amount < 0;
+                                                    return (
+                                                        <span className={cn("text-base font-black tracking-tight", isBudget ? "text-gray-400" : isOut ? "text-red-600" : "text-green-600")}>
+                                                            {isOut ? '-' : '+'}{Math.abs(Number(mov.amount))}
+                                                        </span>
+                                                    );
+                                                })()}
                                             </td>
                                         </tr>
                                     );
@@ -233,7 +240,7 @@ const ProductHistoryModal = ({ productData, movements, onClose, onViewDocument }
                         </table>
                     )}
                 </div>
-                
+
                 <div className="p-4 border-t border-sys-100 bg-sys-50 flex justify-end">
                     <Button onClick={onClose} variant="secondary">Cerrar Historial</Button>
                 </div>
@@ -636,11 +643,14 @@ export const MovementsPage = () => {
                                                     </div>
                                                 </td>
                                                 <td className="px-6 py-3 text-right">
-                                                    {mov.amount && (
-                                                        <span className={cn("text-base font-black tracking-tight", isBudget ? "text-gray-400" : (mov.type.includes('OUT') || mov.amount < 0) ? "text-red-600" : "text-green-600")}>
-                                                            {(mov.type.includes('OUT') || mov.amount < 0) ? '-' : '+'}{Math.abs(Number(mov.amount))}
-                                                        </span>
-                                                    )}
+                                                    {mov.amount && (() => {
+                                                        const isOut = mov.type.includes('OUT') || OUTFLOW_TYPES.has(mov.type) || mov.amount < 0;
+                                                        return (
+                                                            <span className={cn("text-base font-black tracking-tight", isBudget ? "text-gray-400" : isOut ? "text-red-600" : "text-green-600")}>
+                                                                {isOut ? '-' : '+'}{Math.abs(Number(mov.amount))}
+                                                            </span>
+                                                        );
+                                                    })()}
                                                 </td>
                                             </tr>
                                         );
