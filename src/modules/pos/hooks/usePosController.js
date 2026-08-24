@@ -8,7 +8,8 @@ import { paymentService } from '../../payments/services/paymentService';
 import { employeeLedgerRepository } from '../../settings/repositories/employeeLedgerRepository'; 
 import { clientRepository } from '../../clients/repositories/clientRepository'; 
 import { toast } from 'react-hot-toast'; 
-import { getDB } from '../../../database/db'; 
+import { getDB } from '../../../database/db';
+import { parseTotalScaleBarcode } from '../utils/scaleTotalBarcode';
 
 // =================================================================
 // 🧠 NEXUS PRO MAX CORE - POS CONTROLLER (LOCAL-FIRST ENGINE)
@@ -116,6 +117,7 @@ export const usePosController = () => {
             cash: 0, transfer: 0, mp: 0, card: 0, current_account: 0
         },
         scaleBarcodeFormats: {},
+        scaleTotalProfiles: {},
         afipAlwaysOn: false
     });
 
@@ -123,6 +125,9 @@ export const usePosController = () => {
     const activeScaleFormat = posConfig.scaleBarcodeFormats?.[activeBranchId] === 'EAN13_GRAMS'
         ? 'EAN13_GRAMS'
         : 'LEGACY';
+
+    // 🔥 Balanzas "soporte total" (Kretz) configuradas para la sucursal activa
+    const activeTotalScaleProfiles = posConfig.scaleTotalProfiles?.[activeBranchId] || [];
 
     // =================================================================
     // ⚙️ CARGA DE CONFIGURACIÓN DINÁMICA
@@ -144,6 +149,7 @@ export const usePosController = () => {
                             cash: 0, transfer: 0, mp: 0, card: 0, current_account: 0
                         },
                         scaleBarcodeFormats: configDoc.value.scaleBarcodeFormats || {},
+                        scaleTotalProfiles: configDoc.value.scaleTotalProfiles || {},
                         afipAlwaysOn: configDoc.value.afipAlwaysOn || false
                     });
                 }
@@ -172,6 +178,7 @@ export const usePosController = () => {
                             cash: 0, transfer: 0, mp: 0, card: 0, current_account: 0
                         },
                         scaleBarcodeFormats: configDoc.value.scaleBarcodeFormats || {},
+                        scaleTotalProfiles: configDoc.value.scaleTotalProfiles || {},
                         afipAlwaysOn: configDoc.value.afipAlwaysOn || false
                     });
                 }
@@ -678,9 +685,10 @@ export const usePosController = () => {
                     promoLabel: i.promoLabel || '',
                     appliedPromo: i.appliedPromo || false,
                     appliedWholesale: i.appliedWholesale || false,
-                    taxRate: i.taxRate || 21
+                    taxRate: i.taxRate || 21,
+                    scaleSource: i.scaleSource || null
                 })),
-                client: activeTab.client || { name: 'Consumidor Final', fiscalCondition: 'CONSUMIDOR_FINAL' }, 
+                client: activeTab.client || { name: 'Consumidor Final', fiscalCondition: 'CONSUMIDOR_FINAL' },
                 total: totals.total, subtotal: totals.subtotal, discount: totals.discountAmount,
                 surcharge: 0,
                 payments: [{ method: 'budget', amount: 0, total: 0 }],
@@ -867,10 +875,11 @@ export const usePosController = () => {
                     originalPrice: i.originalPrice, price: i.finalPrice, cost: i.cost,
                     quantity: i.quantity, subtotal: i.subtotal,
                     promoLabel: i.promoLabel || '', appliedPromo: i.appliedPromo || false,
-                    appliedWholesale: i.appliedWholesale || false, taxRate: i.taxRate || 21
+                    appliedWholesale: i.appliedWholesale || false, taxRate: i.taxRate || 21,
+                    scaleSource: i.scaleSource || null
                 })),
-                client: activeTab.client || { name: 'Consumidor Final', fiscalCondition: 'CONSUMIDOR_FINAL' }, 
-                total: totalWithInterest, 
+                client: activeTab.client || { name: 'Consumidor Final', fiscalCondition: 'CONSUMIDOR_FINAL' },
+                total: totalWithInterest,
                 subtotal: totals.subtotal,
                 discount: totals.discountAmount + parseFloat(paymentData.paymentDiscount || 0),
                 surcharge: parseFloat(paymentData.surcharge || 0),
@@ -996,8 +1005,9 @@ export const usePosController = () => {
             const payload = {
                 items: activeTab.items.map(i => ({
                     id: i.id, code: i.code, name: i.name, 
-                    price: 0, originalPrice: i.price, cost: i.cost, 
-                    quantity: i.quantity, subtotal: 0
+                    price: 0, originalPrice: i.price, cost: i.cost,
+                    quantity: i.quantity, subtotal: 0,
+                    scaleSource: i.scaleSource || null
                 })),
                 client: { name: 'CONSUMO INTERNO', fiscalCondition: 'CONSUMIDOR FINAL' },
                 total: 0, subtotal: 0, discount: 100,
@@ -1061,8 +1071,26 @@ export const usePosController = () => {
             lastKeyTime = currentTime;
             
             if (e.key === 'Enter') {
-                if (buffer.length > 2) { 
-                    
+                if (buffer.length > 2) {
+
+                    const totalInfo = parseTotalScaleBarcode(buffer, activeTotalScaleProfiles);
+                    if (totalInfo) {
+                        addToCart({
+                            id: `scale_total_${Date.now()}`,
+                            code: 'MANUAL',
+                            name: totalInfo.categoryName.toUpperCase(),
+                            price: totalInfo.total,
+                            cost: 0,
+                            isWeighable: false,
+                            stock: 999,
+                            taxRate: 21,
+                            scaleSource: 'TOTAL_PROFILE'
+                        }, 1);
+                        toast.success(`⚖️ Balanza total: ${totalInfo.categoryName} ($${totalInfo.total})`);
+                        buffer = '';
+                        return;
+                    }
+
                     const scaleInfo = parseScaleBarcode(buffer, activeScaleFormat);
 
                     if (scaleInfo.isScale) {
@@ -1102,7 +1130,7 @@ export const usePosController = () => {
         };
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [activeTabId, addToCart, activeScaleFormat]);
+    }, [activeTabId, addToCart, activeScaleFormat, activeTotalScaleProfiles]);
 
     // 🔥 EXPORTAMOS LAS FUNCIONES Y EL ESTADO (Incluye setTabPaymentMethod)
     return { 

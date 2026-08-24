@@ -13,6 +13,7 @@ import { usePosController } from '../hooks/usePosController';
 import { cashRepository } from '../../cash/repositories/cashRepository';
 import { useAuthStore } from '../../auth/store/useAuthStore';
 import { productRepository } from '../../inventory/repositories/productRepository';
+import { parseTotalScaleBarcode } from '../utils/scaleTotalBarcode';
 
 // Componentes UI
 import { QuantityModal } from '../components/QuantityModal';
@@ -259,6 +260,9 @@ export const PosPage = () => {
       ? 'EAN13_GRAMS'
       : 'LEGACY';
 
+  // 🔥 Balanzas "soporte total" (Kretz) configuradas para la sucursal activa
+  const activeTotalScaleProfiles = posConfig.scaleTotalProfiles?.[activeBranchId] || [];
+
   // 🔥 HELPER: VALIDADOR DE DÍGITO VERIFICADOR EAN-13 ESTÁNDAR
   const isValidEAN13 = (code) => {
       let sum = 0;
@@ -272,6 +276,25 @@ export const PosPage = () => {
 
   const parseScaleBarcode = async (code) => {
       if (code.length !== 13) return false;
+
+      // 🆕 BALANZA "SOPORTE TOTAL" (Kretz, opt-in por sucursal desde Configuración > POS > Balanza)
+      const totalInfo = parseTotalScaleBarcode(code, activeTotalScaleProfiles);
+      if (totalInfo) {
+          addToCart({
+              id: `scale_total_${Date.now()}`,
+              code: 'MANUAL',
+              name: totalInfo.categoryName.toUpperCase(),
+              price: totalInfo.total,
+              cost: 0,
+              isWeighable: false,
+              stock: 999,
+              taxRate: 21,
+              scaleSource: 'TOTAL_PROFILE'
+          }, 1);
+          toast.success(`⚖️ Balanza total: ${totalInfo.categoryName} ($${totalInfo.total})`);
+          setSearchTerm('');
+          return true;
+      }
 
       // 🆕 FORMATO EAN13 GRAMOS (opt-in por sucursal desde Configuración > POS > Balanza)
       // Prefijo 1 dígito '2' + PLU 5 dígitos + peso 6 dígitos (gramos) + dígito verificador EAN-13 real.

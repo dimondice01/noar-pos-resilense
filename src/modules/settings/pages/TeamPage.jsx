@@ -478,10 +478,13 @@ export const TeamPage = () => {
       // 🔥 Formato de código de barras de balanza por sucursal: { [branchId]: 'EAN13_GRAMS' }
       // Si una sucursal no tiene entrada, usa el formato legado (KRETZ/SYSTEL) sin cambios.
       scaleBarcodeFormats: {},
+      // 🔥 Balanzas "soporte total" (Kretz) por sucursal: { [branchId]: [{ id, prefix, categoryName }] }
+      scaleTotalProfiles: {},
       // 🔥 Si está activo, la Facturación Electrónica arranca tildada en cada venta (togglable para desactivarla puntualmente)
       afipAlwaysOn: false
   });
   const [savingPosConfig, setSavingPosConfig] = useState(false);
+  const [newTotalProfile, setNewTotalProfile] = useState({ prefix: '', categoryName: '' });
 
   // ESTADO MODAL DE LIQUIDACIÓN
   const [selectedEmployeeForLedger, setSelectedEmployeeForLedger] = useState(null);
@@ -637,6 +640,7 @@ export const TeamPage = () => {
                       cash: 0, transfer: 0, mp: 0, card: 0, current_account: 0
                   },
                   scaleBarcodeFormats: data.scaleBarcodeFormats || {},
+                  scaleTotalProfiles: data.scaleTotalProfiles || {},
                   afipAlwaysOn: data.afipAlwaysOn || false
               });
           }
@@ -656,6 +660,53 @@ export const TeamPage = () => {
           else delete scaleBarcodeFormats[activeBranchId];
           return { ...prev, scaleBarcodeFormats };
       });
+  };
+
+  // 🔥 BALANZAS "SOPORTE TOTAL" (KRETZ) - CRUD por sucursal
+  const handleAddTotalProfile = () => {
+      if (!activeBranchId || activeBranchId === 'ALL') {
+          toast.error("Elegí una sucursal específica para configurar esta opción.");
+          return;
+      }
+      const prefix = newTotalProfile.prefix.trim();
+      const categoryName = newTotalProfile.categoryName.trim();
+
+      if (!/^\d{6}$/.test(prefix)) {
+          toast.error("El prefijo debe tener exactamente 6 dígitos numéricos.");
+          return;
+      }
+      if (!categoryName) {
+          toast.error("Ingresá un nombre de categoría/venta para esta balanza.");
+          return;
+      }
+
+      const currentProfiles = posConfig.scaleTotalProfiles?.[activeBranchId] || [];
+      if (currentProfiles.some(p => p.prefix === prefix)) {
+          toast.error("Ese prefijo ya está configurado para esta sucursal.");
+          return;
+      }
+
+      const newProfile = { id: `stp_${Date.now()}`, prefix, categoryName: categoryName.toUpperCase() };
+      setPosConfig(prev => ({
+          ...prev,
+          scaleTotalProfiles: {
+              ...prev.scaleTotalProfiles,
+              [activeBranchId]: [...currentProfiles, newProfile]
+          }
+      }));
+      setNewTotalProfile({ prefix: '', categoryName: '' });
+  };
+
+  const handleDeleteTotalProfile = (profileId) => {
+      if (!activeBranchId) return;
+      const currentProfiles = posConfig.scaleTotalProfiles?.[activeBranchId] || [];
+      setPosConfig(prev => ({
+          ...prev,
+          scaleTotalProfiles: {
+              ...prev.scaleTotalProfiles,
+              [activeBranchId]: currentProfiles.filter(p => p.id !== profileId)
+          }
+      }));
   };
 
   const getBranchName = (branchId) => {
@@ -1453,6 +1504,75 @@ export const TeamPage = () => {
                       {(!activeBranchId || activeBranchId === 'ALL') && (
                           <p className="text-[11px] text-orange-500 font-bold mt-3 relative z-10 flex items-center gap-1">
                               <AlertTriangle size={12}/> Elegí una sucursal específica (arriba a la izquierda) para poder activar esta opción.
+                          </p>
+                      )}
+                  </Card>
+
+                  {/* BLOQUE: BALANZAS SOPORTE TOTAL (KRETZ) */}
+                  <Card className="p-6 border-purple-100 shadow-lg shadow-purple-500/5 relative overflow-hidden">
+                      <div className="absolute -right-4 -top-4 w-24 h-24 bg-purple-50 rounded-full opacity-50 pointer-events-none"></div>
+
+                      <div className="relative z-10">
+                          <h3 className="font-bold text-lg text-sys-900 flex items-center gap-2">
+                              <Scale className="text-purple-500" size={20} /> Balanzas Soporte Total
+                          </h3>
+                          <p className="text-xs text-sys-500 mt-1 max-w-md">
+                              Para balanzas Kretz que emiten el ticket con el <strong>total ya calculado</strong> (en vez de PLU + peso). Configurá el prefijo de 6 dígitos que identifica a esa balanza y el nombre de categoría con el que se va a mostrar en la venta (ej. "Verdulería"). Aplica únicamente a la sucursal <strong className="text-sys-700">{getBranchName(activeBranchId)}</strong>.
+                          </p>
+
+                          {(posConfig.scaleTotalProfiles?.[activeBranchId] || []).length > 0 && (
+                              <div className="mt-4 space-y-2">
+                                  {(posConfig.scaleTotalProfiles?.[activeBranchId] || []).map(profile => (
+                                      <div key={profile.id} className="flex items-center justify-between bg-sys-50 border border-sys-200 rounded-xl px-4 py-2.5">
+                                          <div className="flex items-center gap-3">
+                                              <span className="font-mono text-xs font-bold text-purple-600 bg-purple-50 px-2 py-1 rounded">{profile.prefix}</span>
+                                              <span className="text-sm font-bold text-sys-800">{profile.categoryName}</span>
+                                          </div>
+                                          <button
+                                              type="button"
+                                              onClick={() => handleDeleteTotalProfile(profile.id)}
+                                              className="text-sys-400 hover:text-red-500 p-1"
+                                          >
+                                              <Trash2 size={16} />
+                                          </button>
+                                      </div>
+                                  ))}
+                              </div>
+                          )}
+
+                          <div className="flex flex-col sm:flex-row gap-2 mt-4">
+                              <input
+                                  type="text"
+                                  inputMode="numeric"
+                                  maxLength={6}
+                                  placeholder="Prefijo (6 dígitos, ej: 209999)"
+                                  className="flex-1 text-sm p-2.5 bg-sys-50 border-2 border-sys-200 rounded-xl focus:border-brand outline-none font-mono"
+                                  value={newTotalProfile.prefix}
+                                  onChange={(e) => setNewTotalProfile(prev => ({ ...prev, prefix: e.target.value.replace(/\D/g, '') }))}
+                                  disabled={!activeBranchId || activeBranchId === 'ALL'}
+                              />
+                              <input
+                                  type="text"
+                                  placeholder="Categoría (ej: Verdulería)"
+                                  className="flex-1 text-sm p-2.5 bg-sys-50 border-2 border-sys-200 rounded-xl focus:border-brand outline-none"
+                                  value={newTotalProfile.categoryName}
+                                  onChange={(e) => setNewTotalProfile(prev => ({ ...prev, categoryName: e.target.value }))}
+                                  disabled={!activeBranchId || activeBranchId === 'ALL'}
+                              />
+                              <Button
+                                  type="button"
+                                  onClick={handleAddTotalProfile}
+                                  disabled={!activeBranchId || activeBranchId === 'ALL'}
+                                  className="shrink-0"
+                              >
+                                  <PlusCircle size={16} className="mr-1.5" /> Agregar
+                              </Button>
+                          </div>
+                      </div>
+
+                      {(!activeBranchId || activeBranchId === 'ALL') && (
+                          <p className="text-[11px] text-orange-500 font-bold mt-3 relative z-10 flex items-center gap-1">
+                              <AlertTriangle size={12}/> Elegí una sucursal específica (arriba a la izquierda) para poder configurar esta opción.
                           </p>
                       )}
                   </Card>
