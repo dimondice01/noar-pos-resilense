@@ -138,6 +138,9 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave, allProduc
   const [caseResults, setCaseResults] = useState([]);
   const [caseSearching, setCaseSearching] = useState(false);
   const [selectedUnitProduct, setSelectedUnitProduct] = useState(null);
+  // 🔥 Si el producto NO tenía promo activa al abrir el modal, un guardado sin tocar
+  // la pestaña "Promociones" no debe pisar/borrar una promo real (ver handleSubmit)
+  const hadPromoOnLoadRef = useRef(false);
 
   // 1. ESTADO DEL FORMULARIO
   const [formData, setFormData] = useState({
@@ -233,6 +236,7 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave, allProduc
 
           const promo = source.promo || {};
           const hasPromo = !!source.promo;
+          hadPromoOnLoadRef.current = hasPromo;
 
           setFormData({
               ...source,
@@ -272,6 +276,7 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave, allProduc
         })();
       } else {
         setIsLoadingProduct(false);
+        hadPromoOnLoadRef.current = false;
         setFormData({
             name: '', code: '', barcodes: [], category: '', brand: '',
             costNeto: '', cost: '', markup: '40', price: '', taxRate: '21',
@@ -514,6 +519,15 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave, allProduc
                 setActiveTab('promociones');
                 return toast.error("⚠️ Falta el descuento de la promoción");
             }
+        } else if (formData.promoType === 'FIXED_QTY_PRICE') {
+            if (!formData.promoValue) {
+                setActiveTab('promociones');
+                return toast.error("⚠️ Falta la cantidad de la promoción");
+            }
+            if (!formData.promoFixedAmount) {
+                setActiveTab('promociones');
+                return toast.error("⚠️ Falta el precio final de la promoción");
+            }
         } else if (usesFixedAmount ? !formData.promoFixedAmount : !formData.promoValue) {
             setActiveTab('promociones');
             return toast.error("⚠️ Falta el valor de la promoción");
@@ -572,7 +586,11 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave, allProduc
         delete masterPayload.promo; 
         delete masterPayload.costNeto; 
 
-        let promoPayload = null;
+        // 🔥 FIX: si no había promo antes y el toggle sigue apagado, no hay nada que tocar.
+        // Antes se mandaba `null` siempre, y como el caller solo salteaba `undefined`,
+        // CUALQUIER guardado del producto (precio, stock, nombre, etc.) terminaba
+        // llamando a setPromotion(id, null) y borrando una promo real ya aplicada.
+        let promoPayload = hadPromoOnLoadRef.current ? null : undefined;
         if (formData.promoActive) {
             const usesFixedAmount = formData.promoValueMode === 'FIXED' && ['PERCENTAGE', 'BULK_THRESHOLD'].includes(formData.promoType);
             const isPctFixed = formData.promoType === 'PERCENTAGE' && usesFixedAmount;
@@ -593,7 +611,8 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave, allProduc
                     isBulkFixed ? `Llevando ${formData.promoValue}+: $${formData.promoFixedAmount} c/u` :
                     formData.promoType === 'BULK_THRESHOLD' ? `Llevando ${formData.promoValue}+: ${formData.promoDiscount}% OFF` :
                     formData.promoType === 'QUANTITY_LIMIT' ? `Primeras ${formData.promoValue} un. al ${formData.promoDiscount}%` :
-                    formData.promoType === 'BUNDLE_DEAL' ? `${formData.promoValue}x${formData.promoPayValue}` : 'Oferta'
+                    formData.promoType === 'BUNDLE_DEAL' ? `${formData.promoValue}x${formData.promoPayValue}` :
+                    formData.promoType === 'FIXED_QTY_PRICE' ? `${formData.promoValue} x $${formData.promoFixedAmount}` : 'Oferta'
             };
         }
 
@@ -614,7 +633,8 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave, allProduc
       { value: 'PERCENTAGE', label: 'Descuento Directo (%)', icon: Percent },
       { value: 'BULK_THRESHOLD', label: 'Descuento por Volumen', icon: Layers },
       { value: 'QUANTITY_LIMIT', label: 'Limite de Cantidad', icon: AlertTriangle },
-      { value: 'BUNDLE_DEAL', label: 'Combo (Ej: 3x2)', icon: ShoppingBag }
+      { value: 'BUNDLE_DEAL', label: 'Combo (Ej: 3x2)', icon: ShoppingBag },
+      { value: 'FIXED_QTY_PRICE', label: 'Promo por Cantidad', icon: Package }
   ];
 
   // 🔥 Opciones de métodos de pago para filtrar la oferta
@@ -1301,13 +1321,36 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave, allProduc
                                         onChange={e => setFormData({...formData, promoValue: e.target.value})}
                                         disabled={isSaving}
                                     />
-                                    <PremiumInput 
+                                    <PremiumInput
                                         label="Paga (Cantidad) *" type="number"
                                         placeholder="Ej: 2"
                                         value={formData.promoPayValue}
                                         onChange={e => setFormData({...formData, promoPayValue: e.target.value})}
                                         disabled={isSaving}
                                     />
+                                </>
+                            )}
+
+                            {formData.promoType === 'FIXED_QTY_PRICE' && (
+                                <>
+                                    <PremiumInput
+                                        label="Cantidad *" type="number"
+                                        placeholder="Ej: 6"
+                                        value={formData.promoValue}
+                                        onChange={e => setFormData({...formData, promoValue: e.target.value})}
+                                        disabled={isSaving}
+                                    />
+                                    <PremiumInput
+                                        label="Precio Final por esa Cantidad *" type="number"
+                                        placeholder="Ej: 3000"
+                                        value={formData.promoFixedAmount}
+                                        onChange={e => setFormData({...formData, promoFixedAmount: e.target.value})}
+                                        rightIcon={<span className="text-purple-400 font-bold">$ FINAL</span>}
+                                        disabled={isSaving}
+                                    />
+                                    <p className="text-[10px] text-sys-400 -mt-2 col-span-2">
+                                        ⚠️ Al llevar esta cantidad, se cobra este precio final <strong>por el lote completo</strong> (no por unidad).
+                                    </p>
                                 </>
                             )}
                         </div>

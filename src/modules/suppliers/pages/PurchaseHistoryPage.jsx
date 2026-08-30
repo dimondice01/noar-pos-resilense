@@ -300,9 +300,11 @@ export const PurchaseHistoryPage = () => {
     const PAGE_SIZE = 15;
 
     // Filtros
-    const [filterStatus, setFilterStatus] = useState('ALL'); 
+    const [filterStatus, setFilterStatus] = useState('ALL');
     const [searchTerm, setSearchTerm] = useState('');
     const [activeSupplierFilter, setActiveSupplierFilter] = useState(null);
+    const [dateFrom, setDateFrom] = useState('');
+    const [dateTo, setDateTo] = useState('');
 
     // Modales
     const [selectedPurchase, setSelectedPurchase] = useState(null);
@@ -324,7 +326,7 @@ export const PurchaseHistoryPage = () => {
 
     useEffect(() => {
         setCurrentPage(1);
-    }, [filterStatus, searchTerm, activeSupplierFilter, activeBranchId]);
+    }, [filterStatus, searchTerm, activeSupplierFilter, activeBranchId, dateFrom, dateTo]);
 
     // =================================================================
     // ⚡ DESCARGA FORZADA (CLOUD PULL) - EL BOTÓN DE RESCATE
@@ -337,6 +339,8 @@ export const PurchaseHistoryPage = () => {
                 supplierId: activeSupplierFilter?.id,
                 status: filterStatus,
                 search: searchTerm,
+                dateFrom,
+                dateTo,
             };
 
             const [pagedResult, statistics] = await Promise.all([
@@ -355,7 +359,7 @@ export const PurchaseHistoryPage = () => {
         } finally {
             setLoading(false);
         }
-    }, [currentPage, filterStatus, searchTerm, activeSupplierFilter, activeBranchId]);
+    }, [currentPage, filterStatus, searchTerm, activeSupplierFilter, activeBranchId, dateFrom, dateTo]);
 
     useEffect(() => {
         loadData();
@@ -600,15 +604,40 @@ export const PurchaseHistoryPage = () => {
                             <span className="text-xs font-medium text-sys-500">{totalItems} resultados</span>
                         </div>
 
-                        <div className="relative w-64">
-                            <Search className="absolute left-3 top-2.5 text-sys-400" size={16} />
-                            <input 
-                                type="text" 
-                                placeholder="Buscar comprobante..." 
-                                className="w-full pl-9 pr-4 py-2 bg-sys-50 border border-sys-200 rounded-xl text-sm font-medium outline-none focus:border-brand transition-all"
-                                value={searchTerm}
-                                onChange={(e) => setSearchTerm(e.target.value)}
-                            />
+                        <div className="flex items-center gap-3">
+                            <div className="flex items-center gap-1.5 bg-sys-50 border border-sys-200 rounded-xl px-2 py-1.5">
+                                <input
+                                    type="date"
+                                    value={dateFrom}
+                                    onChange={(e) => setDateFrom(e.target.value)}
+                                    className="bg-transparent text-xs font-medium text-sys-600 outline-none w-[120px]"
+                                    title="Desde"
+                                />
+                                <span className="text-sys-300 text-xs">→</span>
+                                <input
+                                    type="date"
+                                    value={dateTo}
+                                    onChange={(e) => setDateTo(e.target.value)}
+                                    className="bg-transparent text-xs font-medium text-sys-600 outline-none w-[120px]"
+                                    title="Hasta"
+                                />
+                                {(dateFrom || dateTo) && (
+                                    <button onClick={() => { setDateFrom(''); setDateTo(''); }} className="p-1 hover:bg-sys-200 rounded-full text-sys-400 hover:text-sys-600">
+                                        <X size={12} />
+                                    </button>
+                                )}
+                            </div>
+
+                            <div className="relative w-64">
+                                <Search className="absolute left-3 top-2.5 text-sys-400" size={16} />
+                                <input
+                                    type="text"
+                                    placeholder="Buscar comprobante..."
+                                    className="w-full pl-9 pr-4 py-2 bg-sys-50 border border-sys-200 rounded-xl text-sm font-medium outline-none focus:border-brand transition-all"
+                                    value={searchTerm}
+                                    onChange={(e) => setSearchTerm(e.target.value)}
+                                />
+                            </div>
                         </div>
                     </div>
                 </div>

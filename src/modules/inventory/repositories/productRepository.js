@@ -1,15 +1,18 @@
 import { getDB } from '../../../database/db';
 import { db } from '../../../database/firebase';
-import { 
-    doc, 
-    setDoc, 
-    updateDoc, 
-    increment, 
-    serverTimestamp, 
-    collection, 
+import {
+    doc,
+    setDoc,
+    updateDoc,
+    increment,
+    serverTimestamp,
+    collection,
     writeBatch,
-    getDoc
-} from 'firebase/firestore'; 
+    getDoc,
+    query,
+    where,
+    getDocs
+} from 'firebase/firestore';
 import { useAuthStore } from '../../auth/store/useAuthStore';
 
 // ==========================================
@@ -464,6 +467,7 @@ export const productRepository = {
                     branchId: activeBranchId,
                     productId: parentId,
                     stock: parentStock + childStock,
+                    promo: parentInv?.promo || null,
                     updatedAt: timestamp,
                     syncStatus: 'pending'
                 });
@@ -509,7 +513,44 @@ export const productRepository = {
 
         return movements;
     },
-    
+
+    // 🔥 NUEVO: Verdad absoluta desde Firestore — trae SOLO los movimientos de un producto (no descarga histórico completo)
+    async getProductMovementsFromCloud(productId, branchIdFilter = null) {
+        const { user, activeBranchId } = useAuthStore.getState();
+        const branch = branchIdFilter || activeBranchId;
+        if (!user?.companyId || !navigator.onLine) return this.getProductMovements(productId, branch);
+
+        const movRef = collection(db, `companies/${user.companyId}/movements`);
+        const q = query(movRef, where('productId', '==', productId));
+        const snap = await getDocs(q);
+
+        const toMillis = (d) => {
+            if (!d) return 0;
+            if (typeof d?.toDate === 'function') return d.toDate().getTime();
+            const t = new Date(d).getTime();
+            return isNaN(t) ? 0 : t;
+        };
+
+        let movements = snap.docs.map(d => {
+            const data = d.data();
+            return { id: d.id, firestoreId: d.id, ...data, date: toMillis(data.date) ? new Date(toMillis(data.date)).toISOString() : data.date, syncStatus: 'synced' };
+        });
+
+        if (branch && branch !== 'ALL') {
+            movements = movements.filter(m => m.branchId === branch || m.branchId === 'GLOBAL');
+        }
+
+        // 🔒 Nunca pisar pendientes locales de este producto que aún no subieron
+        const dbLocal = await getDB();
+        const localPending = (await dbLocal.movements.where('productId').equals(productId).toArray())
+            .filter(m => m.syncStatus === 'pending');
+
+        if (movements.length > 0) await dbLocal.movements.bulkPut(movements);
+
+        const merged = [...movements, ...localPending.filter(p => !movements.some(m => m.id === p.id))];
+        return merged.sort((a, b) => new Date(b.date) - new Date(a.date));
+    },
+
     // 🔥 ACTUALIZADO: Soporte para Mermas, Ajustes y Sync Reparado
     async addStock(productId, quantity, description = 'Ingreso', userName = 'Sistema', forcedBranchId = null, movementType = null) {
         const dbLocal = await getDB();

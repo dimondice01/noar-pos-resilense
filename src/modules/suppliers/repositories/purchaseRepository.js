@@ -152,6 +152,12 @@ export const purchaseRepository = {
                 const supplier = (p.supplierName || '').toLowerCase();
                 if (!invoice.includes(term) && !supplier.includes(term)) match = false;
             }
+
+            if (match && (filters.dateFrom || filters.dateTo)) {
+                const pDate = new Date(p.date || p.createdAt);
+                if (filters.dateFrom && pDate < new Date(filters.dateFrom + 'T00:00:00')) match = false;
+                if (match && filters.dateTo && pDate > new Date(filters.dateTo + 'T23:59:59')) match = false;
+            }
             return match;
         });
 

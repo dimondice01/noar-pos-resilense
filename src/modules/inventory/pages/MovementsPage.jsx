@@ -206,6 +206,13 @@ const ProductHistoryModal = ({ productData, movements, onClose, onViewDocument }
                                                 <span className={cn("inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-bold uppercase border", style.bg, style.color, style.border)}>
                                                     <Icon size={12}/> {style.label}
                                                 </span>
+                                                {mov.syncStatus === 'pending' && (
+                                                    <div className="mt-1">
+                                                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[9px] font-bold uppercase bg-amber-100 text-amber-700 border border-amber-300" title="Registrado en este dispositivo pero nunca subió a la nube">
+                                                            <CloudDownload size={10}/> Pendiente de subir
+                                                        </span>
+                                                    </div>
+                                                )}
                                             </td>
                                             <td className="px-4 py-3 max-w-[200px]">
                                                 <div className="truncate text-sys-600" title={mov.description || 'Sin descripción'}>
@@ -259,8 +266,13 @@ export const MovementsPage = () => {
     const [syncing, setSyncing] = useState(false); 
     
     // MODALES
-    const [selectedProduct, setSelectedProduct] = useState(null); 
+    const [selectedProduct, setSelectedProduct] = useState(null);
     const [selectedDocument, setSelectedDocument] = useState(null); // { type: 'sale' | 'purchase', data: {} }
+
+    // 🔥 KARDEX POR PRODUCTO (consulta puntual a Firestore, sin descargar histórico completo)
+    const [productQuery, setProductQuery] = useState('');
+    const [productMatches, setProductMatches] = useState([]);
+    const [loadingKardex, setLoadingKardex] = useState(false);
 
     // FILTROS
     const [search, setSearch] = useState('');
@@ -409,6 +421,41 @@ export const MovementsPage = () => {
         });
     };
 
+    // 🔥 KARDEX POR PRODUCTO — busca matches locales (productos ya sincronizados offline-first)
+    const handleProductQueryChange = async (value) => {
+        setProductQuery(value);
+        if (!value.trim()) { setProductMatches([]); return; }
+        const matches = await productRepository.search(value);
+        setProductMatches(matches.slice(0, 8));
+    };
+
+    // Al elegir un match: consulta SOLO ese producto contra Firestore (verdad absoluta, sin bajar todo el histórico)
+    const handleSelectProductForKardex = async (product) => {
+        setProductMatches([]);
+        setProductQuery('');
+        setLoadingKardex(true);
+        const toastId = toast.loading('Consultando historial en la nube...');
+        try {
+            // 'ALL' a propósito: este buscador es para auditar el histórico COMPLETO, sin filtrar por sucursal
+            const movements = await productRepository.getProductMovementsFromCloud(product.id, 'ALL');
+            const enriched = movements.map(m => ({
+                ...m,
+                dateObj: new Date(m.date || m.createdAt || Date.now())
+            })).sort((a, b) => b.dateObj - a.dateObj);
+
+            setSelectedProduct({
+                productData: { name: product.name, code: product.code },
+                movements: enriched
+            });
+            toast.success(`${enriched.length} movimientos encontrados`, { id: toastId });
+        } catch (err) {
+            console.error('[Kardex por producto]', err);
+            toast.error('No se pudo consultar el historial en la nube.', { id: toastId });
+        } finally {
+            setLoadingKardex(false);
+        }
+    };
+
     const handleViewDocument = async (mov) => {
         if (!mov.refId) {
             toast.info("Movimiento manual. No tiene un comprobante asociado.", { icon: 'ℹ️' });
@@ -499,13 +546,45 @@ export const MovementsPage = () => {
                 </div>
 
 
+                {/* 🔥 KARDEX POR PRODUCTO: buscar → elegir → traer SOLO ese historial desde Firestore */}
+                <Card className="p-3 bg-brand/5 border-brand/20">
+                    <p className="text-xs font-bold text-brand uppercase mb-2 flex items-center gap-1.5">
+                        <CloudDownload size={13} /> Filtro por Producto — Consulta Directa
+                    </p>
+                    <div className="relative">
+                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-sys-400 w-4 h-4" />
+                        <input
+                            type="text"
+                            placeholder="Buscar producto para consultar su historial completo..."
+                            className="w-full pl-9 pr-4 py-2 bg-white rounded-lg border border-sys-200 text-sm focus:border-brand focus:ring-2 focus:ring-brand/10 outline-none transition-all"
+                            value={productQuery}
+                            onChange={(e) => handleProductQueryChange(e.target.value)}
+                            disabled={loadingKardex}
+                        />
+                        {productMatches.length > 0 && (
+                            <div className="absolute z-20 top-full mt-1 left-0 right-0 bg-white rounded-lg border border-sys-200 shadow-xl max-h-72 overflow-y-auto">
+                                {productMatches.map(p => (
+                                    <button
+                                        key={p.id}
+                                        onClick={() => handleSelectProductForKardex(p)}
+                                        className="w-full text-left px-4 py-2 hover:bg-brand/5 flex justify-between items-center border-b border-sys-100 last:border-0"
+                                    >
+                                        <span className="font-bold text-sm text-sys-800">{p.name}</span>
+                                        <span className="text-[10px] font-mono text-sys-400">{p.code}</span>
+                                    </button>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                </Card>
+
                 <Card className="p-2 flex flex-col lg:flex-row gap-3 bg-sys-100/50 backdrop-blur-md border-sys-200 items-center">
-                    
+
                     <div className="relative flex-1 w-full lg:w-auto">
                         <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-sys-400 w-4 h-4" />
-                        <input 
-                            type="text" 
-                            placeholder="Buscar por nombre o código de producto..." 
+                        <input
+                            type="text"
+                            placeholder="Buscar por nombre o código de producto..."
                             className="w-full pl-9 pr-4 py-2 bg-white rounded-lg border border-sys-200 text-sm focus:border-brand focus:ring-2 focus:ring-brand/10 outline-none transition-all"
                             value={search}
                             onChange={(e) => setSearch(e.target.value)}

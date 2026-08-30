@@ -27,7 +27,7 @@ const PLAN_OPTIONS = [
 // 📦 OPCIONES DE CATÁLOGO INICIAL
 const CATALOG_OPTIONS = [
     { id: 'custom', name: 'Importar Excel Maestro', icon: Upload, file: null, desc: 'Subir archivo con precios y códigos propios' },
-    { id: 'kiosco', name: 'Plantilla Maxikiosco', icon: ShoppingBag, file: '/seeders/catalogo.csv', desc: 'Cargar ~2500 productos base' },
+    { id: 'kiosco', name: 'Plantilla Maxikiosco', icon: ShoppingBag, file: '/catalogo.csv', desc: 'Cargar ~2500 productos base' },
     { id: 'otro', name: 'Empezar de Cero', icon: Package, file: null, desc: 'Sin productos iniciales' },
 ];
 

@@ -595,7 +595,7 @@ export const PrintLabelsPage = () => {
                                                                 </span>
                                                                 <span className={cn("font-bold", currentLayout.type === 'shelf_talker' ? "text-4xl" : "text-xs")}>00</span>
                                                             </div>
-                                                            {isPromo && promo.type !== 'BUNDLE_DEAL' && (
+                                                            {isPromo && !['BUNDLE_DEAL', 'FIXED_QTY_PRICE'].includes(promo.type) && (
                                                                 <span className={cn("text-sys-400 line-through font-bold", currentLayout.type === 'shelf_talker' ? "text-2xl" : "text-[10px]")}>
                                                                     ${p.price.toLocaleString('es-AR')}
                                                                 </span>

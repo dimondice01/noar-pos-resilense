@@ -48,6 +48,11 @@ export const GondolaLabelEngine = {
              const disc = parseFloat(p.promo.discountValue) || 0;
              details.currentPrice = p.price * (1 - disc / 100);
              details.footer = `LÍMITE ${val} UNIDADES`;
+        } else if (p.promo.type === 'FIXED_QTY_PRICE') {
+             const fixedTotal = parseFloat(p.promo.fixedAmount) || 0;
+             details.currentPrice = fixedTotal;
+             details.label = `${val} x $${fixedTotal}`;
+             details.footer = `LLEVANDO ${val} UN. PAGAS $${fixedTotal.toLocaleString('es-AR', {maximumFractionDigits: 2})} EL LOTE`;
         }
 
         return details;

@@ -298,8 +298,8 @@ export const usePosController = () => {
                 }
                 break;
             case 'BUNDLE_DEAL':
-                const n = val; 
-                const m = parseFloat(promo.payValue) || 1; 
+                const n = val;
+                const m = parseFloat(promo.payValue) || 1;
                 if (n > 0 && quantity >= n) {
                     result.applied = true;
                     const bundleCount = Math.floor(quantity / n);
@@ -307,6 +307,18 @@ export const usePosController = () => {
                     result.totalLine = (bundleCount * m * price) + (remainingUnits * price);
                     result.finalPrice = result.totalLine / quantity;
                     result.promoLabel = `PROMO ${n}x${m}`;
+                }
+                break;
+            case 'FIXED_QTY_PRICE':
+                const qty = val;
+                const fixedTotal = parseFloat(promo.fixedAmount) || 0;
+                if (qty > 0 && fixedTotal > 0 && quantity >= qty) {
+                    result.applied = true;
+                    const bundleQtyCount = Math.floor(quantity / qty);
+                    const remainingQtyUnits = quantity % qty;
+                    result.totalLine = (bundleQtyCount * fixedTotal) + (remainingQtyUnits * price);
+                    result.finalPrice = result.totalLine / quantity;
+                    result.promoLabel = `${qty} x $${fixedTotal}`;
                 }
                 break;
             default:
