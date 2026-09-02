@@ -40,8 +40,12 @@ export const paymentService = {
       }
       else if (provider === 'clover') {
         endpoint = '/create-clover-order';
-        bodyData.externalId = deviceId; 
-      } 
+        bodyData.externalId = deviceId;
+      }
+      else if (provider === 'payway') {
+        endpoint = '/create-payway-order';
+        bodyData.terminalId = deviceId; // 🔑 Terminal física Payway (PayStore/Mobitef)
+      }
       else {
         throw new Error(`Proveedor ${provider} no soportado.`);
       }
@@ -55,7 +59,11 @@ export const paymentService = {
       const data = await response.json();
 
       if (!response.ok) {
-        throw new Error(data.details || data.error || `Falló inicio de ${provider}`);
+        // 🛡️ Si el backend manda `details` como objeto (error crudo de la pasarela),
+        // evitamos que se muestre como "[object Object]".
+        const rawDetail = data.details || data.error;
+        const detailMsg = typeof rawDetail === 'string' ? rawDetail : (rawDetail ? JSON.stringify(rawDetail) : null);
+        throw new Error(detailMsg || `Falló inicio de ${provider}`);
       }
       
       // Normalizamos la referencia de seguimiento

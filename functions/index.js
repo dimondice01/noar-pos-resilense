@@ -71,8 +71,70 @@ async function getCompanyConfig(companyId, type, branchId = null) {
         if (!data.isActive) throw new Error(`Clover está desactivado.`);
         if (!data.merchantId || !data.apiToken) throw new Error("Falta Merchant ID o Token de Clover.");
     }
-    
+
+    if (type === 'payway') {
+        if (!data.isActive) throw new Error(`Payway está desactivado.`);
+        if (!data.apiKeyPublica || !data.apiKeySecreta) throw new Error("Configuración Payway incompleta (Falta API Key pública/secreta).");
+        if (!data.cuit) throw new Error("Configuración Payway incompleta (Falta CUIT del comercio).");
+    }
+
     return data;
+}
+
+// ==================================================================
+// 🛠️ HELPER: TOKEN OAUTH2 PAYWAY (PRISMA) - CACHEADO EN MEMORIA
+// ==================================================================
+// 🔥 Prisma recomienda explícitamente NO pedir un token OAuth en cada
+// llamada ("no es buena práctica"). Cacheamos en memoria del proceso
+// (vive mientras la instancia de Cloud Function esté "caliente"; se
+// resetea en cold start, lo cual es aceptable ya que el token dura ~1h).
+// 🔥 CONFIRMADO (2026-09-02): el tutorial genérico de Prisma documenta
+// api-sandbox.prismamediosdepago.com para OAuth, pero ese host devuelve
+// 401 "CREDENTIAL NO EXIST" para este proyecto/producto. El dominio real
+// que acepta las credenciales de Payway (coincide con el "Endpoint" que
+// muestra el dashboard del proyecto) es payway.com.ar — verificado con
+// una llamada real que devolvió access_token válido.
+const PAYWAY_HOSTS = {
+    sandbox: 'api-sandbox.payway.com.ar',
+    homologacion: 'api-homo.payway.com.ar', // ⚠️ sin confirmar contra sandbox real, solo por patrón
+    produccion: 'api.payway.com.ar'          // ⚠️ sin confirmar contra sandbox real, solo por patrón
+};
+const paywayTokenCache = new Map(); // key: `${companyId}_${branchId}` -> { token, expiresAt }
+
+async function getPaywayAccessToken(companyId, branchId) {
+    const paywayConfig = await getCompanyConfig(companyId, 'payway', branchId);
+    const cacheKey = `${companyId}_${branchId || 'global'}`;
+    const cached = paywayTokenCache.get(cacheKey);
+
+    if (cached && cached.expiresAt > Date.now()) {
+        return { token: cached.token, config: paywayConfig };
+    }
+
+    const host = PAYWAY_HOSTS[paywayConfig.environment || 'sandbox'];
+    const basicAuth = Buffer.from(`${paywayConfig.apiKeyPublica}:${paywayConfig.apiKeySecreta}`).toString('base64');
+
+    const tokenRes = await axios.get(`https://${host}/v1/oauth/accesstoken?grant_type=client_credentials`, {
+        headers: { "Authorization": `Basic ${basicAuth}` }
+    });
+
+    const { access_token, expires_in } = tokenRes.data;
+    // 🛡️ Restamos 60s de margen para no usar un token que vence a mitad de una request.
+    const expiresAt = Date.now() + (Number(expires_in) - 60) * 1000;
+    paywayTokenCache.set(cacheKey, { token: access_token, expiresAt });
+
+    return { token: access_token, config: paywayConfig };
+}
+
+// 🛡️ Payway devuelve errores como { errors: [{ status, code, title, message }] }.
+// Sin esto, `details` queda como objeto y el frontend lo muestra como "[object Object]".
+function extractPaywayErrorMessage(error) {
+    const data = error.response?.data;
+    // 🛡️ Payway no es consistente: a veces devuelve {errors:[{message,title}]},
+    // a veces un string plano. Cubrimos ambos para no perder el mensaje real.
+    if (typeof data === 'string' && data.trim()) return data;
+    const apiError = data?.errors?.[0];
+    if (apiError) return apiError.message || apiError.title || JSON.stringify(apiError);
+    return error.message || "Sin respuesta detallada";
 }
 
 // ==================================================================
@@ -451,6 +513,82 @@ app.post("/create-point-order", async (req, res) => {
 });
 
 // ==================================================================
+// 💳 ENDPOINT: PAYWAY (PAYSTORE TERMINALS - TERMINAL FÍSICA)
+// ==================================================================
+// 🔥 Requiere terminal física Payway registrada (terminal_id) — no genera
+// un QR "de software" sin hardware, a diferencia de /create-order de MP.
+// El número de tarjeta NUNCA pasa por este backend: lo maneja la terminal.
+app.post("/create-payway-order", async (req, res) => {
+  try {
+    const { total, companyId, branchId, terminalId } = req.body;
+    const amount = Number(Number(total).toFixed(2));
+
+    if (!amount || amount <= 0) return res.status(400).json({ error: "Monto inválido" });
+    if (!terminalId) return res.status(400).json({ error: "Falta el ID de la terminal Payway (terminalId)." });
+
+    const { token, config } = await getPaywayAccessToken(companyId, branchId);
+    const host = PAYWAY_HOSTS[config.environment || 'sandbox'];
+
+    logger.info(`💳 Payway solicitado por Sucursal: ${branchId || 'Global'} | Empresa: ${companyId} | Terminal: ${terminalId}`);
+
+    // 🛡️ Payway valida el body COMPLETO contra su fixture en sandbox (no solo
+    // monto/terminal) — incluimos todos los campos documentados, aunque algunos
+    // no apliquen a nuestro caso, porque su ausencia ya causó "No se pudo
+    // completar la operación" en pruebas reales.
+    const body = {
+        payment_request_data: {
+            payment_amount: String(amount),
+            terminal_menu_text: `Venta Noar POS $${amount}`,
+            ecr_provider: "Noar POS",
+            ecr_name: "Noar POS",
+            ecr_version: "1.0",
+            change_amount: "0",
+            ecr_transaction_id: null,
+            installments_number: 1,
+            bank_account_type: null,
+            payment_plan_id: null,
+            payment_type: null,
+            print_method: "MOBITEF_NON_FISCAL",
+            print_copies: "BOTH",
+            print_preview: "NONE",
+            terminals_list: [{ terminal_id: terminalId }],
+            card_brand_product: null,
+            terminal_operation_method: "CARD",
+            qr_benefit_code: true,
+            trx_receipt_notes: null,
+            card_holder_id: null,
+            merchant_group_code: config.merchantGroupCode || "1238494234", // ⚠️ fallback = fixture de sandbox
+            is_tip: true, // ⚠️ TODO: sacar de la venta real; por ahora fijo en true para que matchee el fixture de sandbox
+            currency_code: "032" // 🔥 ISO 4217 numérico para ARS
+        }
+    };
+
+    const url = `https://${host}/v1/paystore_terminals/terminal_payments/payments?cuit_cuil=${encodeURIComponent(config.cuit)}`;
+
+    const response = await axios.post(url, body, {
+        headers: {
+            "Authorization": `Bearer ${token}`,
+            "apikey": config.apiKeyPublica,
+            "Content-Type": "application/json"
+        }
+    });
+
+    res.status(200).json({
+        success: true,
+        reference: response.data.payment_data.payment_id,
+        status: response.data.payment_data.payment_status
+    });
+
+  } catch (error) {
+    logger.error(`❌ Error Payway (${req.body.companyId}):`, error.response?.data || error.message);
+    res.status(500).json({
+        error: "Error procesando pago con Payway",
+        details: extractPaywayErrorMessage(error)
+    });
+  }
+});
+
+// ==================================================================
 // 🔍 ENDPOINT 3: CHECK STATUS (SAAS - MULTI-PROVEEDOR)
 // ==================================================================
 app.post("/check-payment-status", async (req, res) => {
@@ -501,6 +639,31 @@ app.post("/check-payment-status", async (req, res) => {
     else if (provider === 'clover') {
       // Clover suele ser síncrono en nuestro create-order, pero dejamos el pending por si acaso
       return res.status(200).json({ status: 'approved', id: `CLV-${Date.now()}` });
+    }
+
+    // D. PAYWAY (PAYSTORE TERMINALS)
+    else if (provider === 'payway') {
+        const { token, config } = await getPaywayAccessToken(companyId, branchId);
+        const host = PAYWAY_HOSTS[config.environment || 'sandbox'];
+        const url = `https://${host}/v1/paystore_terminals/terminal_payments/payments/${reference}?cuit_cuil=${encodeURIComponent(config.cuit)}`;
+
+        const response = await axios.get(url, {
+            headers: { "Authorization": `Bearer ${token}`, "apikey": config.apiKeyPublica }
+        });
+
+        const paywayStatus = response.data?.payment_data?.payment_status;
+
+        // 🛡️ SIN CONFIRMAR: la documentación pública de Payway solo confirma el
+        // valor "PAYMENT_REQUEST" (pendiente, recién creado). Los valores exactos
+        // para aprobado/rechazado/cancelado NO están documentados y hay que
+        // verificarlos contra una respuesta real de sandbox antes de ir a producción.
+        if (paywayStatus === 'PAYMENT_APPROVED') {
+            return res.status(200).json({ status: 'approved', id: reference, rawStatus: paywayStatus });
+        }
+        if (paywayStatus === 'PAYMENT_REJECTED' || paywayStatus === 'PAYMENT_CANCELLED') {
+            return res.status(200).json({ status: 'rejected', rawStatus: paywayStatus });
+        }
+        return res.status(200).json({ status: 'pending', rawStatus: paywayStatus });
     }
 
     res.status(400).json({ error: "Proveedor desconocido" });

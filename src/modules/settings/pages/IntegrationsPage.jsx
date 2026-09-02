@@ -221,6 +221,10 @@ export const IntegrationsPage = () => {
     });
     
     const [cloverConfig, setCloverConfig] = useState({ merchantId: '', apiToken: '', isActive: false });
+    // 🔥 PAYWAY (PRISMA) - Solo cubre "Terminales" (PayStore) por ahora.
+    // El QR interoperable de Payway todavía no tiene un endpoint confirmado
+    // para generar orden sin hardware físico (ver Card "Payway QR" abajo).
+    const [paywayConfig, setPaywayConfig] = useState({ apiKeyPublica: '', apiKeySecreta: '', cuit: '', environment: 'sandbox', isActive: false });
     const [assignments, setAssignments] = useState({});
 
     useEffect(() => { if (user?.companyId && activeBranchId) loadBranchFullData(); }, [user?.companyId, activeBranchId]);
@@ -243,10 +247,11 @@ export const IntegrationsPage = () => {
 
             // 3. Cargar configuraciones AISLADAS de la sucursal
             const branchRef = `companies/${user.companyId}/branches/${activeBranchId}/integrations`;
-            const [mpDoc, afipDoc, cloverDoc, assignDoc] = await Promise.all([
+            const [mpDoc, afipDoc, cloverDoc, paywayDoc, assignDoc] = await Promise.all([
                 getDoc(doc(db, branchRef, 'mercadopago')),
                 getDoc(doc(db, branchRef, 'afip')),
                 getDoc(doc(db, branchRef, 'clover')),
+                getDoc(doc(db, branchRef, 'payway')),
                 getDoc(doc(db, branchRef, 'assignments'))
             ]);
 
@@ -269,6 +274,9 @@ export const IntegrationsPage = () => {
 
             if (cloverDoc.exists()) setCloverConfig(cloverDoc.data());
             else setCloverConfig({ merchantId: '', apiToken: '', isActive: false });
+
+            if (paywayDoc.exists()) setPaywayConfig(paywayDoc.data());
+            else setPaywayConfig({ apiKeyPublica: '', apiKeySecreta: '', cuit: '', environment: 'sandbox', isActive: false });
 
             if (assignDoc.exists()) setAssignments(assignDoc.data());
             else setAssignments({});
@@ -417,6 +425,18 @@ export const IntegrationsPage = () => {
             }
         }
 
+        if (paywayConfig.isActive) {
+            const cleanCuit = paywayConfig.cuit.replace(/[^0-9]/g, '');
+            if (cleanCuit.length !== 11) {
+                alert("⚠️ Error: El CUIT de Payway debe contener exactamente 11 números.");
+                return;
+            }
+            if (!paywayConfig.apiKeyPublica || !paywayConfig.apiKeySecreta) {
+                alert("⚠️ Error: Faltan las API Keys de Payway.");
+                return;
+            }
+        }
+
         setSaving(true);
         try {
             // 🔥 PERSISTENCIA AISLADA POR SUCURSAL
@@ -426,6 +446,7 @@ export const IntegrationsPage = () => {
                 setDoc(doc(db, branchRef, 'mercadopago'), { ...mpConfig, updatedAt: new Date().toISOString() }),
                 setDoc(doc(db, branchRef, 'afip'), { ...afipConfig, updatedAt: new Date().toISOString() }),
                 setDoc(doc(db, branchRef, 'clover'), { ...cloverConfig, updatedAt: new Date().toISOString() }),
+                setDoc(doc(db, branchRef, 'payway'), { ...paywayConfig, updatedAt: new Date().toISOString() }),
                 setDoc(doc(db, branchRef, 'assignments'), assignments)
             ]);
             
@@ -508,6 +529,50 @@ export const IntegrationsPage = () => {
                     </Card>
                 </div>
 
+                {/* PAYWAY (PRISMA) - QR y Terminales separados visualmente: son productos distintos */}
+                <Card className="border border-sys-200 shadow-none hover:border-[#6C2EB5] transition-all p-8 rounded-[2rem] bg-white">
+                    <div className="flex items-center gap-3 mb-6">
+                        <CreditCard size={32} className="text-[#6C2EB5]"/>
+                        <h3 className="font-black text-xs text-sys-900 uppercase tracking-widest">Payway (Prisma)</h3>
+                    </div>
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        {/* PAYWAY QR - Sin endpoint de generación confirmado todavía */}
+                        <div className="border-2 border-dashed border-sys-200 rounded-2xl p-6 opacity-60">
+                            <div className="flex justify-between items-start mb-3">
+                                <h4 className="font-black text-[11px] text-sys-700 uppercase tracking-widest">Payway QR</h4>
+                                <span className="text-[9px] font-black uppercase bg-sys-200 text-sys-500 px-2 py-1 rounded-full">Próximamente</span>
+                            </div>
+                            <p className="text-[11px] text-sys-500 font-bold leading-relaxed">
+                                Pendiente de confirmación con Payway: no encontramos un endpoint de "generar QR con monto" sin terminal física. Se habilita cuando esté confirmado.
+                            </p>
+                        </div>
+
+                        {/* PAYWAY TERMINALES - Funcional (PayStore/Mobitef) */}
+                        <div className="border-2 border-sys-200 rounded-2xl p-6">
+                            <div className="flex justify-between items-start mb-4">
+                                <h4 className="font-black text-[11px] text-sys-700 uppercase tracking-widest">Payway Terminales</h4>
+                                <Switch active={paywayConfig.isActive} onChange={(val) => setPaywayConfig({...paywayConfig, isActive: val})} color="bg-[#6C2EB5]" />
+                            </div>
+                            <div className="space-y-4">
+                                <div>
+                                    <label className="text-[10px] font-black text-sys-500 uppercase tracking-widest mb-1.5 block">CUIT del Comercio</label>
+                                    <input type="text" className="w-full bg-sys-50 border-2 border-sys-200 rounded-xl px-4 py-3 text-sm font-mono font-black focus:border-[#6C2EB5] outline-none shadow-inner" placeholder="30-12345678-9" value={paywayConfig.cuit} onChange={(e) => setPaywayConfig({...paywayConfig, cuit: e.target.value})} />
+                                </div>
+                                <div>
+                                    <label className="text-[10px] font-black text-sys-500 uppercase tracking-widest mb-1.5 block">Ambiente</label>
+                                    <select className="w-full bg-sys-50 border-2 border-sys-200 rounded-xl px-4 py-3 text-sm font-black uppercase focus:border-[#6C2EB5] outline-none shadow-inner cursor-pointer" value={paywayConfig.environment} onChange={(e) => setPaywayConfig({...paywayConfig, environment: e.target.value})}>
+                                        <option value="sandbox">Sandbox</option>
+                                        <option value="homologacion">Homologación</option>
+                                        <option value="produccion">Producción</option>
+                                    </select>
+                                </div>
+                                <SecretInput label="API Key Pública" value={paywayConfig.apiKeyPublica} onChange={(val) => setPaywayConfig({...paywayConfig, apiKeyPublica: val})} />
+                                <SecretInput label="API Key Secreta" value={paywayConfig.apiKeySecreta} onChange={(val) => setPaywayConfig({...paywayConfig, apiKeySecreta: val})} />
+                            </div>
+                        </div>
+                    </div>
+                </Card>
+
                 {/* 👤 MAPEO DE HARDWARE CON BOTÓN MODO PDV */}
                 <Card className="border-2 border-sys-900 shadow-2xl rounded-[2.5rem] overflow-hidden p-0 bg-white">
                     <div className="bg-sys-900 p-6 text-white flex items-center justify-between">
@@ -518,11 +583,12 @@ export const IntegrationsPage = () => {
                     </div>
                     <div className="p-4 overflow-x-auto">
                         <table className="w-full text-left border-separate border-spacing-y-3">
-                            <thead><tr className="text-[10px] font-black text-sys-400 uppercase tracking-[0.2em]"><th className="px-6 py-2">Usuario / Cajero</th><th className="px-6 py-2">Caja QR (MP)</th><th className="px-6 py-2">Point Smart (MP)</th><th className="px-6 py-2 text-center">Estado</th></tr></thead>
+                            <thead><tr className="text-[10px] font-black text-sys-400 uppercase tracking-[0.2em]"><th className="px-6 py-2">Usuario / Cajero</th><th className="px-6 py-2">Caja QR (MP)</th><th className="px-6 py-2">Point Smart (MP)</th><th className="px-6 py-2">Terminal (Payway)</th><th className="px-6 py-2 text-center">Estado</th></tr></thead>
                             <tbody>
                                 {companyUsers.map(userItem => {
                                     const assignedPointId = assignments[userItem.uid]?.pointId;
-                                    const hasHardware = assignments[userItem.uid]?.qrId || assignedPointId;
+                                    const assignedPaywayTerminal = assignments[userItem.uid]?.paywayTerminalId;
+                                    const hasHardware = assignments[userItem.uid]?.qrId || assignedPointId || assignedPaywayTerminal;
                                     
                                     return (
                                         <tr key={userItem.uid} className="group">
@@ -561,6 +627,10 @@ export const IntegrationsPage = () => {
                                                         </Button>
                                                     )}
                                                 </div>
+                                            </td>
+                                            <td className="px-6 py-4 bg-sys-50 border-y border-sys-200">
+                                                {/* 🛡️ Entrada manual: Payway no expone (por ahora) una API de "listar terminales" como MP */}
+                                                <input type="text" className="w-full bg-white border-2 border-sys-200 rounded-xl px-4 py-2 text-[11px] font-black uppercase focus:border-[#6C2EB5] outline-none shadow-sm" placeholder="ID DE TERMINAL" value={assignedPaywayTerminal || ''} onChange={(e) => updateAssignment(userItem.uid, 'paywayTerminalId', e.target.value)} />
                                             </td>
                                             <td className="px-6 py-4 bg-sys-50 rounded-r-2xl border-y border-r border-sys-200 text-center">
                                                 {hasHardware ? (

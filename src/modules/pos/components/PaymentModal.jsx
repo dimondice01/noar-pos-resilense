@@ -74,7 +74,7 @@ export const PaymentModal = ({
     const [reference, setReference] = useState(''); 
     
     // Hardware & Configuración
-    const [assignedHardware, setAssignedHardware] = useState({ qrId: null, pointId: null });
+    const [assignedHardware, setAssignedHardware] = useState({ qrId: null, pointId: null, paywayTerminalId: null });
     const [loadingConfig, setLoadingConfig] = useState(false);
     const [paymentMethods, setPaymentMethods] = useState([]);
     const [selectedBrand, setSelectedBrand] = useState(null);
@@ -128,6 +128,7 @@ export const PaymentModal = ({
         transfer: { icon: Landmark, label: 'Transf.', color: 'purple-600' },
         mercadopago: { icon: QrCode, label: 'QR MP', color: 'blue-500' },
         point: { icon: CreditCard, label: 'Point', color: 'blue-600' },
+        payway: { icon: CreditCard, label: 'Payway', color: 'violet-600' },
         manual_card: { icon: Calculator, label: 'Tarjeta', color: 'indigo-600' },
         employee_account: { icon: User, label: 'Personal', color: 'orange-500' },
         account: { icon: Users, label: 'Cta. Cte.', color: 'red-500' }, 
@@ -266,7 +267,7 @@ export const PaymentModal = ({
             const branchRef = `companies/${user.companyId}/branches/${activeBranchId}/integrations`;
             const assignDoc = await getDoc(doc(db, branchRef, 'assignments'));
             if (assignDoc.exists()) {
-                const hw = assignDoc.data()[user.uid] || { qrId: null, pointId: null };
+                const hw = assignDoc.data()[user.uid] || { qrId: null, pointId: null, paywayTerminalId: null };
                 setAssignedHardware(hw);
                 _setCache(cacheKey, hw);
             }
@@ -338,7 +339,7 @@ export const PaymentModal = ({
         const splitDiscountAmount = amount * (splitDiscountRate / 100);
 
         let paymentMethodName = method;
-        if (['manual_card', 'point', 'clover'].includes(method)) paymentMethodName = 'card';
+        if (['manual_card', 'point', 'clover', 'payway'].includes(method)) paymentMethodName = 'card';
         if (method === 'employee_account') paymentMethodName = 'employee_account';
         if (method === 'account') paymentMethodName = 'account';
 
@@ -408,7 +409,7 @@ export const PaymentModal = ({
         }
 
         let finalMethod = method;
-        if (['manual_card', 'point', 'clover'].includes(method)) finalMethod = 'card';
+        if (['manual_card', 'point', 'clover', 'payway'].includes(method)) finalMethod = 'card';
         if (method === 'mp') finalMethod = 'mercadopago';
 
         onConfirm({
@@ -453,6 +454,32 @@ export const PaymentModal = ({
         }
     };
 
+    const triggerPaywayTransaction = async () => {
+        if (!navigator.onLine) {
+            setDigitalState('error');
+            setErrorMessage('Sin conexión. Los pagos con terminal requieren internet.');
+            return;
+        }
+        setDigitalState('creating');
+        setErrorMessage(null);
+        try {
+            const targetDeviceId = assignedHardware.paywayTerminalId;
+            if (!targetDeviceId) throw new Error("Falta configurar la Terminal Payway en esta caja.");
+
+            const res = await paymentService.initTransaction('payway', parseFloat(amountToPay), targetDeviceId, {
+                companyId: user.companyId,
+                branchId: activeBranchId
+            });
+
+            setPaymentReference(res.reference);
+            setDigitalState('waiting');
+
+        } catch (error) {
+            setDigitalState('error');
+            setErrorMessage(error.message || "Error de conexión con Payway.");
+        }
+    };
+
     const triggerQrTransaction = async () => {
         if (!navigator.onLine) {
             setDigitalState('error');
@@ -490,9 +517,11 @@ export const PaymentModal = ({
                 // 🔥 EN SPLIT: Point también necesita trigger de terminal PRIMERO
                 triggerPointTransaction();
             } else if (method === 'mercadopago' && digitalState === 'idle') {
-                // 🔥 EN SPLIT: QR también necesita trigger de terminal PRIMERO  
+                // 🔥 EN SPLIT: QR también necesita trigger de terminal PRIMERO
                 triggerQrTransaction();
-            } else if (['idle', 'approved'].includes(digitalState) || !['point', 'mercadopago'].includes(method)) {
+            } else if (method === 'payway' && digitalState === 'idle') {
+                triggerPaywayTransaction();
+            } else if (['idle', 'approved'].includes(digitalState) || !['point', 'mercadopago', 'payway'].includes(method)) {
                 // Efectivo, transferencia, tarjeta manual, etc. → agregar directo
                 handleAddSplitPayment();
             }
@@ -501,6 +530,8 @@ export const PaymentModal = ({
                 triggerPointTransaction();
             } else if (method === 'mercadopago' && digitalState === 'idle') {
                 triggerQrTransaction();
+            } else if (method === 'payway' && digitalState === 'idle') {
+                triggerPaywayTransaction();
             } else {
                 handleManualConfirm();
             }
@@ -508,7 +539,7 @@ export const PaymentModal = ({
     };
 
     useEffect(() => {
-        if (digitalState === 'waiting' && paymentReference && (method === 'mercadopago' || method === 'point')) {
+        if (digitalState === 'waiting' && paymentReference && (method === 'mercadopago' || method === 'point' || method === 'payway')) {
             const checkPayment = async () => {
                 try {
                     const res = await paymentService.checkStatus(paymentReference, method);
@@ -617,6 +648,14 @@ export const PaymentModal = ({
             );
         }
 
+        if (method === 'payway' && digitalState === 'idle') {
+            return (
+                <Button onClick={handleMainAction} className="w-full py-6 text-xl font-black uppercase shadow-xl bg-violet-600 hover:bg-violet-700 text-white rounded-2xl flex items-center justify-center gap-2 transition-all active:scale-[0.98]">
+                    <Send size={24}/> ENVIAR A TERMINAL PAYWAY
+                </Button>
+            );
+        }
+
         if (digitalState === 'waiting' || digitalState === 'creating') {
             return (
                 <Button disabled className="w-full py-6 text-xl font-black uppercase shadow-none bg-blue-100 text-blue-500 cursor-wait">
@@ -687,7 +726,7 @@ export const PaymentModal = ({
                                 } else {
                                     // 🔥 Restaura la promo del método actual si sale de Split
                                     let mappedMethod = method;
-                                    if (['manual_card', 'point', 'clover'].includes(method)) mappedMethod = 'card';
+                                    if (['manual_card', 'point', 'clover', 'payway'].includes(method)) mappedMethod = 'card';
                                     if (setTabPaymentMethod) setTabPaymentMethod(mappedMethod); 
                                 }
                             }} size="sm" disabled={isBudgetMode} />
@@ -800,7 +839,7 @@ export const PaymentModal = ({
                                     {isSplitMode && <CurrentIcon size={12} className={cn(`text-${currentMethodInfo.color}`)}/>}
                                     {isSplitMode ? `Monto para ${currentMethodInfo.label.toUpperCase()}` : "Monto que entrega / fía"}
                                 </span>
-                                {((currentInterestRate > 0 && !isSplitMode) || method === 'employee_account' || (method === 'point' && !isSplitMode)) && !isBudgetMode && !isAccountMode && <span className="text-[9px] bg-sys-200 px-1 rounded text-sys-600 uppercase font-black">Input Auto</span>}
+                                {((currentInterestRate > 0 && !isSplitMode) || method === 'employee_account' || ((method === 'point' || method === 'payway') && !isSplitMode)) && !isBudgetMode && !isAccountMode && <span className="text-[9px] bg-sys-200 px-1 rounded text-sys-600 uppercase font-black">Input Auto</span>}
                             </p>
                             <div className="flex items-center relative">
                                 <span className="text-lg font-bold text-sys-400 mr-1">$</span>
@@ -809,12 +848,12 @@ export const PaymentModal = ({
                                     type="number" 
                                     className={cn(
                                         "w-full bg-transparent text-2xl font-black outline-none text-sys-900 placeholder-sys-300 transition-colors",
-                                        ((currentInterestRate > 0 && !isSplitMode) || method === 'employee_account' || (method === 'point' && !isSplitMode) || isBudgetMode) && "cursor-not-allowed text-sys-600"
+                                        ((currentInterestRate > 0 && !isSplitMode) || method === 'employee_account' || ((method === 'point' || method === 'payway') && !isSplitMode) || isBudgetMode) && "cursor-not-allowed text-sys-600"
                                     )}
                                     value={amountToPay} 
                                     onChange={e => (currentInterestRate === 0 || isSplitMode) && !isBudgetMode && setAmountToPay(e.target.value)}
                                     onKeyDown={handleKeyDown}
-                                    readOnly={((currentInterestRate > 0 && !isSplitMode) || method === 'employee_account' || isProcessing || (method === 'point' && !isSplitMode) || isBudgetMode)}
+                                    readOnly={((currentInterestRate > 0 && !isSplitMode) || method === 'employee_account' || isProcessing || ((method === 'point' || method === 'payway') && !isSplitMode) || isBudgetMode)}
                                     disabled={isProcessing || isBudgetMode}
                                     placeholder={isSplitMode ? remainingBase.toFixed(0) : Math.round(total).toString()}
                                 />
@@ -842,12 +881,21 @@ export const PaymentModal = ({
                     </div>
 
                     <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-8 gap-2 mb-6">
-                        {Object.entries(methodsData).map(([id, opt]) => (
-                            <button 
+                        {Object.entries(methodsData).map(([id, opt]) => {
+                        // 🛡️ Validación: sin terminal Payway asignada a esta caja, el botón
+                        // queda visible pero deshabilitado con aviso — evita errores en mostrador.
+                        const isPaywayUnconfigured = id === 'payway' && !assignedHardware.paywayTerminalId;
+                        return (
+                            <button
                                 key={id}
+                                title={isPaywayUnconfigured ? "Terminal Payway no configurada para esta caja" : undefined}
                                 onClick={() => {
                                     if (id === 'account' && !isClientRegistered) {
                                         toast.error("Debe asignar un Cliente (F3) antes de enviarlo a Cta Cte.");
+                                        return;
+                                    }
+                                    if (isPaywayUnconfigured) {
+                                        toast.error("Terminal Payway no configurada para esta caja. Asignala en Integraciones.");
                                         return;
                                     }
 
@@ -860,34 +908,42 @@ export const PaymentModal = ({
                                     // 🔥 MAGIA AQUÍ: Recalcula promos al vuelo y mapea las tarjetas al estándar 'card'
                                     if (setTabPaymentMethod && !isSplitMode) {
                                         let mappedMethod = id;
-                                        if (['manual_card', 'point', 'clover'].includes(id)) mappedMethod = 'card';
+                                        if (['manual_card', 'point', 'clover', 'payway'].includes(id)) mappedMethod = 'card';
                                         setTabPaymentMethod(mappedMethod);
                                     }
                                 }} 
                                 disabled={
-                                    digitalState === 'creating' || 
-                                    digitalState === 'waiting' || 
-                                    digitalState === 'approved' || 
-                                    isProcessing || 
+                                    digitalState === 'creating' ||
+                                    digitalState === 'waiting' ||
+                                    digitalState === 'approved' ||
+                                    isProcessing ||
                                     (isSplitMode && (isFullyPaid || id === 'budget')) ||
-                                    (id === 'account' && !isClientRegistered) 
-                                } 
+                                    (id === 'account' && !isClientRegistered) ||
+                                    isPaywayUnconfigured
+                                }
                                 className={cn(
-                                    "flex flex-col items-center justify-center p-2 rounded-xl border-2 transition-all duration-200 h-24 relative overflow-hidden active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed group", 
+                                    "flex flex-col items-center justify-center p-2 rounded-xl border-2 transition-all duration-200 h-24 relative overflow-hidden active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed group",
                                     method === id ? `bg-sys-50 border-${opt.color} shadow-md` : "bg-white border-sys-100 hover:border-sys-300 text-sys-500"
                                 )}
                             >
                                 <opt.icon size={26} className={cn("mb-1 transition-colors", method === id ? `text-${opt.color}` : "text-sys-400")} />
                                 <span className={cn("font-semibold text-[10px] leading-tight text-center", method === id ? "text-sys-900" : "")}>{opt.label}</span>
                                 {method === id && <div className={`absolute top-2 right-2 w-2 h-2 rounded-full bg-${opt.color}`}></div>}
-                                
+
                                 {posConfig?.paymentSurcharges?.[id] > 0 && !['manual_card', 'employee_account', 'budget', 'account'].includes(id) && (
                                     <div className="absolute bottom-0 left-0 right-0 bg-orange-100 text-orange-700 text-[8px] font-black text-center py-0.5">
                                         +{posConfig.paymentSurcharges[id]}%
                                     </div>
                                 )}
+
+                                {isPaywayUnconfigured && (
+                                    <div className="absolute bottom-0 left-0 right-0 bg-sys-200 text-sys-500 text-[7px] font-black text-center py-0.5 leading-tight px-0.5">
+                                        SIN TERMINAL
+                                    </div>
+                                )}
                             </button>
-                        ))}
+                        );
+                        })}
                     </div>
 
                     {/* ÁREA DINÁMICA DE CONTENIDO */}
@@ -1049,15 +1105,15 @@ export const PaymentModal = ({
                             </div>
                         )}
                         
-                        {(method === 'mercadopago' || method === 'point') && (
+                        {(method === 'mercadopago' || method === 'point' || method === 'payway') && (
                             <div className="flex flex-col items-center gap-3 animate-in fade-in text-center">
                                 {digitalState === 'idle' && (
                                     <>
-                                        <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center text-blue-600 mb-2">
-                                            {method === 'point' ? <CreditCard size={32}/> : <QrCode size={32}/>}
+                                        <div className={cn("w-16 h-16 rounded-full flex items-center justify-center mb-2", method === 'payway' ? "bg-violet-100 text-violet-600" : "bg-blue-100 text-blue-600")}>
+                                            {method === 'mercadopago' ? <QrCode size={32}/> : <CreditCard size={32}/>}
                                         </div>
                                         <p className="font-bold text-sys-800">
-                                            {method === 'point' ? "Pago con Tarjeta / Smart POS" : "Cobro QR Dinámico"}
+                                            {method === 'mercadopago' ? "Cobro QR Dinámico" : method === 'payway' ? "Pago con Terminal Payway" : "Pago con Tarjeta / Smart POS"}
                                         </p>
                                         <p className="text-xs text-sys-500 max-w-[250px]">
                                             Presione el botón enviar para despertar la terminal vinculada a esta sucursal.
@@ -1075,10 +1131,11 @@ export const PaymentModal = ({
 
                                 {(digitalState === 'creating' || digitalState === 'waiting' || digitalState === 'approved') && (
                                     <>
-                                        {digitalState === 'waiting' ? <div className="w-16 h-16 rounded-full border-4 border-blue-500 border-t-transparent animate-spin"/> : digitalState === 'approved' ? <div className="w-16 h-16 rounded-full bg-green-500 text-white flex items-center justify-center animate-in zoom-in"><CheckCircle2 size={32}/></div> : <Loader2 className="animate-spin text-sys-300" />}
-                                        
+                                        {digitalState === 'waiting' ? <div className={cn("w-16 h-16 rounded-full border-4 border-t-transparent animate-spin", method === 'payway' ? "border-violet-500" : "border-blue-500")}/> : digitalState === 'approved' ? <div className="w-16 h-16 rounded-full bg-green-500 text-white flex items-center justify-center animate-in zoom-in"><CheckCircle2 size={32}/></div> : <Loader2 className="animate-spin text-sys-300" />}
+
                                         {digitalState === 'waiting' && method === 'mercadopago' && <p className="text-xs font-bold text-sys-500 mt-2">Escanee el QR en el visor de Mercado Pago</p>}
                                         {digitalState === 'waiting' && method === 'point' && <p className="text-xs font-bold text-sys-500 mt-2">Pase la tarjeta por la terminal Point...</p>}
+                                        {digitalState === 'waiting' && method === 'payway' && <p className="text-xs font-bold text-sys-500 mt-2">Pase la tarjeta por la terminal Payway...</p>}
                                         {digitalState === 'approved' && <p className="text-sm font-black text-green-600 mt-2 uppercase">¡PAGO APROBADO!</p>}
                                     </>
                                 )}
