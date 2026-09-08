@@ -7,6 +7,8 @@
  */
 
 const { onRequest } = require("firebase-functions/v2/https");
+const { onDocumentWritten, onDocumentCreated } = require("firebase-functions/v2/firestore");
+const { defineSecret } = require("firebase-functions/params");
 const logger = require("firebase-functions/logger");
 const express = require("express");
 const cors = require("cors");
@@ -15,6 +17,18 @@ const admin = require("firebase-admin");
 
 // Importamos el módulo de AFIP (Debe existir el archivo afip.js en la misma carpeta)
 const afipModule = require("./afip");
+// Carga de compras a proveedor desde el bot de WhatsApp (ver botPurchases.js)
+const { registerBotPurchase, HttpError: BotPurchaseError } = require("./botPurchases");
+
+// 🔒 Secret compartido para autenticar al bot de WhatsApp (servicio propio, no de
+// terceros). Se crea con: firebase functions:secrets:set BOT_API_KEY
+const BOT_API_KEY = defineSecret("BOT_API_KEY");
+
+// 🌎 Huso horario de este proyecto (Argentina, UTC-3, sin horario de verano) — usado
+// para calcular el "día" real de reports/topProducts_* a partir de timestamps en UTC.
+// Nota: "salvadorpos1"/"el-salvador" es el nombre del cliente/proyecto, no el país —
+// este sistema es 100% Argentina (facturación AFIP/CUIT).
+const SALES_TZ_OFFSET_HOURS = -3;
 
 // Inicialización de Firebase Admin
 if (!admin.apps.length) {
@@ -733,7 +747,9 @@ app.post('/create-invoice', async (req, res) => {
     });
 
   } catch (error) {
-    logger.error("❌ Error en Proceso Facturación:", error);
+    const errCompany = req.body?.companyId || req.body?.data?.companyId || req.body?.operation?.companyId || 'N/A';
+    const errBranch = req.body?.branchId || req.body?.data?.branchId || req.body?.operation?.branchId || 'N/A';
+    logger.error(`❌ Error en Proceso Facturación [company: ${errCompany} | branch: ${errBranch}]:`, error);
     res.status(500).json({ 
         error: "Error al procesar el comprobante electrónico", 
         details: error.message 
@@ -1077,6 +1093,30 @@ app.post("/delete-user", async (req, res) => {
 });
 
 // ==================================================================
+// 🤖 ENDPOINT: CARGA DE COMPRA A PROVEEDOR DESDE EL BOT DE WHATSAPP
+// ==================================================================
+// Único caller esperado: el bot de WhatsApp (repo aparte), después de que el
+// cliente confirmó por texto los datos leídos de la foto de una boleta.
+// Autenticación: header x-bot-key contra el secret BOT_API_KEY.
+app.post("/bot/purchases", async (req, res) => {
+  try {
+    const providedKey = req.headers["x-bot-key"];
+    if (!providedKey || providedKey !== BOT_API_KEY.value()) {
+      return res.status(401).json({ error: "No autorizado" });
+    }
+
+    const result = await registerBotPurchase(db, req.body);
+    res.status(200).json(result);
+  } catch (error) {
+    if (error instanceof BotPurchaseError) {
+      return res.status(error.status).json({ error: error.message });
+    }
+    logger.error("❌ Error /bot/purchases:", error);
+    res.status(500).json({ error: "Error registrando la compra", details: error.message });
+  }
+});
+
+// ==================================================================
 // 📡 ENDPOINT: WEBHOOK MERCADOPAGO (NUEVO)
 // ==================================================================
 app.post("/webhook/mercadopago", async (req, res) => {
@@ -1097,4 +1137,102 @@ app.post("/webhook/mercadopago", async (req, res) => {
 
 // Exportamos la función HTTP
 console.log("Versión con Auto-Fix Forzado v3.1");
-exports.api = onRequest({ cors: true }, app);
+exports.api = onRequest({ cors: true, secrets: [BOT_API_KEY] }, app);
+
+// ==================================================================
+// 📉 TRIGGER: STOCK CRÍTICO (ROLLUP PARA EL BOT DE WHATSAPP)
+// ==================================================================
+// Mantiene companies/{companyId}/branches/{branchId}/reports/lowStock
+// actualizado a partir de cada escritura real de stock (venta, compra,
+// ajuste) — el bot lee 1 solo doc por sucursal en vez de escanear
+// catálogo + inventario completos en cada consulta.
+exports.onInventoryStockWritten = onDocumentWritten(
+  "companies/{companyId}/branches/{branchId}/inventory/{productId}",
+  async (event) => {
+    const { companyId, branchId, productId } = event.params;
+    const after = event.data.after.exists ? event.data.after.data() : null;
+    const lowStockRef = db.doc(`companies/${companyId}/branches/${branchId}/reports/lowStock`);
+
+    // Doc de inventario borrado: no hay stock que reportar, solo limpiar si estaba en rojo.
+    if (!after) {
+      await lowStockRef.set({ [`items.${productId}`]: admin.firestore.FieldValue.delete() }, { merge: true });
+      return;
+    }
+
+    const stock = Number(after.stock) || 0;
+
+    let minStock = 5;
+    let name = null;
+    try {
+      const productSnap = await db.doc(`companies/${companyId}/products/${productId}`).get();
+      if (productSnap.exists) {
+        const productData = productSnap.data();
+        minStock = Number(productData.minStock) || 5;
+        name = productData.name || null;
+      }
+    } catch (err) {
+      logger.warn(`⚠️ lowStock: no se pudo leer products/${productId} (${companyId})`, err);
+    }
+
+    if (stock <= minStock) {
+      await lowStockRef.set({
+        [`items.${productId}`]: {
+          name,
+          stock,
+          minStock,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp()
+        }
+      }, { merge: true });
+    } else {
+      await lowStockRef.set({ [`items.${productId}`]: admin.firestore.FieldValue.delete() }, { merge: true });
+    }
+  }
+);
+
+// ==================================================================
+// 🏆 TRIGGER: RANKING DE PRODUCTOS MÁS VENDIDOS (ROLLUP DIARIO)
+// ==================================================================
+// Mantiene companies/{companyId}/branches/{branchId}/reports/topProducts_{YYYY-MM-DD}
+// con contadores por producto, incrementados al crearse cada venta — el
+// bot suma hasta 7 docs para "lo más vendido de la semana" en vez de
+// escanear la colección sales completa.
+// 🛡️ Simplificación aceptada: no resta si la venta se reembolsa después
+// (REFUNDED/PARTIAL_REFUND) — es un ranking aproximado para el bot, no
+// una cifra contable.
+exports.onSaleCreatedTopProducts = onDocumentCreated(
+  "companies/{companyId}/sales/{saleId}",
+  async (event) => {
+    const sale = event.data.data();
+    if (!sale) return;
+    if (sale.type && sale.type !== 'SALE') return; // excluye BUDGET
+    if (sale.status === 'ABANDONED') return;
+
+    const items = Array.isArray(sale.items) ? sale.items : [];
+    if (items.length === 0) return;
+
+    const { companyId } = event.params;
+    const branchId = sale.branchId || 'main';
+    // 🌎 sale.date/createdAt se guardan en UTC (.toISOString() del frontend). Sin esto,
+    // el "día" quedaría en UTC y cualquier venta desde las 21:00 hora local (Argentina,
+    // UTC-3) caería en el doc del día siguiente. Ajustar SALES_TZ_OFFSET_HOURS si este
+    // mismo código se reusa en un proyecto de otro país/huso horario.
+    const rawDate = sale.date || sale.createdAt || new Date().toISOString();
+    const localDate = new Date(new Date(rawDate).getTime() + SALES_TZ_OFFSET_HOURS * 60 * 60 * 1000);
+    const day = localDate.toISOString().slice(0, 10);
+    const reportRef = db.doc(`companies/${companyId}/branches/${branchId}/reports/topProducts_${day}`);
+
+    const update = {};
+    for (const item of items) {
+      const productId = item.id || item.productId;
+      if (!productId) continue;
+      const qty = Number(item.quantity) || 0;
+      const revenue = Number(item.subtotal) || (Number(item.price) || 0) * qty;
+      update[`items.${productId}.qty`] = admin.firestore.FieldValue.increment(qty);
+      update[`items.${productId}.revenue`] = admin.firestore.FieldValue.increment(revenue);
+      update[`items.${productId}.name`] = item.name || null;
+    }
+
+    if (Object.keys(update).length === 0) return;
+    await reportRef.set(update, { merge: true });
+  }
+);

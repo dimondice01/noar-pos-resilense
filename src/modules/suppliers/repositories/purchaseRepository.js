@@ -5,6 +5,7 @@ import {
     query, where, getDocs, limit, orderBy, increment, serverTimestamp 
 } from 'firebase/firestore';
 import { useAuthStore } from '../../auth/store/useAuthStore';
+import { pushSupplierLedgerWithBalanceIncrement } from '../services/supplierLedgerService';
 
 // 🔥 GENERADOR DE ID GLOBAL ÚNICO (Blindaje Multi-Caja)
 const generateGlobalId = (prefix) => {
@@ -32,7 +33,15 @@ const triggerOptimisticSync = async (collectionName, data, isDelete = false) => 
         if (isDelete) {
             await deleteDoc(doc(db, path, cloudId));
         } else {
-            const { syncStatus, localId, ...cloudData } = data;
+            // eslint-disable-next-line no-unused-vars
+            const { syncStatus, localId, ...rest } = data;
+            // 🔥 balance de suppliers SOLO se muta vía supplierLedgerService (transacción
+            // con increment()) — subir el número plano acá pisaría un incremento concurrente.
+            const cloudData = collectionName === 'suppliers' ? (() => {
+                // eslint-disable-next-line no-unused-vars
+                const { balance, ...withoutBalance } = rest;
+                return withoutBalance;
+            })() : rest;
             await setDoc(doc(db, path, cloudId), {
                 ...cloudData,
                 // 🔥 FIX: forzamos Timestamp real (no string) para no romper los queries
@@ -279,26 +288,46 @@ export const purchaseRepository = {
         let newCashMovement = null;
         let updatedSupplier = null;
 
-        // 2. Procesar Ítems
-        for (const item of items) {
+        // 2. Procesar Ítems — PASADA 1: leer todo en lote (batch), sin awaits por ítem.
+        // 🔥 Antes eran 2 lecturas Dexie `await`adas POR CADA ítem, una atrás de la otra
+        // (products.get + inventory.get) — con compras de muchos SKUs, esa era la demora
+        // real de "cargar una compra tarda". Cada .get() es local (sin red) pero no gratis:
+        // abre su propia mini-transacción. Acá se resuelve todo con 2-3 llamadas en total.
+        const idsToFetch = [...new Set(items.filter(i => i.id).map(i => i.id))];
+        const codesToFetch = [...new Set(items.filter(i => !i.id && i.code).map(i => i.code))];
+
+        const [productsById, productsByCodeList] = await Promise.all([
+            idsToFetch.length ? dbLocal.products.bulkGet(idsToFetch) : Promise.resolve([]),
+            codesToFetch.length ? dbLocal.products.where('code').anyOf(codesToFetch).toArray() : Promise.resolve([])
+        ]);
+
+        const productByIdMap = new Map(idsToFetch.map((id, i) => [id, productsById[i]]));
+        const productByCodeMap = new Map(productsByCodeList.map(p => [p.code, p]));
+
+        // Resolver product + productId final por ítem — puro JS, sin I/O (generar id es local).
+        const resolvedItems = items.map(item => {
+            let productId = item.id;
+            const product = productId ? productByIdMap.get(productId) : productByCodeMap.get(item.code);
+            const isNew = !product;
+            if (isNew) productId = generateGlobalId('prod');
+            return { item, productId, product, isNew };
+        });
+
+        const inventoryKeys = resolvedItems.map(({ productId }) => [branchId, productId]);
+        const inventoryResults = inventoryKeys.length ? await dbLocal.inventory.bulkGet(inventoryKeys) : [];
+        const inventoryByProductId = new Map(resolvedItems.map(({ productId }, i) => [productId, inventoryResults[i]]));
+
+        // PASADA 2: mismo cómputo de siempre (PPP, batches, totales) — ahora 100% en memoria.
+        for (const { item, productId, product: existingProduct, isNew } of resolvedItems) {
             const financials = this._calculateLineItem(item.cost, item.price, item.tax, item.isTaxIncluded);
-            
+
             purchase.totalNet += (financials.netCost * item.qty);
             purchase.totalTax += (financials.taxAmount * item.qty);
             purchase.totalFinal += (financials.finalCost * item.qty);
-            purchase.total += (financials.finalCost * item.qty); 
+            purchase.total += (financials.finalCost * item.qty);
 
-            let productId = item.id;
-            let product = null;
-
-            if (productId) {
-                product = await dbLocal.products.get(productId);
-            } else {
-                product = await dbLocal.products.where('code').equals(item.code).first();
-            }
-
-            if (!product) {
-                productId = generateGlobalId('prod');
+            let product = existingProduct;
+            if (isNew) {
                 product = {
                     id: productId,
                     code: item.code,
@@ -316,7 +345,7 @@ export const purchaseRepository = {
             const currentStock = parseFloat(product.stock || 0);
             const currentCost = parseFloat(product.cost || 0);
             const newQty = parseFloat(item.qty);
-            
+
             let newWeightedCost = financials.finalCost;
 
             if (currentStock > 0) {
@@ -327,7 +356,7 @@ export const purchaseRepository = {
 
             const productUpdate = {
                 ...product,
-                cost: newWeightedCost, 
+                cost: newWeightedCost,
                 lastPurchaseDate: timestamp,
                 supplierId: purchaseHeader.supplierId,
                 updatedAt: timestamp,
@@ -338,13 +367,13 @@ export const purchaseRepository = {
             if (item.activationDate) {
                 productUpdate.nextPrice = financials.price;
                 productUpdate.priceActivationDate = item.activationDate;
-                productUpdate.price = product.price; 
+                productUpdate.price = product.price;
             } else {
                 productUpdate.price = financials.price > 0 ? financials.price : product.price;
                 productUpdate.nextPrice = null;
                 productUpdate.priceActivationDate = null;
             }
-            
+
             const newBatch = {
                 id: generateGlobalId('batch'),
                 purchaseId: purchaseId,
@@ -353,14 +382,14 @@ export const purchaseRepository = {
                 originalCost: financials.finalCost,
                 expiryDate: item.expiryDate || null
             };
-            
+
             const currentBatches = product.batches || [];
             productUpdate.batches = [...currentBatches, newBatch];
             productUpdate.stock = currentStock + newQty;
 
             productsToUpdate.push(productUpdate);
 
-            const currentBranchInv = await dbLocal.inventory.get([branchId, productId]);
+            const currentBranchInv = inventoryByProductId.get(productId);
             inventoryToUpdate.push({
                 productId: productId,
                 branchId: branchId,
@@ -507,9 +536,18 @@ export const purchaseRepository = {
             for (const p of newProductsToCreate) await triggerOptimisticSync('products', p);
             for (const m of movementsToCreate) await triggerOptimisticSync('movements', m);
 
-            if (updatedSupplier) await triggerOptimisticSync('suppliers', updatedSupplier);
-            if (newLedgerEntry) await triggerOptimisticSync('supplier_ledger', newLedgerEntry);
-            if (paymentLedgerEntry) await triggerOptimisticSync('supplier_ledger', paymentLedgerEntry);
+            // 🔥 CONTADOR ATÓMICO: sube el ledger e incrementa suppliers/{id}.balance
+            // en la misma transacción (ver supplierLedgerService) — no subir
+            // updatedSupplier plano acá, pisaría un incremento concurrente. Si falla
+            // queda syncStatus:'pending' y syncPendingSupplierLedger lo reintenta.
+            if (newLedgerEntry) {
+                try { await pushSupplierLedgerWithBalanceIncrement(user.companyId, newLedgerEntry); }
+                catch (err) { console.warn('☁️ Sync optimista (supplier_ledger) falló, background sync lo tomará.', err); }
+            }
+            if (paymentLedgerEntry) {
+                try { await pushSupplierLedgerWithBalanceIncrement(user.companyId, paymentLedgerEntry); }
+                catch (err) { console.warn('☁️ Sync optimista (supplier_ledger) falló, background sync lo tomará.', err); }
+            }
             if (newCashMovement) await triggerOptimisticSync('cash_movements', newCashMovement);
         })();
 
@@ -610,8 +648,11 @@ export const purchaseRepository = {
 
         // 🔥 Disparo Seguro de Sincronización
         if (updatedPurchase) triggerOptimisticSync('purchases', updatedPurchase);
-        if (updatedSupplier) triggerOptimisticSync('suppliers', updatedSupplier);
-        if (newLedgerEntry) triggerOptimisticSync('supplier_ledger', newLedgerEntry);
+        // 🔥 CONTADOR ATÓMICO: ver nota en registerPurchase — no subir updatedSupplier plano.
+        if (newLedgerEntry) {
+            pushSupplierLedgerWithBalanceIncrement(user.companyId, newLedgerEntry)
+                .catch(err => console.warn('☁️ Sync optimista (supplier_ledger) falló, background sync lo tomará.', err));
+        }
         if (newCashMovement) triggerOptimisticSync('cash_movements', newCashMovement);
 
         return true;
@@ -705,8 +746,11 @@ export const purchaseRepository = {
 
             await triggerOptimisticSync('purchases', purchase);
             for (const p of productsToUpdate) await triggerOptimisticSync('products', p);
-            if (updatedSupplier) await triggerOptimisticSync('suppliers', updatedSupplier);
-            if (newLedgerEntry) await triggerOptimisticSync('supplier_ledger', newLedgerEntry);
+            // 🔥 CONTADOR ATÓMICO: ver nota en registerPurchase — no subir updatedSupplier plano.
+            if (newLedgerEntry) {
+                try { await pushSupplierLedgerWithBalanceIncrement(user.companyId, newLedgerEntry); }
+                catch (err) { console.warn('☁️ Sync optimista (supplier_ledger) falló, background sync lo tomará.', err); }
+            }
         })();
 
         return true;
@@ -884,8 +928,11 @@ export const purchaseRepository = {
             await triggerOptimisticSync('purchases', updatedPurchase);
             for (const p of productsToUpdate) await triggerOptimisticSync('products', p);
             for (const m of movementsToCreate) await triggerOptimisticSync('movements', m);
-            if (updatedSupplier) await triggerOptimisticSync('suppliers', updatedSupplier);
-            if (newLedgerEntry) await triggerOptimisticSync('supplier_ledger', newLedgerEntry);
+            // 🔥 CONTADOR ATÓMICO: ver nota en registerPurchase — no subir updatedSupplier plano.
+            if (newLedgerEntry) {
+                try { await pushSupplierLedgerWithBalanceIncrement(user.companyId, newLedgerEntry); }
+                catch (err) { console.warn('☁️ Sync optimista (supplier_ledger) falló, background sync lo tomará.', err); }
+            }
             if (newCashMovement) await triggerOptimisticSync('cash_movements', newCashMovement);
         })();
 

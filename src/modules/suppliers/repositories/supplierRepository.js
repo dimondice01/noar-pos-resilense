@@ -29,7 +29,15 @@ const triggerOptimisticSync = async (collectionName, data, isDelete = false) => 
         if (isDelete) {
             await deleteDoc(doc(db, path, cloudId));
         } else {
-            const { syncStatus, localId, ...cloudData } = data;
+            // eslint-disable-next-line no-unused-vars
+            const { syncStatus, localId, ...rest } = data;
+            // 🔥 balance SOLO se muta vía supplierLedgerService (transacción con
+            // increment()) — subir el número plano acá pisaría un incremento concurrente.
+            const cloudData = collectionName === 'suppliers' ? (() => {
+                // eslint-disable-next-line no-unused-vars
+                const { balance, ...withoutBalance } = rest;
+                return withoutBalance;
+            })() : rest;
             await setDoc(doc(db, path, cloudId), {
                 ...cloudData,
                 firestoreId: cloudId,

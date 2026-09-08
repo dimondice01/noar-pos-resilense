@@ -297,18 +297,26 @@ async function emitirFactura(total, cliente = {}, esNotaCredito = false, comprob
 
       const resultado = res.FECAESolicitarResult;
       
+      const ctxAfip = `CUIT ${config.cuit} | Cond: ${config.taxCondition} | CbteTipo: ${CBTE_TIPO} | PtoVta: ${config.ptoVta} | Nro: ${proximo}`;
+
       if (resultado.FeCabResp.Resultado !== "A") {
           const errs = resultado.Errors?.Err;
-          const msgError = Array.isArray(errs) ? errs[0].Msg : (errs?.Msg || "Rechazo desconocido");
-          throw new Error(`AFIP Rechazó: ${msgError}`);
+          const err0 = Array.isArray(errs) ? errs[0] : errs;
+          const msgError = err0?.Msg || "Rechazo desconocido";
+          const codError = err0?.Code ?? "s/c";
+          console.error(`❌ AFIP Rechazo Cabecera [${codError}] :: ${ctxAfip} :: ${msgError}`);
+          throw new Error(`AFIP Rechazó [${codError}]: ${msgError} (${ctxAfip})`);
       }
 
       const detalle = resultado.FeDetResp.FECAEDetResponse[0] || resultado.FeDetResp.FECAEDetResponse;
       
       if (detalle.Resultado !== "A") {
           const obs = detalle.Observaciones?.Obs;
-          const msgObs = Array.isArray(obs) ? obs[0].Msg : (obs?.Msg || "Error en el detalle");
-          throw new Error(`AFIP Rechazó (Detalle): ${msgObs}`);
+          const obs0 = Array.isArray(obs) ? obs[0] : obs;
+          const msgObs = obs0?.Msg || "Error en el detalle";
+          const codObs = obs0?.Code ?? "s/c";
+          console.error(`❌ AFIP Rechazo Detalle [${codObs}] :: ${ctxAfip} :: ${msgObs}`);
+          throw new Error(`AFIP Rechazó (Detalle) [${codObs}]: ${msgObs} (${ctxAfip})`);
       }
 
       // QR Data (Formato JSON Base64)

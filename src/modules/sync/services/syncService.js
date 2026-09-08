@@ -19,6 +19,7 @@ import { getDB } from '../../../database/db';
 import { useAuthStore } from '../../auth/store/useAuthStore';
 import { pushCashMovementWithShiftCounter, closeShiftAtomic } from '../../cash/services/shiftLedgerService';
 import { pushLedgerMovementWithBalanceIncrement } from '../../clients/services/customerLedgerService';
+import { pushSupplierLedgerWithBalanceIncrement } from '../../suppliers/services/supplierLedgerService';
 
 const SYNC_KEYS = {}; // Deprecated: Usamos Dexie como fuente de verdad del estado de sync.
 
@@ -36,6 +37,20 @@ export const syncService = {
       if (item.firestoreId && item.firestoreId !== 'undefined') return String(item.firestoreId);
       if (typeof item.id === 'string' && item.id.length > 8) return item.id;
       return `${prefix}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+  },
+
+  // 🔥 BACKOFF SIN ABANDONO: antes, syncPendingSales/Shifts/CashMovements cortaban
+  // el reintento a los 5 fallos y abandonaban el dato PARA SIEMPRE en silencio (así
+  // se perdieron 28 ventas + sus cash_movements una noche de mala conexión, ver
+  // incidente 2026-09-01). Un ítem nunca deja de reintentarse solo por cantidad de
+  // intentos — esto solo espacia los reintentos para no martillar cada ciclo (~15s)
+  // algo que viene fallando, sin dejar de insistir eventualmente.
+  _shouldAttemptSync(item) {
+      const retries = item.syncRetries || 0;
+      if (retries === 0) return true;
+      const lastAttempt = item.lastSyncAttemptAt ? new Date(item.lastSyncAttemptAt).getTime() : 0;
+      const backoffMs = Math.min(retries * 30_000, 30 * 60_000); // +30s por intento, techo 30min
+      return (Date.now() - lastAttempt) >= backoffMs;
   },
 
   _deepSanitize(obj) {
@@ -1442,9 +1457,10 @@ export const syncService = {
 
   async syncPendingSales(companyId, branchId) {
     const localDb = await getDB();
-    // 🛡️ Excluir items con demasiados intentos fallidos (prob. corruptos)
+    // 🛡️ Nunca se excluye por cantidad de reintentos — solo se espacian (ver
+    // _shouldAttemptSync). Abandonar un dato en silencio es peor que reintentar de más.
     const pendingSales = await localDb.sales
-        .filter(s => s.syncStatus !== 'synced' && (s.syncRetries || 0) < 5)
+        .filter(s => s.syncStatus !== 'synced' && this._shouldAttemptSync(s))
         .toArray();
 
     console.log(`[SyncPendingSales] ${pendingSales.length} ventas pendientes`);
@@ -1477,10 +1493,10 @@ export const syncService = {
             });
             totalSynced++;
         } catch (err) {
-            // 🔄 Incrementar contador de reintentos — se reintentará en el próximo ciclo
+            // 🔄 Incrementar contador de reintentos — se sigue reintentando, solo más espaciado
             const retries = (sale.syncRetries || 0) + 1;
-            console.warn(`❌ Sync venta ${sale.id} — intento ${retries}/5:`, err.code || err.message);
-            try { await localDb.sales.update(sale.id, { syncRetries: retries }); } catch (_) {}
+            console.warn(`❌ Sync venta ${sale.id} — intento ${retries} (nunca se abandona):`, err.code || err.message);
+            try { await localDb.sales.update(sale.id, { syncRetries: retries, lastSyncAttemptAt: new Date().toISOString() }); } catch (_) {}
         }
     }
     return { synced: totalSynced };
@@ -1553,7 +1569,7 @@ export const syncService = {
   async syncPendingShifts(companyId) {
       const localDb = await getDB();
       const pendingShifts = await localDb.shifts
-          .filter(s => s.syncStatus !== 'synced' && (s.syncRetries || 0) < 5)
+          .filter(s => s.syncStatus !== 'synced' && this._shouldAttemptSync(s))
           .toArray();
 
       if (pendingShifts.length === 0) return { synced: 0 };
@@ -1602,8 +1618,8 @@ export const syncService = {
               totalSynced++;
           } catch (err) {
               const retries = (shift.syncRetries || 0) + 1;
-              console.warn(`❌ Sync turno ${shift.id} — intento ${retries}/5:`, err.code || err.message);
-              try { await localDb.shifts.update(shift.id, { syncRetries: retries }); } catch (_) {}
+              console.warn(`❌ Sync turno ${shift.id} — intento ${retries} (nunca se abandona):`, err.code || err.message);
+              try { await localDb.shifts.update(shift.id, { syncRetries: retries, lastSyncAttemptAt: new Date().toISOString() }); } catch (_) {}
           }
       }
       return { synced: totalSynced };
@@ -1612,7 +1628,7 @@ export const syncService = {
   async syncPendingCashMovements(companyId) {
       const localDb = await getDB();
       const pendingMovs = await localDb.cash_movements
-          .filter(c => c.syncStatus !== 'synced' && (c.syncRetries || 0) < 5)
+          .filter(c => c.syncStatus !== 'synced' && this._shouldAttemptSync(c))
           .toArray();
 
       if (pendingMovs.length === 0) return { synced: 0 };
@@ -1638,8 +1654,8 @@ export const syncService = {
               totalSynced++;
           } catch (err) {
               const retries = (mov.syncRetries || 0) + 1;
-              console.warn(`❌ Sync mov. caja ${mov.id} — intento ${retries}/5:`, err.code || err.message);
-              try { await localDb.cash_movements.update(mov.id, { syncRetries: retries }); } catch (_) {}
+              console.warn(`❌ Sync mov. caja ${mov.id} — intento ${retries} (nunca se abandona):`, err.code || err.message);
+              try { await localDb.cash_movements.update(mov.id, { syncRetries: retries, lastSyncAttemptAt: new Date().toISOString() }); } catch (_) {}
           }
       }
       return { synced: totalSynced };
@@ -1684,36 +1700,37 @@ export const syncService = {
 
   async syncPendingSupplierLedger(companyId) {
       const localDb = await getDB();
-      const pendingLedger = await localDb.supplier_ledger.filter(s => s.syncStatus !== 'synced').toArray();
+      const pendingLedger = await localDb.supplier_ledger
+          .filter(s => s.syncStatus !== 'synced' && this._shouldAttemptSync(s))
+          .toArray();
       
       if (pendingLedger.length === 0) return { synced: 0 };
 
       let totalSynced = 0;
-      const colRef = collection(db, 'companies', companyId, 'supplier_ledger');
 
       for (const mov of pendingLedger) {
           try {
               if (!mov.id) continue;
               const safeId = this._ensureValidCloudId(mov, 'sledg');
-              const docRef = doc(colRef, safeId); 
-              const { syncStatus, localId, id, ...cleanMov } = mov;
               const nowIso = new Date().toISOString();
 
-              await setDoc(docRef, {
-                  ...this._deepSanitize(cleanMov),
-                  firestoreId: safeId,
-                  syncedAt: serverTimestamp(),
-                  updatedAt: serverTimestamp()
-              }, { merge: true });
+              // 🔥 CONTADOR ATÓMICO: sube el movimiento e incrementa
+              // suppliers/{supplierId}.balance en la misma transacción (ver
+              // supplierLedgerService) — idempotente frente a reintentos. Esta
+              // cola es el único camino de reintento confiable para el balance
+              // (no existe syncPendingSuppliers).
+              await pushSupplierLedgerWithBalanceIncrement(companyId, { ...mov, id: safeId });
 
-              await localDb.supplier_ledger.update(mov.id, { 
-                  syncStatus: 'synced', 
-                  firestoreId: safeId, 
-                  updatedAt: nowIso 
+              await localDb.supplier_ledger.update(mov.id, {
+                  syncStatus: 'synced',
+                  firestoreId: safeId,
+                  updatedAt: nowIso
               });
               totalSynced++;
           } catch (err) {
-              console.warn(`❌ Error sinc. ledger proveedor ${mov.id}:`, err);
+              const retries = (mov.syncRetries || 0) + 1;
+              console.warn(`❌ Error sinc. ledger proveedor ${mov.id} — intento ${retries} (nunca se abandona):`, err);
+              try { await localDb.supplier_ledger.update(mov.id, { syncRetries: retries, lastSyncAttemptAt: new Date().toISOString() }); } catch (_) {}
           }
       }
       return { synced: totalSynced };

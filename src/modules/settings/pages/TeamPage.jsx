@@ -4,18 +4,19 @@ import {
     Trash2, CreditCard, Percent, PlusCircle, AlertTriangle, Layers, Tag, Save,
     ChevronDown, ChevronUp, CheckCircle2, MonitorSmartphone, Loader2, ArrowUpRight,
     Wallet, ReceiptText, ArrowRightCircle, X, ShieldAlert, Package, CloudDownload, Scale,
-    Pencil
+    Pencil, Eye, Calendar
 } from 'lucide-react';
 import { Card } from '../../../core/ui/Card';
 import { Button } from '../../../core/ui/Button';
-import { Switch } from '../../../core/ui/Switch'; 
+import { Switch } from '../../../core/ui/Switch';
 import { authService } from '../../auth/services/authService';
 import { collection, getDocs, query, where, updateDoc, doc, getDoc, setDoc } from 'firebase/firestore';
 import { db as firestoreDB } from '../../../database/firebase'; // 🔥 Renombrado para no chocar con Dexie
 import { getDB } from '../../../database/db'; // 🔥 Traemos Dexie para persistencia
 import { cn } from '../../../core/utils/cn';
-import { useAuthStore } from '../../auth/store/useAuthStore'; 
+import { useAuthStore } from '../../auth/store/useAuthStore';
 import { employeeLedgerRepository } from '../repositories/employeeLedgerRepository';
+import { salesRepository } from '../../sales/repositories/salesRepository';
 import toast from 'react-hot-toast';
 import { PERMISSION_KEYS, PERMISSION_DEFINITIONS, DEFAULT_PERMISSIONS, getFullPermissions } from '../config/permissions';
 
@@ -64,9 +65,15 @@ const LiquidationModal = ({ isOpen, onClose, employee, onLiquidated }) => {
     const [history, setHistory] = useState([]);
     const [isLoading, setIsLoading] = useState(true);
     const [isLiquidating, setIsLiquidating] = useState(false);
-    
+
     // 🔥 ESTADO PARA EL SALDO CALCULADO EN VIVO
     const [calculatedDebt, setCalculatedDebt] = useState(0);
+    // 🔥 Monto a liquidar — precargado con el total, pero editable (liquidación parcial)
+    const [liquidationAmount, setLiquidationAmount] = useState('');
+
+    // 🔥 Ver ticket real de un consumo (POS_CONSUMPTION con refId)
+    const [viewSale, setViewSale] = useState(null);
+    const [loadingSaleId, setLoadingSaleId] = useState(null);
 
     useEffect(() => {
         const targetUserId = employee?.uid || employee?.id;
@@ -76,7 +83,7 @@ const LiquidationModal = ({ isOpen, onClose, employee, onLiquidated }) => {
                 setIsLoading(true);
                 try {
                     const records = await employeeLedgerRepository.getEmployeeHistory(currentUser.companyId, targetUserId);
-                    
+
                     // Ordenamos para mostrar los más nuevos arriba (Opcional, asumiendo que el repo ya lo hace)
                     setHistory(records);
 
@@ -92,7 +99,9 @@ const LiquidationModal = ({ isOpen, onClose, employee, onLiquidated }) => {
                     });
 
                     // Evitamos saldos negativos por errores de carga
-                    setCalculatedDebt(Math.max(0, totalDebt));
+                    const safeDebt = Math.max(0, totalDebt);
+                    setCalculatedDebt(safeDebt);
+                    setLiquidationAmount(safeDebt > 0 ? String(safeDebt.toFixed(2)) : '');
 
                 } catch (e) {
                     console.error("Error cargando historial", e);
@@ -106,13 +115,19 @@ const LiquidationModal = ({ isOpen, onClose, employee, onLiquidated }) => {
         }
     }, [isOpen, employee, currentUser]);
 
+    // 🛡️ Blindaje: nunca permitir vacío, negativo, ni un monto mayor a la deuda real.
+    const parsedAmount = parseFloat(liquidationAmount);
+    const isAmountValid = !isNaN(parsedAmount) && parsedAmount > 0 && parsedAmount <= calculatedDebt + 0.01;
+
     const handleLiquidate = async () => {
         const targetUserId = employee?.uid || employee?.id;
-        
-        // Usamos calculatedDebt en lugar del employee.ledgerDebt
-        if (!employee || !targetUserId || calculatedDebt <= 0) return;
-        
-        if (!window.confirm(`¿Confirmas la liquidación de $${calculatedDebt.toLocaleString('es-AR')} para ${employee.name}? Esta acción dejará su deuda en 0.`)) return;
+
+        if (!employee || !targetUserId || !isAmountValid) return;
+
+        const amountToLiquidate = Math.min(parsedAmount, calculatedDebt);
+        const isPartial = amountToLiquidate < calculatedDebt - 0.01;
+
+        if (!window.confirm(`¿Confirmas la liquidación de $${amountToLiquidate.toLocaleString('es-AR')} para ${employee.name}?${isPartial ? ` Queda un saldo pendiente de $${(calculatedDebt - amountToLiquidate).toLocaleString('es-AR')}.` : ' Esta acción dejará su deuda en 0.'}`)) return;
 
         setIsLiquidating(true);
         const toastId = toast.loading("Liquidando cuenta...");
@@ -122,16 +137,13 @@ const LiquidationModal = ({ isOpen, onClose, employee, onLiquidated }) => {
                 branchId: employee.branchId || 'main',
                 userId: targetUserId,
                 type: 'LIQUIDATION',
-                amount: parseFloat(calculatedDebt), // Liquidamos el total calculado
-                description: `Liquidación de cierre de mes.`,
+                amount: amountToLiquidate,
+                description: isPartial ? 'Liquidación parcial de cuenta corriente.' : 'Liquidación de cierre de mes.',
                 operatorName: currentUser.name || 'Admin'
             });
-            
-            // Opcional: Podrías forzar la actualización del documento de usuario en Firebase aquí
-            // para que vuelva a decir 0, pero ya no es estrictamente necesario porque siempre calculás.
 
             toast.success(`Cuenta de ${employee.name} liquidada exitosamente.`, { id: toastId });
-            onLiquidated(); 
+            onLiquidated();
             onClose();
         } catch (error) {
             console.error("Error al liquidar:", error);
@@ -141,18 +153,30 @@ const LiquidationModal = ({ isOpen, onClose, employee, onLiquidated }) => {
         }
     };
 
+    const handleViewSale = async (record) => {
+        if (!record.refId) return;
+        setLoadingSaleId(record.id);
+        try {
+            const sale = await salesRepository.getSaleById(record.refId);
+            if (sale) setViewSale(sale);
+            else toast.error('Venta no encontrada en este dispositivo.');
+        } finally {
+            setLoadingSaleId(null);
+        }
+    };
+
     if (!isOpen || !employee) return null;
 
     return (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-sys-900/60 backdrop-blur-sm p-4 animate-in fade-in zoom-in-95">
             <div className="bg-white rounded-3xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[85vh]">
-                
+
                 {/* HEADER */}
                 <div className="p-6 border-b border-sys-100 bg-sys-50 flex justify-between items-start">
                     <div>
                         <div className="flex items-center gap-2 mb-1">
                             <Wallet className="text-brand" size={24}/>
-                            <h3 className="font-black text-xl text-sys-900 uppercase tracking-tight">Cuenta Corriente</h3>
+                            <h3 className="font-black text-xl text-sys-900 uppercase tracking-tight">Perfil de Cuenta Corriente</h3>
                         </div>
                         <p className="text-sm font-bold text-sys-600">{employee.name || employee.email}</p>
                     </div>
@@ -161,26 +185,48 @@ const LiquidationModal = ({ isOpen, onClose, employee, onLiquidated }) => {
                     </button>
                 </div>
 
-                {/* SALDO TOTAL (CALCULADO) */}
-                <div className="p-6 bg-red-50 border-b border-red-100 flex items-center justify-between">
-                    <div>
-                        <p className="text-xs font-black text-red-800 uppercase tracking-wider mb-1">Deuda Acumulada</p>
-                        {isLoading ? (
-                             <div className="h-10 flex items-center"><Loader2 className="animate-spin text-red-400" size={24}/></div>
-                        ) : (
-                            <p className="text-4xl font-black text-red-600 tracking-tighter tabular-nums">
-                                $ {calculatedDebt.toLocaleString('es-AR', {minimumFractionDigits: 2})}
-                            </p>
-                        )}
+                {/* SALDO TOTAL (CALCULADO) + MONTO A LIQUIDAR */}
+                <div className="p-6 bg-red-50 border-b border-red-100 space-y-4">
+                    <div className="flex items-center justify-between">
+                        <div>
+                            <p className="text-xs font-black text-red-800 uppercase tracking-wider mb-1">Deuda Acumulada</p>
+                            {isLoading ? (
+                                 <div className="h-10 flex items-center"><Loader2 className="animate-spin text-red-400" size={24}/></div>
+                            ) : (
+                                <p className="text-4xl font-black text-red-600 tracking-tighter tabular-nums">
+                                    $ {calculatedDebt.toLocaleString('es-AR', {minimumFractionDigits: 2})}
+                                </p>
+                            )}
+                        </div>
                     </div>
-                    <Button 
-                        onClick={handleLiquidate}
-                        disabled={isLiquidating || isLoading || calculatedDebt <= 0}
-                        className="bg-red-600 hover:bg-red-700 text-white shadow-xl shadow-red-200 py-3"
-                    >
-                        {isLiquidating ? <Loader2 className="animate-spin" size={18} /> : <CheckCircle2 size={18} className="mr-2"/>}
-                        LIQUIDAR SALDO
-                    </Button>
+
+                    {!isLoading && calculatedDebt > 0 && (
+                        <div className="flex items-end gap-3">
+                            <div className="flex-1">
+                                <label className="text-[11px] font-black text-red-800 uppercase tracking-wider mb-1 block">
+                                    Monto a liquidar (podés liquidar parcial)
+                                </label>
+                                <input
+                                    type="number"
+                                    step="0.01"
+                                    min="0.01"
+                                    max={calculatedDebt}
+                                    value={liquidationAmount}
+                                    onChange={e => setLiquidationAmount(e.target.value)}
+                                    disabled={isLiquidating}
+                                    className="w-full px-3 py-2.5 rounded-xl border border-red-200 bg-white font-black text-lg text-red-700 tabular-nums focus:outline-none focus:ring-2 focus:ring-red-300"
+                                />
+                            </div>
+                            <Button
+                                onClick={handleLiquidate}
+                                disabled={isLiquidating || isLoading || !isAmountValid}
+                                className="bg-red-600 hover:bg-red-700 text-white shadow-xl shadow-red-200 py-3 shrink-0"
+                            >
+                                {isLiquidating ? <Loader2 className="animate-spin" size={18} /> : <CheckCircle2 size={18} className="mr-2"/>}
+                                LIQUIDAR
+                            </Button>
+                        </div>
+                    )}
                 </div>
 
                 {/* HISTORIAL */}
@@ -188,7 +234,7 @@ const LiquidationModal = ({ isOpen, onClose, employee, onLiquidated }) => {
                     <h4 className="text-xs font-bold text-sys-400 uppercase tracking-wider mb-3 px-2 flex items-center gap-2">
                         <ReceiptText size={14}/> Últimos Movimientos
                     </h4>
-                    
+
                     {isLoading ? (
                         <div className="py-10 flex justify-center"><Loader2 className="animate-spin text-brand" size={30}/></div>
                     ) : history.length === 0 ? (
@@ -197,15 +243,28 @@ const LiquidationModal = ({ isOpen, onClose, employee, onLiquidated }) => {
                         <div className="space-y-2">
                             {history.map(record => {
                                 const isPayment = record.type === 'LIQUIDATION' || record.type === 'PAYMENT';
+                                const canViewTicket = record.type === 'POS_CONSUMPTION' && !!record.refId;
                                 return (
                                     <div key={record.id} className={cn("p-3 rounded-xl border flex justify-between items-center text-sm shadow-sm", isPayment ? "bg-emerald-50 border-emerald-100" : "bg-white border-sys-200")}>
-                                        <div>
-                                            <p className={cn("font-bold", isPayment ? "text-emerald-800" : "text-sys-800")}>
-                                                {record.type === 'ADVANCE' ? 'Vales / Adelantos' : record.type === 'POS_CONSUMPTION' ? 'Consumo Local' : 'Liquidación'}
-                                            </p>
-                                            <p className="text-xs text-sys-500 mt-0.5">{new Date(record.date).toLocaleDateString('es-AR')} - {record.description}</p>
+                                        <div className="flex items-center gap-2 min-w-0">
+                                            {canViewTicket && (
+                                                <button
+                                                    onClick={() => handleViewSale(record)}
+                                                    disabled={loadingSaleId === record.id}
+                                                    title="Ver ticket"
+                                                    className="shrink-0 p-1.5 rounded-lg bg-blue-50 text-blue-500 hover:bg-blue-100 border border-blue-200 transition-all"
+                                                >
+                                                    {loadingSaleId === record.id ? <Loader2 size={14} className="animate-spin"/> : <Eye size={14} />}
+                                                </button>
+                                            )}
+                                            <div className="min-w-0">
+                                                <p className={cn("font-bold", isPayment ? "text-emerald-800" : "text-sys-800")}>
+                                                    {record.type === 'ADVANCE' ? 'Vales / Adelantos' : record.type === 'POS_CONSUMPTION' ? 'Consumo Local' : 'Liquidación'}
+                                                </p>
+                                                <p className="text-xs text-sys-500 mt-0.5">{new Date(record.date).toLocaleDateString('es-AR')} - {record.description}</p>
+                                            </div>
                                         </div>
-                                        <div className={cn("font-black text-right", isPayment ? "text-emerald-600" : "text-red-600")}>
+                                        <div className={cn("font-black text-right shrink-0 ml-2", isPayment ? "text-emerald-600" : "text-red-600")}>
                                             {isPayment ? '-' : '+'}$ {parseFloat(record.amount).toLocaleString('es-AR', {minimumFractionDigits: 0})}
                                         </div>
                                     </div>
@@ -216,81 +275,45 @@ const LiquidationModal = ({ isOpen, onClose, employee, onLiquidated }) => {
                 </div>
 
             </div>
-        </div>
-    );
 
-
-    if (!isOpen || !employee) return null;
-
-    return (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-sys-900/60 backdrop-blur-sm p-4 animate-in fade-in zoom-in-95">
-            <div className="bg-white rounded-3xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[85vh]">
-                
-                {/* HEADER */}
-                <div className="p-6 border-b border-sys-100 bg-sys-50 flex justify-between items-start">
-                    <div>
-                        <div className="flex items-center gap-2 mb-1">
-                            <Wallet className="text-brand" size={24}/>
-                            <h3 className="font-black text-xl text-sys-900 uppercase tracking-tight">Cuenta Corriente</h3>
+            {/* DETALLE DE TICKET (mismo patrón que ClientDashboard.viewSale) */}
+            {viewSale && (
+                <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4" onClick={() => setViewSale(null)}>
+                    <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md max-h-[85vh] flex flex-col overflow-hidden" onClick={e => e.stopPropagation()}>
+                        <div className="flex items-center justify-between p-5 border-b border-sys-100">
+                            <div>
+                                <p className="text-xs font-black uppercase tracking-widest text-sys-400">Detalle de Venta</p>
+                                <p className="text-lg font-black text-sys-900">Ticket #{viewSale.number || viewSale.ticketNumber || viewSale.localId?.slice(-6)}</p>
+                            </div>
+                            <button onClick={() => setViewSale(null)} className="p-2 hover:bg-sys-100 rounded-full transition-colors">
+                                <X size={18} className="text-sys-400" />
+                            </button>
                         </div>
-                        <p className="text-sm font-bold text-sys-600">{employee.name || employee.email}</p>
-                    </div>
-                    <button onClick={onClose} disabled={isLiquidating} className="p-2 hover:bg-sys-200 rounded-full transition-colors">
-                        <X size={20} className="text-sys-400" />
-                    </button>
-                </div>
-
-                {/* SALDO TOTAL */}
-                <div className="p-6 bg-red-50 border-b border-red-100 flex items-center justify-between">
-                    <div>
-                        <p className="text-xs font-black text-red-800 uppercase tracking-wider mb-1">Deuda Acumulada</p>
-                        <p className="text-4xl font-black text-red-600 tracking-tighter tabular-nums">
-                            $ {(parseFloat(employee.ledgerDebt || 0)).toLocaleString('es-AR', {minimumFractionDigits: 2})}
-                        </p>
-                    </div>
-                    <Button 
-                        onClick={handleLiquidate}
-                        disabled={isLiquidating || !employee.ledgerDebt || employee.ledgerDebt <= 0}
-                        className="bg-red-600 hover:bg-red-700 text-white shadow-xl shadow-red-200 py-3"
-                    >
-                        {isLiquidating ? <Loader2 className="animate-spin" size={18} /> : <CheckCircle2 size={18} className="mr-2"/>}
-                        LIQUIDAR SALDO
-                    </Button>
-                </div>
-
-                {/* HISTORIAL */}
-                <div className="flex-1 overflow-y-auto p-4 bg-sys-50/30 custom-scrollbar">
-                    <h4 className="text-xs font-bold text-sys-400 uppercase tracking-wider mb-3 px-2 flex items-center gap-2">
-                        <ReceiptText size={14}/> Últimos Movimientos
-                    </h4>
-                    
-                    {isLoading ? (
-                        <div className="py-10 flex justify-center"><Loader2 className="animate-spin text-brand" size={30}/></div>
-                    ) : history.length === 0 ? (
-                        <div className="text-center py-10 text-sys-400 text-sm font-medium opacity-60">Sin movimientos registrados.</div>
-                    ) : (
-                        <div className="space-y-2">
-                            {history.map(record => {
-                                const isPayment = record.type === 'LIQUIDATION';
-                                return (
-                                    <div key={record.id} className={cn("p-3 rounded-xl border flex justify-between items-center text-sm shadow-sm", isPayment ? "bg-emerald-50 border-emerald-100" : "bg-white border-sys-200")}>
-                                        <div>
-                                            <p className={cn("font-bold", isPayment ? "text-emerald-800" : "text-sys-800")}>
-                                                {record.type === 'ADVANCE' ? 'Vales / Adelantos' : record.type === 'POS_CONSUMPTION' ? 'Consumo Local' : 'Liquidación'}
-                                            </p>
-                                            <p className="text-xs text-sys-500 mt-0.5">{new Date(record.date).toLocaleDateString('es-AR')} - {record.description}</p>
-                                        </div>
-                                        <div className={cn("font-black text-right", isPayment ? "text-emerald-600" : "text-red-600")}>
-                                            {isPayment ? '-' : '+'}$ {parseFloat(record.amount).toLocaleString('es-AR', {minimumFractionDigits: 0})}
-                                        </div>
+                        <div className="px-5 py-3 bg-sys-50 border-b border-sys-100 flex items-center justify-between text-xs text-sys-500 font-bold">
+                            <span><Calendar size={12} className="inline mr-1"/>{new Date(viewSale.date || viewSale.createdAt).toLocaleDateString('es-AR', { day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit' })}</span>
+                        </div>
+                        <div className="flex-1 overflow-y-auto px-5 py-4 space-y-2">
+                            {(viewSale.items || []).map((item, i) => (
+                                <div key={i} className="flex items-center justify-between gap-3 py-2 border-b border-sys-50 last:border-0">
+                                    <div className="flex items-center gap-2 min-w-0">
+                                        <span className="shrink-0 w-7 h-7 rounded-lg bg-sys-100 flex items-center justify-center text-xs font-black text-sys-600">{item.quantity}</span>
+                                        <span className="text-sm font-bold text-sys-800 truncate uppercase">{item.name}</span>
                                     </div>
-                                )
-                            })}
+                                    <span className="shrink-0 font-black font-mono text-sm text-sys-900">$ {(item.subtotal ?? item.price * item.quantity).toLocaleString('es-AR', {minimumFractionDigits: 2})}</span>
+                                </div>
+                            ))}
+                            {(!viewSale.items || viewSale.items.length === 0) && (
+                                <p className="text-center text-sys-400 text-sm py-6">Sin detalle de items disponible</p>
+                            )}
                         </div>
-                    )}
+                        <div className="px-5 py-4 border-t border-sys-100 bg-sys-50/50">
+                            <div className="flex justify-between font-black text-base text-sys-900">
+                                <span>TOTAL</span><span>$ {(viewSale.total || 0).toLocaleString('es-AR', {minimumFractionDigits: 2})}</span>
+                            </div>
+                        </div>
+                    </div>
                 </div>
-
-            </div>
+            )}
         </div>
     );
 };

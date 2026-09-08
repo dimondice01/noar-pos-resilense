@@ -115,6 +115,8 @@ const getMovementProps = (mov) => {
 // MODAL: AUDITORÍA DETALLADA (BLINDADO)
 // ============================================================================
 const AuditDetailModal = ({ shift, onClose, resolveName, resolveBranchName }) => {
+    const { user } = useAuthStore();
+    const isAdminAudit = user?.role === 'ADMIN' || user?.role === 'OWNER';
     const [details, setDetails] = useState(null);
     const [loadingDetails, setLoadingDetails] = useState(true);
     const [currentPage, setCurrentPage] = useState(1);
@@ -211,6 +213,17 @@ const AuditDetailModal = ({ shift, onClose, resolveName, resolveBranchName }) =>
                             {out > 0 && (
                                 <div className="absolute top-2 right-2 flex items-center justify-center w-5 h-5 bg-red-100 rounded-full" title={`Se descontaron ${formatCurrency(out)} en Gastos/Retiros`}>
                                     <AlertTriangle size={10} className="text-red-600" />
+                                </div>
+                            )}
+                            {/* 🔥 AVISO DE DRIFT — solo ADMIN/OWNER, solo si el contador remoto y la
+                                suma local del turno no coinciden (posible sync sin terminar). El
+                                cajero nunca ve esto — el número de "Esperado" ya es siempre el local. */}
+                            {isAdminAudit && shift.auditSnapshot?.hasDriftWarning && (
+                                <div
+                                    className="absolute top-2 left-2 flex items-center justify-center w-5 h-5 bg-amber-100 rounded-full"
+                                    title={`Contador remoto y local no coinciden por ${formatCurrency(shift.auditSnapshot.totalCashDrift)} — puede haber datos de este turno sin sincronizar todavía.`}
+                                >
+                                    <AlertTriangle size={10} className="text-amber-600" />
                                 </div>
                             )}
                         </div>

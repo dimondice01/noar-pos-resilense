@@ -36,6 +36,11 @@ export const CashClosingModal = ({ isOpen, onClose, onConfirm, systemTotals, use
     // desapercibido, sin importar por qué salió mal el "esperado".
     const [overrideConfirmed, setOverrideConfirmed] = useState(false);
 
+    // 🔥 Guard de doble-submit: antes, onConfirm() no se esperaba acá adentro y el
+    // botón nunca se deshabilitaba mientras la promesa estaba en vuelo — un doble
+    // click podía disparar el cierre dos veces.
+    const [isSubmitting, setIsSubmitting] = useState(false);
+
     const ticketRef = useRef(null);
 
     // Reset al abrir
@@ -45,6 +50,7 @@ export const CashClosingModal = ({ isOpen, onClose, onConfirm, systemTotals, use
             setDeclaredCash('');
             setLeftInCash('');
             setOverrideConfirmed(false);
+            setIsSubmitting(false);
         }
     }, [isOpen]);
 
@@ -71,7 +77,7 @@ export const CashClosingModal = ({ isOpen, onClose, onConfirm, systemTotals, use
     const requiresOverride = Math.abs(difference) > BIG_DIFF_THRESHOLD;
     const canConfirmClose = !requiresOverride || overrideConfirmed;
 
-    const handleSubmit = () => {
+    const handleSubmit = async () => {
         // 🔥 Antes esto era un botón silenciosamente deshabilitado: el cajero
         // imprimía el ticket (botón aparte, siempre activo) y se iba pensando
         // que había cerrado, sin notar el check pendiente. Ahora el botón
@@ -80,15 +86,21 @@ export const CashClosingModal = ({ isOpen, onClose, onConfirm, systemTotals, use
             toast.error("⚠️ Diferencia grande sin verificar: marcá el check antes de confirmar el cierre.");
             return;
         }
-        onConfirm({
-            declaredCash: valDeclared,
-            leftInCash: valLeft,
-            expectedCash: expectedCash,
-            expectedDigital: expectedDigital,
-            withdrawal: totalWithdrawal,
-            difference: difference,
-            overrideConfirmed: requiresOverride ? overrideConfirmed : false
-        });
+        if (isSubmitting) return;
+        setIsSubmitting(true);
+        try {
+            await onConfirm({
+                declaredCash: valDeclared,
+                leftInCash: valLeft,
+                expectedCash: expectedCash,
+                expectedDigital: expectedDigital,
+                withdrawal: totalWithdrawal,
+                difference: difference,
+                overrideConfirmed: requiresOverride ? overrideConfirmed : false
+            });
+        } finally {
+            setIsSubmitting(false);
+        }
     };
 
     return (
@@ -315,14 +327,17 @@ export const CashClosingModal = ({ isOpen, onClose, onConfirm, systemTotals, use
                                <Button
                                    variant="danger"
                                    onClick={handleSubmit}
+                                   disabled={isSubmitting}
                                    className={cn(
                                        "h-12 shadow-xl font-black tracking-wider text-xs uppercase",
-                                       canConfirmClose
-                                           ? "shadow-red-500/20 bg-red-600 hover:bg-red-700 text-white"
-                                           : "shadow-none bg-sys-200 hover:bg-sys-300 text-sys-500"
+                                       isSubmitting
+                                           ? "shadow-none bg-sys-300 text-sys-500 cursor-not-allowed"
+                                           : canConfirmClose
+                                               ? "shadow-red-500/20 bg-red-600 hover:bg-red-700 text-white"
+                                               : "shadow-none bg-sys-200 hover:bg-sys-300 text-sys-500"
                                    )}
                                >
-                                   Confirmar Cierre
+                                   {isSubmitting ? 'Cerrando...' : 'Confirmar Cierre'}
                                </Button>
                             </div>
                             <button onClick={() => setStep(2)} className="mt-2 text-xs text-sys-400 underline text-center hover:text-sys-600">Volver a editar montos</button>

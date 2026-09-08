@@ -2,7 +2,6 @@ import { getDB } from '../../../database/db';
 import { db } from '../../../database/firebase';
 import { doc, setDoc, getDoc, collection, query, where, getDocs, limit, orderBy } from 'firebase/firestore';
 import { useAuthStore } from '../../auth/store/useAuthStore';
-import { syncService } from '../../sync/services/syncService'; // 🔥 IMPORTACIÓN FALTANTE
 import { pushCashMovementWithShiftCounter, closeShiftAtomic } from '../services/shiftLedgerService';
 
 // 🔥 GENERADOR DE ID GLOBAL ÚNICO (Blindaje Multi-Caja)
@@ -125,29 +124,11 @@ export const cashRepository = {
              throw new Error("No tienes permisos para cerrar esta caja.");
         }
 
-        // 1. 🔥 CÁLCULO DE LA VERDAD (Expected Cash)
-        // Antes de calcular, si hay internet, intentamos bajar lo último para asegurar multi-PC
-        if (navigator.onLine && user?.companyId) {
-            try {
-                const branchId = shift.branchId || 'main';
-                await Promise.all([
-                    syncService.syncInitialSales(user.companyId, branchId, user.role),
-                    syncService.syncInitialMovements(user.companyId, branchId, user.role),
-                    // También bajamos cash_movements específicos si existiera una función dedicada
-                    // (syncInitialMovements ya baja kardex, bajamos cash_movements por si acaso)
-                    this.getCurrentShift() // Esto ayuda a refrescar estado local
-                ]);
-
-                // 🔥 CONTADOR DE CAJA: traemos runningTotals directo de Firestore (no
-                // depender del listener) justo antes de calcular — es el momento crítico
-                // donde vale la pena pagar el round-trip extra.
-                const freshShiftSnap = await getDoc(doc(db, `companies/${user.companyId}/shifts`, shiftId));
-                if (freshShiftSnap.exists() && freshShiftSnap.data().runningTotals) {
-                    await dbLocal.shifts.update(shiftId, { runningTotals: freshShiftSnap.data().runningTotals });
-                }
-            } catch (syncErr) { console.warn("Sync preventivo falló, usando datos locales:", syncErr); }
-        }
-
+        // 1. 🔥 CÁLCULO DE LA VERDAD (Expected Cash) — 100% LOCAL, instantáneo (rediseño
+        // 2026-09-08). Ya no se descarga nada de la nube antes de cerrar: este turno es
+        // de este dispositivo, todo lo que pasó ya está en Dexie. El contador remoto se
+        // sigue leyendo (si ya está en `shift` local) solo para el aviso de drift, no
+        // para calcular expectedCash — ver _calculateShiftState.
         const currentAudit = await this.getShiftAuditData(shiftId);
 
         // 2. Datos declarados por el humano (lo que contaron)
@@ -252,20 +233,21 @@ export const cashRepository = {
             }
         });
 
-        // 4. 🔥 BLINDAJE DE CIERRE: Sincronización Mandatoria de Pendientes
-        try {
-            // 🔥 shiftId indexado — más selectivo que syncStatus
-            const pendingMovs = await dbLocal.cash_movements
-                .where('shiftId').equals(shiftId)
-                .filter(m => m.syncStatus === 'pending')
-                .toArray();
-            
-            for (const mov of pendingMovs) {
-                await this._pushCashMovement(mov);
+        // 4. 🔥 Sync de pendientes del turno — EN SEGUNDO PLANO, no bloquea el cierre
+        // (antes era un `for` secuencial con `await` uno por uno, ahí vivía la lentitud
+        // real de "cerrar caja tarda". El ciclo de fondo de syncService (cada ~15s) ya
+        // los toma solo, y con el fix de _shouldAttemptSync ninguno se abandona.)
+        (async () => {
+            try {
+                const pendingMovs = await dbLocal.cash_movements
+                    .where('shiftId').equals(shiftId)
+                    .filter(m => m.syncStatus === 'pending')
+                    .toArray();
+                await Promise.all(pendingMovs.map(mov => this._pushCashMovement(mov)));
+            } catch (e) {
+                console.warn("⚠️ Error en sync de fondo post-cierre:", e);
             }
-        } catch (e) {
-            console.warn("⚠️ Error en sync forzado previo al cierre:", e);
-        }
+        })();
 
         // Sync Background del turno cerrado (atómico, vía transacción — ver _syncShiftCloseToCloud)
         this._syncShiftCloseToCloud(closedShift);
@@ -698,28 +680,33 @@ export const cashRepository = {
             }
         });
 
-        // C. CÁLCULO LOCAL (detalle/auditoría — ya NO es la fuente de verdad del total,
-        // ver runningTotals abajo. Se conserva como cross-check: si diverge del contador
-        // remoto, es señal de que este dispositivo tiene datos incompletos.)
+        // C. CÁLCULO LOCAL — 🔥 FUENTE DE VERDAD de expectedCash (rediseño 2026-09-08).
+        // Un turno es de UN cajero + UNA sucursal + UN dispositivo: todo lo que pasó
+        // en este turno ya está completo acá, en Dexie, porque cada venta/movimiento
+        // se escribe local primero, siempre. Antes se prefería el contador remoto
+        // (runningTotals) como "verdad" — pero si un cash_movement nunca llega a
+        // sincronizar (bug de reintentos, ver syncService._shouldAttemptSync), el
+        // contador remoto queda de menos y el cierre reporta un "sobrante" falso con
+        // plata real que el cajero sí tiene. Local nunca miente sobre lo que pasó acá.
         // Redondeo de seguridad para evitar bugs de coma flotante de JS
         const round = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
         const localTotalCash = round(state.initialAmount + state.salesCash + state.manualIn - state.manualOut);
 
+        state.totalCash = localTotalCash;
         state.totalCashLocalCrossCheck = localTotalCash;
         state.totalCashDrift = 0;
         state.hasDriftWarning = false;
 
-        // 🔥 CONTADOR ATÓMICO (shiftLedgerService): fuente de verdad de expectedCash.
-        // No depende de qué filas tenga replicadas ESTE dispositivo — se actualiza
-        // atómicamente en el servidor con cada cash_movement, sin importar la PC de origen.
+        // 🔥 CONTADOR ATÓMICO (shiftLedgerService): ya NO decide expectedCash — queda
+        // como cross-check asíncrono. Si diverge de lo local, es señal de que hay
+        // movimientos de OTRO dispositivo (turno compartido) o de sync pendiente —
+        // se expone como aviso (hasDriftWarning) para que un admin lo revise, nunca
+        // para sobreescribir el número que ve el cajero.
         if (shift?.runningTotals && typeof shift.runningTotals.cash === 'number') {
             const counterTotalCash = round(state.initialAmount + shift.runningTotals.cash);
-            state.totalCash = counterTotalCash;
+            state.remoteCounterTotalCash = counterTotalCash;
             state.totalCashDrift = round(counterTotalCash - localTotalCash);
             state.hasDriftWarning = Math.abs(state.totalCashDrift) > 1; // tolerancia $1 por redondeo
-        } else {
-            // Turno legado sin runningTotals (o todavía no sincronizado): fallback al cálculo local.
-            state.totalCash = localTotalCash;
         }
 
         state.totalSales = round(state.totalSales);
@@ -896,3 +883,92 @@ export const cashRepository = {
         });
     }
 };
+
+// 🔧 DEBUG: compara el auditSnapshot.totalSales que quedó CONGELADO al cerrar un turno
+// (calculado en ese momento con datos LOCALES de la PC que cerró la caja — ver
+// _calculateShiftState, lee dbLocal.sales) contra la suma real en la nube de las
+// ventas de ese mismo shiftId AHORA MISMO. Si difieren, confirma que ese cierre se
+// hizo con ventas del turno todavía sin sincronizar a esa PC. Solo lectura.
+// Uso: window.__noarDebugShift('shift_xxxx') (ID completo) o
+//      window.__noarDebugShift('f2ab6c') (sufijo de 6 chars, el mismo que muestra
+//      la UI en "Auditoría Detallada... ID: xxxxxx" — busca entre los últimos 300
+//      turnos el que termina así).
+if (typeof window !== 'undefined') {
+  window.__noarDebugShift = async (shiftIdOrSuffix) => {
+    const { user } = useAuthStore.getState();
+    const companyId = user?.companyId || user?.tenantId;
+    if (!companyId) { console.warn('[debugShift] No hay companyId en sesión'); return; }
+
+    const input = String(shiftIdOrSuffix);
+    let shiftId = input;
+    let shiftData = null;
+
+    if (input.length <= 10) {
+      // ID corto = el sufijo que muestra la UI (shift.id.slice(-6)). Buscamos entre
+      // los turnos recientes de la empresa el que termina así.
+      const recentSnap = await getDocs(query(
+        collection(db, 'companies', companyId, 'shifts'),
+        orderBy('closedAt', 'desc'),
+        limit(300)
+      ));
+      const match = recentSnap.docs.find(d => d.id.endsWith(input));
+      if (!match) {
+        console.warn(`[debugShift] No encontré, entre los últimos 300 turnos cerrados, ninguno que termine en "${input}". Probá con el ID completo del documento.`);
+        return;
+      }
+      shiftId = match.id;
+      shiftData = match.data();
+    } else {
+      const shiftSnap = await getDoc(doc(db, 'companies', companyId, 'shifts', shiftId));
+      if (!shiftSnap.exists()) { console.warn(`[debugShift] Turno ${shiftId} no existe en la nube`); return; }
+      shiftData = shiftSnap.data();
+    }
+
+    const shift = shiftData;
+
+    const salesRef = collection(db, 'companies', companyId, 'sales');
+    const q = query(salesRef, where('shiftId', '==', String(shiftId)));
+    const snap = await getDocs(q);
+    const docs = snap.docs.map(d => d.data());
+    const completed = docs.filter(s => s.status === 'COMPLETED' && s.type !== 'INTERNAL' && s.type !== 'BUDGET');
+    const cloudTotal = completed.reduce((acc, s) => acc + (parseFloat(s.total) || 0), 0);
+    const snapshotTotal = shift.auditSnapshot?.totalSales;
+
+    console.log(`[debugShift] Turno ${shiftId} — estado: ${shift.status}`);
+    console.log(`[debugShift] auditSnapshot.totalSales (congelado al cerrar, ${shift.auditSnapshot?.salesCount ?? '?'} ventas contadas):`, snapshotTotal);
+    console.log(`[debugShift] Suma real en la nube AHORA (${completed.length} ventas COMPLETED de ${docs.length} con ese shiftId):`, Number(cloudTotal.toFixed(2)));
+
+    // 🔎 Si hay menos ventas en la nube (por shiftId) que las que contó el cierre,
+    // buscamos TODAS las ventas de esa sucursal en la ventana horaria del turno,
+    // sin filtrar por shiftId — para ver si las que faltan existen con OTRO shiftId
+    // (desfasaje de ID) o directamente no existen en la nube (pérdida real).
+    if (shift.openedAt && shift.branchId) {
+      const windowEnd = shift.closedAt || new Date().toISOString();
+      const windowQ = query(
+        salesRef,
+        where('branchId', '==', shift.branchId),
+        where('date', '>=', shift.openedAt),
+        where('date', '<=', windowEnd)
+      );
+      const windowSnap = await getDocs(windowQ);
+      const windowDocs = windowSnap.docs.map(d => d.data());
+      const windowCompleted = windowDocs.filter(s => s.status === 'COMPLETED' && s.type !== 'INTERNAL' && s.type !== 'BUDGET');
+      const otherShiftIds = new Set(windowCompleted.filter(s => s.shiftId !== String(shiftId)).map(s => s.shiftId));
+      console.log(`[debugShift] Ventas COMPLETED de esa sucursal en la ventana horaria del turno (${shift.openedAt} → ${windowEnd}), SIN filtrar por shiftId: ${windowCompleted.length}`);
+      if (windowCompleted.length > completed.length) {
+        console.log(`[debugShift] ⚠️ Hay ${windowCompleted.length - completed.length} ventas más en esa ventana horaria que no tienen este shiftId. shiftId encontrados en esas ventas:`, Array.from(otherShiftIds));
+        console.log('[debugShift] Esto sugiere desfasaje de shiftId, NO pérdida de ventas — revisar esos otros shiftId.');
+      } else {
+        console.log('[debugShift] No hay ventas extra en la ventana horaria — las 28 (o las que falten) NO están en la nube bajo ningún shiftId de esta sucursal en ese rango. Esto sugiere pérdida real de datos, no un desfasaje de ID.');
+      }
+    }
+
+    if (typeof snapshotTotal === 'number') {
+      console.log(`[debugShift] Diferencia (nube - cierre):`, Number((cloudTotal - snapshotTotal).toFixed(2)));
+    } else {
+      console.log('[debugShift] Este turno no tiene auditSnapshot.totalSales (¿sigue abierto?).');
+    }
+
+    return { snapshotTotal, cloudTotal, salesCountCloud: completed.length, salesCountSnapshot: shift.auditSnapshot?.salesCount };
+  };
+}

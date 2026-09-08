@@ -772,3 +772,55 @@ export const salesRepository = {
     return all.filter(s => s.client?.id === clientId && s.status !== 'abandoned');
   }
 };
+
+// 🔧 DEBUG: expone debugSalesRange/debugTotalsParity en window (solo lectura, no
+// escriben nada) para poder investigar diferencias de totales desde la consola del
+// navegador en producción, tal como ya prometían los comentarios de esas funciones.
+// Uso: window.__noarDebugSales('2026-08-31','2026-09-06')
+//      window.__noarDebugTotals('2026-08-31','2026-09-06')
+if (typeof window !== 'undefined') {
+  window.__noarDebugSales = (startStr, endStr) => salesRepository.debugSalesRange(startStr, endStr);
+  window.__noarDebugTotals = (startStr, endStr, opts) => salesRepository.debugTotalsParity(startStr, endStr, opts);
+
+  // 🔧 DEBUG: lista las ventas que quedaron TRABADAS en esta PC/navegador (nunca
+  // llegaron a la nube). syncPendingSales (syncService.js) deja de reintentar
+  // después de 5 fallos (syncRetries >= 5) y las abandona en silencio — siguen acá
+  // en Dexie, pero fuera del loop de reintento. Solo lectura, corre 100% local.
+  // Uso: window.__noarDebugStuckSales() — CORRER EN LA PC/NAVEGADOR SOSPECHOSO,
+  // no sirve desde otra máquina (lee IndexedDB local, no la nube).
+  window.__noarDebugStuckSales = async () => {
+    const dbLocal = await getDB();
+    const all = await dbLocal.sales.filter(s => s.syncStatus !== 'synced').toArray();
+    const stuck = all.filter(s => (s.syncRetries || 0) >= 5);
+    const stillRetrying = all.filter(s => (s.syncRetries || 0) < 5);
+    const total = stuck.reduce((acc, s) => acc + (parseFloat(s.total) || 0), 0);
+
+    console.log(`[debugStuckSales] Total ventas no sincronizadas en esta PC: ${all.length}`);
+    console.log(`[debugStuckSales] De esas, TRABADAS (syncRetries >= 5, abandonadas para siempre): ${stuck.length} — suma $${total.toFixed(2)}`);
+    console.log(`[debugStuckSales] Todavía en cola de reintento (syncRetries < 5): ${stillRetrying.length}`);
+    if (stuck.length > 0) {
+      console.table(stuck.map(s => ({ id: s.id, date: s.date, total: s.total, shiftId: s.shiftId, syncRetries: s.syncRetries })));
+      console.log('[debugStuckSales] Para forzar un reintento de estas, correr: window.__noarRetryStuckSales()');
+    }
+    return stuck;
+  };
+
+  // 🔧 Fuerza un reintento de las ventas trabadas (resetea syncRetries a 0 y llama
+  // a syncPendingSales). Solo hace un intento más de subida — no inventa datos, si
+  // el doc ya no está en Dexie no puede recuperar nada.
+  window.__noarRetryStuckSales = async () => {
+    const { user } = useAuthStore.getState();
+    if (!user?.companyId) { console.warn('[retryStuckSales] No hay companyId en sesión'); return; }
+    const dbLocal = await getDB();
+    const stuck = await dbLocal.sales.filter(s => s.syncStatus !== 'synced' && (s.syncRetries || 0) >= 5).toArray();
+    if (stuck.length === 0) { console.log('[retryStuckSales] No hay ventas trabadas para reintentar.'); return; }
+
+    for (const s of stuck) {
+      await dbLocal.sales.update(s.id, { syncRetries: 0 });
+    }
+    const { syncService } = await import('../../sync/services/syncService');
+    const result = await syncService.syncPendingSales(user.companyId, useAuthStore.getState().activeBranchId);
+    console.log(`[retryStuckSales] Reintentadas ${stuck.length} ventas trabadas. Resultado:`, result);
+    return result;
+  };
+}

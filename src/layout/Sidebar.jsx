@@ -4,7 +4,7 @@ import {
     LayoutDashboard, ShoppingCart, Package, Settings,
     FileText, Cloud, RefreshCw, LogOut, User, ShieldCheck, Wallet,
     Users, Lock, KeyRound, Loader2, Plug,
-    Building, Truck, Unlock, WifiOff, ChevronLeft, ChevronRight
+    Building, Truck, Unlock, ChevronLeft, ChevronRight
 } from 'lucide-react';
 
 import { cn } from '../core/utils/cn';
@@ -473,25 +473,15 @@ export const Sidebar = () => {
                             {!sidebarCollapsed && <span className="text-xs text-sys-500">Verificando...</span>}
                         </div>
                     ) : hasActiveShift ? (
+                        // 🔥 Cerrar caja ya no requiere estar online (rediseño 2026-09-08):
+                        // el cálculo del cierre es 100% local, igual que cargar una venta.
+                        // Offline, queda `syncStatus: 'pending'` y sincroniza sola después.
                         <button
-                            onClick={() => {
-                                if (isOnline) setIsCloseModalOpen(true);
-                                else alert("⚠️ DEBE ESTAR ONLINE\n\nEl cierre de caja requiere conexión a internet para sincronizar los datos y evitar errores.");
-                            }}
-                            disabled={!isOnline}
+                            onClick={() => setIsCloseModalOpen(true)}
                             title="Cerrar Turno"
-                            className={cn(
-                                "w-full flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-bold transition-all shadow-sm group",
-                                isOnline
-                                    ? "bg-sys-800 border border-red-900/40 text-red-400 hover:bg-red-900/20 active:scale-95 cursor-pointer"
-                                    : "bg-sys-800/50 border border-sys-700 text-sys-600 cursor-not-allowed"
-                            )}
+                            className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-bold transition-all shadow-sm group bg-sys-800 border border-red-900/40 text-red-400 hover:bg-red-900/20 active:scale-95 cursor-pointer"
                         >
-                            {isOnline ? (
-                                <>{sidebarCollapsed ? <LogOut size={16} /> : <><LogOut size={16} className="group-hover:text-red-700" /> Cerrar Turno</>}</>
-                            ) : (
-                                <>{sidebarCollapsed ? <WifiOff size={16} /> : <><WifiOff size={16} /> Cerrar (Requiere Red)</>}</>
-                            )}
+                            {sidebarCollapsed ? <LogOut size={16} /> : <><LogOut size={16} className="group-hover:text-red-700" /> Cerrar Turno</>}
                         </button>
                     ) : (
                         <button

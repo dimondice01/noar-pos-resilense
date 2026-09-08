@@ -1,4 +1,4 @@
-import { collection, addDoc, getDocs, query, where, orderBy, serverTimestamp, doc, getDoc, updateDoc } from 'firebase/firestore';
+import { collection, addDoc, getDocs, query, where, orderBy, serverTimestamp, doc, runTransaction, increment } from 'firebase/firestore';
 import { db } from '../../../database/firebase';
 
 // =================================================================
@@ -30,25 +30,25 @@ export const employeeLedgerRepository = {
             });
 
             // 2. Actualizamos el saldo total en el perfil del usuario para lecturas rápidas
+            // 🔥 increment() atómico (mismo patrón que customerLedgerService.js): evita que
+            // dos movimientos casi simultáneos (ej. consumo de caja + liquidación) se pisen
+            // con un read-then-write.
             const userRef = doc(db, 'users', userId);
-            const userSnap = await getDoc(userRef);
-            
-            if (userSnap.exists()) {
-                const currentDebt = parseFloat(userSnap.data().ledgerDebt || 0);
-                let newDebt = currentDebt;
-                
-                // Si le damos plata (Adelanto) o se lleva mercadería (Consumo), su deuda aumenta.
-                if (['ADVANCE', 'POS_CONSUMPTION'].includes(type)) {
-                    newDebt += parseFloat(amount);
-                } 
-                // Si descontamos del sueldo o paga (Liquidación), su deuda baja.
-                else if (['LIQUIDATION'].includes(type)) {
-                    newDebt -= parseFloat(amount);
-                }
 
-                await updateDoc(userRef, { 
-                    ledgerDebt: newDebt,
-                    lastLedgerUpdate: serverTimestamp() 
+            // Si le damos plata (Adelanto) o se lleva mercadería (Consumo), su deuda aumenta.
+            // Si descontamos del sueldo o paga (Liquidación), su deuda baja.
+            const signedAmount = ['ADVANCE', 'POS_CONSUMPTION'].includes(type)
+                ? parseFloat(amount)
+                : type === 'LIQUIDATION' ? -parseFloat(amount) : 0;
+
+            if (signedAmount !== 0) {
+                await runTransaction(db, async (tx) => {
+                    const userSnap = await tx.get(userRef);
+                    if (!userSnap.exists()) return;
+                    tx.update(userRef, {
+                        ledgerDebt: increment(signedAmount),
+                        lastLedgerUpdate: serverTimestamp()
+                    });
                 });
             }
             
