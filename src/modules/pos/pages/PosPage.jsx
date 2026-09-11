@@ -412,6 +412,18 @@ export const PosPage = () => {
   const handleOpenShift = async (e) => {
       e.preventDefault();
       if (!openingAmount) return;
+      // 🔥 Mismo chequeo que Sidebar.jsx — mejor avisar antes de pedir el monto
+      // que dejar que el repositorio tire el error genérico después. Un cajero
+      // (sucursal fija) nunca debería llegar acá en uso normal; si pasa, es una
+      // carrera de timing (recién logueado), no algo que resuelva "eligiendo"
+      // sucursal — no tiene selector, lo tiene bloqueado.
+      if (!activeBranchId || activeBranchId === 'ALL') {
+          const isLockedUser = !!user?.branchId && user?.role !== 'OWNER';
+          alert(isLockedUser
+              ? "⏳ Tu sucursal todavía se está cargando. Esperá un segundo y volvé a intentar."
+              : "⚠️ Seleccioná una sucursal específica para abrir caja.");
+          return;
+      }
       setIsOpening(true);
       try {
           await cashRepository.openShift(openingAmount, user?.name);

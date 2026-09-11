@@ -2,7 +2,8 @@ import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { productRepository } from '../../inventory/repositories/productRepository';
 import { salesRepository } from '../../sales/repositories/salesRepository';
 import { useAuthStore } from '../../auth/store/useAuthStore';
-import { useShiftStore } from '../../cash/store/useShiftStore'; 
+import { useShiftStore } from '../../cash/store/useShiftStore';
+import { usePosSessionStore } from '../store/usePosSessionStore';
 import { cashRepository } from '../../cash/repositories/cashRepository'; 
 import { paymentService } from '../../payments/services/paymentService'; 
 import { employeeLedgerRepository } from '../../settings/repositories/employeeLedgerRepository'; 
@@ -100,8 +101,10 @@ export const usePosController = () => {
     const { user, activeBranchId } = useAuthStore(); 
     const { activeShift, setActiveShift } = useShiftStore(); 
     
-    const [tabs, setTabs] = useState([{ ...NEW_TAB_TEMPLATE, id: Date.now() }]);
-    const [activeTabId, setActiveTabId] = useState(tabs[0].id);
+    // 🔥 FIX: antes vivía en useState() y se perdía al navegar a otra página
+    // (ej: Inventario) y volver — ahora vive en un store fuera del árbol de
+    // React, así que sobrevive a la navegación. Ver usePosSessionStore.js.
+    const { tabs, setTabs, activeTabId, setActiveTabId } = usePosSessionStore();
     const [isProcessing, setIsProcessing] = useState(false);
     const processingRef = useRef(false); // 🛡️ Sincronización real contra llamadas concurrentes
     const [searchResults, setSearchResults] = useState([]);
@@ -659,12 +662,16 @@ export const usePosController = () => {
     // =================================================================
     
     const _verifyShift = async () => {
-        let currentShift = activeShift;
+        // 🔥 FIX: activeShift (RAM/localStorage vía useShiftStore) no distingue de
+        // qué usuario es. Sin este chequeo, si el turno cacheado quedó de OTRO
+        // cajero (logout que no limpió a tiempo, dispositivo compartido), se
+        // vendía sobre un turno ajeno sin que nadie lo notara.
+        let currentShift = (activeShift && activeShift.userId === user?.uid) ? activeShift : null;
         if (!currentShift || currentShift.status !== 'OPEN') {
             console.log("🔍 [POS] Shift no en RAM o cerrado. Verificando base local...");
             currentShift = await cashRepository.getCurrentShift();
             if (currentShift && currentShift.status === 'OPEN') {
-                setActiveShift(currentShift); 
+                setActiveShift(currentShift);
             } else {
                 throw new Error("⚠️ DEBE ABRIR CAJA ANTES DE VENDER");
             }

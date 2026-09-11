@@ -260,10 +260,19 @@ export const Sidebar = () => {
     // 🔥 ABRIR CAJA 
     const handleOpenShiftDirectly = async () => {
         const realBranchId = activeBranchId;
-        
+
         if (!realBranchId || realBranchId === 'ALL') {
-            alert("⚠️ Seleccione una sucursal específica para abrir caja.");
-            navigate(getLink(''));
+            // 🔥 Un cajero (sucursal fija) nunca debería llegar acá — BranchSelector
+            // ya lo fuerza a user.branchId apenas carga. Si igual pasa, es una
+            // carrera de timing (recién logueado/recargado), no algo que el cajero
+            // pueda resolver eligiendo sucursal — no tiene selector, lo tiene bloqueado.
+            const isLockedUser = !!user?.branchId && user?.role !== 'OWNER';
+            if (isLockedUser) {
+                alert("⏳ Tu sucursal todavía se está cargando. Esperá un segundo y volvé a intentar.");
+            } else {
+                alert("⚠️ Seleccioná una sucursal específica para abrir caja.");
+                navigate(getLink(''));
+            }
             return;
         }
 

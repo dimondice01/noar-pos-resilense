@@ -122,7 +122,11 @@ export const authService = {
                 email,
                 role: extraData.role || 'OWNER',
                 companyId,
-                branchId: 'suc-01', // 🔥 MODIFICACIÓN: Iniciamos con la primera sucursal asignada
+                // 🔥 FIX: un OWNER nunca debe quedar con branchId fijo — BranchSelector usa
+                // `!!user.branchId` para bloquear el selector (mismo criterio que CAJERO/ADMIN
+                // de sucursal fija). Con 'suc-01' hardcodeado acá, todo OWNER quedaba trabado
+                // en su primera sucursal apenas la empresa sumaba una segunda.
+                branchId: null,
                 active: true,
                 createdAt: serverTimestamp(),
                 ...extraData.userMetadata

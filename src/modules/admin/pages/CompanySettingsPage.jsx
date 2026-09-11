@@ -102,14 +102,19 @@ export const CompanySettingsPage = () => {
                 const branchSnap = await getDoc(branchRef);
                 const bData = branchSnap.exists() ? branchSnap.data() : {};
 
+                // 🔥 FIX: los datos fiscales son por sucursal (cada sucursal puede facturar
+                // con su propio CUIT/razón social — ver Integraciones AFIP, que ya es por
+                // sucursal). Priorizamos lo que tenga guardado la sucursal; si nunca se
+                // guardó nada ahí (sucursales viejas, pre-multi-CUIT), caemos al dato
+                // compartido de la empresa para no perder lo que ya estaba cargado.
                 const payload = {
                     name: bData.name || (activeBranchId === 'ALL' ? 'Sucursal Principal' : activeBranchName),
                     logoBase64: bData.logoBase64 || bData.logoUrl || companyData.logoUrl || null,
-                    razonSocial: companyData.razonSocial || '',
-                    cuit: companyData.cuit || '',
-                    taxCondition: companyData.taxCondition || 'CONSUMIDOR FINAL',
-                    iibb: companyData.iibb || '',
-                    inicioAct: companyData.inicioAct || '',
+                    razonSocial: bData.razonSocial || companyData.razonSocial || '',
+                    cuit: bData.cuit || companyData.cuit || '',
+                    taxCondition: bData.taxCondition || companyData.taxCondition || 'CONSUMIDOR FINAL',
+                    iibb: bData.iibb || companyData.iibb || '',
+                    inicioAct: bData.inicioAct || companyData.inicioAct || '',
                     address: bData.address || companyData.address || '',
                     transferAlias: bData.transferAlias || '',
                     transferAccountName: bData.transferAccountName || ''
@@ -153,7 +158,10 @@ export const CompanySettingsPage = () => {
                 updatedAt: timestamp
             };
 
-            // A. Guardar en Firebase (Sucursal)
+            // A. Guardar en Firebase (Sucursal) — 🔥 FIX: incluye los datos fiscales
+            // propios de esta sucursal (antes solo vivían en el doc compartido de la
+            // empresa, así que un dispositivo nuevo en otra sucursal traía el ticket
+            // vacío al bajar por primera vez desde la nube — ver TicketModal.jsx).
             const branchRef = doc(db, 'companies', user.companyId, 'branches', branchId);
             await setDoc(branchRef, {
                 id: branchId,
@@ -163,10 +171,15 @@ export const CompanySettingsPage = () => {
                 logoBase64: payload.logoBase64 || null,
                 transferAlias: payload.transferAlias || '',
                 transferAccountName: payload.transferAccountName || '',
+                razonSocial: payload.razonSocial || '',
+                cuit: payload.cuit || '',
+                taxCondition: payload.taxCondition || '',
+                iibb: payload.iibb || '',
+                inicioAct: payload.inicioAct || '',
                 updatedAt: timestamp
             }, { merge: true });
 
-            // B. Guardar en Firebase (Master de Empresa - Datos Fiscales)
+            // B. Guardar en Firebase (Master de Empresa - Datos Fiscales, legacy/fallback)
             const companyRef = doc(db, 'companies', user.companyId);
             await setDoc(companyRef, {
                 razonSocial: payload.razonSocial,

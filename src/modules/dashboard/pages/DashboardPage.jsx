@@ -223,7 +223,12 @@ const KpiCard = ({ metrics, isAdmin, money, navigate, onTriggerClose, isCajeroAc
 
 const MyShiftCard = ({ metrics, money, handleOpenShift, activeBranchId, activeBranchName, onTriggerClose }) => {
     const isCajeroActive = !!metrics.activeShift;
-    const isMismatchedBranch = isCajeroActive && metrics.activeShift.branchId !== activeBranchId && activeBranchId !== 'ALL' && metrics.activeShift.branchId !== 'main';
+    // 🔥 FIX: justo después de un F5, activeBranchId puede resolverse un instante
+    // antes que activeBranchName (la sesión todavía está terminando de cargar) —
+    // eso mostraba el cartel de "turno en otra sede" con el nombre vacío por un
+    // segundo, aunque branchId ya coincidiera. Exigimos activeBranchName resuelto
+    // antes de mostrar esta alerta, para no asustar al cajero con un falso positivo.
+    const isMismatchedBranch = isCajeroActive && !!activeBranchId && !!activeBranchName && metrics.activeShift.branchId !== activeBranchId && activeBranchId !== 'ALL' && metrics.activeShift.branchId !== 'main';
 
     return (
         <div className={cn("p-5 border-l-4 transition-all shadow-sm hover:shadow-md relative overflow-hidden group bg-white rounded-2xl border border-border-subtle", 
@@ -701,6 +706,17 @@ export const DashboardPage = () => {
 
     // --- MANEJADORES ---
     const handleOpenShift = async () => {
+        // 🔥 Mismo chequeo que Sidebar.jsx — mejor avisar antes de pedir el monto
+        // que dejar que el repositorio tire el error genérico después. Un cajero
+        // (sucursal fija) nunca debería llegar acá en uso normal; si pasa, es una
+        // carrera de timing (recién logueado), no algo que resuelva "eligiendo"
+        // sucursal — no tiene selector, lo tiene bloqueado.
+        if (!activeBranchId || activeBranchId === 'ALL') {
+            const isLockedUser = !!user?.branchId && user?.role !== 'OWNER';
+            return alert(isLockedUser
+                ? "⏳ Tu sucursal todavía se está cargando. Esperá un segundo y volvé a intentar."
+                : "⚠️ Seleccioná una sucursal específica para abrir caja.");
+        }
         const input = prompt("Monto inicial:", "1000");
         if (input === null) return;
         const amount = parseFloat(input);

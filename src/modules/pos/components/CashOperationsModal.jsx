@@ -195,7 +195,12 @@ export const CashOperationsModal = ({ isOpen, onClose }) => {
         const value = parseFloat(amount);
         
         if (isNaN(value) || value <= 0) return toast.error("Ingrese un monto válido.");
-        if (!activeShift?.id) return toast.error("No hay un turno de caja activo.");
+        // 🔥 FIX: activeShift (localStorage vía useShiftStore) puede quedar del
+        // cajero anterior si el logout no lo limpió a tiempo. addMovement usa
+        // activeShift.id directo (no re-resuelve por usuario como sí hace
+        // registerIncome/registerExpense), así que sin esto el movimiento se
+        // carga a la caja de otra persona.
+        if (!activeShift?.id || activeShift.userId !== user?.uid) return toast.error("No hay un turno de caja activo para tu usuario. Volvé a iniciar sesión.");
         if (isAdvance && !selectedEmployeeId) return toast.error("Debe seleccionar un empleado.");
 
         // 🔥 INTERCEPTOR: ¿Es un Retiro y NO tiene permiso?

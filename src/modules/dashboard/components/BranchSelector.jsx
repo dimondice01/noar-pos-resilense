@@ -12,8 +12,12 @@ export const BranchSelector = () => {
     const [branches, setBranches] = useState([]);
     const [loading, setLoading] = useState(true);
 
-    // Determinamos si el usuario está bloqueado en una sucursal
-    const isLocked = !!user?.branchId;
+    // Determinamos si el usuario está bloqueado en una sucursal.
+    // 🔥 FIX: un OWNER nunca se bloquea, sin importar qué tenga en branchId —
+    // puede venir de una cuenta migrada de ADMIN a OWNER a mano en Firebase (el
+    // campo branchId queda con el valor viejo) o de la config inicial de registro.
+    // El bloqueo es exclusivo de roles fijados a una sucursal (CAJERO/ADMIN).
+    const isLocked = !!user?.branchId && user?.role !== 'OWNER';
 
     useEffect(() => {
         const loadBranches = async () => {
@@ -21,13 +25,22 @@ export const BranchSelector = () => {
             
             try {
                 let all = await localDb.branches.toArray();
-                
-                if (all.length === 0 && navigator.onLine) {
-                    const querySnapshot = await getDocs(collection(firestoreDb, 'companies', user.companyId, 'branches'));
-                    all = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                    
-                    if (all.length > 0) {
-                        await localDb.branches.bulkPut(all);
+
+                // 🔥 FIX: antes solo se refrescaba desde la nube cuando Dexie estaba
+                // vacío — así, cualquier sucursal creada DESPUÉS del primer login de un
+                // dispositivo quedaba invisible para siempre en ese dispositivo. La
+                // colección de sucursales es chica (unas pocas por empresa), así que no
+                // hay costo real en refrescarla siempre que haya internet.
+                if (navigator.onLine) {
+                    try {
+                        const querySnapshot = await getDocs(collection(firestoreDb, 'companies', user.companyId, 'branches'));
+                        const cloudBranches = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                        if (cloudBranches.length > 0) {
+                            all = cloudBranches;
+                            await localDb.branches.bulkPut(all);
+                        }
+                    } catch (e) {
+                        console.warn("No se pudo refrescar sucursales desde la nube, uso el cache local:", e);
                     }
                 }
 

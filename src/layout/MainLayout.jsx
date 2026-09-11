@@ -96,8 +96,16 @@ export const MainLayout = () => {
       // Validaciones iniciales
       if (!user || !user.companyId) return;
 
-      // Si ya tenemos el turno en memoria RAM, no molestamos a la base de datos.
-      if (activeShift) return;
+      // 🔥 FIX: activeShift persiste en localStorage sin importar qué usuario lo
+      // abrió. Antes esto solo chequeaba "¿hay algo en RAM?" — si el cajero
+      // anterior no cerró sesión limpio (o el logout no alcanzó a limpiar el
+      // store), el usuario nuevo heredaba el turno de otro y vendía sobre él sin
+      // darse cuenta. Ahora solo confiamos en el turno cacheado si es del usuario
+      // que está logueado ahora mismo.
+      if (activeShift && activeShift.userId === user.uid) return;
+      if (activeShift && activeShift.userId !== user.uid) {
+          useShiftStore.getState().clearShift();
+      }
 
       try {
         // Consultamos Firebase: "¿Hay turnos ABIERTOS para este usuario?"

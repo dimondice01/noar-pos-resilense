@@ -839,11 +839,21 @@ export const syncService = {
       if (user.role === 'OWNER') {
           const dbLocal = await getDB();
           let branches = await dbLocal.branches.toArray();
-          
-          if (branches.length === 0 && navigator.onLine) {
-             const bSnap = await getDocs(collection(db, 'companies', user.companyId, 'branches'));
-             branches = bSnap.docs.map(d => ({id: d.id, ...d.data()}));
-             await dbLocal.branches.bulkPut(branches);
+
+          // 🔥 FIX: igual que en BranchSelector — refrescar solo cuando Dexie está
+          // vacío deja a cualquier dispositivo ciego a sucursales creadas después de
+          // su primer login. La colección es chica, se puede refrescar siempre.
+          if (navigator.onLine) {
+             try {
+                 const bSnap = await getDocs(collection(db, 'companies', user.companyId, 'branches'));
+                 const cloudBranches = bSnap.docs.map(d => ({id: d.id, ...d.data()}));
+                 if (cloudBranches.length > 0) {
+                     branches = cloudBranches;
+                     await dbLocal.branches.bulkPut(branches);
+                 }
+             } catch (e) {
+                 console.warn("No se pudo refrescar sucursales desde la nube, uso el cache local:", e);
+             }
           }
           if (branches.length > 0) {
               await this.syncAllInventoryForOwner(user.companyId, branches);

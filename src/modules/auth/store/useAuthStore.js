@@ -2,7 +2,9 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { authService } from '../services/authService';
 import { doc, getDoc } from 'firebase/firestore';
-import { db } from '../../../database/firebase'; 
+import { db } from '../../../database/firebase';
+import { useShiftStore } from '../../cash/store/useShiftStore';
+import { usePosSessionStore } from '../../pos/store/usePosSessionStore';
 
 export const useAuthStore = create(
   persist(
@@ -42,16 +44,28 @@ export const useAuthStore = create(
       logout: async () => {
         try {
           await authService.logout();
-          localStorage.removeItem('NOAR_ACTIVE_BRANCH'); 
-          
+          localStorage.removeItem('NOAR_ACTIVE_BRANCH');
+
+          // 🔥 FIX: useShiftStore ('nexus-shift-storage') persiste el turno en
+          // localStorage sin distinguir de qué usuario es. Si no se limpia acá, el
+          // próximo cajero que loguee en esta misma compu hereda el turno abierto
+          // del anterior (y a veces no puede cerrarlo, por el chequeo de permisos
+          // en closeShift). Logout es el único lugar que SIEMPRE corre sin importar
+          // por dónde se cierre sesión.
+          useShiftStore.getState().clearShift();
+          // 🔥 Mismo criterio: el carrito/pestañas de POS quedan en RAM (ver
+          // usePosSessionStore) para sobrevivir a navegar entre páginas — pero
+          // no deben sobrevivir a un cambio de cajero en la misma compu.
+          usePosSessionStore.getState().resetSession();
+
           // 🔥 LIMPIEZA PROFUNDA DEL ESTADO
-          set({ 
-            user: null, 
-            isAuthenticated: false, 
-            activeBranchId: null, 
+          set({
+            user: null,
+            isAuthenticated: false,
+            activeBranchId: null,
             activeBranchName: null,
             error: null
-          }); 
+          });
         } catch (error) {
           console.error(error);
         }
@@ -59,10 +73,12 @@ export const useAuthStore = create(
 
       switchBranch: (branchId, branchName) => {
         const currentUser = get().user;
-        // 🛡️ SEGURIDAD: Si el usuario está confinado, impedir cambio
-        if (currentUser?.branchId && currentUser.branchId !== branchId) {
+        // 🛡️ SEGURIDAD: Si el usuario está confinado, impedir cambio.
+        // 🔥 FIX: mismo criterio que BranchSelector.isLocked — un OWNER nunca está
+        // confinado, sin importar qué tenga en branchId (cuenta migrada de ADMIN, etc).
+        if (currentUser?.branchId && currentUser.branchId !== branchId && currentUser.role !== 'OWNER') {
             console.warn("⛔ Cambio de sucursal bloqueado por perfil de usuario.");
-            return; 
+            return;
         }
 
         localStorage.setItem('NOAR_ACTIVE_BRANCH', JSON.stringify({ id: branchId, name: branchName }));
@@ -136,19 +152,36 @@ export const useAuthStore = create(
                     let targetBranchId = get().activeBranchId;
                     let targetBranchName = get().activeBranchName;
 
-                    if (firestoreData.branchId) {
+                    // 🔒 Mismo criterio que isLocked en BranchSelector/switchBranch: solo
+                    // forzamos la sucursal de Firestore si el usuario está REALMENTE
+                    // confinado (CAJERO/ADMIN de sucursal fija). Un OWNER nunca se fuerza
+                    // acá, aunque tenga branchId seteado (cuenta migrada de ADMIN, o
+                    // config inicial de registro) — si no, cada recarga de página le pisa
+                    // la sucursal que eligió a mano con el selector y vuelve a su "sucursal
+                    // de base", aunque tenga un turno abierto en otra.
+                    const isRoleLocked = !!firestoreData.branchId && firestoreData.role !== 'OWNER';
+
+                    if (isRoleLocked) {
                         targetBranchId = firestoreData.branchId;
-                        if (!targetBranchName) targetBranchName = "Sucursal Asignada"; 
-                    } 
+                        if (!targetBranchName) targetBranchName = "Sucursal Asignada";
+                    }
                     else if (!targetBranchId) {
-                        try {
-                            const stored = localStorage.getItem('NOAR_ACTIVE_BRANCH');
-                            if (stored) {
-                                const parsed = JSON.parse(stored);
-                                targetBranchId = parsed.id;
-                                targetBranchName = parsed.name;
-                            }
-                        } catch (e) {}
+                        // Sin sucursal activa todavía (primer login, o storage limpio):
+                        // usamos branchId de Firestore como default si lo tiene, si no el
+                        // último que se eligió a mano con el selector.
+                        if (firestoreData.branchId) {
+                            targetBranchId = firestoreData.branchId;
+                            targetBranchName = "Sucursal Asignada";
+                        } else {
+                            try {
+                                const stored = localStorage.getItem('NOAR_ACTIVE_BRANCH');
+                                if (stored) {
+                                    const parsed = JSON.parse(stored);
+                                    targetBranchId = parsed.id;
+                                    targetBranchName = parsed.name;
+                                }
+                            } catch (e) {}
+                        }
                     }
 
                     set({ 

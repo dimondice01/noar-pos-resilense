@@ -52,8 +52,32 @@ export const cashRepository = {
             .first();
 
         if (activeInBranch) {
-            console.log("⚠️ Turno ya abierto recuperado localmente:", activeInBranch.id);
-            return activeInBranch; 
+            // 🔥 FIX: antes esto confiaba ciegamente en Dexie local. Si el turno ya
+            // se cerró en la nube (desde otro dispositivo, o un sync que no llegó a
+            // bajar acá) pero esta compu nunca se enteró, el cajero quedaba sin
+            // poder abrir uno nuevo — el síntoma real era "recurrir a otro
+            // navegador" (Dexie vacío = sin el fantasma). Si hay internet,
+            // verificamos contra la nube antes de confiar; si offline, seguimos
+            // confiando en local como siempre (nunca bloquear por falta de red).
+            if (navigator.onLine) {
+                try {
+                    const cloudSnap = await getDoc(doc(db, 'companies', user.companyId, 'shifts', String(activeInBranch.id)));
+                    const cloudStatus = cloudSnap.exists() ? cloudSnap.data().status : null;
+                    if (cloudStatus && cloudStatus !== 'OPEN') {
+                        console.warn(`⚠️ Turno local "${activeInBranch.id}" figuraba OPEN pero la nube dice ${cloudStatus} — corrigiendo local y abriendo uno nuevo.`);
+                        await dbLocal.shifts.update(activeInBranch.id, { status: cloudStatus, syncStatus: 'synced' });
+                    } else {
+                        console.log("⚠️ Turno ya abierto recuperado localmente (confirmado contra la nube):", activeInBranch.id);
+                        return activeInBranch;
+                    }
+                } catch (e) {
+                    console.warn("No se pudo verificar el turno contra la nube, confío en local:", e);
+                    return activeInBranch;
+                }
+            } else {
+                console.log("⚠️ Turno ya abierto recuperado localmente (offline, sin poder verificar):", activeInBranch.id);
+                return activeInBranch;
+            }
         }
 
         const shift = {
