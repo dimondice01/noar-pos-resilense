@@ -123,7 +123,9 @@ export const supplierRepository = {
             id,
             sequentialId,
             companyId: user.companyId,
-            branchId: activeBranchId || 'main', // Trazabilidad de quién lo creó
+            // 🔥 Proveedores son company-wide (no se filtran por sucursal), así que esto
+            // es solo trazabilidad de quién lo creó — null es más honesto que inventar 'main'.
+            branchId: activeBranchId || null,
             balance: parseFloat(supplier.balance || 0),
             syncStatus: 'pending',
             updatedAt: new Date().toISOString()

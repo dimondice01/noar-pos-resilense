@@ -255,7 +255,10 @@ export const purchaseRepository = {
         const { user, activeBranchId } = useAuthStore.getState();
         
         if (!user) throw new Error("Sin sesión.");
-        const branchId = purchaseHeader.branchId || activeBranchId || 'main';
+        // 🔥 Nunca adivinar con 'main': con más de una sucursal real ese id no
+        // matchea ninguna y la compra/stock queda huérfana.
+        const branchId = purchaseHeader.branchId || activeBranchId || user.branchId;
+        if (!branchId) throw new Error("Error Crítico: No se pudo determinar la sucursal activa para registrar la compra.");
 
         const purchaseId = purchaseHeader.id || generateGlobalId('purch');
         const timestamp = new Date().toISOString();
@@ -561,7 +564,10 @@ export const purchaseRepository = {
         const dbLocal = await getDB();
         const { user, activeBranchId } = useAuthStore.getState();
         const timestamp = new Date().toISOString();
-        const branchId = activeBranchId || 'main';
+        // 🔥 Nunca adivinar con 'main': con más de una sucursal real ese id no
+        // matchea ninguna y el pago/movimiento de caja queda huérfano.
+        const branchId = activeBranchId || user?.branchId;
+        if (!branchId) throw new Error("Error Crítico: No se pudo determinar la sucursal activa para registrar el pago.");
 
         const { supplierId, amount, method, description, refId } = paymentData;
 
@@ -670,7 +676,10 @@ export const purchaseRepository = {
         let updatedSupplier = null;
         let newLedgerEntry = null;
         let productsToUpdate = [];
-        const branchId = purchase.branchId || activeBranchId || 'main';
+        // 🔥 Nunca adivinar con 'main': con más de una sucursal real ese id no
+        // matchea ninguna y la reversa de stock/ledger queda huérfana.
+        const branchId = purchase.branchId || activeBranchId || user?.branchId;
+        if (!branchId) throw new Error("Error Crítico: No se pudo determinar la sucursal activa para anular la compra.");
 
         await dbLocal.transaction('rw', [
             dbLocal.purchases, dbLocal.products, 
@@ -762,7 +771,10 @@ export const purchaseRepository = {
     async processRefund(purchase, returnMap, refundTotal, reason, refundCash) {
         const dbLocal = await getDB();
         const { user, activeBranchId } = useAuthStore.getState();
-        const branchId = purchase.branchId || activeBranchId || 'main';
+        // 🔥 Nunca adivinar con 'main': con más de una sucursal real ese id no
+        // matchea ninguna y la devolución de stock/ledger queda huérfana.
+        const branchId = purchase.branchId || activeBranchId || user?.branchId;
+        if (!branchId) throw new Error("Error Crítico: No se pudo determinar la sucursal activa para procesar la devolución.");
         const timestamp = new Date().toISOString();
 
         let updatedSupplier = null;

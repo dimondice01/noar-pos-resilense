@@ -61,7 +61,7 @@ const PermissionsSwitchGroups = ({ permissions, togglePermission }) => {
 // 🧩 MODAL: LIQUIDACIÓN DE EMPLEADO (LEDGER) - MATEMÁTICA EN VIVO
 // =================================================================================
 const LiquidationModal = ({ isOpen, onClose, employee, onLiquidated }) => {
-    const { user: currentUser } = useAuthStore();
+    const { user: currentUser, activeBranchId } = useAuthStore();
     const [history, setHistory] = useState([]);
     const [isLoading, setIsLoading] = useState(true);
     const [isLiquidating, setIsLiquidating] = useState(false);
@@ -127,6 +127,14 @@ const LiquidationModal = ({ isOpen, onClose, employee, onLiquidated }) => {
         const amountToLiquidate = Math.min(parsedAmount, calculatedDebt);
         const isPartial = amountToLiquidate < calculatedDebt - 0.01;
 
+        // 🔥 Nunca adivinar con 'main': con más de una sucursal real ese id no
+        // matchea ninguna y la liquidación queda huérfana.
+        const branchId = employee.branchId || activeBranchId || currentUser?.branchId;
+        if (!branchId) {
+            toast.error('No se pudo determinar la sucursal del empleado. Revisá su ficha.');
+            return;
+        }
+
         if (!window.confirm(`¿Confirmas la liquidación de $${amountToLiquidate.toLocaleString('es-AR')} para ${employee.name}?${isPartial ? ` Queda un saldo pendiente de $${(calculatedDebt - amountToLiquidate).toLocaleString('es-AR')}.` : ' Esta acción dejará su deuda en 0.'}`)) return;
 
         setIsLiquidating(true);
@@ -134,7 +142,7 @@ const LiquidationModal = ({ isOpen, onClose, employee, onLiquidated }) => {
         try {
             await employeeLedgerRepository.addTransaction({
                 companyId: currentUser.companyId,
-                branchId: employee.branchId || 'main',
+                branchId,
                 userId: targetUserId,
                 type: 'LIQUIDATION',
                 amount: amountToLiquidate,

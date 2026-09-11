@@ -145,8 +145,11 @@ export const salesRepository = {
     
     if (!user?.companyId) throw new Error("Error crítico: Sesión inválida.");
 
-    // 🔥 BLINDAJE DE SUCURSAL: Forzamos la sucursal activa
-    const targetBranchId = activeBranchId || user.branchId || 'main';
+    // 🔥 BLINDAJE DE SUCURSAL: Forzamos la sucursal activa. Nunca adivinar con
+    // 'main' — con más de una sucursal real ese id no matchea ninguna y la
+    // venta queda huérfana (invisible en reportes de esa sucursal).
+    const targetBranchId = activeBranchId || user.branchId;
+    if (!targetBranchId) throw new Error("Error Crítico: No se pudo determinar la sucursal activa para registrar la venta.");
     
     const saleId = saleData.id || `sale_${crypto.randomUUID()}`;
     const timestamp = saleData.createdAt || new Date().toISOString(); 
@@ -393,6 +396,32 @@ export const salesRepository = {
     }
 
     return sale;
+  },
+
+  // ==========================================
+  // 🔄 PARCHE DE RESULTADO ARCA/AFIP TARDÍO
+  // ==========================================
+  // La venta ya se creó y se imprimió como ticket de contingencia (X) porque ARCA
+  // no respondió dentro del timeout de usePosController. Este método actualiza esa
+  // MISMA venta cuando el pedido original (que sigue corriendo en segundo plano,
+  // nunca se aborta) finalmente resuelve — con CAE o con error definitivo.
+  async updateAfipResult(saleId, patch) {
+    const dbLocal = await getDB();
+    const { user } = useAuthStore.getState();
+    const existing = await dbLocal.sales.get(saleId);
+    if (!existing) return null;
+
+    const updated = {
+        ...existing,
+        ...patch,
+        afip: { ...existing.afip, ...patch.afip },
+        syncStatus: 'pending',
+        updatedAt: new Date().toISOString()
+    };
+
+    await dbLocal.sales.put(updated);
+    if (user?.companyId) triggerOptimisticSync('sales', updated, user.companyId);
+    return updated;
   },
 
   // ==========================================
@@ -660,6 +689,10 @@ export const salesRepository = {
     
     const { user, activeBranchId } = useAuthStore.getState();
     if (!user?.companyId) return null;
+    // 🔥 Nunca adivinar con 'main': si no hay sucursal resuelta, mejor no loguear
+    // el abandono que loguearlo bajo una sucursal inventada.
+    const branchId = activeBranchId || user.branchId;
+    if (!branchId) return null;
 
     const saleId = `abnd_${crypto.randomUUID()}`;
     const timestamp = new Date().toISOString();
@@ -676,7 +709,7 @@ export const salesRepository = {
       createdAt: timestamp,
       date: timestamp,
       companyId: user.companyId,
-      branchId: activeBranchId || user.branchId || 'main',
+      branchId,
       userId: user.uid,
       userName: user.name || 'Vendedor',
       syncStatus: 'pending'
@@ -701,6 +734,10 @@ export const salesRepository = {
     
     const { user, activeBranchId } = useAuthStore.getState();
     if (!user?.companyId) return null;
+    // 🔥 Nunca adivinar con 'main': si no hay sucursal resuelta, mejor no loguear
+    // el abandono que loguearlo bajo una sucursal inventada.
+    const branchId = activeBranchId || user.branchId;
+    if (!branchId) return null;
 
     const saleId = `abnd_${crypto.randomUUID()}`;
     const timestamp = new Date().toISOString();
@@ -718,7 +755,7 @@ export const salesRepository = {
       createdAt: timestamp,
       date: timestamp,
       companyId: user.companyId,
-      branchId: activeBranchId || user.activeBranchId || user.branchId || 'main',
+      branchId,
       userId: user.uid,
       userName: user.name || 'Vendedor',
       syncStatus: 'pending'

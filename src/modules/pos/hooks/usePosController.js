@@ -918,34 +918,82 @@ export const usePosController = () => {
             let saleResult = null;
 
             if (paymentData.withAfip) {
-                loadingToast = toast.loading("📡 Autorizando con AFIP...");
-                const afipResult = await paymentService.createInvoice({
+                loadingToast = toast.loading("📡 Autorizando con ARCA...");
+
+                const buildFiscalPatch = (afipResult) => {
+                    const fiscalNumber = `FC-${afipResult.letra}-${String(afipResult.ptoVta).padStart(4,'0')}-${String(afipResult.numero).padStart(8,'0')}`;
+                    return {
+                        afip: {
+                            status: 'APPROVED',
+                            cae: afipResult.cae,
+                            vtoCAE: afipResult.vencimiento,
+                            cbteNumero: afipResult.numero,
+                            cbteTipo: afipResult.tipo,
+                            cbteLetra: afipResult.letra,
+                            qr_data: afipResult.qr_data,
+                            ptoVta: afipResult.ptoVta || 1,
+                            impNeto: afipResult.impNeto,
+                            impIVA: afipResult.impIVA
+                        },
+                        number: fiscalNumber,
+                        ticketNumber: fiscalNumber,
+                        invoiceNumber: fiscalNumber
+                    };
+                };
+
+                // 🔥 BLINDAJE ARCA: nunca abortamos el pedido (el backend no tiene
+                // idempotencia por saleId — abortar y reintentar podría pedir un CAE
+                // dos veces para la misma venta). Solo dejamos de ESPERARLO después
+                // de ARCA_TIMEOUT_MS: la venta se guarda YA como contingencia (X) para
+                // que el cajero siga operando sin tocar F5, y el pedido original sigue
+                // corriendo solo — cuando resuelva, parchea esta misma venta.
+                const ARCA_TIMEOUT_MS = 5000;
+                const afipPromise = paymentService.createInvoice({
                     ...basePayload,
                     invoiceLetter: basePayload.client?.fiscalCondition === 'RESPONSABLE_INSCRIPTO' ? 'A' : 'B'
-                });
+                }).then(result => ({ settled: 'ok', result }))
+                  .catch(error => ({ settled: 'error', error }));
 
-                const fiscalNumber = `FC-${afipResult.letra}-${String(afipResult.ptoVta).padStart(4,'0')}-${String(afipResult.numero).padStart(8,'0')}`;
+                const timeoutMarker = new Promise(resolve => setTimeout(() => resolve({ settled: 'timeout' }), ARCA_TIMEOUT_MS));
 
-                saleResult = await salesRepository.createSale({
-                    ...basePayload,
-                    afip: {
-                        status: 'APPROVED',
-                        cae: afipResult.cae,
-                        vtoCAE: afipResult.vencimiento,
-                        cbteNumero: afipResult.numero,
-                        cbteTipo: afipResult.tipo,
-                        cbteLetra: afipResult.letra,
-                        qr_data: afipResult.qr_data,
-                        ptoVta: afipResult.ptoVta || 1,
-                        impNeto: afipResult.impNeto, 
-                        impIVA: afipResult.impIVA    
-                    },
-                    number: fiscalNumber,
-                    ticketNumber: fiscalNumber, 
-                    invoiceNumber: fiscalNumber
-                });
-                toast.dismiss(loadingToast);
-                toast.success(`Factura ${afipResult.letra} generada`);
+                const outcome = await Promise.race([afipPromise, timeoutMarker]);
+
+                if (outcome.settled === 'ok') {
+                    saleResult = await salesRepository.createSale({
+                        ...basePayload,
+                        ...buildFiscalPatch(outcome.result)
+                    });
+                    toast.dismiss(loadingToast);
+                    toast.success(`Factura ${outcome.result.letra} generada`);
+                } else {
+                    // Timeout o error rápido: la venta queda como contingencia (X) y sigue.
+                    toast.dismiss(loadingToast);
+                    const localNumber = `TK-${Date.now().toString().slice(-6)}`;
+                    saleResult = await salesRepository.createSale({
+                        ...basePayload,
+                        afip: { status: 'PENDING', cbteLetra: 'X' },
+                        number: localNumber,
+                        ticketNumber: localNumber,
+                        invoiceNumber: localNumber
+                    });
+
+                    if (outcome.settled === 'timeout') {
+                        toast('⏳ ARCA demoró — venta registrada, factura pendiente', { icon: '⏳' });
+                        const pendingSaleId = saleResult.id;
+                        afipPromise.then(async (lateOutcome) => {
+                            if (lateOutcome.settled === 'ok') {
+                                await salesRepository.updateAfipResult(pendingSaleId, buildFiscalPatch(lateOutcome.result));
+                                toast.success(`Factura ${lateOutcome.result.letra} llegó tarde — venta ${localNumber} actualizada`);
+                            } else {
+                                console.warn('ARCA en segundo plano terminó en error tras timeout:', lateOutcome.error);
+                                await salesRepository.updateAfipResult(pendingSaleId, { afip: { status: 'PENDING', cbteLetra: 'X', error: lateOutcome.error?.message } });
+                            }
+                        });
+                    } else {
+                        console.warn('ARCA rechazó rápido:', outcome.error);
+                        toast('⚠️ ARCA rechazó — venta registrada, factura pendiente de revisión', { icon: '⚠️' });
+                    }
+                }
             } else {
                 const localNumber = `TK-${Date.now().toString().slice(-6)}`;
                 

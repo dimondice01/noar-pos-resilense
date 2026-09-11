@@ -9,6 +9,14 @@ import { Button } from '../../../core/ui/Button';
 import { cn } from '../../../core/utils/cn'; // 🔥 AÑADIDA: Importación faltante
 import toast from 'react-hot-toast';
 
+// 🔒 DEV-ONLY: alta de sucursal 2+. Gateado por passphrase que solo el dev conoce.
+// OJO: esto NO es seguridad real -- un string en el bundle se puede leer con
+// DevTools -- es un freno para que un cliente curioso no se cree una sucursal
+// solo, no un candado contra alguien que sepa inspeccionar el código. Límite
+// fijo de sucursales por ahora (no depende de plan/tier de facturación).
+const DEV_NEW_BRANCH_KEY = 'noar-2026-sucursal';
+const MAX_BRANCHES = 3;
+
 export const CompanySettingsPage = () => {
     const { user, activeBranchId, activeBranchName } = useAuthStore();
     
@@ -225,6 +233,53 @@ export const CompanySettingsPage = () => {
         }
     };
 
+    // =================================================================
+    // 🔒 DEV-ONLY: ALTA DE SUCURSAL 2+ (ver DEV_NEW_BRANCH_KEY arriba)
+    // =================================================================
+    const handleCreateBranch = async () => {
+        const key = window.prompt('Clave de autorización:');
+        if (key === null) return; // canceló
+        if (key !== DEV_NEW_BRANCH_KEY) {
+            toast.error('Clave incorrecta.');
+            return;
+        }
+
+        const localDb = await getDB();
+        const existingBranches = await localDb.branches.where('companyId').equals(user.companyId).toArray();
+        if (existingBranches.length >= MAX_BRANCHES) {
+            toast.error(`Límite de ${MAX_BRANCHES} sucursales alcanzado para esta empresa.`);
+            return;
+        }
+
+        const name = window.prompt('Nombre de la nueva sucursal:');
+        if (!name || !name.trim()) return;
+        const address = window.prompt('Dirección (opcional):') || '';
+
+        const branchId = `br_${Date.now()}`;
+        const timestamp = new Date().toISOString();
+
+        try {
+            await setDoc(doc(db, 'companies', user.companyId, 'branches', branchId), {
+                id: branchId,
+                companyId: user.companyId,
+                name: name.trim(),
+                address,
+                logoBase64: null,
+                transferAlias: '',
+                transferAccountName: '',
+                updatedAt: timestamp
+            });
+
+            await localDb.branches.put({ id: branchId, companyId: user.companyId, name: name.trim(), address, updatedAt: timestamp });
+
+            toast.success(`Sucursal "${name.trim()}" creada correctamente.`);
+            window.location.reload(); // 🔥 más simple y confiable que parchear todo el estado de branches en memoria
+        } catch (error) {
+            console.error('Error creando sucursal:', error);
+            toast.error('Error al crear la sucursal. Verificá tu conexión.');
+        }
+    };
+
     if (loadingData) {
         return <div className="p-10 text-center text-sys-400 animate-pulse font-bold">Iniciando Centro de Control...</div>;
     }
@@ -252,6 +307,12 @@ export const CompanySettingsPage = () => {
                         </span>
                     </div>
                 </div>
+
+                {!noBranchSetup && user?.role === 'OWNER' && (
+                    <Button type="button" variant="secondary" onClick={handleCreateBranch}>
+                        <Store size={16} className="mr-2" /> Nueva Sucursal
+                    </Button>
+                )}
             </div>
 
             <form onSubmit={handleSave} className="space-y-6">

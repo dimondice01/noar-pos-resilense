@@ -451,8 +451,8 @@ export const PrintLabelsPage = () => {
             <div className="flex gap-6 h-full min-h-0">
                 
                 {/* --- SIDEBAR SELECCIÓN --- */}
-                <div className="w-1/3 flex flex-col gap-4">
-                    <Card className="p-4 border-sys-200">
+                <div className="w-1/3 flex flex-col gap-4 overflow-y-auto custom-scrollbar min-h-0">
+                    <Card className="p-4 border-sys-200 shrink-0">
                         {/* FILTROS AVANZADOS */}
                         <div className="flex flex-col gap-3 mb-4">
                             <div className="flex gap-2">
@@ -514,12 +514,12 @@ export const PrintLabelsPage = () => {
                         </div>
                     </Card>
 
-                    <div className="flex-1 bg-white rounded-2xl border border-sys-200 p-5 flex flex-col overflow-hidden">
-                        <div className="flex justify-between items-center mb-4">
+                    <div className="flex-1 bg-white rounded-2xl border border-sys-200 p-5 flex flex-col overflow-hidden min-h-[220px]">
+                        <div className="flex justify-between items-center mb-4 shrink-0">
                             <h2 className="text-[10px] font-black uppercase text-sys-400 tracking-widest">Cola ({printQueue.length})</h2>
                             <button onClick={() => setPrintQueue([])} className="text-[10px] font-bold text-red-500 hover:bg-red-50 px-2 py-1 rounded-lg transition-colors">LIMPIAR</button>
                         </div>
-                        <div className="flex-1 overflow-y-auto custom-scrollbar space-y-2">
+                        <div className="flex-1 overflow-y-auto custom-scrollbar space-y-2 min-h-0">
                             {printQueue.map((item, idx) => (
                                 <div key={`${item.id}-${idx}`} className="flex justify-between items-center p-3 bg-sys-50 rounded-xl border border-sys-100 group animate-in slide-in-from-left-2">
                                     <span className="text-[10px] font-bold text-sys-700 truncate flex-1 uppercase">{item.name}</span>
@@ -527,7 +527,7 @@ export const PrintLabelsPage = () => {
                                 </div>
                             ))}
                         </div>
-                        <Button className="w-full mt-6 py-4 bg-sys-900 text-white font-black uppercase text-xs tracking-widest shadow-2xl hover:bg-black active:scale-95 transition-all" onClick={handleDownloadPDF} disabled={printQueue.length === 0 || isGenerating}>
+                        <Button className="w-full mt-6 py-4 bg-sys-900 text-white font-black uppercase text-xs tracking-widest shadow-2xl hover:bg-black active:scale-95 transition-all shrink-0" onClick={handleDownloadPDF} disabled={printQueue.length === 0 || isGenerating}>
                             {isGenerating ? "PROCESANDO..." : <><Printer size={18} className="mr-2"/> GENERAR PDF</>}
                         </Button>
                     </div>

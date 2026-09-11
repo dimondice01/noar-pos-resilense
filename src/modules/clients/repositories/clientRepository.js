@@ -137,7 +137,10 @@ export const clientRepository = {
     let movement = null; // 🔥 se llena dentro de la transacción, se usa después para el push atómico
     const movementId = generateId('ledger'); // ID Blindado
     const timestamp = new Date().toISOString();
-    const currentBranch = activeBranchId || user.branchId || 'main';
+    // 🔥 Nunca adivinar con 'main': con más de una sucursal real ese id no
+    // matchea ninguna y el movimiento del cliente queda huérfano.
+    const currentBranch = activeBranchId || user.branchId;
+    if (!currentBranch) throw new Error("Error Crítico: No se pudo determinar la sucursal activa para registrar el movimiento.");
 
     // 🔥 TRANSACCIÓN ACID: Ledger Cliente + Saldo Cliente + Movimiento de Caja
     await dbLocal.transaction('rw', [

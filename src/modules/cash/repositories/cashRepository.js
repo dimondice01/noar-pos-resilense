@@ -22,7 +22,15 @@ export const cashRepository = {
         const { user, activeBranchId } = useAuthStore.getState();
         if (!user) throw new Error("Sistema: No hay sesión de usuario activa.");
 
-        const targetBranch = activeBranchId || user.branchId || 'main';
+        // 🔥 NUNCA adivinar la sucursal: un cajero siempre tiene user.branchId fijo,
+        // y un OWNER/admin sin sucursal fija depende de que BranchSelector ya haya
+        // resuelto activeBranchId. Si ninguno está seteado, antes esto caía en
+        // 'main' silenciosamente — con más de una sucursal real, 'main' no matchea
+        // ninguna y el registro queda huérfano (invisible en reportes). Mejor fallar
+        // fuerte acá que perder de qué sucursal era una venta/movimiento de caja.
+        const targetBranch = activeBranchId || user.branchId;
+        if (!targetBranch) throw new Error("Error Crítico: No se pudo determinar la sucursal activa. Volvé a seleccionarla o recargá la página.");
+
         return { user, branchId: targetBranch };
     },
 
@@ -934,9 +942,20 @@ if (typeof window !== 'undefined') {
     const cloudTotal = completed.reduce((acc, s) => acc + (parseFloat(s.total) || 0), 0);
     const snapshotTotal = shift.auditSnapshot?.totalSales;
 
-    console.log(`[debugShift] Turno ${shiftId} — estado: ${shift.status}`);
-    console.log(`[debugShift] auditSnapshot.totalSales (congelado al cerrar, ${shift.auditSnapshot?.salesCount ?? '?'} ventas contadas):`, snapshotTotal);
-    console.log(`[debugShift] Suma real en la nube AHORA (${completed.length} ventas COMPLETED de ${docs.length} con ese shiftId):`, Number(cloudTotal.toFixed(2)));
+    // 🔥 LOCAL EN VIVO: lo que hay AHORA en el Dexie de ESTA máquina para ese shiftId,
+    // ignorando el auditSnapshot congelado (que puede ser de otro momento/dispositivo).
+    // Esto es lo que responde "¿cuánto tiene realmente esta PC ahora mismo?".
+    const dbLocal = await getDB();
+    const localSales = await dbLocal.sales.where('shiftId').equals(String(shiftId)).toArray();
+    const localCompleted = localSales.filter(s => s.status === 'COMPLETED' && s.type !== 'INTERNAL' && s.type !== 'BUDGET');
+    const localTotal = localCompleted.reduce((acc, s) => acc + (parseFloat(s.total) || 0), 0);
+    const localShift = await dbLocal.shifts.get(String(shiftId));
+
+    console.log(`[debugShift] Turno ${shiftId} — estado nube: ${shift.status}${localShift ? `, estado local: ${localShift.status}` : ' (sin registro local en esta PC)'}`);
+    console.log(`[debugShift] LOCAL AHORA en esta PC (${localCompleted.length} ventas COMPLETED de ${localSales.length} con ese shiftId en Dexie):`, Number(localTotal.toFixed(2)));
+    console.log(`[debugShift] NUBE AHORA (${completed.length} ventas COMPLETED de ${docs.length} con ese shiftId):`, Number(cloudTotal.toFixed(2)));
+    console.log(`[debugShift] Diferencia (nube - local):`, Number((cloudTotal - localTotal).toFixed(2)));
+    console.log(`[debugShift] (referencia) auditSnapshot.totalSales congelado al cerrar, ${shift.auditSnapshot?.salesCount ?? '?'} ventas contadas:`, snapshotTotal);
 
     // 🔎 Si hay menos ventas en la nube (por shiftId) que las que contó el cierre,
     // buscamos TODAS las ventas de esa sucursal en la ventana horaria del turno,
@@ -969,6 +988,6 @@ if (typeof window !== 'undefined') {
       console.log('[debugShift] Este turno no tiene auditSnapshot.totalSales (¿sigue abierto?).');
     }
 
-    return { snapshotTotal, cloudTotal, salesCountCloud: completed.length, salesCountSnapshot: shift.auditSnapshot?.salesCount };
+    return { localTotal, cloudTotal, snapshotTotal, salesCountLocal: localCompleted.length, salesCountCloud: completed.length, salesCountSnapshot: shift.auditSnapshot?.salesCount };
   };
 }

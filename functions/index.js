@@ -19,6 +19,10 @@ const admin = require("firebase-admin");
 const afipModule = require("./afip");
 // Carga de compras a proveedor desde el bot de WhatsApp (ver botPurchases.js)
 const { registerBotPurchase, HttpError: BotPurchaseError } = require("./botPurchases");
+// Mas acciones del bot de WhatsApp para OWNER/ADMIN (mismo patron que botPurchases.js)
+const { registerBotPriceUpdate } = require("./botPriceUpdate");
+const { registerBotStockAdjustment } = require("./botStockAdjustment");
+const { registerBotSupplierPayment } = require("./botSupplierPayment");
 
 // 🔒 Secret compartido para autenticar al bot de WhatsApp (servicio propio, no de
 // terceros). Se crea con: firebase functions:secrets:set BOT_API_KEY
@@ -1113,6 +1117,66 @@ app.post("/bot/purchases", async (req, res) => {
     }
     logger.error("❌ Error /bot/purchases:", error);
     res.status(500).json({ error: "Error registrando la compra", details: error.message });
+  }
+});
+
+// ==================================================================
+// 🤖 ENDPOINTS: MAS ACCIONES DEL BOT DE WHATSAPP (OWNER/ADMIN)
+// ==================================================================
+// Mismo esquema de auth (x-bot-key contra BOT_API_KEY) y mismo manejo de
+// errores que /bot/purchases arriba -- BotPurchaseError es la clase HttpError
+// exportada por botPurchases.js, reusada por los 3 modulos nuevos.
+app.post("/bot/price-update", async (req, res) => {
+  try {
+    const providedKey = req.headers["x-bot-key"];
+    if (!providedKey || providedKey !== BOT_API_KEY.value()) {
+      return res.status(401).json({ error: "No autorizado" });
+    }
+
+    const result = await registerBotPriceUpdate(db, req.body);
+    res.status(200).json(result);
+  } catch (error) {
+    if (error instanceof BotPurchaseError) {
+      return res.status(error.status).json({ error: error.message });
+    }
+    logger.error("❌ Error /bot/price-update:", error);
+    res.status(500).json({ error: "Error actualizando el precio", details: error.message });
+  }
+});
+
+app.post("/bot/stock-adjustment", async (req, res) => {
+  try {
+    const providedKey = req.headers["x-bot-key"];
+    if (!providedKey || providedKey !== BOT_API_KEY.value()) {
+      return res.status(401).json({ error: "No autorizado" });
+    }
+
+    const result = await registerBotStockAdjustment(db, req.body);
+    res.status(200).json(result);
+  } catch (error) {
+    if (error instanceof BotPurchaseError) {
+      return res.status(error.status).json({ error: error.message });
+    }
+    logger.error("❌ Error /bot/stock-adjustment:", error);
+    res.status(500).json({ error: "Error ajustando el stock", details: error.message });
+  }
+});
+
+app.post("/bot/supplier-payment", async (req, res) => {
+  try {
+    const providedKey = req.headers["x-bot-key"];
+    if (!providedKey || providedKey !== BOT_API_KEY.value()) {
+      return res.status(401).json({ error: "No autorizado" });
+    }
+
+    const result = await registerBotSupplierPayment(db, req.body);
+    res.status(200).json(result);
+  } catch (error) {
+    if (error instanceof BotPurchaseError) {
+      return res.status(error.status).json({ error: error.message });
+    }
+    logger.error("❌ Error /bot/supplier-payment:", error);
+    res.status(500).json({ error: "Error registrando el pago", details: error.message });
   }
 });
 
