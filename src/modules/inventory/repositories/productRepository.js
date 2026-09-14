@@ -82,6 +82,23 @@ const triggerCloudUpdate = async (product) => {
 const _injectBranchData = async (products, branchId, dbLocal) => {
     if (!products || products.length === 0) return [];
 
+    // 🔥 FIX PERFORMANCE: caso más común (findByCode/getById → 1 solo producto, se
+    // llama en CADA escaneo de balanza/POS) — antes esto traía TODO el inventario de
+    // la sucursal (miles de filas en catálogos grandes) solo para leer el stock de 1
+    // producto. En PCs de gama baja eso se nota mucho ("escanear tarda muchísimo").
+    // Usamos el índice compuesto [branchId+productId] (ya definido en db.js) para un
+    // get() directo O(1) en vez de escanear/mapear toda la sucursal.
+    if (products.length === 1 && branchId && branchId !== 'ALL') {
+        const p = products[0];
+        const branchData = await dbLocal.inventory.get([branchId, p.id]);
+        return [{
+            ...p,
+            stock: branchData ? (parseFloat(branchData.stock) || 0) : 0,
+            promo: branchData?.promo || null,
+            _branchId: branchId
+        }];
+    }
+
     // 🔥 Cargar inventario solo de la sucursal necesaria — evita traer todas las sucursales
     const allInventory = (!branchId || branchId === 'ALL')
         ? await dbLocal.inventory.toArray()
@@ -132,7 +149,11 @@ export const productRepository = {
     async getAll() {
         const dbLocal = await getDB();
         const { activeBranchId } = useAuthStore.getState();
-        const products = await dbLocal.products.filter(p => !p.deleted).toArray();
+        // 🔥 FIX PERFORMANCE: Table.filter() de Dexie aplica el predicado dentro del
+        // cursor de IndexedDB (fila por fila, con overhead de promesa por fila) — medido
+        // en 22+ segundos con ~4500 productos en hardware débil. toArray() sin filtro es
+        // una lectura masiva optimizada; filtrar el array plano en JS es prácticamente gratis.
+        const products = (await dbLocal.products.toArray()).filter(p => !p.deleted);
         return await _injectBranchData(products, activeBranchId, dbLocal);
     },
 
@@ -149,8 +170,12 @@ export const productRepository = {
 
     async getAllByBranch(branchId) {
         const dbLocal = await getDB();
-        let products = await dbLocal.products.filter(p => !p.deleted).toArray();
-        
+        // 🔥 FIX PERFORMANCE: Table.filter() de Dexie aplica el predicado dentro del
+        // cursor de IndexedDB (fila por fila, con overhead de promesa por fila) — medido
+        // en 22+ segundos con ~4500 productos en hardware débil. toArray() sin filtro es
+        // una lectura masiva optimizada; filtrar el array plano en JS es prácticamente gratis.
+        let products = (await dbLocal.products.toArray()).filter(p => !p.deleted);
+
         const today = new Date().toLocaleDateString('sv-SE');
         const productsToUpdate = [];
 
@@ -176,7 +201,7 @@ export const productRepository = {
             await dbLocal.products.bulkPut(productsToUpdate);
             productsToUpdate.forEach(p => triggerCloudUpdate(p));
         }
-        
+
         return await _injectBranchData(products, branchId, dbLocal);
     },
 
@@ -193,12 +218,15 @@ export const productRepository = {
 
         let matchedTier = null;
         if (!product || product.deleted) {
-            product = await dbLocal.products
-                .filter(p => !p.deleted && (
-                    (Array.isArray(p.barcode) && p.barcode.includes(cleanCode)) ||
-                    (Array.isArray(p.priceTiers) && p.priceTiers.some(t => t.plu === cleanCode))
-                ))
-                .first();
+            // 🔥 FIX PERFORMANCE: mismo problema que ya resolvimos en otros lados — Table.filter()
+            // de Dexie escanea fila por fila con overhead de promesa por fila. Este fallback
+            // (PLU de variante anexada / barcode no indexado) corre en CADA scan de balanza que
+            // no matchea directo por code/barcode, así que el costo se sentía siempre.
+            const allProducts = await dbLocal.products.toArray();
+            product = allProducts.find(p => !p.deleted && (
+                (Array.isArray(p.barcode) && p.barcode.includes(cleanCode)) ||
+                (Array.isArray(p.priceTiers) && p.priceTiers.some(t => t.plu === cleanCode))
+            ));
 
             if (product && !product.deleted && Array.isArray(product.priceTiers)) {
                 matchedTier = product.priceTiers.find(t => t.plu === cleanCode) || null;

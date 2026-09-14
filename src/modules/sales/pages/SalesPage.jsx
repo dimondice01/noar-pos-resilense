@@ -374,6 +374,8 @@ export const SalesPage = () => {
   const [selectedOpForTicket, setSelectedOpForTicket] = useState(null);
   const [refundData, setRefundData] = useState(null);
   const [isProcessingRefund, setIsProcessingRefund] = useState(false);
+  const [selectedForDelete, setSelectedForDelete] = useState(() => new Set());
+  const [isBulkDeleting, setIsBulkDeleting] = useState(false);
 
   // Ref para evitar stale closure en event listeners de sync
   const fetchOperationsRef = useRef(null);
@@ -808,6 +810,46 @@ export const SalesPage = () => {
     }
   };
 
+  const toggleSelectForDelete = (op) => {
+      const id = op.localId || op.id;
+      setSelectedForDelete(prev => {
+          const next = new Set(prev);
+          if (next.has(id)) next.delete(id); else next.add(id);
+          return next;
+      });
+  };
+
+  // 🔥 BORRADO DEFINITIVO: para ventas mal atribuidas (ej: de otra sucursal) que
+  // ya se borraron a mano de Firestore — repone stock y limpia kardex/caja
+  // asociados, no deja el registro marcado como "Anulado", lo saca del todo.
+  const handleHardDeleteSelected = async () => {
+      if (selectedForDelete.size === 0) return;
+      const ids = Array.from(selectedForDelete);
+      if (!window.confirm(`⚠️ Vas a BORRAR DEFINITIVAMENTE ${ids.length} venta(s) de este dispositivo (se repone el stock). Esta acción no se puede deshacer. ¿Continuar?`)) return;
+
+      setIsBulkDeleting(true);
+      const toastId = toast.loading(`Borrando ${ids.length} venta(s)...`);
+      let okCount = 0;
+      const errors = [];
+      for (const id of ids) {
+          try {
+              await salesRepository.hardDeleteSale(id);
+              okCount++;
+          } catch (e) {
+              errors.push(`${id}: ${e.message}`);
+          }
+      }
+      setIsBulkDeleting(false);
+      setSelectedForDelete(new Set());
+
+      if (errors.length === 0) {
+          toast.success(`✅ ${okCount} venta(s) borrada(s) y stock repuesto`, { id: toastId });
+      } else {
+          toast.error(`Borradas ${okCount}/${ids.length}. Errores: ${errors.join(' | ')}`, { id: toastId, duration: 8000 });
+      }
+      fetchOperations();
+  };
+
   const handleProcessRefund = async (originalSale, returnMap, refundAmount, reason, refundCash) => {
       setIsProcessingRefund(true);
       const toastId = toast.loading("Procesando devolución...");
@@ -955,7 +997,18 @@ export const SalesPage = () => {
                     <RefreshCw size={18} className={loading ? "animate-spin" : ""}/>
                 </Button>
 
-                
+                {isAdmin && selectedForDelete.size > 0 && (
+                    <Button
+                        onClick={handleHardDeleteSelected}
+                        disabled={isBulkDeleting}
+                        className="h-10 px-4 rounded-xl bg-red-600 hover:bg-red-700 text-white shadow-lg shadow-red-200 flex items-center gap-2"
+                    >
+                        {isBulkDeleting ? <Loader2 size={16} className="animate-spin"/> : <XCircle size={16}/>}
+                        <span className="text-xs font-black uppercase tracking-tight">Borrar {selectedForDelete.size} seleccionada(s)</span>
+                    </Button>
+                )}
+
+
                 {/* 💳 TARJETA DE TOTALES REALES (SOLO ADMIN/OWNER) */}
                 {isAdmin && (
                     <Card className="px-5 py-2 bg-white border border-sys-200 shadow-sm flex items-center gap-6 animate-in slide-in-from-right-2">
@@ -1110,6 +1163,7 @@ export const SalesPage = () => {
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className="bg-sys-50/80 text-sys-500 text-xs uppercase tracking-wider border-b border-sys-100 backdrop-blur-sm sticky top-0 z-10">
+                {isAdmin && <th className="p-4 w-8"></th>}
                 <th className="p-4 font-semibold whitespace-nowrap">Fecha / N° Ticket</th>
                 <th className="p-4 font-semibold whitespace-nowrap">Tipo</th>
                 <th className="p-4 font-semibold whitespace-nowrap">Cliente / Detalle</th>
@@ -1121,10 +1175,10 @@ export const SalesPage = () => {
             </thead>
             <tbody className="divide-y divide-sys-100 bg-white">
               {loading && operations.length === 0 ? (
-                  <tr><td colSpan="7" className="p-10 text-center"><RefreshCw className="animate-spin mx-auto text-sys-300"/></td></tr>
+                  <tr><td colSpan={isAdmin ? 8 : 7} className="p-10 text-center"><RefreshCw className="animate-spin mx-auto text-sys-300"/></td></tr>
               ) : paginatedOperations.length === 0 ? (
                 <tr>
-                  <td colSpan="7" className="p-12 text-center">
+                  <td colSpan={isAdmin ? 8 : 7} className="p-12 text-center">
                     <div className="flex flex-col items-center justify-center text-sys-300">
                         <Search size={48} className="mb-4 opacity-50" />
                         <p className="font-medium text-sys-500">No se encontraron movimientos.</p>
@@ -1163,6 +1217,17 @@ export const SalesPage = () => {
                         (isAnulado || isRefunded) ? "bg-red-50/30 opacity-60" : 
                         isAbandoned ? "bg-red-50/20 border-l-4 border-red-500 opacity-70" :
                         "hover:bg-sys-50/40")}>
+                        {isAdmin && (
+                            <td className="p-4">
+                                <input
+                                    type="checkbox"
+                                    checked={selectedForDelete.has(op.localId || op.id)}
+                                    onChange={() => toggleSelectForDelete(op)}
+                                    className="w-4 h-4 accent-red-600 cursor-pointer"
+                                    title="Seleccionar para borrado definitivo"
+                                />
+                            </td>
+                        )}
                         <td className="p-4 text-sys-600 font-mono text-xs whitespace-nowrap">
                           <div className="font-bold text-sys-800">{opDate.toLocaleDateString()} {opDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</div>
                           <div className="text-[11px] font-bold text-brand mt-0.5">{displayTicketNumber}</div>

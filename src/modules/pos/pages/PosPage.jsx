@@ -256,8 +256,8 @@ export const PosPage = () => {
   // ⚖️ LÓGICA DE BALANZAS
   // =================================================================
   // 🔥 Formato de balanza resuelto para la sucursal activa (default = comportamiento legado KRETZ/SYSTEL)
-  const activeScaleFormat = posConfig.scaleBarcodeFormats?.[activeBranchId] === 'EAN13_GRAMS'
-      ? 'EAN13_GRAMS'
+  const activeScaleFormat = ['EAN13_GRAMS', 'EAN13_TOTAL'].includes(posConfig.scaleBarcodeFormats?.[activeBranchId])
+      ? posConfig.scaleBarcodeFormats[activeBranchId]
       : 'LEGACY';
 
   // 🔥 Balanzas "soporte total" (Kretz) configuradas para la sucursal activa
@@ -309,6 +309,29 @@ export const PosPage = () => {
                   toast.success(`⚖️ Balanza: ${product.name} - ${detectedQty}kg`);
                   setSearchTerm('');
                   return true;
+              }
+          }
+      }
+
+      // 🆕 FORMATO EAN13 TOTAL (opt-in por sucursal desde Configuración > POS > Balanza)
+      // Balanza que manda el IMPORTE TOTAL ya calculado en vez del peso — hay que derivar
+      // el peso dividiendo por el precio/kg del producto. Prefijo 1 dígito '2' + PLU 5
+      // dígitos + 1 dígito de control (ignorado) + total en PESOS 5 dígitos + verificador.
+      // Ej: 2-00082-0-01040-9 → PLU 82, total $1040 (a $2000/kg = 0.520kg).
+      if (activeScaleFormat === 'EAN13_TOTAL' && code[0] === '2' && isValidEAN13(code)) {
+          const pluCode = parseInt(code.substring(1, 6), 10).toString();
+          const total = parseInt(code.substring(7, 12), 10);
+          if (total > 0) {
+              const product = await productRepository.findByCode(pluCode);
+              if (product) {
+                  const unitPrice = parseFloat(product.price);
+                  if (unitPrice > 0) {
+                      const detectedQty = Math.round((total / unitPrice) * 1000) / 1000;
+                      addToCart(product, detectedQty);
+                      toast.success(`⚖️ Balanza: ${product.name} - ${detectedQty}kg`);
+                      setSearchTerm('');
+                      return true;
+                  }
               }
           }
       }

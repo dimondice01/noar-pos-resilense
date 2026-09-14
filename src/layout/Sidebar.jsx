@@ -144,6 +144,12 @@ const CloseShiftModalWrapper = ({ isOpen, onClose, onShiftClosed }) => {
         setProcessing(true); 
         try {
             await cashRepository.closeShift(shift.id, data);
+            // 🔥 FIX: closeShift solo actualiza Dexie — el activeShift cacheado en
+            // useShiftStore (RAM/localStorage, el que lee usePosController._verifyShift
+            // en el POS) seguía con status:'OPEN' hasta el próximo F5. El cajero cerraba
+            // caja acá pero el POS lo dejaba seguir vendiendo como si nada (la única rama
+            // que sí limpiaba esto era el conflicto de cierre por otro dispositivo).
+            useShiftStore.getState().clearShift();
             alert("✅ Turno Cerrado Correctamente.");
             onClose();
             if (onShiftClosed) onShiftClosed();

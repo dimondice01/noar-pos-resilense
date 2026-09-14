@@ -306,7 +306,17 @@ export const CashClosingModal = ({ isOpen, onClose, onConfirm, systemTotals, use
                                 <div className="bg-red-50 border-2 border-red-200 p-4 rounded-xl text-red-800 text-xs space-y-2">
                                     <div className="flex gap-2 items-start font-bold">
                                         <AlertTriangle size={16} className="shrink-0 mt-0.5"/>
-                                        <p>Diferencia grande detectada: {formatMoney(Math.abs(difference))} de {difference >= 0 ? 'sobrante' : 'faltante'}. Verifique el arqueo antes de continuar.</p>
+                                        {/* 🔥 FIX: esto rompía el arqueo ciego — antes mostraba el monto exacto
+                                        de la diferencia a CUALQUIERA acá, sin chequear canSeeExpected. Con
+                                        el botón "Volver a editar montos" (vuelve al Paso 2 → Atrás → Paso 1),
+                                        un cajero sin permiso podía ver acá cuánto le faltaba y volver a
+                                        "corregir" su declaración para que coincida — justo lo que el arqueo
+                                        ciego existe para evitar. Mismo permiso que el Paso 1. */}
+                                        {canSeeExpected ? (
+                                            <p>Diferencia grande detectada: {formatMoney(Math.abs(difference))} de {difference >= 0 ? 'sobrante' : 'faltante'}. Verifique el arqueo antes de continuar.</p>
+                                        ) : (
+                                            <p>Hay una diferencia importante entre lo declarado y lo esperado por el sistema. Un supervisor va a revisar el arqueo — confirmá que contaste bien antes de continuar.</p>
+                                        )}
                                     </div>
                                     <label className="flex items-center gap-2 cursor-pointer select-none pt-1">
                                         <input

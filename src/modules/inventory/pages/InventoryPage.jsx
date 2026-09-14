@@ -799,15 +799,27 @@ export const InventoryPage = () => {
 
             // ── CAMINO A: sin datos locales → esperar sync (inevitable) ──
             if (isFirstTime) {
+                // 🔥 FIX: en conexiones lentas/inestables, el getDocs() de Firestore dentro
+                // de syncProducts/syncInitialInventory podía tardar tanto (o no resolver
+                // limpio) que la pantalla quedaba colgada en "Sincronizando Stock..." para
+                // siempre — contra el principio offline-first (Dexie debería poder mostrarse
+                // igual aunque la nube tarde). Con timeout, seguimos igual con lo que haya
+                // en Dexie; el sync real sigue corriendo solo y onProductsSynced/inventory-sync
+                // recargan la UI cuando termine, aunque sea tarde.
+                const withTimeout = (promise, ms) => Promise.race([
+                    promise,
+                    new Promise(resolve => setTimeout(resolve, ms))
+                ]);
+
                 if (!isSilent) setLoadingMessage('Descargando Catálogo...');
-                await syncService.syncProducts(user.companyId);
+                await withTimeout(syncService.syncProducts(user.companyId).catch(console.error), 12000);
 
                 if (!isSilent) setLoadingMessage('Sincronizando Stock...');
-                if (canViewAllBranches) {
-                    await syncService.syncAllInventoryForOwner(user.companyId, branchesData);
-                } else {
-                    await syncService.syncInitialInventory(user.companyId, activeBranchId);
-                }
+                const inventorySyncTask = canViewAllBranches
+                    ? syncService.syncAllInventoryForOwner(user.companyId, branchesData)
+                    : syncService.syncInitialInventory(user.companyId, activeBranchId);
+                await withTimeout(inventorySyncTask.catch(console.error), 12000);
+
                 await loadFromLocal();
 
                 // ── CAMINO B: datos en Dexie → mostrar ya, sync en background ──

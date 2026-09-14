@@ -37,7 +37,7 @@ const isValidEAN13 = (code) => {
 };
 
 // 🔥 HELPER: PARSER DE CÓDIGOS DE BALANZA (KRETZ / SYSTEL / ETC)
-// `format`: 'LEGACY' (default, KRETZ/SYSTEL - comportamiento histórico sin cambios) | 'EAN13_GRAMS'
+// `format`: 'LEGACY' (default, KRETZ/SYSTEL - comportamiento histórico sin cambios) | 'EAN13_GRAMS' | 'EAN13_TOTAL'
 const parseScaleBarcode = (code, format = 'LEGACY') => {
     if (code.length !== 13) return { isScale: false };
 
@@ -54,6 +54,25 @@ const parseScaleBarcode = (code, format = 'LEGACY') => {
                 type: 'weight',
                 pluCode,
                 embeddedWeight: weightGrams / 1000
+            };
+        }
+    }
+
+    // 🆕 FORMATO EAN13 TOTAL (opt-in por sucursal): balanza que en vez de peso manda el
+    // IMPORTE TOTAL ya calculado — el peso hay que derivarlo dividiendo por el precio/kg
+    // del producto (igual que ya hace el caso 'price' de abajo para el formato legado).
+    // Prefijo 1 dígito '2' + PLU 5 dígitos + 1 dígito de control (ignorado) + total en
+    // PESOS 5 dígitos + dígito verificador EAN-13 real.
+    // Ej: 2-00082-0-01040-9 → PLU 82, total $1040 (a $2000/kg = 0.520kg).
+    if (format === 'EAN13_TOTAL' && code[0] === '2' && isValidEAN13(code)) {
+        const pluCode = parseInt(code.substring(1, 6), 10).toString();
+        const total = parseInt(code.substring(7, 12), 10);
+        if (total > 0) {
+            return {
+                isScale: true,
+                type: 'price',
+                pluCode,
+                embeddedTotal: total
             };
         }
     }
@@ -125,8 +144,8 @@ export const usePosController = () => {
     });
 
     // 🔥 Formato de balanza resuelto para la sucursal activa (default = comportamiento legado)
-    const activeScaleFormat = posConfig.scaleBarcodeFormats?.[activeBranchId] === 'EAN13_GRAMS'
-        ? 'EAN13_GRAMS'
+    const activeScaleFormat = ['EAN13_GRAMS', 'EAN13_TOTAL'].includes(posConfig.scaleBarcodeFormats?.[activeBranchId])
+        ? posConfig.scaleBarcodeFormats[activeBranchId]
         : 'LEGACY';
 
     // 🔥 Balanzas "soporte total" (Kretz) configuradas para la sucursal activa
@@ -769,8 +788,24 @@ export const usePosController = () => {
 
             const shiftBranch = String(currentShift.branchId).trim();
             const activeBranch = String(activeBranchId).trim();
-            if (shiftBranch !== activeBranch && user?.role !== 'OWNER') {
+            const branchMismatch = shiftBranch !== activeBranch;
+            if (branchMismatch && user?.role !== 'OWNER') {
                 throw new Error("⚠️ EL TURNO ABIERTO PERTENECE A OTRA SUCURSAL");
+            }
+            // 🔥 FIX: el OWNER puede navegar "Principal" viendo otras sucursales
+            // mientras deja una caja abierta en la suya. Antes esto vendía en
+            // silencio contra activeBranchId (la sucursal que está MIRANDO), no
+            // contra shiftBranch (la sucursal DUEÑA del turno) — las ventas de esa
+            // caja terminaban sumando en la sucursal equivocada. Avisamos y
+            // igual atribuimos la venta a la sucursal real del turno abierto.
+            if (branchMismatch) {
+                try {
+                    const dbLocal = await getDB();
+                    const branch = await dbLocal.branches.get(shiftBranch);
+                    toast(`⚠️ Vendiendo sobre la caja abierta en "${branch?.name || shiftBranch}" (no en la sucursal activa)`, { icon: '⚠️', duration: 6000 });
+                } catch {
+                    toast(`⚠️ Vendiendo sobre la caja abierta en otra sucursal (no en la activa)`, { icon: '⚠️', duration: 6000 });
+                }
             }
 
             const activeCompanyId = user?.companyId || user?.tenantId;
@@ -909,10 +944,10 @@ export const usePosController = () => {
                 
                 // 🔥 CRÍTICO PARA EL HISTORIAL Y DASHBOARD
                 amountPaid: totalPaidInCash, 
-                amountDebt: totalDebtAmount, 
-                
-                branchId: activeBranchId, 
-                shiftId: currentShift.id, 
+                amountDebt: totalDebtAmount,
+
+                branchId: currentShift.branchId,
+                shiftId: currentShift.id,
                 companyId: activeCompanyId,
                 operatorId: user.uid,
                 operatorName: user.name,
@@ -1029,7 +1064,7 @@ export const usePosController = () => {
                     if (p.method === 'employee_account' && p.employeeId) {
                         await employeeLedgerRepository.addTransaction({
                             companyId: activeCompanyId,
-                            branchId: activeBranchId,
+                            branchId: currentShift.branchId,
                             userId: p.employeeId,
                             type: 'POS_CONSUMPTION',
                             amount: p.total,
@@ -1081,8 +1116,8 @@ export const usePosController = () => {
                 payments: [{ method: 'internal', amount: 0, total: 0 }],
                 payment: { method: 'internal', amount: 0 }, 
                 method: 'INTERNAL',
-                branchId: activeBranchId, 
-                shiftId: currentShift.id, 
+                branchId: currentShift.branchId,
+                shiftId: currentShift.id,
                 companyId: activeCompanyId,
                 operatorId: user.uid, operatorName: user.name,
                 createdAt: new Date().toISOString(), status: 'COMPLETED', type: 'INTERNAL', notes: reason

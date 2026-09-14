@@ -312,7 +312,14 @@ app.post('/change-point-mode', async (req, res) => { // 👈 Cambiado el nombre 
 // ==================================================================
 app.post("/create-user", async (req, res) => {
   try {
-    const { email, password, name, role, companyId } = req.body; 
+    // 🔥 FIX: branchId/permissions/ledgerDebt no se leían acá — el frontend los
+    // mandaba pero se ignoraban en la creación real, y dependía de un segundo
+    // paso (updateDoc por email desde TeamPage.jsx) para completarlos. Si ese
+    // segundo paso fallaba (red, o Firestore todavía sin indexar el doc recién
+    // creado para el where('email',...)), el usuario quedaba SIN sucursal —
+    // y sin branchId, BranchSelector.isLocked da false: un cajero así deja de
+    // estar confinado a su sucursal. Ahora se persiste todo en un solo write.
+    const { email, password, name, role, companyId, branchId, permissions, ledgerDebt } = req.body;
     const authHeader = req.headers.authorization;
 
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -337,8 +344,11 @@ app.post("/create-user", async (req, res) => {
     await db.collection('users').doc(userRecord.uid).set({
       name,
       email,
-      role: role || 'CAJERO', 
+      role: role || 'CAJERO',
       companyId: companyId,
+      branchId: branchId || null,
+      permissions: permissions || null,
+      ledgerDebt: typeof ledgerDebt === 'number' ? ledgerDebt : 0,
       createdAt: new Date().toISOString(),
       createdBy: decodedToken.uid
     });

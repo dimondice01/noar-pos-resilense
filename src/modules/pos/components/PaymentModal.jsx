@@ -328,10 +328,28 @@ export const PaymentModal = ({
     // 5. LÓGICA DE NEGOCIO (ACCIONES)
     // ==========================================
 
+    // 🔔 ALERTA DE LÍMITE DE CUENTA CORRIENTE DE EMPLEADO — es un aviso, no un
+    // bloqueo: si el empleado tiene un alertLimit configurado (TeamPage) y esta
+    // carga lo superaría, pedimos confirmación explícita antes de seguir.
+    const checkEmployeeAlertLimit = (employeeId, amountToCharge) => {
+        const employee = employees.find(e => e.uid === employeeId);
+        const limit = Number(employee?.alertLimit) || 0;
+        if (!employee || limit <= 0) return true; // sin límite configurado = sin aviso
+
+        const currentDebt = Number(employee.ledgerDebt) || 0;
+        const projectedDebt = currentDebt + (Number(amountToCharge) || 0);
+        if (projectedDebt <= limit) return true;
+
+        return window.confirm(
+            `⚠️ ${employee.name || employee.email} va a superar su límite de $${limit.toLocaleString('es-AR')} en cuenta corriente (quedaría en $${projectedDebt.toLocaleString('es-AR')}).\n\n¿Confirmás cargar esta venta a su cuenta igual?`
+        );
+    };
+
     const handleAddSplitPayment = () => {
         const amount = parseFloat(amountToPay);
         if (isNaN(amount) || amount <= 0) return;
         if (amount > remainingBase + 1) return alert("El monto excede el saldo restante.");
+        if (method === 'employee_account' && !checkEmployeeAlertLimit(selectedEmployeeId, amount)) return;
 
         const splitInterestRate = selectedRate ? selectedRate.interest : (posConfig?.paymentSurcharges?.[method] || 0);
         const interestAmount = amount * (splitInterestRate / 100);
@@ -411,6 +429,8 @@ export const PaymentModal = ({
         let finalMethod = method;
         if (['manual_card', 'point', 'clover', 'payway'].includes(method)) finalMethod = 'card';
         if (method === 'mp') finalMethod = 'mercadopago';
+
+        if (method === 'employee_account' && !checkEmployeeAlertLimit(selectedEmployeeId, debtValue)) return;
 
         onConfirm({
             method: finalMethod,

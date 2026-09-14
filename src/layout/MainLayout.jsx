@@ -17,7 +17,7 @@ import { collection, query, where, getDocs, limit } from 'firebase/firestore';
 import { db } from '../database/firebase';
 
 export const MainLayout = () => {
-  const { user, loading, activeBranchId } = useAuthStore();
+  const { user, isLoading, activeBranchId } = useAuthStore();
   const { sidebarCollapsed } = useUiStore();
   const { activeShift, setActiveShift } = useShiftStore(); 
   
@@ -70,7 +70,7 @@ export const MainLayout = () => {
         }
     };
 
-    if (!loading) {
+    if (!isLoading) {
         initSystem();
     }
 
@@ -85,7 +85,7 @@ export const MainLayout = () => {
         // Limpiamos también los listeners de startRealTimeListeners (config, productos, ventas)
         syncService.stopListeners();
     };
-  }, [user, loading, activeBranchId]); // Se reinicia si cambia el usuario o la sucursal
+  }, [user, isLoading, activeBranchId]); // Se reinicia si cambia el usuario o la sucursal
 
 
   // =================================================================
@@ -135,17 +135,17 @@ export const MainLayout = () => {
       }
     };
 
-    if (!loading) {
+    if (!isLoading) {
         restoreShiftSession();
     }
-  }, [user, loading, activeShift, setActiveShift]);
+  }, [user, isLoading, activeShift, setActiveShift]);
 
 
   // =================================================================
   // 🎨 RENDERIZADO
   // =================================================================
   
-  if (loading) {
+  if (isLoading) {
       return <div className="min-h-screen bg-sys-50 flex items-center justify-center text-sys-400">Cargando sistema...</div>; 
   }
 

@@ -334,6 +334,7 @@ const EditUserModal = ({ isOpen, onClose, employee, branches, onSaved }) => {
     const [role, setRole] = useState('CAJERO');
     const [branchId, setBranchId] = useState('');
     const [permissions, setPermissions] = useState(DEFAULT_PERMISSIONS);
+    const [alertLimit, setAlertLimit] = useState('');
     const [isSaving, setIsSaving] = useState(false);
 
     useEffect(() => {
@@ -342,6 +343,7 @@ const EditUserModal = ({ isOpen, onClose, employee, branches, onSaved }) => {
             setRole(employee.role || 'CAJERO');
             setBranchId(employee.branchId || '');
             setPermissions({ ...DEFAULT_PERMISSIONS, ...(employee.permissions || {}) });
+            setAlertLimit(employee.alertLimit ? String(employee.alertLimit) : '');
         }
     }, [isOpen, employee]);
 
@@ -360,7 +362,10 @@ const EditUserModal = ({ isOpen, onClose, employee, branches, onSaved }) => {
 
         // 🔥 Solo datos y permisos. NUNCA incluir ledgerDebt acá: la deuda se maneja
         // exclusivamente vía employeeLedgerRepository (ver LiquidationModal).
-        const updates = { name: name.trim(), role, branchId: branchId || null, permissions: finalPermissions };
+        // alertLimit es solo un umbral de aviso (PaymentModal/lista de empleados),
+        // no afecta el cálculo de deuda ni bloquea nada por sí solo.
+        const parsedAlertLimit = alertLimit === '' ? null : Math.max(0, parseFloat(alertLimit) || 0);
+        const updates = { name: name.trim(), role, branchId: branchId || null, permissions: finalPermissions, alertLimit: parsedAlertLimit };
 
         setIsSaving(true);
         try {
@@ -461,6 +466,26 @@ const EditUserModal = ({ isOpen, onClose, employee, branches, onSaved }) => {
                         </div>
                     </div>
 
+                    <div>
+                        <label className="text-[11px] font-bold text-sys-500 uppercase tracking-wider ml-1 flex items-center gap-1">
+                            <AlertTriangle size={12} className="text-amber-500" /> Límite de Alerta (Cta. Corriente)
+                        </label>
+                        <div className="relative mt-1">
+                            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sys-400 text-sm font-bold">$</span>
+                            <input
+                                type="number"
+                                min="0"
+                                placeholder="Sin límite (no avisa)"
+                                className="w-full bg-sys-50 border border-sys-200 rounded-xl pl-7 pr-3 py-2.5 text-sm outline-none focus:border-brand transition-all"
+                                value={alertLimit}
+                                onChange={e => setAlertLimit(e.target.value)}
+                            />
+                        </div>
+                        <p className="text-[10px] text-sys-400 mt-1 ml-1">
+                            Si su deuda de cuenta corriente supera este monto, avisa en rojo acá y le pide confirmación al cajero antes de cargarle una venta nueva. Vacío = sin aviso.
+                        </p>
+                    </div>
+
                     {role === 'CAJERO' && (
                         <div className="pt-2 border-t border-sys-200 mt-2 space-y-4">
                             <PermissionsSwitchGroups permissions={permissions} togglePermission={togglePermission} />
@@ -515,7 +540,7 @@ export const TeamPage = () => {
       afipAlwaysOn: false
   });
   const [savingPosConfig, setSavingPosConfig] = useState(false);
-  const [newTotalProfile, setNewTotalProfile] = useState({ prefix: '', categoryName: '' });
+  const [newTotalProfile, setNewTotalProfile] = useState({ prefix: '', categoryName: '', isCents: true });
 
   // ESTADO MODAL DE LIQUIDACIÓN
   const [selectedEmployeeForLedger, setSelectedEmployeeForLedger] = useState(null);
@@ -605,30 +630,35 @@ export const TeamPage = () => {
           branchesToSet = await dbLocal.branches.where('companyId').equals(currentUser.companyId).toArray();
       } catch (e) { console.warn("Dexie error, falling back to cloud"); }
 
-      // Si no hay datos locales, forzamos bajada de nube silenciosa
-      if (usersToSet.length === 0 || branchesToSet.length === 0) {
+      // Usuarios: si no hay datos locales, forzamos bajada de nube silenciosa
+      // (colección potencialmente grande, mantenemos el criterio "solo si está vacío").
+      if (usersToSet.length === 0) {
           const usersQuery = query(
-              collection(firestoreDB, 'users'), 
+              collection(firestoreDB, 'users'),
               where('companyId', '==', currentUser.companyId)
           );
-          
-          const branchesQuery = query(
-              collection(firestoreDB, 'companies', currentUser.companyId, 'branches')
-          );
-          
-          const [usersSnap, branchesSnap] = await Promise.all([
-              getDocs(usersQuery),
-              getDocs(branchesQuery)
-          ]);
-
+          const usersSnap = await getDocs(usersQuery);
           usersToSet = usersSnap.docs.map(doc => ({ uid: doc.id, id: doc.id, ...doc.data() }));
-          branchesToSet = branchesSnap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+          try { if (usersToSet.length > 0) await dbLocal.users.bulkPut(usersToSet); } catch (e) { }
+      }
 
-          // Guardar caché silencioso
+      // 🔥 FIX: sucursales SIEMPRE se refrescan de la nube si hay internet — es una
+      // colección chica (unas pocas por empresa), y "solo si está vacío" dejaba
+      // invisible cualquier sucursal creada después del primer login de este
+      // dispositivo (mismo bug que BranchSelector.jsx/syncService.js). Sin esto,
+      // un admin no podía ni ver la sucursal nueva para asignarle un cajero.
+      if (navigator.onLine) {
           try {
-              if (usersToSet.length > 0) await dbLocal.users.bulkPut(usersToSet);
-              if (branchesToSet.length > 0) await dbLocal.branches.bulkPut(branchesToSet);
-          } catch (e) { }
+              const branchesQuery = query(
+                  collection(firestoreDB, 'companies', currentUser.companyId, 'branches')
+              );
+              const branchesSnap = await getDocs(branchesQuery);
+              const cloudBranches = branchesSnap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+              if (cloudBranches.length > 0) {
+                  branchesToSet = cloudBranches;
+                  await dbLocal.branches.bulkPut(branchesToSet);
+              }
+          } catch (e) { console.warn("No se pudo refrescar sucursales desde la nube, uso el cache local:", e); }
       }
 
       setUsers(usersToSet);
@@ -680,15 +710,15 @@ export const TeamPage = () => {
       }
   };
 
-  const handleToggleScaleFormat = (checked) => {
+  const handleSetScaleFormat = (format) => {
       if (!activeBranchId || activeBranchId === 'ALL') {
           toast.error("Elegí una sucursal específica para activar esta opción.");
           return;
       }
       setPosConfig(prev => {
           const scaleBarcodeFormats = { ...prev.scaleBarcodeFormats };
-          if (checked) scaleBarcodeFormats[activeBranchId] = 'EAN13_GRAMS';
-          else delete scaleBarcodeFormats[activeBranchId];
+          if (format === 'LEGACY') delete scaleBarcodeFormats[activeBranchId];
+          else scaleBarcodeFormats[activeBranchId] = format;
           return { ...prev, scaleBarcodeFormats };
       });
   };
@@ -717,7 +747,7 @@ export const TeamPage = () => {
           return;
       }
 
-      const newProfile = { id: `stp_${Date.now()}`, prefix, categoryName: categoryName.toUpperCase() };
+      const newProfile = { id: `stp_${Date.now()}`, prefix, categoryName: categoryName.toUpperCase(), isCents: newTotalProfile.isCents !== false };
       setPosConfig(prev => ({
           ...prev,
           scaleTotalProfiles: {
@@ -725,7 +755,7 @@ export const TeamPage = () => {
               [activeBranchId]: [...currentProfiles, newProfile]
           }
       }));
-      setNewTotalProfile({ prefix: '', categoryName: '' });
+      setNewTotalProfile({ prefix: '', categoryName: '', isCents: true });
   };
 
   const handleDeleteTotalProfile = (profileId) => {
@@ -1162,6 +1192,8 @@ export const TeamPage = () => {
                     filteredUsers.map((u) => {
                         const debt = parseFloat(u.ledgerDebt || 0);
                         const hasDebt = debt > 0;
+                        const alertLimit = parseFloat(u.alertLimit || 0);
+                        const overAlertLimit = alertLimit > 0 && debt > alertLimit;
                         const perms = u.permissions || {};
 
                         return (
@@ -1195,17 +1227,19 @@ export const TeamPage = () => {
                             </div>
                             
                             <div className="flex items-center gap-4 self-end md:self-auto w-full md:w-auto justify-end">
-                                <button 
+                                <button
                                     onClick={() => setSelectedEmployeeForLedger(u)}
                                     className={cn(
                                         "px-3 py-1.5 rounded-lg border transition-all text-xs font-bold flex items-center gap-2",
-                                        hasDebt ? "bg-red-50 text-red-600 border-red-200 hover:bg-red-100 shadow-sm" : "bg-white text-sys-400 border-sys-200 hover:border-sys-300 hover:text-sys-600"
+                                        overAlertLimit ? "bg-red-600 text-white border-red-700 hover:bg-red-700 shadow-md animate-pulse"
+                                            : hasDebt ? "bg-red-50 text-red-600 border-red-200 hover:bg-red-100 shadow-sm"
+                                            : "bg-white text-sys-400 border-sys-200 hover:border-sys-300 hover:text-sys-600"
                                     )}
-                                    title="Ver Cuenta Corriente"
+                                    title={overAlertLimit ? `Superó el límite de alerta ($${alertLimit.toLocaleString('es-AR')})` : "Ver Cuenta Corriente"}
                                 >
-                                    <Wallet size={14}/>
+                                    {overAlertLimit ? <AlertTriangle size={14}/> : <Wallet size={14}/>}
                                     {hasDebt ? `Debe $${debt.toLocaleString('es-AR')}` : "Al día"}
-                                    <ArrowRightCircle size={14} className={cn("opacity-50", hasDebt && "text-red-500")}/>
+                                    <ArrowRightCircle size={14} className={cn("opacity-50", hasDebt && !overAlertLimit && "text-red-500")}/>
                                 </button>
 
                                 <button
@@ -1516,20 +1550,39 @@ export const TeamPage = () => {
                   <Card className="p-6 border-purple-100 shadow-lg shadow-purple-500/5 relative overflow-hidden">
                       <div className="absolute -right-4 -top-4 w-24 h-24 bg-purple-50 rounded-full opacity-50 pointer-events-none"></div>
 
-                      <div className="flex items-start justify-between gap-4 relative z-10">
-                          <div>
-                              <h3 className="font-bold text-lg text-sys-900 flex items-center gap-2">
-                                  <Scale className="text-purple-500" size={20} /> Balanza
-                              </h3>
-                              <p className="text-xs text-sys-500 mt-1 max-w-sm">
-                                  <strong>Activar EAN13 Gramos:</strong> usa el formato de código de barras estándar (peso en gramos embebido + dígito verificador) en vez del formato KRETZ/SYSTEL por defecto. Aplica únicamente a la sucursal <strong className="text-sys-700">{getBranchName(activeBranchId)}</strong>.
-                              </p>
+                      <div className="relative z-10">
+                          <h3 className="font-bold text-lg text-sys-900 flex items-center gap-2">
+                              <Scale className="text-purple-500" size={20} /> Balanza
+                          </h3>
+                          <p className="text-xs text-sys-500 mt-1 max-w-md">
+                              Formato de código de barras que emite la balanza de la sucursal <strong className="text-sys-700">{getBranchName(activeBranchId)}</strong>.
+                          </p>
+
+                          <div className="flex flex-col sm:flex-row gap-2 mt-4">
+                              {[
+                                  { id: 'LEGACY', label: 'KRETZ / SYSTEL (default)', desc: 'PLU + peso, heurística histórica' },
+                                  { id: 'EAN13_GRAMS', label: 'EAN13 Gramos', desc: 'PLU + peso en gramos embebido' },
+                                  { id: 'EAN13_TOTAL', label: 'EAN13 Total ($)', desc: 'PLU + importe total, el peso se calcula' }
+                              ].map(opt => {
+                                  const current = posConfig.scaleBarcodeFormats?.[activeBranchId] || 'LEGACY';
+                                  const isSelected = current === opt.id;
+                                  return (
+                                      <button
+                                          key={opt.id}
+                                          type="button"
+                                          onClick={() => handleSetScaleFormat(opt.id)}
+                                          disabled={!activeBranchId || activeBranchId === 'ALL'}
+                                          className={cn(
+                                              "flex-1 text-left p-3 rounded-xl border-2 transition-all disabled:opacity-50 disabled:cursor-not-allowed",
+                                              isSelected ? "border-purple-500 bg-purple-50" : "border-sys-200 hover:border-purple-200"
+                                          )}
+                                      >
+                                          <p className={cn("text-xs font-bold", isSelected ? "text-purple-700" : "text-sys-800")}>{opt.label}</p>
+                                          <p className="text-[10px] text-sys-500 mt-0.5">{opt.desc}</p>
+                                      </button>
+                                  );
+                              })}
                           </div>
-                          <Switch
-                              checked={posConfig.scaleBarcodeFormats?.[activeBranchId] === 'EAN13_GRAMS'}
-                              onCheckedChange={handleToggleScaleFormat}
-                              disabled={!activeBranchId || activeBranchId === 'ALL'}
-                          />
                       </div>
 
                       {(!activeBranchId || activeBranchId === 'ALL') && (
@@ -1558,6 +1611,9 @@ export const TeamPage = () => {
                                           <div className="flex items-center gap-3">
                                               <span className="font-mono text-xs font-bold text-purple-600 bg-purple-50 px-2 py-1 rounded">{profile.prefix}</span>
                                               <span className="text-sm font-bold text-sys-800">{profile.categoryName}</span>
+                                              <span className={cn("text-[9px] font-bold uppercase px-1.5 py-0.5 rounded border", profile.isCents === false ? "bg-amber-50 text-amber-600 border-amber-200" : "bg-sys-100 text-sys-500 border-sys-200")}>
+                                                  {profile.isCents === false ? 'Pesos' : 'Centavos'}
+                                              </span>
                                           </div>
                                           <button
                                               type="button"
@@ -1590,6 +1646,26 @@ export const TeamPage = () => {
                                   onChange={(e) => setNewTotalProfile(prev => ({ ...prev, categoryName: e.target.value }))}
                                   disabled={!activeBranchId || activeBranchId === 'ALL'}
                               />
+                              <div className="flex bg-sys-100 p-1 rounded-xl shrink-0">
+                                  <button
+                                      type="button"
+                                      onClick={() => setNewTotalProfile(prev => ({ ...prev, isCents: true }))}
+                                      disabled={!activeBranchId || activeBranchId === 'ALL'}
+                                      title="El importe de 5 dígitos viene en centavos (ej: 01040 = $10,40)"
+                                      className={cn("px-3 py-2 rounded-lg text-xs font-bold transition-all disabled:opacity-50", newTotalProfile.isCents !== false ? "bg-white shadow-sm text-purple-600" : "text-sys-500")}
+                                  >
+                                      Centavos
+                                  </button>
+                                  <button
+                                      type="button"
+                                      onClick={() => setNewTotalProfile(prev => ({ ...prev, isCents: false }))}
+                                      disabled={!activeBranchId || activeBranchId === 'ALL'}
+                                      title="El importe de 5 dígitos viene en pesos directos (ej: 01040 = $1040)"
+                                      className={cn("px-3 py-2 rounded-lg text-xs font-bold transition-all disabled:opacity-50", newTotalProfile.isCents === false ? "bg-white shadow-sm text-purple-600" : "text-sys-500")}
+                                  >
+                                      Pesos
+                                  </button>
+                              </div>
                               <Button
                                   type="button"
                                   onClick={handleAddTotalProfile}

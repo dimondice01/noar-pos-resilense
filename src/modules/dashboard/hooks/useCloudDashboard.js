@@ -344,12 +344,16 @@ export const useCloudDashboard = () => {
                 const localDb = await getDB();
 
                 // Carga productos e inventario en 2 queries planas en lugar de 1 por producto
-                const [products, allInventory] = await Promise.all([
-                    localDb.products.filter(p => !p.deleted).toArray(),
+                // 🔥 FIX PERFORMANCE: Table.filter() de Dexie escanea fila por fila con overhead
+                // de promesa por fila (medido en 22+ segundos con ~4500 productos en hardware
+                // débil) — toArray() + filter() nativo en el array es muchísimo más rápido.
+                const [rawProducts, allInventory] = await Promise.all([
+                    localDb.products.toArray(),
                     activeBranchId && activeBranchId !== 'ALL'
                         ? localDb.inventory.where('branchId').equals(activeBranchId).toArray()
                         : localDb.inventory.toArray()
                 ]);
+                const products = rawProducts.filter(p => !p.deleted);
 
                 // Índice plano: productId → stock total
                 const stockIndex = {};

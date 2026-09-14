@@ -145,15 +145,25 @@ export const salesRepository = {
     
     if (!user?.companyId) throw new Error("Error crítico: Sesión inválida.");
 
-    // 🔥 BLINDAJE DE SUCURSAL: Forzamos la sucursal activa. Nunca adivinar con
-    // 'main' — con más de una sucursal real ese id no matchea ninguna y la
-    // venta queda huérfana (invisible en reportes de esa sucursal).
-    const targetBranchId = activeBranchId || user.branchId;
+    const isBudget = saleData.type === 'BUDGET';
+
+    // Obtenemos turno actual para asociar (si existe) — ANTES de resolver la
+    // sucursal, porque la sucursal real de la venta es la del turno.
+    const currentShift = await cashRepository.getCurrentShift();
+
+    // 🔥 BLINDAJE DE SUCURSAL: la venta pertenece a la sucursal del TURNO
+    // ABIERTO que la respalda, no a la que el usuario esté mirando en
+    // Principal (activeBranchId) — un OWNER puede dejar una caja abierta en
+    // una sucursal y navegar viendo otra, y antes la venta se atribuía a la
+    // que estaba mirando. Los presupuestos no tienen turno, ahí sí usamos la
+    // sucursal activa. Nunca adivinar con 'main' — con más de una sucursal
+    // real ese id no matchea ninguna y la venta queda huérfana.
+    const targetBranchId = (!isBudget && currentShift?.branchId) || activeBranchId || user.branchId;
     if (!targetBranchId) throw new Error("Error Crítico: No se pudo determinar la sucursal activa para registrar la venta.");
-    
+
     const saleId = saleData.id || `sale_${crypto.randomUUID()}`;
-    const timestamp = saleData.createdAt || new Date().toISOString(); 
-    
+    const timestamp = saleData.createdAt || new Date().toISOString();
+
     // 1. GESTIÓN DE NUMERACIÓN LOCAL
     let finalNumber = saleData.number;
     let configKeyToUpdate = null;
@@ -161,17 +171,13 @@ export const salesRepository = {
 
     if (!finalNumber) {
         // 🔥 Si es presupuesto forzamos la letra P
-        const isBudget = saleData.type === 'BUDGET';
         const docType = isBudget ? 'P' : (saleData.afip?.status === 'APPROVED' ? saleData.afip.cbteLetra : 'X');
-        
+
         const gen = await this._generateTicketNumber(docType, targetBranchId);
         finalNumber = gen.finalNumber;
         configKeyToUpdate = gen.configKey;
         nextSequenceVal = gen.nextSequence;
     }
-
-    // Obtenemos turno actual para asociar (si existe)
-    const currentShift = await cashRepository.getCurrentShift();
 
     // 2. PROCESAMIENTO FINANCIERO (PPP & MARGEN)
     const enrichedItems = saleData.items.map(item => {
@@ -198,9 +204,6 @@ export const salesRepository = {
     });
 
     const totalProfit = enrichedItems.reduce((acc, item) => acc + item.profit, 0);
-    
-    // 🔥 CONTROL DE TIPO DE OPERACIÓN
-    const isBudget = saleData.type === 'BUDGET';
 
     // 3. ARMADO DEL OBJETO VENTA MAESTRO
     const sale = {
@@ -807,6 +810,51 @@ export const salesRepository = {
     const dbLocal = await getDB();
     const all = await dbLocal.sales.toArray();
     return all.filter(s => s.client?.id === clientId && s.status !== 'abandoned');
+  },
+
+  // =========================================
+  // 🗑️ BORRADO DEFINITIVO (venta huérfana / mal atribuida a otra sucursal)
+  // =========================================
+  // Uso puntual: ventas que quedaron mal (ej: cruzadas de otra sucursal) y ya se
+  // borraron a mano de Firestore. Repone stock y elimina kardex/cash_movements
+  // asociados en Dexie, y limpia esos mismos docs en Firestore si siguen ahí.
+  // 🔥 NO toca shift.runningTotals (contador atómico de caja) — si la venta ya
+  // sumó a un turno cerrado, ese ajuste hay que hacerlo aparte a propósito.
+  async hardDeleteSale(saleId) {
+    const dbLocal = await getDB();
+    const { user } = useAuthStore.getState();
+    if (!user?.companyId) throw new Error("Sesión inválida.");
+
+    const sale = await dbLocal.sales.get(saleId);
+    if (!sale) throw new Error("La venta ya no existe en este dispositivo.");
+
+    const relatedMovements = await dbLocal.movements.where('refId').equals(saleId).toArray();
+    const relatedCashMovements = await dbLocal.cash_movements.where('referenceId').equals(saleId).toArray();
+
+    // Reponer stock (mismo mecanismo que "Anular" en SalesPage) — usamos el
+    // branchId real de la venta, no activeBranchId.
+    if (sale.type !== 'BUDGET' && Array.isArray(sale.items)) {
+        for (const item of sale.items) {
+            await productRepository.addStock(item.id, item.quantity, `Borrado definitivo #${sale.number || saleId}`, user?.name, sale.branchId);
+        }
+    }
+
+    await dbLocal.sales.delete(saleId);
+    if (relatedMovements.length) await dbLocal.movements.bulkDelete(relatedMovements.map(m => m.id));
+    if (relatedCashMovements.length) await dbLocal.cash_movements.bulkDelete(relatedCashMovements.map(m => m.id));
+
+    if (navigator.onLine) {
+        try {
+            const { deleteDoc } = await import('firebase/firestore');
+            await deleteDoc(doc(db, `companies/${user.companyId}/sales`, saleId)).catch(() => {});
+            await Promise.all(relatedMovements.map(m => deleteDoc(doc(db, `companies/${user.companyId}/movements`, String(m.id))).catch(() => {})));
+            await Promise.all(relatedCashMovements.map(m => deleteDoc(doc(db, `companies/${user.companyId}/cash_movements`, String(m.id))).catch(() => {})));
+        } catch (e) {
+            console.warn('No se pudo limpiar completo en la nube (offline o ya borrado):', e);
+        }
+    }
+
+    return { restoredItems: sale.type !== 'BUDGET' ? (sale.items?.length || 0) : 0, deletedMovements: relatedMovements.length, deletedCashMovements: relatedCashMovements.length };
   }
 };
 

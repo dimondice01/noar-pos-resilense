@@ -50,15 +50,29 @@ db.on('populate', (tx) => {
 // 🚀 ACCESO SEGURO & SINGLETON PATTERN
 // =================================================================
 
+// 🔥 FIX: en un arranque con muchos componentes pidiendo getDB() casi a la vez
+// (Sidebar, MainLayout, InventoryPage, POS...), antes cada uno veía db.isOpen()
+// === false y llamaba a db.open() por su cuenta, EN PARALELO — en PCs lentas esa
+// ventana de carrera se agranda y termina abriendo la base varias veces seguidas,
+// compitiendo entre sí (visible como el log "Motor Local-First" repetido N veces).
+// Ahora todas las llamadas concurrentes esperan la MISMA promesa de apertura.
+let openPromise = null;
+
 export const getDB = async () => {
-  if (!db.isOpen()) {
-      try {
-        await db.open();
-        console.log("💽 Motor Local-First (Dexie) V18 operativo e indexado.");
-      } catch (err) {
-        console.error("💥 Falla Crítica en Motor Local:", err);
-        throw err; 
-      }
+  if (db.isOpen()) return db;
+
+  if (!openPromise) {
+      openPromise = db.open()
+        .then(() => {
+            console.log("💽 Motor Local-First (Dexie) V18 operativo e indexado.");
+        })
+        .catch((err) => {
+            console.error("💥 Falla Crítica en Motor Local:", err);
+            openPromise = null; // permite reintentar en la próxima llamada
+            throw err;
+        });
   }
+
+  await openPromise;
   return db;
 };
