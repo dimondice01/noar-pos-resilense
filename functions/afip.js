@@ -182,11 +182,16 @@ async function emitirFactura(total, cliente = {}, esNotaCredito = false, comprob
   
   // 1. Configuración y Auth
   const config = {
-      cuit: rawConfig.cuit.replace(/[^0-9]/g, ''), 
+      cuit: rawConfig.cuit.replace(/[^0-9]/g, ''),
       ptoVta: parseInt(rawConfig.ptoVta) || 1,
       certPem: cleanAndFormatKey(rawConfig.cert, 'CERT'),
       keyPem: cleanAndFormatKey(rawConfig.key, 'KEY'),
-      taxCondition: rawConfig.taxCondition || 'MONOTRIBUTO' // Default seguro
+      taxCondition: rawConfig.taxCondition || 'MONOTRIBUTO', // Default seguro
+      // 🔥 RG 5762/2025: Factura A con leyenda "PAGO EN CBU INFORMADA" — habilitación
+      // especial para sujetos que no acreditan solvencia patrimonial. El CbteTipo NO
+      // cambia (sigue siendo Factura A normal, código 1/3), esto es solo para que el
+      // comprobante impreso/ticket muestre la leyenda obligatoria junto a la "A".
+      cbuLeyenda: rawConfig.cbuLeyenda || null
   };
 
   const auth = await getValidToken(config);
@@ -326,17 +331,27 @@ async function emitirFactura(total, cliente = {}, esNotaCredito = false, comprob
           tipoCodAut: "E", codAut: parseInt(detalle.CAE)
       });
 
+      const esFacturaA = CBTE_TIPO === CBTE_TIPOS.FACTURA_A || CBTE_TIPO === CBTE_TIPOS.NC_A;
+
       return {
-        success: true, 
-        cae: detalle.CAE, 
-        vencimiento: detalle.CAEFchVto, 
-        numero: proximo, 
-        ptoVta: config.ptoVta, 
+        success: true,
+        cae: detalle.CAE,
+        vencimiento: detalle.CAEFchVto,
+        numero: proximo,
+        ptoVta: config.ptoVta,
         tipo: CBTE_TIPO,
         letra: CBTE_TIPO === 1 || CBTE_TIPO === 3 ? 'A' : (CBTE_TIPO === 6 || CBTE_TIPO === 8 ? 'B' : 'C'), // Helper visual
         qr_data: `https://www.afip.gob.ar/fe/qr/?p=${Buffer.from(qrJson).toString('base64')}`,
         impNeto: impNeto,    // 🔥 NUEVO: Exponemos el Neto Calculado
-        impIVA: impIVA       // 🔥 NUEVO: Exponemos el IVA Calculado
+        impIVA: impIVA,      // 🔥 NUEVO: Exponemos el IVA Calculado
+        // 🔥 RG 5762/2025: solo va en Factura A/NC-A con la modalidad activada en Integraciones.
+        // Queda grabado en el comprobante (no se recalcula después) para que el ticket lo muestre
+        // aunque más adelante se desactive o cambie el CBU en la config de la sucursal.
+        ...(esFacturaA && config.cbuLeyenda?.activa ? {
+            leyenda: 'PAGO EN CBU INFORMADA',
+            cbu: config.cbuLeyenda.cbu || '',
+            bancoCbu: config.cbuLeyenda.banco || ''
+        } : {})
       };
 
   } catch (error) {

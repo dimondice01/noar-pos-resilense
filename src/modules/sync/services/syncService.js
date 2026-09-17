@@ -92,6 +92,7 @@ export const syncService = {
           minPrice: parseFloat(data.minPrice) || 0,
           minStock: parseFloat(data.minStock) || 5,
           isWeighable: data.isWeighable === true,
+          requiresUnitSku: data.requiresUnitSku === true,
           priceTiers: Array.isArray(data.priceTiers) ? data.priceTiers : [],
           wholesalePricing: Array.isArray(data.wholesalePricing) ? data.wholesalePricing : [],
           isCombo: data.isCombo === true,
@@ -166,8 +167,13 @@ export const syncService = {
               cbteLetra: data.afip.cbteLetra || null,
               ptoVta: data.afip.ptoVta || null,
               qr_data: data.afip.qr_data || null,
-              impNeto: data.afip.impNeto || 0, 
-              impIVA: data.afip.impIVA || 0    
+              impNeto: data.afip.impNeto || 0,
+              impIVA: data.afip.impIVA || 0,
+              // 🔥 RG 5762/2025: mismo riesgo que requiresUnitSku — si no se preservan acá,
+              // el "eco" de la nube borra la leyenda/CBU apenas sincroniza en otro dispositivo.
+              leyenda: data.afip.leyenda || null,
+              cbu: data.afip.cbu || null,
+              bancoCbu: data.afip.bancoCbu || null
           } : null,
           updatedAt: data.updatedAt?.toDate ? data.updatedAt.toDate().toISOString() : (data.updatedAt || data.date || new Date().toISOString()),
           syncStatus: 'synced'

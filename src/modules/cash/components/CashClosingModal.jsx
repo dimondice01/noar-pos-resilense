@@ -20,6 +20,7 @@ export const CashClosingModal = ({ isOpen, onClose, onConfirm, systemTotals, use
     const { user } = useAuthStore();
     const isSuperUser = user?.role === 'ADMIN' || user?.role === 'OWNER';
     const canSeeExpected = isSuperUser || user?.permissions?.canSeeExpectedCash === true;
+    const isMerged = systemTotals?.mergedShiftIds?.length > 1;
 
     // ESTADOS
     const [step, setStep] = useState(1); // 1: Conteo, 2: Distribución, 3: Ticket Declaración
@@ -127,14 +128,31 @@ export const CashClosingModal = ({ isOpen, onClose, onConfirm, systemTotals, use
                     {/* ================================================= */}
                     {step === 1 && (
                       <div className="space-y-6 animate-in slide-in-from-right-4 duration-300 max-w-sm mx-auto">
-                        
+
+                        {/* 🔥 AVISO DE FUSIÓN MULTI-PC: la misma caja se abrió en 2 dispositivos
+                        (carrera al abrir turno). El total de acá abajo ya incluye ambos —
+                        el otro turno se cierra automáticamente al confirmar este cierre. */}
+                        {systemTotals?.mergedShiftIds?.length > 1 && (
+                            <div className="bg-purple-50 p-4 rounded-xl border border-purple-100 text-purple-800 text-sm flex gap-3">
+                               <AlertTriangle className="shrink-0 mt-0.5 text-purple-600" size={20}/>
+                               <div>
+                                   <p className="font-black text-purple-900">Ambos Turnos</p>
+                                   <p className="opacity-90 text-xs mt-1 leading-relaxed">Esta caja estaba abierta en 2 dispositivos a la vez — al confirmar, se cierran los dos juntos.</p>
+                               </div>
+                            </div>
+                        )}
+
                         {/* 🔥 PANEL INTELIGENTE BASADO EN PERMISOS */}
                         {canSeeExpected ? (
                             <div className="bg-emerald-50 p-4 rounded-xl border border-emerald-100 text-emerald-800 text-sm flex gap-3">
                                <Eye className="shrink-0 mt-0.5 text-emerald-600" size={20}/>
                                <div>
                                    <p className="font-black text-emerald-900">Modo Transparente</p>
-                                   <p className="opacity-90 text-xs mt-1 leading-relaxed">Según el sistema, debes tener <strong>{formatMoney(expectedCash)}</strong> en tu cajón.</p>
+                                   <p className="opacity-90 text-xs mt-1 leading-relaxed">
+                                       {isMerged
+                                           ? <>Según el sistema, entre las <strong>2 cajas</strong> deberían tener <strong>{formatMoney(expectedCash)}</strong> en total.</>
+                                           : <>Según el sistema, debes tener <strong>{formatMoney(expectedCash)}</strong> en tu cajón.</>}
+                                   </p>
                                </div>
                             </div>
                         ) : (
@@ -142,13 +160,17 @@ export const CashClosingModal = ({ isOpen, onClose, onConfirm, systemTotals, use
                                <EyeOff className="shrink-0 mt-0.5 text-blue-600" size={20}/>
                                <div>
                                    <p className="font-black text-blue-900">Auditoría Ciega</p>
-                                   <p className="opacity-90 text-xs mt-1 leading-relaxed">Cuente TODO el dinero físico que hay en la caja (billetes + monedas) e ingrese el total real.</p>
+                                   <p className="opacity-90 text-xs mt-1 leading-relaxed">
+                                       {isMerged
+                                           ? 'Cuente TODO el efectivo físico de AMBAS cajas (las 2 PCs) e ingrese el total combinado.'
+                                           : 'Cuente TODO el dinero físico que hay en la caja e ingrese el total real.'}
+                                   </p>
                                </div>
                             </div>
                         )}
 
                         <div>
-                           <label className="block text-xs font-bold text-sys-500 uppercase tracking-wider mb-2">Total Efectivo Físico en Caja</label>
+                           <label className="block text-xs font-bold text-sys-500 uppercase tracking-wider mb-2">{isMerged ? 'Total Efectivo Físico en Ambas Cajas' : 'Total Efectivo Físico en Caja'}</label>
                            <div className="relative">
                               <DollarSign className="absolute left-4 top-4 text-sys-400" />
                               <input 

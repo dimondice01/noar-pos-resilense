@@ -908,4 +908,43 @@ if (typeof window !== 'undefined') {
     console.log(`[retryStuckSales] Reintentadas ${stuck.length} ventas trabadas. Resultado:`, result);
     return result;
   };
+
+  // 🔧 FIX PUNTUAL: corrige el afip de una venta YA facturada (CAE ya otorgado) que quedó
+  // sin impNeto/impIVA/leyenda porque el botón "Facturar" de Ventas (updateOperationStatus)
+  // no los copiaba — bug ya corregido para facturaciones nuevas, esto es solo para reparar
+  // una que ya se emitió con el bug. No vuelve a pedir CAE, solo corrige los datos locales
+  // (queda 'pending' para resincronizar sola a Firestore).
+  // Uso: window.__noarFixInvoiceAfip('86373008803554')  (el CAE que salió en el ticket)
+  window.__noarFixInvoiceAfip = async (cae) => {
+    const dbLocal = await getDB();
+    const { user } = useAuthStore.getState();
+    const allSales = await dbLocal.sales.toArray();
+    const sale = allSales.find(s => String(s.afip?.cae) === String(cae));
+    if (!sale) { console.warn('[fixInvoiceAfip] No se encontró ninguna venta con ese CAE en esta PC.'); return; }
+
+    const total = parseFloat(sale.total) || 0;
+    const impNeto = Math.round((total / 1.21) * 100) / 100;
+    const impIVA = Math.round((total - impNeto) * 100) / 100;
+
+    let leyendaPatch = {};
+    if (sale.afip?.cbteLetra === 'A' && sale.branchId && user?.companyId) {
+      try {
+        const afipConfigSnap = await getDoc(doc(db, `companies/${user.companyId}/branches/${sale.branchId}/integrations/afip`));
+        const cbuLeyenda = afipConfigSnap.exists() ? afipConfigSnap.data().cbuLeyenda : null;
+        if (cbuLeyenda?.activa) {
+          leyendaPatch = { leyenda: 'PAGO EN CBU INFORMADA', cbu: cbuLeyenda.cbu || '', bancoCbu: cbuLeyenda.banco || '' };
+        }
+      } catch (e) { console.warn('[fixInvoiceAfip] No se pudo leer la config de CBU:', e); }
+    }
+
+    const updated = {
+      ...sale,
+      afip: { ...sale.afip, impNeto, impIVA, ...leyendaPatch },
+      syncStatus: 'pending',
+      updatedAt: new Date().toISOString()
+    };
+    await dbLocal.sales.put(updated);
+    console.log('✅ [fixInvoiceAfip] Venta corregida localmente (se subirá sola en el próximo sync):', updated);
+    return updated;
+  };
 }

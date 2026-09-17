@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { 
     X, Save, ScanLine, Scale, Package, DollarSign, Tag, Truck, 
     AlertTriangle, Award, ChevronDown, Check, Calendar, Plus, 
-    Trash2, Megaphone, Clock, Barcode, Edit2, Percent, Layers, ShoppingBag, MapPin, Loader2, Info, Banknote, CreditCard, QrCode, Search
+    Trash2, Megaphone, Clock, Barcode, Edit2, Percent, Layers, ShoppingBag, MapPin, Loader2, Info, Banknote, CreditCard, QrCode, Search, Fingerprint
 } from 'lucide-react';
 import { Button } from '../../../core/ui/Button';
 import { Switch } from '../../../core/ui/Switch';
@@ -157,10 +157,13 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave, allProduc
     price: '',    
     taxRate: '21',
     
-    stock: '', 
+    stock: '',
     minStock: '5',
     isWeighable: false,
-    
+    // 🔥 SKU único por unidad física (ej: perfumes originales) — se pide al vender,
+    // no se carga acá. Default false: no afecta ningún producto existente.
+    requiresUnitSku: false,
+
     // PROMO ENGINE
     promoActive: false,
     promoType: 'PERCENTAGE',
@@ -249,6 +252,7 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave, allProduc
               minStock: source.minStock || '5',
               stock: source.stock || '',
               isWeighable: source.isWeighable === true,
+              requiresUnitSku: source.requiresUnitSku === true,
 
               taxRate: String(tax),
               costNeto: cNeto,
@@ -280,8 +284,9 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave, allProduc
         setFormData({
             name: '', code: '', barcodes: [], category: '', brand: '',
             costNeto: '', cost: '', markup: '40', price: '', taxRate: '21',
-            stock: '', minStock: '5', supplier: '', 
+            stock: '', minStock: '5', supplier: '',
             isWeighable: false,
+            requiresUnitSku: false,
             promoActive: false, promoType: 'PERCENTAGE', promoValueMode: 'PERCENT', promoFixedAmount: '', promoValue: '', promoDiscount: '', promoPayValue: '',
             promoStartDate: new Date().toISOString().split('T')[0],
             promoEndDate: '',
@@ -556,6 +561,7 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave, allProduc
             minStock: parseFloat(String(formData.minStock).replace(',', '.')) || 0,
             taxRate: parseFloat(String(formData.taxRate).replace(',', '.')) || 21,
             isWeighable: Boolean(formData.isWeighable),
+            requiresUnitSku: Boolean(formData.requiresUnitSku),
             priceTiers: formData.isWeighable
                 ? (formData.priceTiers || []).map(t => ({ ...t, price: parseFloat(String(t.price).replace(',', '.')) || 0 }))
                 : [],
@@ -1113,9 +1119,21 @@ export const ProductModal = ({ isOpen, onClose, productToEdit, onSave, allProduc
                     </span>
                 </div>
 
+                <div className="p-4 bg-purple-50 border border-purple-200 rounded-xl flex items-center justify-between gap-4">
+                    <div>
+                        <p className="text-xs font-bold text-purple-800 flex items-center gap-1.5">
+                            <Fingerprint size={14}/> Solicitar SKU único por unidad al vender
+                        </p>
+                        <p className="text-[10px] text-purple-600 mt-1">
+                            Para productos con código único por unidad física (ej: perfumes originales). Se pide al vender, no acá — y se imprime en el ticket.
+                        </p>
+                    </div>
+                    <Switch checked={!!formData.requiresUnitSku} onCheckedChange={(c) => setFormData({...formData, requiresUnitSku: c})} disabled={isSaving} />
+                </div>
+
                 <div className="pt-4 border-t border-sys-100">
-                    <PremiumSelect 
-                        label="Proveedor Principal" 
+                    <PremiumSelect
+                        label="Proveedor Principal"
                         icon={Truck}
                         options={lists.suppliers} value={formData.supplier}
                         onChange={(val) => setFormData({...formData, supplier: val})}

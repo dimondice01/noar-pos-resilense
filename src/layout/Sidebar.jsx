@@ -213,7 +213,8 @@ export const Sidebar = () => {
     const canAccessInventory = canManage
         || hasPermission(user, 'canAddStock')
         || hasPermission(user, 'canRemoveStock')
-        || hasPermission(user, 'canChangePrices');
+        || hasPermission(user, 'canChangePrices')
+        || hasPermission(user, 'canExportScale');
 
     const [companyInfo, setCompanyInfo] = useState({ 
         name: 'MI NEGOCIO', 

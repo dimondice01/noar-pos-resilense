@@ -103,9 +103,15 @@ export const InvoiceA4 = ({ sale, companyConfig }) => {
         <div className="relative border-b-2 border-black pb-4 mb-4 flex justify-between items-start">
           
           {/* CUADRO CENTRAL CON LETRA Y CÓDIGO */}
-          <div className="absolute left-1/2 -translate-x-1/2 top-0 border-2 border-black bg-white flex flex-col items-center justify-center w-14 h-14 z-10 font-bold">
-            <span className="text-3xl leading-none">{letra}</span>
-            <span className="text-[10px] leading-none mt-1 border-t border-black w-full text-center pt-0.5">Cod. {codComprobante}</span>
+          <div className="absolute left-1/2 -translate-x-1/2 top-0 flex flex-col items-center z-10">
+            <div className="border-2 border-black bg-white flex flex-col items-center justify-center w-14 h-14 font-bold">
+              <span className="text-3xl leading-none">{letra}</span>
+              <span className="text-[10px] leading-none mt-1 border-t border-black w-full text-center pt-0.5">Cod. {codComprobante}</span>
+            </div>
+            {/* 🔥 RG 5762/2025: leyenda obligatoria en la cabecera, junto a la letra "A" */}
+            {afip.leyenda && (
+              <span className="text-[9px] font-black uppercase text-center mt-1 max-w-[140px] leading-tight">{afip.leyenda}</span>
+            )}
           </div>
 
           {/* LADO IZQUIERDO (Emisor + Logo) */}
@@ -185,7 +191,17 @@ export const InvoiceA4 = ({ sale, companyConfig }) => {
                 return (
                   <tr key={idx} className="border-b border-gray-200">
                     <td className="py-2 px-2 font-mono text-gray-600">{item.code || item.id?.slice(0,6) || '-'}</td>
-                    <td className="py-2 px-2 uppercase font-bold">{item.name}</td>
+                    <td className="py-2 px-2 uppercase font-bold">
+                      {item.name}
+                      {/* 🔥 SKU único por unidad física (ej: perfumes originales) */}
+                      {Array.isArray(item.skus) && item.skus.length > 0 && (
+                        <div className="mt-1 space-y-0.5 normal-case font-normal">
+                          {item.skus.map((sku, skuIdx) => (
+                            <div key={skuIdx} className="text-[10px] font-mono text-gray-600">SKU: {sku}</div>
+                          ))}
+                        </div>
+                      )}
+                    </td>
                     <td className="py-2 px-2 text-center font-mono">{item.isWeighable ? parseFloat(item.quantity).toFixed(3) : item.quantity}</td>
                     <td className="py-2 px-2 text-center uppercase text-gray-600">{item.isWeighable ? 'KG' : 'UN'}</td>
                     <td className="py-2 px-2 text-right font-mono">{formatCurrency(item.originalPrice || item.price)}</td>

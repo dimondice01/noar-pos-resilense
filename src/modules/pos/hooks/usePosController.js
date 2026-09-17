@@ -128,6 +128,10 @@ export const usePosController = () => {
     const processingRef = useRef(false); // 🛡️ Sincronización real contra llamadas concurrentes
     const [searchResults, setSearchResults] = useState([]);
 
+    // 🔥 SKU único por unidad física (ej: perfumes originales) — abre el modal de
+    // captura en vez de agregar directo; ver addToCart/updateItemQuantity/setUnitSkus.
+    const [skuModalRequest, setSkuModalRequest] = useState(null);
+
     // 🔥 ESTADO DE CONFIGURACIÓN DEL POS (Integrando Surcharges & Discounts)
     const [posConfig, setPosConfig] = useState({
         isWholesaleEnabled: false,
@@ -537,6 +541,16 @@ export const usePosController = () => {
 
     const addToCart = useCallback((product, qty = 1) => {
         if (!product || addingRef.current) return;
+
+        // 🔥 SKU único por unidad física: no agregamos directo — abrimos el modal de
+        // captura, que va a llamar a setUnitSkus() con la lista final de SKUs.
+        if (product.requiresUnitSku) {
+            const tab = tabs.find(t => t.id === activeTabId);
+            const existing = tab?.items.find(i => i.id === product.id && !i.tierPlu);
+            setSkuModalRequest({ product, existingSkus: existing?.skus || [] });
+            return;
+        }
+
         addingRef.current = true;
         updateActiveTab(tab => {
             // 🔥 tierPlu distingue variantes "anexadas" (mismo product.id, precio/PLU propio)
@@ -584,9 +598,61 @@ export const usePosController = () => {
             return { ...tab, items: newItems };
         });
         Promise.resolve().then(() => { addingRef.current = false; });
+    }, [activeTabId, tabs]);
+
+    // 🔥 SKU único por unidad física: reemplaza (no suma) la cantidad/lista de SKUs del
+    // ítem — la cantidad final SIEMPRE es skus.length. skus=[] saca el ítem del carrito.
+    const setUnitSkus = useCallback((product, skus) => {
+        updateActiveTab(tab => {
+            const existingIndex = tab.items.findIndex(i => i.id === product.id && !i.tierPlu);
+
+            if (skus.length === 0) {
+                if (existingIndex < 0) return tab;
+                return { ...tab, items: tab.items.filter((_, i) => i !== existingIndex) };
+            }
+
+            const qty = skus.length;
+            const promoResult = _calculatePromo(product, qty, tab.paymentMethod);
+            let newItems = [...tab.items];
+
+            if (existingIndex >= 0) {
+                newItems[existingIndex] = {
+                    ...newItems[existingIndex],
+                    quantity: qty,
+                    skus,
+                    finalPrice: promoResult.finalPrice,
+                    subtotal: promoResult.totalLine,
+                    promoLabel: promoResult.promoLabel,
+                    appliedPromo: promoResult.applied
+                };
+            } else {
+                newItems.push({
+                    ...product,
+                    originalPrice: parseFloat(product.price),
+                    cost: parseFloat(product.cost) || 0,
+                    quantity: qty,
+                    skus,
+                    finalPrice: promoResult.finalPrice,
+                    subtotal: promoResult.totalLine,
+                    promoLabel: promoResult.promoLabel,
+                    appliedPromo: promoResult.applied,
+                    appliedWholesale: false
+                });
+            }
+            return { ...tab, items: newItems };
+        });
     }, [activeTabId]);
 
     const updateItemQuantity = (productId, newQty, tierPlu = null) => {
+        // 🔥 SKU único por unidad: +/- reabre el modal (pre-cargado) en vez de incrementar
+        // a ciegas — no hay forma de saber "qué SKU" corresponde a un +1/-1 numérico.
+        const tabForSku = tabs.find(t => t.id === activeTabId);
+        const itemForSku = tabForSku?.items.find(i => i.id === productId && (i.tierPlu || null) === (tierPlu || null));
+        if (itemForSku?.requiresUnitSku) {
+            setSkuModalRequest({ product: itemForSku, existingSkus: itemForSku.skus || [] });
+            return;
+        }
+
         if (newQty <= 0) return removeFromCart(productId, tierPlu);
         updateActiveTab(tab => {
             const newItems = tab.items.map(item => {
@@ -724,7 +790,9 @@ export const usePosController = () => {
                     appliedPromo: i.appliedPromo || false,
                     appliedWholesale: i.appliedWholesale || false,
                     taxRate: i.taxRate || 21,
-                    scaleSource: i.scaleSource || null
+                    scaleSource: i.scaleSource || null,
+                    // 🔥 SKU único por unidad física — sin esto se perdía al armar el payload de venta
+                    skus: i.skus || undefined, requiresUnitSku: i.requiresUnitSku || undefined
                 })),
                 client: activeTab.client || { name: 'Consumidor Final', fiscalCondition: 'CONSUMIDOR_FINAL' },
                 total: totals.total, subtotal: totals.subtotal, discount: totals.discountAmount,
@@ -930,7 +998,9 @@ export const usePosController = () => {
                     quantity: i.quantity, subtotal: i.subtotal,
                     promoLabel: i.promoLabel || '', appliedPromo: i.appliedPromo || false,
                     appliedWholesale: i.appliedWholesale || false, taxRate: i.taxRate || 21,
-                    scaleSource: i.scaleSource || null
+                    scaleSource: i.scaleSource || null,
+                    // 🔥 SKU único por unidad física — sin esto se perdía al armar el payload de venta
+                    skus: i.skus || undefined, requiresUnitSku: i.requiresUnitSku || undefined
                 })),
                 client: activeTab.client || { name: 'Consumidor Final', fiscalCondition: 'CONSUMIDOR_FINAL' },
                 total: totalWithInterest,
@@ -975,7 +1045,11 @@ export const usePosController = () => {
                             qr_data: afipResult.qr_data,
                             ptoVta: afipResult.ptoVta || 1,
                             impNeto: afipResult.impNeto,
-                            impIVA: afipResult.impIVA
+                            impIVA: afipResult.impIVA,
+                            // 🔥 RG 5762/2025: Factura A con leyenda "PAGO EN CBU INFORMADA" — se
+                            // graba en el comprobante para que el ticket la muestre siempre igual,
+                            // aunque después se desactive o cambie el CBU en Integraciones.
+                            ...(afipResult.leyenda ? { leyenda: afipResult.leyenda, cbu: afipResult.cbu, bancoCbu: afipResult.bancoCbu } : {})
                         },
                         number: fiscalNumber,
                         ticketNumber: fiscalNumber,
@@ -1109,7 +1183,8 @@ export const usePosController = () => {
                     id: i.id, code: i.code, name: i.name, 
                     price: 0, originalPrice: i.price, cost: i.cost,
                     quantity: i.quantity, subtotal: 0,
-                    scaleSource: i.scaleSource || null
+                    scaleSource: i.scaleSource || null,
+                    skus: i.skus || undefined, requiresUnitSku: i.requiresUnitSku || undefined
                 })),
                 client: { name: 'CONSUMO INTERNO', fiscalCondition: 'CONSUMIDOR FINAL' },
                 total: 0, subtotal: 0, discount: 100,
@@ -1155,8 +1230,12 @@ export const usePosController = () => {
                 return true;
             }
             if (query.length > 2) {
-                 const results = await productRepository.search(query); 
-                 setSearchResults(results.slice(0, 10));
+                 // 🔥 Antes se cortaba a los primeros 10 acá y el resto del match
+                 // por nombre desaparecía sin poder verse (el contenedor en PosPage
+                 // ya tiene scroll propio). productRepository.search() ya trae como
+                 // mucho 50, así que dejamos pasar todo eso y que se scrollee.
+                 const results = await productRepository.search(query);
+                 setSearchResults(results);
                  return false;
             }
         } catch (err) { return false; }
@@ -1235,10 +1314,11 @@ export const usePosController = () => {
     }, [activeTabId, addToCart, activeScaleFormat, activeTotalScaleProfiles]);
 
     // 🔥 EXPORTAMOS LAS FUNCIONES Y EL ESTADO (Incluye setTabPaymentMethod)
-    return { 
+    return {
         tabs, activeTab, activeTabId, totals, searchResults, isProcessing, posConfig,
-        addTab, removeTab, switchTab, addToCart, removeFromCart, updateCartItemQuantity: updateItemQuantity, setClient, clearCart, searchProduct, 
+        addTab, removeTab, switchTab, addToCart, removeFromCart, updateCartItemQuantity: updateItemQuantity, setClient, clearCart, searchProduct,
         setSearchResults, processSale, processInternalSale, applyWholesaleToLastItem, processBudget,
-        setTabPaymentMethod // 🔥 EXPONEMOS LA FUNCIÓN DE RECÁLCULO PARA EL MODAL
+        setTabPaymentMethod, // 🔥 EXPONEMOS LA FUNCIÓN DE RECÁLCULO PARA EL MODAL
+        skuModalRequest, setUnitSkus, closeSkuModal: () => setSkuModalRequest(null)
     };
 };

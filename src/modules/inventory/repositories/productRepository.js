@@ -266,8 +266,14 @@ export const productRepository = {
         const term = query.toLowerCase().trim();
         if (!term) return [];
 
-        let results = await dbLocal.products
-            .filter(p => {
+        // 🔥 FIX PERFORMANCE: mismo anti-patrón que ya resolvimos en getAll/getAllByBranch/
+        // findByCode — Table.filter() de Dexie corre el predicado dentro del cursor de
+        // IndexedDB fila por fila. Esta función se llama en CADA tecla del buscador del POS
+        // (y como fallback de cada escaneo que no matchea código exacto), así que en PCs
+        // débiles con catálogo grande era el cuello de botella real de "tarda en mostrar
+        // el producto". toArray() + filter/slice nativo de JS es el mismo dato, muchísimo más rápido.
+        const allProducts = await dbLocal.products.toArray();
+        let results = allProducts.filter(p => {
                 if (p.deleted) return false;
                 // 🔥 Búsqueda exclusiva: solo productos del proveedor seleccionado
                 if (exclusive && supplierName && p.supplier !== supplierName) return false;
@@ -283,8 +289,7 @@ export const productRepository = {
                 if (p.category && typeof p.category === 'string' && p.category.toLowerCase().includes(term)) return true;
                 return false;
             })
-            .limit(50)
-            .toArray();
+            .slice(0, 50);
 
         const processedResults = await Promise.all(results.map(p => checkAndActivatePrice(p, dbLocal)));
         const enriched = await _injectBranchData(processedResults, activeBranchId, dbLocal);
@@ -306,10 +311,10 @@ export const productRepository = {
         const dbLocal = await getDB();
         const { activeBranchId } = useAuthStore.getState();
 
-        const results = await dbLocal.products
+        // 🔥 FIX PERFORMANCE: mismo anti-patrón de Table.filter() de Dexie — ver search().
+        const results = (await dbLocal.products.toArray())
             .filter(p => !p.deleted && p.supplier === supplierName)
-            .limit(50)
-            .toArray();
+            .slice(0, 50);
 
         return await _injectBranchData(results, activeBranchId, dbLocal);
     },
@@ -345,6 +350,7 @@ export const productRepository = {
             supplier: product.supplier !== undefined ? product.supplier : (existingProduct.supplier || ''),
             unit: product.unit || existingProduct.unit || 'UN',
             isWeighable: product.isWeighable !== undefined ? product.isWeighable : !!existingProduct.isWeighable,
+            requiresUnitSku: product.requiresUnitSku !== undefined ? !!product.requiresUnitSku : !!existingProduct.requiresUnitSku,
             taxRate: parseFloat(product.taxRate) || existingProduct.taxRate || 21,
             minStock: product.minStock !== undefined ? (parseFloat(product.minStock) || 0) : (existingProduct.minStock || 0),
 

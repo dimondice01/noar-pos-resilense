@@ -17,6 +17,7 @@ import { parseTotalScaleBarcode } from '../utils/scaleTotalBarcode';
 
 // Componentes UI
 import { QuantityModal } from '../components/QuantityModal';
+import { SkuEntryModal } from '../components/SkuEntryModal';
 import { PaymentModal } from '../components/PaymentModal';
 import { ClientSelectionModal } from '../components/ClientSelectionModal'; 
 import { TicketModal } from '../../sales/components/TicketModal';
@@ -194,7 +195,10 @@ export const PosPage = () => {
       processSale,
       applyWholesaleToLastItem,
       processBudget,
-      setTabPaymentMethod 
+      setTabPaymentMethod,
+      skuModalRequest,
+      setUnitSkus,
+      closeSkuModal
   } = usePosController();
 
   // Estados Locales
@@ -767,11 +771,18 @@ export const PosPage = () => {
                           return (
                               <div key={lineKey} className={cn("group flex items-center gap-3 px-3 py-2.5 bg-white border rounded-xl shadow-sm hover:shadow-md transition-all animate-in fade-in slide-in-from-left-2", item.appliedWholesale ? "border-brand border-2 bg-brand/5" : "border-sys-100")}>
 
-                                  {/* Cantidad editable */}
+                                  {/* Cantidad editable — SKU único por unidad: reabre el modal de SKUs en vez del editor numérico */}
                                   <div
                                       className="w-14 shrink-0 text-center cursor-pointer rounded-lg hover:bg-sys-100 py-1 transition-colors"
-                                      onClick={(e) => { e.stopPropagation(); setEditingItemId(lineKey); }}
-                                      title="Click para editar cantidad"
+                                      onClick={(e) => {
+                                          e.stopPropagation();
+                                          if (item.requiresUnitSku) {
+                                              updateCartItemQuantity(item.id, item.quantity, item.tierPlu);
+                                          } else {
+                                              setEditingItemId(lineKey);
+                                          }
+                                      }}
+                                      title={item.requiresUnitSku ? "Click para editar SKUs" : "Click para editar cantidad"}
                                   >
                                       {editingItemId === lineKey ? (
                                           <InlineQuantityEditor
@@ -805,6 +816,11 @@ export const PosPage = () => {
                                               <span className={cn("inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-black uppercase", item.appliedWholesale ? "bg-orange-100 text-orange-700" : "bg-purple-100 text-purple-700")}>
                                                   {item.appliedWholesale ? <Percent size={9}/> : <Tag size={9}/>}
                                                   {item.promoLabel || "OFERTA"}
+                                              </span>
+                                          )}
+                                          {item.requiresUnitSku && (
+                                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-black uppercase bg-purple-100 text-purple-700">
+                                                  {(item.skus?.length || 0)} SKU
                                               </span>
                                           )}
                                           <span className="text-[10px] text-sys-400 font-mono">
@@ -967,6 +983,8 @@ export const PosPage = () => {
       />
       
       <QuantityModal isOpen={!!selectedProduct} product={selectedProduct} onClose={() => { setSelectedProduct(null); refocusInput(); }} onConfirm={(product, qty) => { addToCart(product, qty); setSelectedProduct(null); refocusInput(); }} />
+
+      <SkuEntryModal request={skuModalRequest} onClose={() => { closeSkuModal(); refocusInput(); }} onConfirm={(product, skus) => { setUnitSkus(product, skus); refocusInput(); }} />
       
       <PaymentModal 
           isOpen={isPaymentOpen} 

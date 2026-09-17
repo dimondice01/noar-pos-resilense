@@ -217,7 +217,11 @@ export const IntegrationsPage = () => {
         isActive: false,
         taxCondition: 'MONOTRIBUTO',
         iibb: '',       // Nuevo campo
-        inicioAct: ''   // Nuevo campo
+        inicioAct: '',  // Nuevo campo
+        // 🔥 RG 5762/2025: Factura A con leyenda "PAGO EN CBU INFORMADA" — habilitación
+        // especial de ARCA para RI que no acreditan solvencia patrimonial. NO pisa a los
+        // clientes con Factura A común (isActive false por default, opt-in explícito).
+        cbuLeyenda: { activa: false, cbu: '', banco: '' }
     });
     
     const [cloverConfig, setCloverConfig] = useState({ merchantId: '', apiToken: '', isActive: false });
@@ -268,7 +272,8 @@ export const IntegrationsPage = () => {
                     ...data,
                     taxCondition: data.taxCondition || 'MONOTRIBUTO',
                     iibb: data.iibb || '',
-                    inicioAct: data.inicioAct || ''
+                    inicioAct: data.inicioAct || '',
+                    cbuLeyenda: { activa: false, cbu: '', banco: '', ...data.cbuLeyenda }
                 }));
             }
 
@@ -435,6 +440,11 @@ export const IntegrationsPage = () => {
                 alert("⚠️ Error: Faltan las API Keys de Payway.");
                 return;
             }
+        }
+
+        if (afipConfig.cbuLeyenda?.activa && (!afipConfig.cbuLeyenda.cbu || afipConfig.cbuLeyenda.cbu.length !== 22)) {
+            alert("⚠️ Error: El CBU debe tener exactamente 22 dígitos para activar la leyenda 'Pago en CBU Informada'.");
+            return;
         }
 
         setSaving(true);
@@ -692,6 +702,47 @@ export const IntegrationsPage = () => {
                                         </div>
                                     )}
                                 </div>
+
+                                {/* 🔥 RG 5762/2025: Factura A con leyenda "PAGO EN CBU INFORMADA" —
+                                    habilitación especial de ARCA para RI que no acreditan solvencia
+                                    patrimonial. Opt-in explícito por sucursal, no pisa a los clientes
+                                    con Factura A común (default: desactivado). */}
+                                {afipConfig.taxCondition === 'RESPONSABLE_INSCRIPTO' && (
+                                    <div className="bg-sys-50 p-6 rounded-[2rem] border-2 border-sys-100 shadow-inner animate-in fade-in">
+                                        <div className="flex items-center justify-between mb-3">
+                                            <label className="text-[10px] font-black text-sys-500 uppercase tracking-widest">
+                                                Factura A con leyenda "Pago en CBU Informada"
+                                            </label>
+                                            <Switch
+                                                active={afipConfig.cbuLeyenda?.activa}
+                                                onChange={(val) => setAfipConfig({ ...afipConfig, cbuLeyenda: { ...afipConfig.cbuLeyenda, activa: val } })}
+                                                color="bg-[#2C3E50]"
+                                            />
+                                        </div>
+                                        <p className="text-[10px] text-sys-500 mb-4 leading-relaxed">
+                                            Activar SOLO si ARCA te habilitó específicamente esta modalidad (RG 5762/2025) — es distinta de la Factura A común. Revisá tu constancia de habilitación de comprobantes.
+                                        </p>
+                                        {afipConfig.cbuLeyenda?.activa && (
+                                            <div className="space-y-3 animate-in slide-in-from-top-2">
+                                                <input
+                                                    type="text"
+                                                    className="w-full bg-white border-2 border-sys-200 rounded-2xl px-5 py-3 font-mono font-black text-sm focus:border-sys-900 outline-none shadow-md text-sys-900"
+                                                    placeholder="CBU (22 dígitos)"
+                                                    value={afipConfig.cbuLeyenda.cbu}
+                                                    onChange={(e) => setAfipConfig({ ...afipConfig, cbuLeyenda: { ...afipConfig.cbuLeyenda, cbu: e.target.value.replace(/\D/g, '') } })}
+                                                    maxLength={22}
+                                                />
+                                                <input
+                                                    type="text"
+                                                    className="w-full bg-white border-2 border-sys-200 rounded-2xl px-5 py-3 font-black text-sm focus:border-sys-900 outline-none shadow-md uppercase text-sys-900"
+                                                    placeholder="Banco emisor"
+                                                    value={afipConfig.cbuLeyenda.banco}
+                                                    onChange={(e) => setAfipConfig({ ...afipConfig, cbuLeyenda: { ...afipConfig.cbuLeyenda, banco: e.target.value } })}
+                                                />
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
 
                                 <div className="bg-sys-50 p-6 rounded-[2rem] border-2 border-sys-100 shadow-inner"><label className="text-[10px] font-black text-sys-500 uppercase tracking-widest mb-3 block">CUIT Local (Sin guiones)</label><input type="text" className="w-full bg-white border-2 border-sys-200 rounded-2xl px-5 py-4 font-mono font-black text-xl focus:border-sys-900 outline-none shadow-md text-sys-900" placeholder="20112223339" value={afipConfig.cuit} onChange={(e) => setAfipConfig({...afipConfig, cuit: e.target.value})} maxLength={11} /></div>
                                 <div className="bg-sys-50 p-6 rounded-[2rem] border-2 border-sys-100 shadow-inner"><label className="text-[10px] font-black text-sys-500 uppercase tracking-widest mb-3 block">Punto de Venta</label><input type="number" className="w-full bg-white border-2 border-sys-200 rounded-2xl px-5 py-4 font-black text-xl focus:border-sys-900 outline-none shadow-md text-sys-900" placeholder="0001" value={afipConfig.ptoVta} onChange={(e) => setAfipConfig({...afipConfig, ptoVta: parseInt(e.target.value)})} min={1} /></div>

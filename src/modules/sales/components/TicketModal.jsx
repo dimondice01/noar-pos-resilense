@@ -170,6 +170,10 @@ const TicketContent = forwardRef(({
                 <div className="flex justify-between items-center py-1 border-b-2 border-black mb-2">
                     <div className="flex flex-col">
                         <span className="text-xs font-black leading-none">{tipoComprobante} "{letraComprobante}"</span>
+                        {/* 🔥 RG 5762/2025: leyenda obligatoria en la cabecera, junto a la letra "A" */}
+                        {afip.leyenda && (
+                            <span className="text-[9px] font-black uppercase leading-tight mt-0.5">{afip.leyenda}</span>
+                        )}
                         <span className="text-[10px] font-mono mt-0.5 font-bold">{numeroComprobante}</span>
                     </div>
                     <div className="text-right text-[9px] font-bold leading-tight">
@@ -224,6 +228,16 @@ const TicketContent = forwardRef(({
                                     ) : (
                                         <div className="text-[8px] text-right font-mono mt-0.5 text-gray-500 print:text-black">
                                             Unit: {formatCurrency(item.price)}
+                                        </div>
+                                    )}
+                                    {/* 🔥 SKU único por unidad física (ej: perfumes originales) */}
+                                    {Array.isArray(item.skus) && item.skus.length > 0 && (
+                                        <div className="pl-[15%] mt-0.5 space-y-0.5">
+                                            {item.skus.map((sku, skuIdx) => (
+                                                <div key={skuIdx} className="text-[8px] font-mono font-bold text-black">
+                                                    SKU: {sku}
+                                                </div>
+                                            ))}
                                         </div>
                                     )}
                                 </div>

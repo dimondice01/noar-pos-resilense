@@ -1,8 +1,10 @@
 import { getDB } from '../../../database/db';
 import { db } from '../../../database/firebase';
-import { doc, setDoc, getDoc, collection, query, where, getDocs, limit, orderBy } from 'firebase/firestore';
+import { doc, setDoc, getDoc, collection, query, where, getDocs, limit, orderBy, onSnapshot } from 'firebase/firestore';
 import { useAuthStore } from '../../auth/store/useAuthStore';
+import { useShiftStore } from '../store/useShiftStore';
 import { pushCashMovementWithShiftCounter, closeShiftAtomic } from '../services/shiftLedgerService';
+import { syncService } from '../../sync/services/syncService';
 
 // 🔥 GENERADOR DE ID GLOBAL ÚNICO (Blindaje Multi-Caja)
 const generateGlobalId = (prefix) => {
@@ -68,15 +70,46 @@ export const cashRepository = {
                         await dbLocal.shifts.update(activeInBranch.id, { status: cloudStatus, syncStatus: 'synced' });
                     } else {
                         console.log("⚠️ Turno ya abierto recuperado localmente (confirmado contra la nube):", activeInBranch.id);
+                        this.watchForCloseRequests(activeInBranch);
                         return activeInBranch;
                     }
                 } catch (e) {
                     console.warn("No se pudo verificar el turno contra la nube, confío en local:", e);
+                    this.watchForCloseRequests(activeInBranch);
                     return activeInBranch;
                 }
             } else {
                 console.log("⚠️ Turno ya abierto recuperado localmente (offline, sin poder verificar):", activeInBranch.id);
+                this.watchForCloseRequests(activeInBranch);
                 return activeInBranch;
+            }
+        }
+
+        // 1.5 🔥 FIX (blindaje multi-PC): si no hay nada local, puede ser porque OTRA
+        // PC (mismo cajero, misma sucursal) ya abrió esta caja y el sync/listener de
+        // este dispositivo todavía no bajó ese turno. Sin este chequeo se crea un
+        // shiftId duplicado y las ventas quedan repartidas entre dos turnos distintos
+        // (arqueo roto al cierre). Solo aplica cuando el chequeo local no encontró nada.
+        if (!activeInBranch && navigator.onLine) {
+            try {
+                const remoteQ = query(
+                    collection(db, 'companies', user.companyId, 'shifts'),
+                    where('userId', '==', user.uid),
+                    where('branchId', '==', branchId),
+                    where('status', '==', 'OPEN'),
+                    limit(1)
+                );
+                const remoteSnap = await getDocs(remoteQ);
+                if (!remoteSnap.empty) {
+                    const remoteDoc = remoteSnap.docs[0];
+                    const remoteShift = { ...remoteDoc.data(), id: remoteDoc.id, syncStatus: 'synced' };
+                    await dbLocal.shifts.put(remoteShift);
+                    console.warn('⚠️ Turno ya abierto en otro dispositivo, adoptado localmente:', remoteShift.id);
+                    this.watchForCloseRequests(remoteShift);
+                    return remoteShift;
+                }
+            } catch (e) {
+                console.warn('No se pudo verificar turno remoto antes de abrir, se continúa con creación local:', e);
             }
         }
 
@@ -137,6 +170,7 @@ export const cashRepository = {
         // 3. Sincronización en Segundo Plano (No bloqueante)
         this._syncToCloud('shifts', shift);
         this._pushCashMovement(initialMovement);
+        this.watchForCloseRequests(shift);
 
         return shift;
     },
@@ -156,18 +190,53 @@ export const cashRepository = {
              throw new Error("No tienes permisos para cerrar esta caja.");
         }
 
-        // 1. 🔥 CÁLCULO DE LA VERDAD (Expected Cash) — 100% LOCAL, instantáneo (rediseño
-        // 2026-09-08). Ya no se descarga nada de la nube antes de cerrar: este turno es
-        // de este dispositivo, todo lo que pasó ya está en Dexie. El contador remoto se
-        // sigue leyendo (si ya está en `shift` local) solo para el aviso de drift, no
-        // para calcular expectedCash — ver _calculateShiftState.
-        const currentAudit = await this.getShiftAuditData(shiftId);
+        // 0. 🔥 BLINDAJE MULTI-PC (CRÍTICO): local puede decir OPEN aunque la nube
+        // ya lo haya cerrado hace rato (ej. otra PC ya cerró y fusionó este turno).
+        // El listener real-time de shifts no siempre llega a tiempo (compara
+        // `updatedAt` como Timestamp contra un campo que se escribe como string —
+        // ver bug documentado). Sin este chequeo, el cajero re-cierra un turno YA
+        // cerrado: vuelve a declarar el mismo efectivo, pisa el auditSnapshot
+        // fusionado y quedan dos "cierres" para la misma plata física.
+        if (navigator.onLine) {
+            let cloudShiftData = null;
+            try {
+                const cloudSnap = await getDoc(doc(db, 'companies', shift.companyId, 'shifts', String(shiftId)));
+                if (cloudSnap.exists()) cloudShiftData = cloudSnap.data();
+            } catch (e) {
+                console.warn('No se pudo verificar el turno contra la nube antes de cerrar, sigo con local:', e);
+            }
+            if (cloudShiftData?.status === 'CLOSED') {
+                await dbLocal.shifts.put({ ...cloudShiftData, id: shiftId, syncStatus: 'synced' });
+                throw new Error(cloudShiftData.mergedInto
+                    ? '⚠️ Este turno ya fue cerrado (se fusionó con la otra caja al cerrarla desde el otro dispositivo). Recargá la página.'
+                    : '⚠️ Este turno ya fue cerrado desde otro dispositivo. Recargá la página.');
+            }
+        }
 
-        // 2. Datos declarados por el humano (lo que contaron)
+        // 1. 🔥 FUSIÓN MULTI-PC: si hay un turno hermano OPEN (misma caja abierta en
+        // 2 dispositivos por la carrera al abrir), le pedimos que fuerce el sync de
+        // sus pendientes AHORA (handshake vía Firestore, ver _requestSiblingFlush)
+        // y esperamos su confirmación con timeout antes de calcular. Después leemos
+        // sus ventas/movimientos DIRECTO DE LA NUBE (no de Dexie local) para no
+        // depender de que el listener de este dispositivo ya los haya bajado.
+        const siblingShift = await this._findOpenSiblingShift(shift);
+        if (siblingShift) {
+            await this._requestSiblingFlush(siblingShift);
+        }
+
+        // 2. 🔥 CÁLCULO DE LA VERDAD (Expected Cash). Sin turno hermano, sigue siendo
+        // 100% local/instantáneo (rediseño 2026-09-08): este turno es de este
+        // dispositivo, todo lo que pasó ya está en Dexie. Con turno hermano, se suma
+        // lo de la nube (recién forzado a subir arriba). El contador remoto
+        // (runningTotals) se sigue leyendo solo para el aviso de drift, nunca para
+        // calcular expectedCash — ver _calculateShiftState.
+        const currentAudit = await this.getShiftAuditData(shiftId, siblingShift ? { siblingShift, freshSiblingFromCloud: true } : {});
+
+        // 3. Datos declarados por el humano (lo que contaron)
         const declared = closingData.declaredCash ? parseFloat(closingData.declaredCash) : 0;
         const left = closingData.leftInCash ? parseFloat(closingData.leftInCash) : 0;
-        
-        // 3. Cálculos finales
+
+        // 4. Cálculos finales
         const withdrawn = Math.max(0, declared - left); // Lo que se llevan
         const difference = declared - currentAudit.expectedCash; // Sobrante (+) o Faltante (-)
 
@@ -231,6 +300,12 @@ export const cashRepository = {
                 // en CashClosingModal, queda registrado permanentemente acá.
                 overrideConfirmed: !!closingData.overrideConfirmed,
 
+                // 🔥 FUSIÓN MULTI-PC: si este cierre incluyó un turno hermano (misma
+                // caja abierta por error en 2 dispositivos), queda registrado acá cuáles
+                // IDs se fusionaron — el detalle de ventas/movimientos de ambos ya está
+                // sumado arriba, esto es solo trazabilidad.
+                mergedShiftIds: currentAudit.mergedShiftIds || null,
+
                 generatedAt: new Date().toISOString()
             },
 
@@ -265,7 +340,7 @@ export const cashRepository = {
             }
         });
 
-        // 4. 🔥 Sync de pendientes del turno — EN SEGUNDO PLANO, no bloquea el cierre
+        // 5. 🔥 Sync de pendientes del turno — EN SEGUNDO PLANO, no bloquea el cierre
         // (antes era un `for` secuencial con `await` uno por uno, ahí vivía la lentitud
         // real de "cerrar caja tarda". El ciclo de fondo de syncService (cada ~15s) ya
         // los toma solo, y con el fix de _shouldAttemptSync ninguno se abandona.)
@@ -287,7 +362,58 @@ export const cashRepository = {
             this._pushCashMovement(withdrawalMovement);
         }
 
+        // 🔥 FUSIÓN MULTI-PC: si getShiftAuditData detectó un turno hermano OPEN
+        // (misma caja abierta por error en 2 dispositivos), lo cerramos también acá.
+        // Sus ventas/movimientos YA fueron sumados arriba (ver _calculateShiftState) —
+        // este turno hermano queda marcado CLOSED con total en $0 para no duplicar el
+        // arqueo en los reportes: la plata real vive en el snapshot del turno principal.
+        if (currentAudit.mergedShiftIds && currentAudit.siblingShift) {
+            this._closeSiblingShift(currentAudit.siblingShift, shift.id, closedShift.closedAt);
+        }
+
         return closedShift;
+    },
+
+    // Cierra en segundo plano el turno "hermano" fusionado al cerrar el principal.
+    // No bloquea el cierre del cajero — si falla, queda como turno OPEN huérfano y
+    // hay que cerrarlo a mano desde CashPage (admin), pero el arqueo del principal
+    // ya quedó bien porque sus ventas ya fueron sumadas al calcular currentAudit.
+    async _closeSiblingShift(siblingShift, primaryShiftId, closedAt) {
+        const closedSibling = {
+            ...siblingShift,
+            status: 'CLOSED',
+            closedAt,
+            mergedInto: primaryShiftId,
+            finalCash: 0,
+            leftInCash: 0,
+            withdrawn: 0,
+            expectedCash: 0,
+            difference: 0,
+            discrepancyStatus: 'MATCH',
+            audited: false,
+            auditSnapshot: {
+                mergedInto: primaryShiftId,
+                note: 'Turno fusionado — ver arqueo completo en el turno principal.',
+                generatedAt: new Date().toISOString()
+            },
+            syncStatus: 'pending'
+        };
+
+        try {
+            const dbLocal = await getDB();
+            await dbLocal.shifts.put(closedSibling);
+        } catch (e) {
+            console.warn('No se pudo cachear localmente el cierre del turno hermano:', e);
+        }
+
+        if (!navigator.onLine) return; // queda 'pending', lo retoma syncPendingShifts
+        try {
+            await setDoc(doc(db, 'companies', siblingShift.companyId, 'shifts', String(siblingShift.id)), closedSibling, { merge: true });
+            const dbLocal = await getDB();
+            await dbLocal.shifts.update(siblingShift.id, { syncStatus: 'synced' });
+        } catch (e) {
+            console.warn('Error cerrando turno hermano en la nube (queda pending):', e);
+        }
     },
 
     // =========================================
@@ -417,10 +543,15 @@ export const cashRepository = {
                 .toArray();
 
             const activeInBranch = openShifts.find(s => s.branchId === branchId);
+            const found = activeInBranch || (openShifts.length > 0 ? openShifts[0] : null);
 
-            if (!activeInBranch && openShifts.length > 0) return openShifts[0];
+            // 🔥 Este es el punto de descubrimiento que usa casi toda la app
+            // (Sidebar, PosPage, usePosController, dashboards) — armamos acá el
+            // watcher de cierre fusionado sin importar por dónde se enteró el
+            // dispositivo de que tiene un turno abierto.
+            if (found) this.watchForCloseRequests(found);
 
-            return activeInBranch || null;
+            return found;
 
         } catch (e) {
             console.error("Error buscando turno:", e);
@@ -586,26 +717,245 @@ export const cashRepository = {
     // ⚖️ BALANCE Y AUDITORÍA (EL CEREBRO DEL CIERRE Z BLINDADO)
     // =========================================
     
-    async _calculateShiftState(shift, dbLocal) {
+    // 🔥 FUSIÓN MULTI-PC: busca otro turno OPEN del mismo cajero+sucursal (nace de
+    // la carrera al abrir caja casi simultáneo en 2 dispositivos). Solo lectura,
+    // requiere conexión. No migra ningún dato, solo permite sumar ambos al cerrar.
+    async _findOpenSiblingShift(shift) {
+        if (!navigator.onLine || !shift?.companyId || !shift?.branchId || !shift?.userId) return null;
+        try {
+            const siblingQ = query(
+                collection(db, 'companies', shift.companyId, 'shifts'),
+                where('userId', '==', shift.userId),
+                where('branchId', '==', shift.branchId),
+                where('status', '==', 'OPEN'),
+                limit(5)
+            );
+            const snap = await getDocs(siblingQ);
+            const siblingDoc = snap.docs.find(d => d.id !== String(shift.id));
+            if (!siblingDoc) return null;
+            return { ...siblingDoc.data(), id: siblingDoc.id };
+        } catch (e) {
+            console.warn('No se pudo verificar turno hermano (fusión multi-PC):', e);
+            return null;
+        }
+    },
+
+    // 🔥 FUSIÓN MULTI-PC: ventas del turno hermano DIRECTO DE LA NUBE. Solo se usa
+    // en el cierre real (post-handshake) — el listener real-time de sales SÍ
+    // funciona bien (filtra por updatedAt con Timestamp consistente), así que en
+    // la vista previa alcanza con lo que ya haya en Dexie; acá solo evitamos el
+    // último tramo de latencia justo en el momento crítico del cierre.
+    async _fetchSiblingSalesFromCloud(siblingShift) {
+        const toIso = (v) => (v && typeof v.toDate === 'function') ? v.toDate().toISOString() : v;
+        try {
+            const salesQ = query(collection(db, 'companies', siblingShift.companyId, 'sales'), where('shiftId', '==', String(siblingShift.id)));
+            const salesSnap = await getDocs(salesQ);
+            return salesSnap.docs.map(d => { const data = d.data(); return { ...data, id: d.id, date: toIso(data.date), createdAt: toIso(data.createdAt) }; });
+        } catch (e) {
+            console.warn('No se pudo leer ventas del turno hermano desde la nube, sigo solo con lo que haya local:', e);
+            return [];
+        }
+    },
+
+    // 🔥 FUSIÓN MULTI-PC: movimientos de caja del turno hermano, SIEMPRE directo
+    // de la nube (no solo al cerrar). A diferencia de ventas, el listener
+    // real-time de cash_movements (syncService.js) y su delta-sync filtran por
+    // `date` comparándolo como Timestamp, pero el campo se escribe como string
+    // ISO (mismo bug ya conocido en este proyecto para sales/movements de
+    // inventario, nunca corregido acá) — así que un movimiento manual de OTRO
+    // dispositivo NUNCA baja a Dexie local por esa vía, no es un tema de timing.
+    // Sin esto, un ingreso/gasto/retiro cargado en la otra PC quedaría afuera del
+    // arqueo fusionado siempre, no solo "a veces".
+    async _fetchSiblingMovementsFromCloud(siblingShift) {
+        const toIso = (v) => (v && typeof v.toDate === 'function') ? v.toDate().toISOString() : v;
+        try {
+            const movsQ = query(collection(db, 'companies', siblingShift.companyId, 'cash_movements'), where('shiftId', '==', String(siblingShift.id)));
+            const movsSnap = await getDocs(movsQ);
+            return movsSnap.docs.map(d => { const data = d.data(); return { ...data, id: d.id, date: toIso(data.date) }; });
+        } catch (e) {
+            console.warn('No se pudo leer movimientos del turno hermano desde la nube, sigo solo con lo que haya local:', e);
+            return [];
+        }
+    },
+
+    // 🔥 FUSIÓN MULTI-PC: resuelve TODO lo que necesita red (turno hermano + sus
+    // ventas/movimientos) ANTES de tocar Dexie. CRÍTICO: nunca llamar esto (ni
+    // nada que haga getDocs/setDoc) desde ADENTRO de un dbLocal.transaction() —
+    // Dexie corta la transacción en cuanto detecta una promesa no-Dexie de por
+    // medio (un fetch de red), y cualquier operación de Dexie que venga después
+    // tira "TransactionInactiveError: Transaction has already completed or
+    // failed" (bug real, reproducido 2026-09-15 al cerrar turno). Por eso
+    // getShiftBalance/getShiftAuditData resuelven esto ANTES de abrir su
+    // transacción de lectura, y _calculateShiftState ya no hace ninguna llamada
+    // de red — solo consume lo que le llega acá ya resuelto.
+    async _resolveSiblingContext(shift, opts = {}) {
+        if (!shift || shift.status !== 'OPEN') return { siblingShift: null, siblingSales: null, siblingMovements: null };
+
+        const siblingShift = opts.siblingShift !== undefined ? opts.siblingShift : await this._findOpenSiblingShift(shift);
+        if (!siblingShift) return { siblingShift: null, siblingSales: null, siblingMovements: null };
+
+        // Ventas: solo se releen de la nube en el cierre real (post-handshake) —
+        // en la vista previa, `null` le indica a quien consuma esto que use Dexie.
+        const siblingSales = opts.freshSiblingFromCloud ? await this._fetchSiblingSalesFromCloud(siblingShift) : null;
+
+        // Movimientos: siempre de la nube (bug de sync ya documentado arriba).
+        const siblingMovements = await this._fetchSiblingMovementsFromCloud(siblingShift);
+
+        return { siblingShift, siblingSales, siblingMovements };
+    },
+
+    // 🔥 HANDSHAKE DE CIERRE FUSIONADO: le avisa al turno hermano (vía su propio
+    // documento en Firestore, que ese dispositivo ya escucha en tiempo real) que
+    // están por cerrarlo, para que fuerce YA el sync de sus pendientes en vez de
+    // esperar el ciclo de fondo (~15s). Espera una confirmación corta con timeout
+    // — si no llega (esa PC está offline/cerrada), sigue igual: la lectura directa
+    // a la nube de todas formas toma lo que ya haya alcanzado a subir.
+    async _requestSiblingFlush(siblingShift, timeoutMs = 6000) {
+        const requestId = generateGlobalId('closereq');
+        try {
+            const siblingRef = doc(db, 'companies', siblingShift.companyId, 'shifts', String(siblingShift.id));
+            await setDoc(siblingRef, { closeRequestId: requestId }, { merge: true });
+
+            const start = Date.now();
+            while (Date.now() - start < timeoutMs) {
+                await new Promise(r => setTimeout(r, 700));
+                const snap = await getDoc(siblingRef);
+                if (snap.exists() && snap.data().closeRequestAckId === requestId) {
+                    return true; // confirmado: la otra PC ya forzó su sync
+                }
+            }
+            console.warn('⚠️ Turno hermano no confirmó el flush a tiempo (posible offline) — cierro igual con lo que haya en la nube.');
+            return false;
+        } catch (e) {
+            console.warn('No se pudo pedir flush al turno hermano:', e);
+            return false;
+        }
+    },
+
+    // 🔥 LADO RECEPTOR del handshake: se activa sola desde openShift() y
+    // getCurrentShift() (cualquier punto donde este dispositivo confirma que
+    // tiene un turno abierto) y escucha SU PROPIO documento de turno. Si otro
+    // dispositivo pide cerrar (closeRequestId nuevo), fuerza el sync de todo lo
+    // pendiente de esta PC y confirma. No bloquea nada de la venta normal.
+    watchForCloseRequests(shift) {
+        if (!shift?.companyId || !shift?.id) return;
+        if (this._watchedShiftId === shift.id) return; // ya escuchando este mismo turno
+        // Turno distinto al que veníamos escuchando (ej. se cerró y se abrió uno
+        // nuevo sin recargar la página) — soltamos el listener viejo primero.
+        if (this._closeRequestUnsub) {
+            try { this._closeRequestUnsub(); } catch (e) { console.warn('Error liberando watcher de close-request anterior:', e); }
+        }
+        this._watchedShiftId = shift.id;
+        this._lastAckedCloseRequestId = null;
+        try {
+            const shiftRef = doc(db, 'companies', shift.companyId, 'shifts', String(shift.id));
+            this._closeRequestUnsub = onSnapshot(shiftRef, async (snap) => {
+                if (!snap.exists()) return;
+                const data = snap.data();
+
+                // 🔥 FIX (reactividad multi-PC): si este turno ya se cerró — acá mismo
+                // o fusionado desde la otra PC — la UI de este dispositivo (Sidebar,
+                // POS) lee `activeShift` de useShiftStore, que NO se entera solo. El
+                // listener genérico de shifts (syncService.js) no sirve de red de
+                // seguridad para esto porque compara `updatedAt` como Timestamp contra
+                // un campo que se escribe como string (bug ya documentado) — nunca
+                // llega. Este listener puntual (documento propio, sin filtro de fecha)
+                // no tiene ese problema, así que lo usamos también para esto: limpiar
+                // el turno en RAM apenas se detecta el cierre, sin esperar a que el
+                // cajero navegue a otra pantalla.
+                if (data.status !== 'OPEN') {
+                    if (useShiftStore.getState().activeShift?.id === shift.id) {
+                        console.log('🔔 Este turno se cerró (fusionado o desde otro dispositivo) — actualizando UI.');
+                        useShiftStore.getState().clearShift();
+                    }
+                    try { this._closeRequestUnsub(); } catch (e) { console.warn('Error liberando watcher tras detectar cierre:', e); }
+                    this._closeRequestUnsub = null;
+                    this._watchedShiftId = null;
+                    return;
+                }
+
+                const reqId = data.closeRequestId;
+                if (!reqId || reqId === this._lastAckedCloseRequestId) return;
+                this._lastAckedCloseRequestId = reqId; // marcar antes del await, evita doble disparo
+                console.log('🔔 El turno hermano está por cerrar — forzando sync de pendientes...');
+                try { await syncService.syncAll(); } catch (e) { console.warn('Error forzando sync por close-request:', e); }
+                try {
+                    await setDoc(shiftRef, { closeRequestAckId: reqId, closeRequestAckAt: new Date().toISOString() }, { merge: true });
+                } catch (e) {
+                    console.warn('No se pudo confirmar (ack) el close-request:', e);
+                }
+            });
+        } catch (e) {
+            console.warn('No se pudo activar el watcher de close-request:', e);
+        }
+    },
+
+    // siblingContext viene YA RESUELTO por _resolveSiblingContext (llamado antes
+    // de abrir cualquier transacción de Dexie, ver comentario ahí). Esta función
+    // no hace ninguna llamada de red — solo Dexie, para poder correr adentro de
+    // un dbLocal.transaction() sin cortarlo.
+    async _calculateShiftState(shift, dbLocal, siblingContext = {}) {
         if (!shift) return null;
+
+        const { siblingShift = null, siblingSales = null, siblingMovements = null } = siblingContext;
+
+        // 🔥 FUSIÓN MULTI-PC (blindaje "misma caja en 2 PCs"): si hay un turno
+        // hermano OPEN del mismo cajero+sucursal, lo sumamos acá. NO migramos el
+        // shiftId de ninguna venta — solo sumamos sus datos.
+        let initialAmount = Number(shift.initialAmount) || 0;
+        if (siblingShift) {
+            // 🔥 Mismo fondo declarado en los dos = el cajero cargó el mismo
+            // efectivo físico dos veces (un solo cajón real, apertura duplicada
+            // por la carrera). Ahí NO se suma, se usa un solo fondo. Si son
+            // distintos, sí son dos cajones reales y corresponde sumarlos.
+            const siblingInitial = Number(siblingShift.initialAmount) || 0;
+            initialAmount = (siblingInitial === initialAmount)
+                ? initialAmount
+                : initialAmount + siblingInitial;
+            // Cacheamos localmente para trazabilidad (debugShift, historial, etc.)
+            try {
+                await dbLocal.shifts.put({ ...siblingShift, syncStatus: 'synced' });
+            } catch (e) {
+                console.warn('No se pudo cachear turno hermano localmente:', e);
+            }
+        }
+
+        const saleIsValid = s => s.status === 'COMPLETED' && s.type !== 'INTERNAL' && s.type !== 'BUDGET';
 
         // 1. OBTENEMOS VENTAS REALES — 🔥 índice shiftId evita full-scan
         const sales = await dbLocal.sales
             .where('shiftId').equals(shift.id)
-            .filter(s => s.status === 'COMPLETED' && s.type !== 'INTERNAL' && s.type !== 'BUDGET')
+            .filter(saleIsValid)
             .toArray();
-
-        // 🔥 EL ESCUDO ANTI-DUPLICACIÓN: Guardamos los IDs de todas las ventas contadas
-        const countedSalesIds = new Set(sales.map(s => s.id));
 
         // 2. OBTENEMOS MOVIMIENTOS DE CAJA — 🔥 índice shiftId
         const movements = await dbLocal.cash_movements
             .where('shiftId').equals(shift.id)
             .toArray();
 
+        // 🔥 Datos del turno hermano (ya resueltos por _resolveSiblingContext):
+        // - Ventas: si `siblingSales` viene null (vista previa), leemos Dexie local
+        //   (el listener real-time de sales funciona bien, alcanza y sobra). Si
+        //   viene un array (cierre real, post-handshake), son las de la nube.
+        // - Movimientos: siempre los que resolvió _resolveSiblingContext (nube).
+        if (siblingShift) {
+            if (siblingSales) {
+                sales.push(...siblingSales.filter(saleIsValid));
+            } else {
+                const localSiblingSales = await dbLocal.sales.where('shiftId').equals(siblingShift.id).filter(saleIsValid).toArray();
+                sales.push(...localSiblingSales);
+            }
+            movements.push(...(siblingMovements || []));
+        }
+
+        // 🔥 EL ESCUDO ANTI-DUPLICACIÓN: Guardamos los IDs de todas las ventas contadas
+        const countedSalesIds = new Set(sales.map(s => s.id));
+
         let state = {
-            initialAmount: Number(shift.initialAmount) || 0,
-            
+            initialAmount,
+            mergedShiftIds: siblingShift ? [shift.id, siblingShift.id] : null,
+            siblingShift,
+
             // Ventas
             salesCash: 0,
             salesDigital: 0,
@@ -750,24 +1100,45 @@ export const cashRepository = {
     // Obtener Balance Visual (Para Auditoría Detallada)
     async getShiftBalance(shiftId) {
         const dbLocal = await getDB();
-        
+        const shift = await dbLocal.shifts.get(shiftId);
+        if (!shift) return { totalCash: 0, movements: [] };
+
+        // 🔥 Resolvemos la fusión multi-PC ANTES de la transacción de Dexie — ver
+        // _resolveSiblingContext (nunca red adentro de un transaction()).
+        const siblingContext = await this._resolveSiblingContext(shift);
+        const saleIsValidForList = s => s.status === 'COMPLETED' && s.type !== 'BUDGET' && s.type !== 'INTERNAL';
+
         return await dbLocal.transaction('r', [dbLocal.cash_movements, dbLocal.shifts, dbLocal.sales], async () => {
-            const shift = await dbLocal.shifts.get(shiftId);
-            if (!shift) return { totalCash: 0, movements: [] };
-            
-            const state = await this._calculateShiftState(shift, dbLocal);
-            
+            const state = await this._calculateShiftState(shift, dbLocal, siblingContext);
+
             // 🔥 UNIFICAMOS VISUALMENTE VENTAS Y MOVIMIENTOS — índices shiftId
             const sales = await dbLocal.sales
                 .where('shiftId').equals(shiftId)
-                .filter(s => s.status === 'COMPLETED' && s.type !== 'BUDGET' && s.type !== 'INTERNAL')
+                .filter(saleIsValidForList)
                 .toArray();
-            const countedSalesIds = new Set(sales.map(s => s.id));
 
             const movements = await dbLocal.cash_movements
                 .where('shiftId').equals(shiftId)
                 .toArray();
-            
+
+            // 🔥 FUSIÓN MULTI-PC: sumamos también al listado visual (Ticket Z /
+            // Auditoría Detallada) — antes solo se sumaban a los TOTALES en
+            // _calculateShiftState, el detalle de operaciones no incluía al hermano.
+            if (siblingContext.siblingShift) {
+                if (siblingContext.siblingSales) {
+                    sales.push(...siblingContext.siblingSales.filter(saleIsValidForList));
+                } else {
+                    const localSiblingSales = await dbLocal.sales
+                        .where('shiftId').equals(siblingContext.siblingShift.id)
+                        .filter(saleIsValidForList)
+                        .toArray();
+                    sales.push(...localSiblingSales);
+                }
+                if (siblingContext.siblingMovements) movements.push(...siblingContext.siblingMovements);
+            }
+
+            const countedSalesIds = new Set(sales.map(s => s.id));
+
             let allOperations = [];
 
             // 🔥 PASO 1: FONDO INICIAL — aparece primero como ingreso para que la matemática sea visible
@@ -850,7 +1221,9 @@ export const cashRepository = {
     },
 
     // Obtener Datos para Auditoría (Para Ticket Z)
-    async getShiftAuditData(shiftId) {
+    // opts.siblingShift / opts.freshSiblingFromCloud: usados por closeShift para
+    // forzar la lectura del turno hermano directo de la nube (post-handshake).
+    async getShiftAuditData(shiftId, opts = {}) {
         const dbLocal = await getDB();
         const shift = await dbLocal.shifts.get(shiftId);
         if (!shift) throw new Error("Turno no encontrado");
@@ -864,15 +1237,19 @@ export const cashRepository = {
                 startTime: shift.openedAt,
                 closeTime: shift.closedAt,
                 initialAmount: Number(shift.initialAmount),
-                ...shift.auditSnapshot, 
+                ...shift.auditSnapshot,
                 auditSnapshot: shift.auditSnapshot
             };
         }
 
+        // 🔥 Resolvemos la fusión multi-PC ANTES de la transacción de Dexie — ver
+        // _resolveSiblingContext (nunca red adentro de un transaction()).
+        const siblingContext = await this._resolveSiblingContext(shift, opts);
+
         // Si está ABIERTO, recalculamos en vivo
         return await dbLocal.transaction('r', [dbLocal.cash_movements, dbLocal.shifts, dbLocal.sales], async () => {
-            const state = await this._calculateShiftState(shift, dbLocal);
-            
+            const state = await this._calculateShiftState(shift, dbLocal, siblingContext);
+
             return {
                 shiftId: shift.id,
                 shiftName: shift.userName || shift.userId,
@@ -907,6 +1284,11 @@ export const cashRepository = {
                 totalCashLocalCrossCheck: state.totalCashLocalCrossCheck,
                 totalCashDrift: state.totalCashDrift,
                 hasDriftWarning: state.hasDriftWarning,
+
+                // 🔥 FUSIÓN MULTI-PC: si hay un turno hermano OPEN, viaja acá para que
+                // closeShift lo pueda cerrar también y la UI avise "ambos turnos".
+                mergedShiftIds: state.mergedShiftIds,
+                siblingShift: state.siblingShift,
 
                 leftInCash: Number(shift.leftInCash) || 0,
                 declaredCash: Number(shift.finalCash) || 0,
@@ -1013,5 +1395,31 @@ if (typeof window !== 'undefined') {
     }
 
     return { localTotal, cloudTotal, snapshotTotal, salesCountLocal: localCompleted.length, salesCountCloud: completed.length, salesCountSnapshot: shift.auditSnapshot?.salesCount };
+  };
+
+  // 🔧 DEBUG: dispara EXACTAMENTE la consulta que usa la fusión multi-PC
+  // (_findOpenSiblingShift) — userId + branchId + status sobre `shifts` — con la
+  // sesión actual. Si falta el índice compuesto, Firestore tira acá mismo el
+  // error con el link para crearlo con un clic. Si ya existe, solo informa
+  // cuántos turnos OPEN hay para este usuario/sucursal. Solo lectura.
+  // Uso: window.__noarForceSiblingIndex()
+  window.__noarForceSiblingIndex = async () => {
+    const { user, activeBranchId } = useAuthStore.getState();
+    const companyId = user?.companyId;
+    const branchId = activeBranchId || user?.branchId;
+    if (!companyId || !branchId) { console.warn('[forceSiblingIndex] Falta companyId o branchId en la sesión actual.'); return; }
+    try {
+      const q = query(
+        collection(db, 'companies', companyId, 'shifts'),
+        where('userId', '==', user.uid),
+        where('branchId', '==', branchId),
+        where('status', '==', 'OPEN'),
+        limit(5)
+      );
+      const snap = await getDocs(q);
+      console.log(`[forceSiblingIndex] ✅ El índice ya existe. ${snap.size} turno(s) OPEN encontrados para este usuario/sucursal.`);
+    } catch (e) {
+      console.error('[forceSiblingIndex] Si falta el índice, el link para crearlo está en este error 👇', e);
+    }
   };
 }

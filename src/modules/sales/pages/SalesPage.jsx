@@ -595,7 +595,11 @@ export const SalesPage = () => {
   };
 
   // 3. FILTRADO VISUAL EN MEMORIA
-  const visibleOperations = useMemo(() => {
+  // 🔥 Filtro compartido SIN método de pago (branch/tipo/cajero/afip/búsqueda).
+  // Separado de visibleOperations porque paymentBreakdown necesita arrancar de
+  // acá: si filtráramos por op.method global antes, una venta SPLIT con parte
+  // en efectivo desaparecería entera de la cuenta de "Efectivo" (ver abajo).
+  const baseFilteredOperations = useMemo(() => {
       return operations.filter(op => {
           if (activeBranchId && String(op.branchId) !== String(activeBranchId)) return false;
           if (filterType === 'ALL') {
@@ -618,40 +622,14 @@ export const SalesPage = () => {
               const selectedUser = cashiersList.find(u => u.email === filterCashier);
               if (!selectedUser) return false;
               const opUserId = op.userId || op.operatorId || op.createdBy;
-              if (opUserId !== selectedUser.uid && op.createdBy !== selectedUser.email) return false;
-          }
-
-          if (filterPaymentMethod !== 'ALL') {
-              // 🔥 CLAVE: Usamos op.method (el global, guardado por el repo) primero.
-              // op.payment?.method solo apunta al PRIMER pago del desglose (puede ser efectivo en un split).
-              const methodRaw = op.method || op.payment?.method || op.paymentMethod || 'cash';
-              const method = String(methodRaw).toLowerCase().trim();
-              
-              if (filterPaymentMethod === 'CASH') {
-                  if (!['cash', 'efectivo'].includes(method)) return false;
-              }
-              if (filterPaymentMethod === 'CARD') {
-                  if (!['card', 'credit', 'debit', 'tarjeta', 'clover', 'manual_card'].includes(method)) return false;
-              }
-              if (filterPaymentMethod === 'TRANSFER') {
-                  if (!['transfer', 'transferencia', 'deposito'].includes(method)) return false;
-              }
-              if (filterPaymentMethod === 'MP') {
-                  if (!['mercadopago', 'mp', 'qr', 'point'].includes(method)) return false;
-              }
-              if (filterPaymentMethod === 'CURRENT_ACCOUNT') {
-                  if (!['current_account', 'cta_cte', 'cuenta_corriente', 'account'].includes(method)) return false;
-              }
-              if (filterPaymentMethod === 'EMPLOYEE_ACCOUNT') {
-                  if (method !== 'employee_account') return false;
-              }
-              if (filterPaymentMethod === 'BUDGET') {
-                  if (!['budget', 'presupuesto', 'budget'].includes(method)) return false;
-              }
-              if (filterPaymentMethod === 'SPLIT') {
-                  // Acepta tanto 'split' como 'SPLIT' (el repo guarda 'SPLIT' en mayusculas desde usePosController)
-                  if (!['split'].includes(method)) return false;
-              }
+              const matchesId = opUserId === selectedUser.uid || op.createdBy === selectedUser.email;
+              // 🛡️ Ventas viejas (previas a guardar userId/operatorId) solo tienen el
+              // nombre del cajero en operatorName/sellerName/userName. Sin este fallback
+              // por nombre, el filtro por dropdown da 0 resultados aunque la fila SÍ
+              // muestre el cajero correcto (resolveCashierName ya usa esos campos).
+              const selectedName = selectedUser.name || selectedUser.email.split('@')[0];
+              const matchesName = !matchesId && resolveCashierName(op) === selectedName;
+              if (!matchesId && !matchesName) return false;
           }
 
           if (filterAfip && op.afip?.status !== 'APPROVED') return false;
@@ -667,24 +645,134 @@ export const SalesPage = () => {
           }
           return true;
       });
-  }, [operations, filterType, filterCashier, filterPaymentMethod, searchTerm, cashiersList, activeBranchId, filterAfip]);
+  }, [operations, filterType, filterCashier, searchTerm, cashiersList, activeBranchId, filterAfip]);
+
+  const visibleOperations = useMemo(() => {
+      if (filterPaymentMethod === 'ALL') return baseFilteredOperations;
+      return baseFilteredOperations.filter(op => {
+          // 🔥 CLAVE: Usamos op.method (el global, guardado por el repo) primero.
+          // op.payment?.method solo apunta al PRIMER pago del desglose (puede ser efectivo en un split).
+          const methodRaw = op.method || op.payment?.method || op.paymentMethod || 'cash';
+          const method = String(methodRaw).toLowerCase().trim();
+
+          if (filterPaymentMethod === 'CASH') {
+              return ['cash', 'efectivo'].includes(method);
+          }
+          if (filterPaymentMethod === 'CARD') {
+              return ['card', 'credit', 'debit', 'tarjeta', 'clover', 'manual_card'].includes(method);
+          }
+          if (filterPaymentMethod === 'TRANSFER') {
+              return ['transfer', 'transferencia', 'deposito'].includes(method);
+          }
+          if (filterPaymentMethod === 'MP') {
+              return ['mercadopago', 'mp', 'qr', 'point'].includes(method);
+          }
+          if (filterPaymentMethod === 'CURRENT_ACCOUNT') {
+              return ['current_account', 'cta_cte', 'cuenta_corriente', 'account'].includes(method);
+          }
+          if (filterPaymentMethod === 'EMPLOYEE_ACCOUNT') {
+              return method === 'employee_account';
+          }
+          if (filterPaymentMethod === 'BUDGET') {
+              return ['budget', 'presupuesto'].includes(method);
+          }
+          if (filterPaymentMethod === 'SPLIT') {
+              // Acepta tanto 'split' como 'SPLIT' (el repo guarda 'SPLIT' en mayusculas desde usePosController)
+              return method === 'split';
+          }
+          return true;
+      });
+  }, [baseFilteredOperations, filterPaymentMethod]);
 
   // 🔥 TOTAL DESGLOSADO POR MEDIO DE PAGO (solo cuando hay un método específico seleccionado)
   const PAYMENT_METHOD_LABELS = {
       CASH: 'EFECTIVO', CARD: 'TARJETAS', TRANSFER: 'TRANSFERENCIAS', MP: 'MERCADOPAGO',
       CURRENT_ACCOUNT: 'CTA. CORRIENTE', EMPLOYEE_ACCOUNT: 'CTA. PERSONAL', SPLIT: 'COMBINADO', BUDGET: 'PRESUPUESTO'
   };
-  const paymentMethodTotal = useMemo(() => {
-      if (filterPaymentMethod === 'ALL') return null;
-      return visibleOperations.reduce((acc, op) => {
+
+  // 🔥 DESGLOSE REAL POR PAGO (audita como cashRepository._calculateShiftState):
+  // recorre el array `payments` de CADA venta (base, sin filtrar por método) para
+  // no perder la porción en efectivo de una venta SPLIT — antes esa porción
+  // desaparecía porque op.method global era 'SPLIT', no 'cash', y el filtro
+  // "Efectivo" excluía la venta entera. Esto es lo que hace que el cierre de
+  // caja (que sí suma por pago individual) y esta pantalla difieran en $.
+  const paymentBreakdown = useMemo(() => {
+      const buckets = { CASH: { total: 0, count: 0 }, CARD: { total: 0, count: 0 }, TRANSFER: { total: 0, count: 0 }, MP: { total: 0, count: 0 }, CURRENT_ACCOUNT: { total: 0, count: 0 }, EMPLOYEE_ACCOUNT: { total: 0, count: 0 }, BUDGET: { total: 0, count: 0 } };
+      const bucketFor = (method) => {
+          if (['cash', 'efectivo'].includes(method)) return 'CASH';
+          if (['card', 'credit', 'debit', 'tarjeta', 'clover', 'manual_card'].includes(method)) return 'CARD';
+          if (['transfer', 'transferencia', 'deposito'].includes(method)) return 'TRANSFER';
+          if (['mercadopago', 'mp', 'qr', 'point'].includes(method)) return 'MP';
+          if (['current_account', 'cta_cte', 'cuenta_corriente', 'account'].includes(method)) return 'CURRENT_ACCOUNT';
+          if (method === 'employee_account') return 'EMPLOYEE_ACCOUNT';
+          if (['budget', 'presupuesto'].includes(method)) return 'BUDGET';
+          return null;
+      };
+
+      baseFilteredOperations.forEach(op => {
           const isVoided = op.afip?.status === 'VOIDED';
           const isRefunded = op.status === 'REFUNDED' || op.status === 'PARTIAL_REFUND' || parseFloat(op.refundedAmount) > 0;
           const isAbandoned = op.status === 'ABANDONED';
           const isBudget = op.type === 'BUDGET';
-          if (isVoided || isRefunded || isAbandoned || isBudget) return acc;
-          return acc + (parseFloat(op.total) || 0);
-      }, 0);
-  }, [visibleOperations, filterPaymentMethod]);
+          if (isVoided || isRefunded || isAbandoned || isBudget) return;
+
+          const payments = Array.isArray(op.payments) && op.payments.length > 0
+              ? op.payments
+              : [{ method: op.method || op.payment?.method || op.paymentMethod || 'cash', amount: op.total, total: op.total }];
+
+          const touchedBuckets = new Set();
+          payments.forEach(p => {
+              const bucket = bucketFor(String(p.method || 'cash').toLowerCase().trim());
+              if (!bucket) return;
+              const amount = parseFloat(p.total ?? p.amount ?? 0) || 0;
+              buckets[bucket].total += amount;
+              touchedBuckets.add(bucket);
+          });
+          // Cada pago cuenta como "1 operación" en su bucket, incluso si la venta
+          // es SPLIT y aporta a más de un bucket a la vez (así una venta con
+          // mitad efectivo/mitad tarjeta suma 1 op en cada desglose).
+          touchedBuckets.forEach(bucket => { buckets[bucket].count++; });
+      });
+
+      return buckets;
+  }, [baseFilteredOperations]);
+
+  const paymentMethodTotal = useMemo(() => {
+      if (filterPaymentMethod === 'ALL') return null;
+      return paymentBreakdown[filterPaymentMethod]?.total ?? 0;
+  }, [paymentBreakdown, filterPaymentMethod]);
+
+  // 🔥 AUDITORÍA POR CAJERO/MÉTODO: periodTotals siempre trae el total del DÍA
+  // completo (viene de agregación server-side o de filteredByDate sin filtrar),
+  // así que al elegir un cajero o método de pago desde el drop la tarjeta de
+  // arriba seguía mostrando el total de todos los cajeros. Cuando hay un filtro
+  // de drill-down activo, mostramos esto (derivado de visibleOperations, que sí
+  // respeta cajero/tipo/pago/búsqueda) en su lugar.
+  const hasDrilldownFilter = filterCashier !== 'ALL' || filterPaymentMethod !== 'ALL';
+  const filteredTotals = useMemo(() => {
+      // 🔥 netProfit no tiene un desglose por pago individual (es de la venta
+      // entera), así que para esa cifra seguimos usando visibleOperations —
+      // solo gross/count necesitan mirar paymentBreakdown para no perder la
+      // porción en efectivo/tarjeta/etc. de una venta SPLIT.
+      const valid = visibleOperations.filter(op =>
+          op.afip?.status !== 'VOIDED' &&
+          op.status !== 'REFUNDED' &&
+          op.status !== 'PARTIAL_REFUND' &&
+          op.status !== 'ABANDONED' &&
+          op.type !== 'BUDGET' &&
+          !(parseFloat(op.refundedAmount) > 0)
+      );
+      const netProfit = valid.reduce((acc, op) => acc + (parseFloat(op.netProfit) || 0), 0);
+
+      if (filterPaymentMethod !== 'ALL') {
+          const bucket = paymentBreakdown[filterPaymentMethod];
+          return { gross: bucket?.total ?? 0, netProfit, count: bucket?.count ?? 0 };
+      }
+      const gross = valid.reduce((acc, op) => acc + (parseFloat(op.total) || 0), 0);
+      return { gross, netProfit, count: valid.length };
+  }, [visibleOperations, paymentBreakdown, filterPaymentMethod]);
+
+  const displayedTotals = hasDrilldownFilter ? filteredTotals : periodTotals;
 
   const totalPages = Math.ceil(visibleOperations.length / itemsPerPage);
   const paginatedOperations = useMemo(() => {
@@ -937,15 +1025,21 @@ export const SalesPage = () => {
       ticketNumber: newNumber, 
       invoiceNumber: newNumber,
       afip: {
-        ...op.afip, 
+        ...op.afip,
         status: status || 'PENDING',
         cae: afipData?.cae || op.afip?.cae || null,
         cbteNumero: afipData?.numero || op.afip?.cbteNumero || null,
-        cbteLetra: afipData?.letra || op.afip?.cbteLetra || null, 
+        cbteLetra: afipData?.letra || op.afip?.cbteLetra || null,
         cbteTipo: afipData?.tipo || op.afip?.cbteTipo || null,
         qr: afipData?.qr_data || op.afip?.qr || null,
         vtoCAE: afipData?.vencimiento || afipData?.vto || op.afip?.vtoCAE || null,
-        ptoVta: afipData?.ptoVta || op.afip?.ptoVta || null
+        ptoVta: afipData?.ptoVta || op.afip?.ptoVta || null,
+        // 🔥 FIX: faltaban acá — sin esto el ticket no mostraba el desglose de IVA
+        // (Factura A/B, Ley 27.743) ni la leyenda "PAGO EN CBU INFORMADA" (RG 5762/2025)
+        // al facturar desde el botón "Facturar" de Ventas (camino separado de usePosController).
+        impNeto: afipData?.impNeto ?? op.afip?.impNeto ?? null,
+        impIVA: afipData?.impIVA ?? op.afip?.impIVA ?? null,
+        ...(afipData?.leyenda ? { leyenda: afipData.leyenda, cbu: afipData.cbu, bancoCbu: afipData.bancoCbu } : {})
       },
       syncStatus: 'pending' 
     };
@@ -1014,13 +1108,13 @@ export const SalesPage = () => {
                     <Card className="px-5 py-2 bg-white border border-sys-200 shadow-sm flex items-center gap-6 animate-in slide-in-from-right-2">
                         <div>
                             <p className={cn("text-[10px] uppercase font-bold tracking-wider flex items-center gap-1", filterAfip ? "text-emerald-600" : "text-sys-400")}>
-                                {filterAfip ? "Total Facturado AFIP" : "Ventas Brutas"}
+                                {filterAfip ? "Total Facturado AFIP" : hasDrilldownFilter ? "Ventas Filtradas" : "Ventas Brutas"}
                             </p>
                             <p className="text-xl font-black text-sys-900">
-                                $ {periodTotals.gross.toLocaleString('es-AR', {minimumFractionDigits: 2})}
+                                $ {displayedTotals.gross.toLocaleString('es-AR', {minimumFractionDigits: 2})}
                             </p>
                             <p className="text-[10px] text-sys-400 font-semibold mt-0.5">
-                                Ventas: {periodTotals.count.toLocaleString('es-AR')}
+                                Ventas: {displayedTotals.count.toLocaleString('es-AR')}
                             </p>
                         </div>
                         <div className="border-l border-sys-100 pl-6 hidden sm:block">
@@ -1028,7 +1122,7 @@ export const SalesPage = () => {
                                 <TrendingUp size={10}/> Utilidad Neta
                             </p>
                             <p className="text-xl font-black text-emerald-600">
-                                $ {periodTotals.netProfit.toLocaleString('es-AR', {minimumFractionDigits: 2})}
+                                $ {displayedTotals.netProfit.toLocaleString('es-AR', {minimumFractionDigits: 2})}
                             </p>
                         </div>
                         {paymentMethodTotal !== null && (
