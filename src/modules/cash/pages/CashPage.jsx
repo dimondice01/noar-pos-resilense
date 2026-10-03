@@ -617,7 +617,7 @@ export const CashPage = () => {
                                         <div className="p-3 bg-emerald-50 rounded-2xl text-emerald-500"><Unlock size={24} /></div>
                                     </div>
                                     <div className="grid grid-cols-2 gap-2 mb-6">
-                                        <div className="bg-sys-50 p-3 rounded-xl"><p className="text-[9px] font-black text-sys-400 uppercase">Inicio</p><p className="font-black text-sys-800 text-sm">{new Date(shift.openedAt).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</p></div>
+                                        <div className="bg-sys-50 p-3 rounded-xl"><p className="text-[9px] font-black text-sys-400 uppercase">Inicio</p><p className="font-black text-sys-800 text-sm">{new Date(shift.openedAt).toLocaleDateString([], {day:'2-digit', month:'2-digit'})} {new Date(shift.openedAt).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</p></div>
                                         <div className="bg-sys-50 p-3 rounded-xl"><p className="text-[9px] font-black text-sys-400 uppercase">Fondo</p><p className="font-black text-sys-800 text-sm">{formatCurrency(shift.initialAmount)}</p></div>
                                     </div>
                                     <Button onClick={() => setShiftToClose(shift)} className="w-full bg-sys-900 hover:bg-black text-white py-3 font-black rounded-xl uppercase text-xs tracking-widest shadow-lg shadow-sys-900/10">Efectuar Cierre Z</Button>
@@ -650,8 +650,8 @@ export const CashPage = () => {
                                         <tr key={shift.id} className="hover:bg-sys-50 transition-colors group">
                                             <td className="p-5">
                                                 <div className="font-black text-sys-800 text-xs uppercase">{new Date(shift.closedAt).toLocaleDateString()}</div>
-                                                <div className="text-[10px] text-sys-400 font-mono">Inicio: {new Date(shift.openedAt).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</div>
-                                                <div className="text-[10px] text-sys-400 font-mono">Cierre: {new Date(shift.closedAt).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</div>
+                                                <div className="text-[10px] text-sys-400 font-mono">Inicio: {new Date(shift.openedAt).toLocaleDateString([], {day:'2-digit', month:'2-digit'})} {new Date(shift.openedAt).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</div>
+                                                <div className="text-[10px] text-sys-400 font-mono">Cierre: {new Date(shift.closedAt).toLocaleDateString([], {day:'2-digit', month:'2-digit'})} {new Date(shift.closedAt).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</div>
                                             </td>
                                             <td className="p-5">
                                                 <span className="text-[10px] font-black uppercase px-2 py-1 bg-sys-50 rounded-lg text-sys-600 border border-sys-100 flex items-center gap-1 w-fit">

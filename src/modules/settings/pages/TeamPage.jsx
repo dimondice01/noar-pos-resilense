@@ -540,7 +540,7 @@ export const TeamPage = () => {
       afipAlwaysOn: false
   });
   const [savingPosConfig, setSavingPosConfig] = useState(false);
-  const [newTotalProfile, setNewTotalProfile] = useState({ prefix: '', categoryName: '', isCents: true });
+  const [newTotalProfile, setNewTotalProfile] = useState({ prefix: '', categoryName: '', isCents: true, amountDigits: 5 });
 
   // ESTADO MODAL DE LIQUIDACIÓN
   const [selectedEmployeeForLedger, setSelectedEmployeeForLedger] = useState(null);
@@ -747,7 +747,7 @@ export const TeamPage = () => {
           return;
       }
 
-      const newProfile = { id: `stp_${Date.now()}`, prefix, categoryName: categoryName.toUpperCase(), isCents: newTotalProfile.isCents !== false };
+      const newProfile = { id: `stp_${Date.now()}`, prefix, categoryName: categoryName.toUpperCase(), isCents: newTotalProfile.isCents !== false, amountDigits: newTotalProfile.amountDigits === 6 ? 6 : 5 };
       setPosConfig(prev => ({
           ...prev,
           scaleTotalProfiles: {
@@ -755,7 +755,7 @@ export const TeamPage = () => {
               [activeBranchId]: [...currentProfiles, newProfile]
           }
       }));
-      setNewTotalProfile({ prefix: '', categoryName: '', isCents: true });
+      setNewTotalProfile({ prefix: '', categoryName: '', isCents: true, amountDigits: 5 });
   };
 
   const handleDeleteTotalProfile = (profileId) => {
@@ -1614,6 +1614,9 @@ export const TeamPage = () => {
                                               <span className={cn("text-[9px] font-bold uppercase px-1.5 py-0.5 rounded border", profile.isCents === false ? "bg-amber-50 text-amber-600 border-amber-200" : "bg-sys-100 text-sys-500 border-sys-200")}>
                                                   {profile.isCents === false ? 'Pesos' : 'Centavos'}
                                               </span>
+                                              <span className="text-[9px] font-bold uppercase px-1.5 py-0.5 rounded border bg-sys-100 text-sys-500 border-sys-200">
+                                                  {profile.amountDigits === 6 ? '6 dígitos' : '5 dígitos'}
+                                              </span>
                                           </div>
                                           <button
                                               type="button"
@@ -1664,6 +1667,26 @@ export const TeamPage = () => {
                                       className={cn("px-3 py-2 rounded-lg text-xs font-bold transition-all disabled:opacity-50", newTotalProfile.isCents === false ? "bg-white shadow-sm text-purple-600" : "text-sys-500")}
                                   >
                                       Pesos
+                                  </button>
+                              </div>
+                              <div className="flex bg-sys-100 p-1 rounded-xl shrink-0">
+                                  <button
+                                      type="button"
+                                      onClick={() => setNewTotalProfile(prev => ({ ...prev, amountDigits: 5 }))}
+                                      disabled={!activeBranchId || activeBranchId === 'ALL'}
+                                      title="El importe se lee de 5 dígitos (formato estándar)"
+                                      className={cn("px-3 py-2 rounded-lg text-xs font-bold transition-all disabled:opacity-50", newTotalProfile.amountDigits !== 6 ? "bg-white shadow-sm text-purple-600" : "text-sys-500")}
+                                  >
+                                      5 dígitos
+                                  </button>
+                                  <button
+                                      type="button"
+                                      onClick={() => setNewTotalProfile(prev => ({ ...prev, amountDigits: 6 }))}
+                                      disabled={!activeBranchId || activeBranchId === 'ALL'}
+                                      title="El importe se lee de 6 dígitos (algunos modelos no descartan el 7mo dígito)"
+                                      className={cn("px-3 py-2 rounded-lg text-xs font-bold transition-all disabled:opacity-50", newTotalProfile.amountDigits === 6 ? "bg-white shadow-sm text-purple-600" : "text-sys-500")}
+                                  >
+                                      6 dígitos
                                   </button>
                               </div>
                               <Button

@@ -119,6 +119,21 @@ export const useAuthStore = create(
                     return;
                 }
 
+                // 🔥 FIX (turnos fantasma multi-cajero): si el usuario de Firebase que
+                // acaba de confirmarse es DISTINTO al que ya está en el store, invalidamos
+                // YA la sesión vieja (antes de esperar el getDoc de abajo). Sin esto, entre
+                // que Firebase confirma el login nuevo y termina de bajar el perfil de
+                // Firestore, useAuthStore.getState().user seguía devolviendo al usuario
+                // ANTERIOR — tiempo de sobra para que un click en "abrir turno" (u otra
+                // acción sensible) se ejecute con la identidad equivocada (ver incidente
+                // Milagros/Isadora, turno abierto con userId de la sesión previa).
+                const currentUser = get().user;
+                if (currentUser && currentUser.uid !== firebaseUser.uid) {
+                    useShiftStore.getState().clearShift();
+                    usePosSessionStore.getState().resetSession();
+                    set({ user: null, isAuthenticated: false, isLoading: true, activeBranchId: null, activeBranchName: null });
+                }
+
                 // 1. Obtener datos frescos de Firestore (incluyendo permisos y sucursal)
                 const userDocRef = doc(db, 'users', firebaseUser.uid);
                 const userSnap = await getDoc(userDocRef);

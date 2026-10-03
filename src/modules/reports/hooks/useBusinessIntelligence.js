@@ -6,8 +6,10 @@ import { useAuthStore } from '../../auth/store/useAuthStore';
 
 const getDateRange = (period, customRange) => {
     if (period === 'custom' && customRange?.start && customRange?.end) {
-        const start = new Date(customRange.start); start.setHours(0, 0, 0, 0);
-        const end = new Date(customRange.end); end.setHours(23, 59, 59, 999);
+        const [sy, sm, sd] = customRange.start.split('-').map(Number);
+        const [ey, em, ed] = customRange.end.split('-').map(Number);
+        const start = new Date(sy, sm - 1, sd, 0, 0, 0, 0);
+        const end = new Date(ey, em - 1, ed, 23, 59, 59, 999);
         return { start, end };
     }
     const start = new Date(); start.setHours(0, 0, 0, 0);

@@ -10,11 +10,15 @@ const isValidEAN13 = (code) => {
 };
 
 // 🔥 PARSER DE BALANZAS "SOPORTE TOTAL" (KRETZ) - ticket con importe total, sin PLU
-// Formato: prefix(6 dígitos configurable) + 1 dígito (ignorado) + 5 dígitos importe + dígito verificador EAN13
-// El importe de 5 dígitos puede venir en CENTAVOS (default, balanzas tipo A) o en PESOS
-// directos (algunas balanzas, mismo modelo que ya nos pasó con el formato "Total" por PLU) —
+// Formato: prefix(6 dígitos configurable) + 1 dígito (ignorado en la mayoría de balanzas) + 5 dígitos importe + dígito verificador EAN13
+// El importe puede venir en CENTAVOS (default, balanzas tipo A) o en PESOS directos —
 // por eso `profile.isCents` es configurable por sucursal en TeamPage (default true, retrocompatible).
-// profiles: [{ prefix: '209999', categoryName: 'VERDULERIA', isCents: true }, ...] de la sucursal activa
+// 🔥 FIX: en algunos modelos ese 7mo dígito (índice 6) NO se ignora — es el dígito más
+// significativo del importe (6 dígitos en vez de 5). Confirmado con ticket real
+// "2099804930000": total real $4930,00 requiere leer "493000" (6 dígitos), no "93000" (5).
+// Como otras balanzas SÍ necesitan descartarlo, es un flag por profile: `amountDigits: 6`
+// (default 5, retrocompatible).
+// profiles: [{ prefix: '209999', categoryName: 'VERDULERIA', isCents: true, amountDigits: 6 }, ...] de la sucursal activa
 //
 // 🔥 FIX: el 4to dígito del prefijo (índice 3) NO es fijo — codifica la CANTIDAD DE
 // ARTÍCULOS del ticket (confirmado comparando dos tickets reales: "220100" con 1
@@ -37,7 +41,8 @@ export const parseTotalScaleBarcode = (code, profiles = []) => {
     const profile = profiles.find(p => prefixMatches(prefix, p.prefix));
     if (!profile) return null;
 
-    const rawValue = parseInt(code.substring(7, 12), 10);
+    const amountStart = profile.amountDigits === 6 ? 6 : 7;
+    const rawValue = parseInt(code.substring(amountStart, 12), 10);
     if (isNaN(rawValue) || rawValue <= 0) return null;
 
     const total = profile.isCents === false ? rawValue : rawValue / 100;

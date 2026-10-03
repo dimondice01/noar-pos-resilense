@@ -1446,6 +1446,12 @@ export const syncService = {
                       const safeId = this._ensureValidCloudId(item, collectionName.slice(0, 3));
                       const docRef = doc(collection(db, 'companies', companyId, collectionName), safeId);
                       const { syncStatus, localId, id, ...cleanItem } = item;
+                      // 🔥 balance de suppliers/clients SOLO se muta vía su ledger service
+                      // (transacción con increment()) — subir el número plano acá corre en
+                      // paralelo con syncPending*Ledger y duplica el monto (set + increment).
+                      if (collectionName === 'suppliers' || collectionName === 'clients') {
+                          delete cleanItem.balance;
+                      }
                       const nowIso = new Date().toISOString();
 
                       await setDoc(docRef, {

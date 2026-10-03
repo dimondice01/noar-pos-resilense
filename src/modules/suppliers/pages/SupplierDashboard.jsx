@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { 
     ArrowLeft, Truck, FileText, 
@@ -31,43 +31,48 @@ export const SupplierDashboard = () => {
   const [monthTotal, setMonthTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [isPaymentOpen, setIsPaymentOpen] = useState(false);
+  const hydratedSupplierRef = useRef(null); // 1 descarga de nube por apertura de perfil
 
   const calculateTotals = (purchases) => {
-        let debt = 0;
         let monthSum = 0;
         const thirtyDaysAgo = new Date();
         thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
         purchases.forEach(p => {
             if (p.status === 'VOIDED') return;
-            
-            const remaining = parseFloat(p.remainingBalance || 0);
-            if (remaining > 0.01) debt += remaining; 
-            
             if (new Date(p.date) >= thirtyDaysAgo) {
                 monthSum += parseFloat(p.total || p.totalFinal || 0);
             }
         });
 
-        setCalculatedDebt(debt);
         setMonthTotal(monthSum);
   };
 
+  const loadPurchases = () => localDb.purchases
+      .where('supplierId').equals(supplierId)
+      .reverse() // Más nuevas primero
+      .toArray();
+
   const loadData = async () => {
     setLoading(true);
-    
+
     try {
         const s = await supplierRepository.getById(supplierId);
         setSupplier(s);
+        // 🔥 Saldo = contador atómico (supplier.balance, vía supplierLedgerService),
+        // el mismo que muestra el listado. Las compras locales pueden estar incompletas.
+        setCalculatedDebt(parseFloat(s?.balance) || 0);
 
         // 🔥 MAGIA: LEEMOS DIRECTO DE LAS COMPRAS
-        let purchases = await localDb.purchases
-            .where('supplierId').equals(supplierId)
-            .reverse() // Más nuevas primero
-            .toArray();
+        let purchases = await loadPurchases();
+        calculateTotals(purchases);
+        setHistory(purchases);
+        setLoading(false);
 
-        // 🔥 AUTO-HIDRATACIÓN SILENCIOSA O FORZADA DE NUBE
-        if (purchases.length === 0 && navigator.onLine && user?.companyId) {
+        // 🔥 HIDRATACIÓN BAJO DEMANDA: al abrir el perfil se bajan de la nube las
+        // compras de ESTE proveedor (no hay descarga global). En segundo plano.
+        if (hydratedSupplierRef.current !== supplierId && navigator.onLine && user?.companyId) {
+            hydratedSupplierRef.current = supplierId;
             try {
                 const q = query(
                     collection(firestoreDB, `companies/${user.companyId}/purchases`),
@@ -90,15 +95,14 @@ export const SupplierDashboard = () => {
                     );
                     const safePurchases = cloudPurchases.filter(p => !pendingSet.has(String(p.id)));
                     if (safePurchases.length > 0) await localDb.purchases.bulkPut(safePurchases);
-                    purchases = await localDb.purchases.where('supplierId').equals(supplierId).reverse().toArray();
+                    purchases = await loadPurchases();
+                    calculateTotals(purchases);
+                    setHistory(purchases);
                 }
             } catch (e) {
                 console.warn("Fallo hidratación del historial del proveedor:", e);
             }
         }
-
-        calculateTotals(purchases);
-        setHistory(purchases);
 
     } catch (error) {
         console.error(error);
