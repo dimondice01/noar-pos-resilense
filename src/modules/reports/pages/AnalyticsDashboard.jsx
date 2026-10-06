@@ -4,7 +4,7 @@ import {
     PieChart, Pie, Cell
 } from 'recharts';
 import {
-    TrendingUp, DollarSign, Package,
+    TrendingUp, DollarSign, Package, PackageX,
     ArrowUpRight, Truck, Wallet, Activity, HandCoins, RefreshCw, Calendar
 } from 'lucide-react';
 import { useBusinessIntelligence } from '../hooks/useBusinessIntelligence';
@@ -55,7 +55,7 @@ export const AnalyticsDashboard = () => {
                     name: h.name || '---',
                     Ventas:   Number(h.Ingresos   || 0),
                     Costos:   Number(h.CostoVenta  || 0),
-                    Ganancia: Number((h.Ingresos || 0) - (h.CostoVenta || 0) - (h.Gastos || 0))
+                    Ganancia: Number((h.Ingresos || 0) - (h.CostoVenta || 0) - (h.Gastos || 0) - (h.Perdidas || 0))
                 };
             }
             return {
@@ -199,12 +199,13 @@ export const AnalyticsDashboard = () => {
             </div>
 
             {/* KPI GRID */}
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            <div className={`grid grid-cols-1 md:grid-cols-2 gap-4 ${viewMode === 'ECONOMIC' ? 'lg:grid-cols-5' : 'lg:grid-cols-4'}`}>
                 {viewMode === 'ECONOMIC' ? (
                     <>
                         <KPICard title="Ventas Netas"       value={stats.revenue}                                    icon={DollarSign}  color="blue"    sub="Ingresos del periodo" />
                         <KPICard title="Costo Mercadería"   value={stats.cost}                                       icon={Package}     color="amber"   sub="Costo de Venta (COGS)" />
                         <KPICard title="Gastos Operativos"  value={stats.expenses}                                   icon={HandCoins}   color="rose"    sub="Gastos Fijos" />
+                        <KPICard title="Pérdidas"           value={stats.losses}                                     icon={PackageX}    color="orange"  sub="Roturas / vencidos (al costo, sin mermas)" />
                         <KPICard title="Utilidad Bruta"     value={stats.revenue - stats.cost}                       icon={TrendingUp}  color="emerald" sub="Margen Bruto Real" isProfit />
                     </>
                 ) : (
@@ -389,6 +390,7 @@ const KPICard = ({ title, value, icon: Icon, color, sub, isProfit }) => {
         blue:    { bg: 'bg-blue-50',    text: 'text-blue-600',    val: 'text-blue-700'    },
         amber:   { bg: 'bg-amber-50',   text: 'text-amber-600',   val: 'text-amber-700'   },
         rose:    { bg: 'bg-rose-50',    text: 'text-rose-600',    val: 'text-rose-700'    },
+        orange:  { bg: 'bg-orange-50',  text: 'text-orange-600',  val: 'text-orange-700'  },
         emerald: { bg: 'bg-emerald-50', text: 'text-emerald-600', val: 'text-emerald-700' },
     };
     const c = colorMap[color] || colorMap.blue;

@@ -961,7 +961,9 @@ export const syncService = {
           snapshot.docChanges().forEach(change => {
               if (change.type === 'added' || change.type === 'modified') {
                   const data = change.doc.data();
-                  itemsToPut.push({ id: change.doc.id, firestoreId: change.doc.id, ...data, syncStatus: 'synced' });
+                  // 🔥 Docs viejos tienen date como Timestamp — Dexie/kardex esperan ISO string
+                  const date = typeof data.date?.toDate === 'function' ? data.date.toDate().toISOString() : data.date;
+                  itemsToPut.push({ id: change.doc.id, firestoreId: change.doc.id, ...data, date, syncStatus: 'synced' });
               }
           });
 

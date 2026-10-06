@@ -36,7 +36,9 @@ export const ProductHistoryModal = ({ isOpen, onClose, product }) => {
         case 'STOCK_ADJUST_IN': 
             return { icon: TrendingUp, color: "text-green-600", bg: "bg-green-100", border: "border-green-200" };
         case 'STOCK_OUT': // Venta (Próximamente)
-        case 'STOCK_ADJUST_OUT': 
+        case 'STOCK_ADJUST_OUT':
+        case 'MERMA':
+        case 'PERDIDA':
             return { icon: TrendingDown, color: "text-red-600", bg: "bg-red-100", border: "border-red-200" };
         case 'CREATION': 
             return { icon: Package, color: "text-purple-600", bg: "bg-purple-100", border: "border-purple-200" };
@@ -52,6 +54,8 @@ export const ProductHistoryModal = ({ isOpen, onClose, product }) => {
           'STOCK_IN': 'Ingreso Inicial',
           'STOCK_ADJUST_IN': 'Ajuste Stock (+)',
           'STOCK_ADJUST_OUT': 'Ajuste Stock (-)',
+          'MERMA': 'Merma',
+          'PERDIDA': 'Pérdida',
           'CREATION': 'Producto Creado'
       };
       return map[type] || type.replace(/_/g, ' ');

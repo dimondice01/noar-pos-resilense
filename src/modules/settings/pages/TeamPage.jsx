@@ -60,7 +60,7 @@ const PermissionsSwitchGroups = ({ permissions, togglePermission }) => {
 // =================================================================================
 // 🧩 MODAL: LIQUIDACIÓN DE EMPLEADO (LEDGER) - MATEMÁTICA EN VIVO
 // =================================================================================
-const LiquidationModal = ({ isOpen, onClose, employee, onLiquidated }) => {
+const LiquidationModal = ({ isOpen, onClose, employee, onLiquidated, onDebtSynced }) => {
     const { user: currentUser, activeBranchId } = useAuthStore();
     const [history, setHistory] = useState([]);
     const [isLoading, setIsLoading] = useState(true);
@@ -102,6 +102,8 @@ const LiquidationModal = ({ isOpen, onClose, employee, onLiquidated }) => {
                     const safeDebt = Math.max(0, totalDebt);
                     setCalculatedDebt(safeDebt);
                     setLiquidationAmount(safeDebt > 0 ? String(safeDebt.toFixed(2)) : '');
+                    // 🔥 El ledger es la verdad: alineamos el listado (cache Dexie desactualizado)
+                    onDebtSynced?.(targetUserId, safeDebt);
 
                 } catch (e) {
                     console.error("Error cargando historial", e);
@@ -151,6 +153,7 @@ const LiquidationModal = ({ isOpen, onClose, employee, onLiquidated }) => {
             });
 
             toast.success(`Cuenta de ${employee.name} liquidada exitosamente.`, { id: toastId });
+            await onDebtSynced?.(targetUserId, Math.max(0, calculatedDebt - amountToLiquidate));
             onLiquidated();
             onClose();
         } catch (error) {
@@ -1756,6 +1759,13 @@ export const TeamPage = () => {
           employee={selectedEmployeeForLedger}
           onClose={() => setSelectedEmployeeForLedger(null)}
           onLiquidated={loadData}
+          onDebtSynced={async (targetId, debt) => {
+              setUsers(prev => prev.map(u => (u.uid || u.id) === targetId ? { ...u, ledgerDebt: debt } : u));
+              try {
+                  const dbLocal = await getDB();
+                  await dbLocal.users.update(targetId, { ledgerDebt: debt });
+              } catch (e) { console.warn("No se pudo actualizar ledgerDebt en Dexie", e); }
+          }}
       />
 
       {/* MODAL DE EDICIÓN DE EMPLEADO */}

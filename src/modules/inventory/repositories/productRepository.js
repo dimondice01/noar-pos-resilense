@@ -604,6 +604,9 @@ export const productRepository = {
 
         // Leer producto ANTES de la transacción para detectar si es caja
         const productData = await dbLocal.products.get(productId);
+        // 🔥 PÉRDIDA valorizada al costo del momento (para KPI de BI). Solo en el movimiento
+        // principal — el cascade a la unidad no lleva lossValue para no contarlo dos veces.
+        const lossValue = type === 'PERDIDA' ? Math.abs(qty) * (parseFloat(productData?.cost) || 0) : undefined;
         const isCaseProduct = !!(productData?.isCase === true && productData?.caseProductId && Number(productData?.unitsPerCase) > 1);
         const unitProductId = isCaseProduct ? productData.caseProductId : null;
         const unitQty = isCaseProduct ? qty * Number(productData.unitsPerCase) : 0;
@@ -672,6 +675,7 @@ export const productRepository = {
                 user: userName,
                 date: timestamp,
                 refId: null,
+                ...(lossValue !== undefined ? { lossValue } : {}),
                 syncStatus: 'pending'
             });
 
@@ -711,8 +715,13 @@ export const productRepository = {
                 type: type,
                 description: description,
                 user: userName,
-                date: serverTimestamp(),
-                refId: null
+                // 🔥 FIX: date como ISO string (igual que Dexie y los where('date') de
+                // fetchMovementsByRange/BI) — un Timestamp quedaba fuera de esos rangos.
+                date: timestamp,
+                // 🔥 FIX: sin updatedAt el listener (orderBy('updatedAt')) excluía el doc.
+                updatedAt: serverTimestamp(),
+                refId: null,
+                ...(lossValue !== undefined ? { lossValue } : {})
             });
 
             // 3. 🔥 ACTUALIZAR PRODUCTO (Para despertar el Delta Sync)
@@ -733,7 +742,8 @@ export const productRepository = {
                     type: type,
                     description: `Desde caja: ${description || 'Ajuste'}`,
                     user: userName,
-                    date: serverTimestamp(),
+                    date: timestamp,
+                    updatedAt: serverTimestamp(),
                     refId: productId
                 });
                 const unitProductCloudRef = doc(db, `companies/${user.companyId}/products`, unitProductId);

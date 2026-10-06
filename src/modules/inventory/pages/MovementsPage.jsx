@@ -34,16 +34,17 @@ const TYPE_CONFIG = {
   'CREATION': { label: 'Alta Producto', icon: Package, color: 'text-purple-600', bg: 'bg-purple-50', border: 'border-purple-200' },
   'STOCK_OUT': { label: 'Venta', icon: ArrowUpRight, color: 'text-sys-600', bg: 'bg-sys-100', border: 'border-sys-200' },
   'MERMA': { label: 'Merma', icon: ShieldAlert, color: 'text-red-600', bg: 'bg-red-50', border: 'border-red-200' },
+  'PERDIDA': { label: 'Pérdida', icon: ShieldAlert, color: 'text-red-800', bg: 'bg-red-100', border: 'border-red-300' },
   'BUDGET': { label: 'Presupuesto', icon: FileArchive, color: 'text-gray-500', bg: 'bg-gray-100', border: 'border-gray-200' },
 };
 
 // Tipos cuya cantidad se muestra como salida (rojo, con signo -)
-const OUTFLOW_TYPES = new Set(['MERMA']);
+const OUTFLOW_TYPES = new Set(['MERMA', 'PERDIDA']);
 
 // Solo estos tipos aparecen en el Feed de Auditoría — ventas (STOCK_OUT) y presupuestos quedan excluidos
 const AUDIT_TYPES = new Set([
     'STOCK_IN', 'IN', 'STOCK_ADJUST_IN', 'STOCK_ADJUST_OUT',
-    'OUT', 'PRICE_CHANGE', 'COST_CHANGE', 'CREATION', 'MERMA'
+    'OUT', 'PRICE_CHANGE', 'COST_CHANGE', 'CREATION', 'MERMA', 'PERDIDA'
 ]);
 
 // =================================================================

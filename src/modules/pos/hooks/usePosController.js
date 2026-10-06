@@ -792,7 +792,9 @@ export const usePosController = () => {
                     taxRate: i.taxRate || 21,
                     scaleSource: i.scaleSource || null,
                     // 🔥 SKU único por unidad física — sin esto se perdía al armar el payload de venta
-                    skus: i.skus || undefined, requiresUnitSku: i.requiresUnitSku || undefined
+                    skus: i.skus || undefined, requiresUnitSku: i.requiresUnitSku || undefined,
+                    // 🔥 COMBO: sin esto salesRepository descontaba stock del combo y no de sus componentes
+                    isCombo: i.isCombo || undefined, components: i.isCombo ? i.components : undefined
                 })),
                 client: activeTab.client || { name: 'Consumidor Final', fiscalCondition: 'CONSUMIDOR_FINAL' },
                 total: totals.total, subtotal: totals.subtotal, discount: totals.discountAmount,
@@ -1000,7 +1002,9 @@ export const usePosController = () => {
                     appliedWholesale: i.appliedWholesale || false, taxRate: i.taxRate || 21,
                     scaleSource: i.scaleSource || null,
                     // 🔥 SKU único por unidad física — sin esto se perdía al armar el payload de venta
-                    skus: i.skus || undefined, requiresUnitSku: i.requiresUnitSku || undefined
+                    skus: i.skus || undefined, requiresUnitSku: i.requiresUnitSku || undefined,
+                    // 🔥 COMBO: sin esto salesRepository descontaba stock del combo y no de sus componentes
+                    isCombo: i.isCombo || undefined, components: i.isCombo ? i.components : undefined
                 })),
                 client: activeTab.client || { name: 'Consumidor Final', fiscalCondition: 'CONSUMIDOR_FINAL' },
                 total: totalWithInterest,
@@ -1184,7 +1188,9 @@ export const usePosController = () => {
                     price: 0, originalPrice: i.price, cost: i.cost,
                     quantity: i.quantity, subtotal: 0,
                     scaleSource: i.scaleSource || null,
-                    skus: i.skus || undefined, requiresUnitSku: i.requiresUnitSku || undefined
+                    skus: i.skus || undefined, requiresUnitSku: i.requiresUnitSku || undefined,
+                    // 🔥 COMBO: sin esto salesRepository descontaba stock del combo y no de sus componentes
+                    isCombo: i.isCombo || undefined, components: i.isCombo ? i.components : undefined
                 })),
                 client: { name: 'CONSUMO INTERNO', fiscalCondition: 'CONSUMIDOR FINAL' },
                 total: 0, subtotal: 0, discount: 100,

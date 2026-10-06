@@ -52,6 +52,7 @@ export const useBusinessIntelligence = () => {
     const [forceRefresh, setForceRefresh] = useState(0);
     const [salesData, setSalesData] = useState([]);
     const [movementsData, setMovementsData] = useState([]);
+    const [lossesData, setLossesData] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
 
@@ -95,7 +96,13 @@ export const useBusinessIntelligence = () => {
                 let movQ = query(collection(db, companyPath, 'cash_movements'), where('date', '>=', start.toISOString()), where('date', '<=', end.toISOString()), limit(1000));
                 if (activeBranchId && activeBranchId !== 'ALL') movQ = query(movQ, where('branchId', '==', activeBranchId));
 
-                const [sSnap, mSnap] = await Promise.all([salesSnapPromise, getDocs(movQ)]);
+                // 4. Pérdidas (movimientos de stock tipo PERDIDA — la MERMA simple no es pérdida de $): solo ese tipo + rango, para leer
+                // pocos docs (índice compuesto type+date / branchId+type+date).
+                let lossQ = query(collection(db, companyPath, 'movements'), where('type', '==', 'PERDIDA'), where('date', '>=', start.toISOString()), where('date', '<=', end.toISOString()), limit(500));
+                if (activeBranchId && activeBranchId !== 'ALL') lossQ = query(lossQ, where('branchId', '==', activeBranchId));
+                const lossSnapPromise = getDocs(lossQ).catch(e => { console.warn('BI: no se pudieron bajar pérdidas', e); return null; });
+
+                const [sSnap, mSnap, lSnap] = await Promise.all([salesSnapPromise, getDocs(movQ), lossSnapPromise]);
 
                 const cloudSales = sSnap.docs.map(doc => ({ ...doc.data(), id: doc.id }));
 
@@ -142,6 +149,32 @@ export const useBusinessIntelligence = () => {
                     finalMovements = finalMovements.filter(m => m.branchId === activeBranchId);
                 }
                 setMovementsData(finalMovements.map(m => ({ ...m, dateObj: parseDate(m.date || m.createdAt) })));
+
+                // Pérdidas: merge en Dexie sin pisar pendientes, y releer local
+                const cloudLosses = lSnap ? lSnap.docs.map(d => ({ ...d.data(), id: d.id, firestoreId: d.id })) : [];
+                if (cloudLosses.length > 0) {
+                    const pendingIds = new Set(await localDb.movements.where('syncStatus').equals('pending').primaryKeys());
+                    const safeLosses = cloudLosses.filter(m => !pendingIds.has(m.id)).map(m => ({ ...m, syncStatus: 'synced' }));
+                    if (safeLosses.length > 0) await localDb.movements.bulkPut(safeLosses);
+                }
+                const startIso = start.toISOString(); const endIso = end.toISOString();
+                let finalLosses = (await localDb.movements.where('type').equals('PERDIDA').toArray())
+                    .filter(m => typeof m.date === 'string' && m.date >= startIso && m.date <= endIso);
+                if (activeBranchId && activeBranchId !== 'ALL') {
+                    finalLosses = finalLosses.filter(m => m.branchId === activeBranchId);
+                }
+                // Pérdidas sin lossValue (defensivo): se valorizan con el costo ACTUAL del producto (aprox.)
+                const missingIds = [...new Set(finalLosses.filter(m => m.lossValue === undefined).map(m => m.productId))];
+                const costById = new Map();
+                if (missingIds.length > 0) {
+                    const prods = await localDb.products.bulkGet(missingIds);
+                    prods.forEach((p, i) => costById.set(missingIds[i], parseFloat(p?.cost) || 0));
+                }
+                setLossesData(finalLosses.map(m => ({
+                    ...m,
+                    value: m.lossValue !== undefined ? (parseFloat(m.lossValue) || 0) : (parseFloat(m.amount) || 0) * (costById.get(m.productId) || 0),
+                    dateObj: parseDate(m.date)
+                })));
 
             } catch (err) { setError(err.message); } finally { setLoading(false); }
         };
@@ -223,15 +256,27 @@ export const useBusinessIntelligence = () => {
             }
         });
 
+        // Pérdidas (roturas/vencidos) — KPI aparte del CMV para no distorsionar el margen de venta
+        let losses = 0;
+        const lossDetails = [];
+        lossesData.forEach(m => {
+            losses += m.value;
+            const { key, label } = getGroupKeyAndLabel(m.dateObj, period);
+            if (!historyMap[key]) historyMap[key] = { name: label, Ingresos: 0, CostoVenta: 0, Gastos: 0, Compras: 0, order: key };
+            historyMap[key].Perdidas = (historyMap[key].Perdidas || 0) + m.value;
+            lossDetails.push({ date: m.date, description: m.description || 'Pérdida', user: m.user || '', productId: m.productId, quantity: parseFloat(m.amount) || 0, amount: m.value });
+        });
+
         return {
-            global: { revenue, cost, expenses, purchases, profit: revenue - cost - expenses, avgTicket: salesData.length > 0 ? revenue / salesData.length : 0 },
+            global: { revenue, cost, expenses, purchases, losses, profit: revenue - cost - expenses - losses, avgTicket: salesData.length > 0 ? revenue / salesData.length : 0 },
+            lossDetails,
             historyChart: Object.values(historyMap).sort((a,b) => a.order.localeCompare(b.order)),
             paymentChart: Object.entries(paymentMap).map(([name, value]) => ({ name, value })).filter(p => p.value > 0),
             topSuppliers: Object.entries(supplierMap).map(([name, value]) => ({ name, value })).sort((a,b) => b.value - a.value).slice(0, 5),
             topProfit: Object.values(productMap).sort((a,b) => b.profit - a.profit).slice(0, 5),
             expenseDetails: expenseDetails.sort((a, b) => new Date(b.date) - new Date(a.date)).slice(0, 30)
         };
-    }, [salesData, movementsData, period]);
+    }, [salesData, movementsData, lossesData, period]);
 
     return { metrics, loading, error, period, setPeriod, customRange, setCustomRange, refetch: () => setForceRefresh(n => n + 1), activeBranchId };
 };

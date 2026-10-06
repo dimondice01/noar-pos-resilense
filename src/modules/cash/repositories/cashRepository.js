@@ -713,6 +713,31 @@ export const cashRepository = {
         } catch (e) { console.warn("Background history sync warning:", e); }
     },
 
+    // 🔥 Backfill MANUAL y acotado para perfiles de cajeros: trae los turnos abiertos
+    // desde `fromISO` (openedAt es ISO string). Reusa el índice branchId+openedAt.
+    // Tope duro de 300 docs para no castigar Firestore. Respeta pendientes locales.
+    async fetchShiftsRangeFromCloud(fromISO) {
+        const { user, branchId } = this._getContext();
+        if (!navigator.onLine || !user?.companyId) return 0;
+        if (user.role !== 'ADMIN' && user.role !== 'OWNER') return 0;
+
+        const shiftsRef = collection(db, `companies/${user.companyId}/shifts`);
+        const q = (branchId && branchId !== 'main' && branchId !== 'ALL')
+            ? query(shiftsRef, where('branchId', '==', branchId), where('openedAt', '>=', fromISO), orderBy('openedAt', 'desc'), limit(300))
+            : query(shiftsRef, where('openedAt', '>=', fromISO), orderBy('openedAt', 'desc'), limit(300));
+
+        const snapshot = await getDocs(q);
+        const dbLocal = await getDB();
+        const pendingSet = new Set(
+            (await dbLocal.shifts.where('syncStatus').equals('pending').toArray()).map(s => String(s.id))
+        );
+        const safeShifts = snapshot.docs
+            .map(d => ({ ...d.data(), id: d.id, firestoreId: d.id, syncStatus: 'synced', branchId: d.data().branchId || 'main' }))
+            .filter(s => !pendingSet.has(String(s.id)));
+        if (safeShifts.length > 0) await dbLocal.shifts.bulkPut(safeShifts);
+        return safeShifts.length;
+    },
+
     // =========================================
     // ⚖️ BALANCE Y AUDITORÍA (EL CEREBRO DEL CIERRE Z BLINDADO)
     // =========================================

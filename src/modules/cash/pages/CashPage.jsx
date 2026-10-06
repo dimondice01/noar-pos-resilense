@@ -17,7 +17,8 @@ import { Card } from '../../../core/ui/Card';
 import { Button } from '../../../core/ui/Button';
 import { cn } from '../../../core/utils/cn';
 import { CashClosingModal } from '../components/CashClosingModal'; 
-import { TicketZModal } from '../../reports/components/TicketZModal'; 
+import { TicketZModal } from '../../reports/components/TicketZModal';
+import { CashierProfilesPanel } from '../components/CashierProfilesPanel';
 
 // Firebase
 import { collection, query, where, getDocs } from 'firebase/firestore';
@@ -423,6 +424,19 @@ export const CashPage = () => {
         }
     };
 
+    // 🔥 Backfill acotado para Perfiles de Cajeros (solo a demanda)
+    const handleCashierBackfill = async (fromISO) => {
+        const toastId = toast.loading("Completando turnos del período...");
+        try {
+            const count = await cashRepository.fetchShiftsRangeFromCloud(fromISO);
+            setAllShifts(await cashRepository.getAllShifts());
+            toast.success(`${count} turnos verificados desde la nube`, { id: toastId });
+        } catch (error) {
+            console.error(error);
+            toast.error("No se pudo completar desde la nube", { id: toastId });
+        }
+    };
+
     const loadInitialData = async () => {
         setLoading(true);
         try {
@@ -595,9 +609,21 @@ export const CashPage = () => {
                 <button onClick={() => setActiveTab('history')} className={cn("px-6 py-2 text-xs font-black rounded-xl transition-all flex items-center gap-2 uppercase tracking-wider", activeTab === 'history' ? "bg-sys-900 text-white shadow-lg" : "text-sys-400 hover:bg-sys-50")}>
                     <HistoryIcon size={14}/> Historial ({closedShifts.length})
                 </button>
+                <button onClick={() => setActiveTab('cashiers')} className={cn("px-6 py-2 text-xs font-black rounded-xl transition-all flex items-center gap-2 uppercase tracking-wider", activeTab === 'cashiers' ? "bg-sys-900 text-white shadow-lg" : "text-sys-400 hover:bg-sys-50")}>
+                    <User size={14}/> Cajeros
+                </button>
             </div>
 
-            {activeTab === 'active' ? (
+            {activeTab === 'cashiers' ? (
+                <CashierProfilesPanel
+                    shifts={closedShifts}
+                    resolveCashierName={resolveCashierName}
+                    resolveBranchName={resolveBranchName}
+                    getDiff={getShiftValues}
+                    onOpenShift={setSelectedShiftForAudit}
+                    onCloudBackfill={(user?.role === 'ADMIN' || user?.role === 'OWNER') ? handleCashierBackfill : null}
+                />
+            ) : activeTab === 'active' ? (
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                     {activeShifts.length === 0 ? (
                         <Card className="col-span-full py-20 text-center border-dashed border-2 flex flex-col items-center gap-4 opacity-50 bg-transparent shadow-none border-sys-200">

@@ -178,6 +178,7 @@ const StockEntryModal = ({ isOpen, onClose, product, onConfirm }) => {
     const [qty, setQty] = useState('');
     const [reason, setReason] = useState('Ajuste de Conteo');
     const [moveType, setMoveType] = useState('STOCK_ADJUST_IN'); // Default: Ingreso Manual
+    const isOut = moveType === 'MERMA' || moveType === 'PERDIDA';
     const inputRef = useRef(null);
 
     useEffect(() => {
@@ -194,7 +195,7 @@ const StockEntryModal = ({ isOpen, onClose, product, onConfirm }) => {
         if (!val || val === 0) return toast.error("Ingrese una cantidad válida");
 
         let finalQty = val;
-        if (['MERMA', 'STOCK_ADJUST_OUT'].includes(moveType) && finalQty > 0) {
+        if (['MERMA', 'PERDIDA', 'STOCK_ADJUST_OUT'].includes(moveType) && finalQty > 0) {
             finalQty = -finalQty;
         } else if (moveType === 'STOCK_ADJUST_IN' && finalQty < 0) {
             finalQty = Math.abs(finalQty);
@@ -227,13 +228,33 @@ const StockEntryModal = ({ isOpen, onClose, product, onConfirm }) => {
                             <span className="text-xs font-bold uppercase tracking-wide">Ingreso (+)</span>
                         </button>
                         <button
-                            onClick={() => { setMoveType('MERMA'); setReason('Merma / Rotura'); }}
-                            className={cn("p-3 rounded-xl border-2 flex flex-col items-center gap-1 transition-all", moveType === 'MERMA' ? "border-red-500 bg-red-50 text-red-700" : "border-sys-200 text-sys-500 hover:border-sys-300")}
+                            onClick={() => { setMoveType('MERMA'); setReason('Merma / Fraccionado'); }}
+                            className={cn("p-3 rounded-xl border-2 flex flex-col items-center gap-1 transition-all", isOut ? "border-red-500 bg-red-50 text-red-700" : "border-sys-200 text-sys-500 hover:border-sys-300")}
                         >
-                            <ShieldAlert size={20} className={moveType === 'MERMA' ? "text-red-500" : "text-sys-400"} />
+                            <ShieldAlert size={20} className={isOut ? "text-red-500" : "text-sys-400"} />
                             <span className="text-xs font-bold uppercase tracking-wide">Merma (-)</span>
                         </button>
                     </div>
+
+                    {/* 🔥 MERMA = solo baja stock (ej: fraccionar para otro producto) · PÉRDIDA = rotura/vencido, cuenta como $ perdido en Analytics */}
+                    {isOut && (
+                        <div className="grid grid-cols-2 gap-2 -mt-2">
+                            <button
+                                onClick={() => { setMoveType('MERMA'); setReason('Merma / Fraccionado'); }}
+                                className={cn("p-2 rounded-lg border text-left transition-all", moveType === 'MERMA' ? "border-red-400 bg-red-50" : "border-sys-200 hover:border-sys-300")}
+                            >
+                                <p className={cn("text-[11px] font-black uppercase", moveType === 'MERMA' ? "text-red-700" : "text-sys-600")}>Solo merma</p>
+                                <p className="text-[10px] text-sys-500 leading-tight">Baja stock, sin pérdida de dinero</p>
+                            </button>
+                            <button
+                                onClick={() => { setMoveType('PERDIDA'); setReason('Pérdida / Rotura'); }}
+                                className={cn("p-2 rounded-lg border text-left transition-all", moveType === 'PERDIDA' ? "border-red-600 bg-red-100" : "border-sys-200 hover:border-sys-300")}
+                            >
+                                <p className={cn("text-[11px] font-black uppercase", moveType === 'PERDIDA' ? "text-red-800" : "text-sys-600")}>Pérdida</p>
+                                <p className="text-[10px] text-sys-500 leading-tight">Rotura / vencido — resta en Analytics</p>
+                            </button>
+                        </div>
+                    )}
 
                     <div>
                         <label className="text-[10px] text-sys-500 uppercase font-black tracking-widest mb-2 block">Cantidad a modificar</label>
@@ -241,7 +262,7 @@ const StockEntryModal = ({ isOpen, onClose, product, onConfirm }) => {
                             ref={inputRef}
                             type="number"
                             className={cn("w-full text-3xl font-black p-4 border-2 rounded-2xl outline-none text-center transition-colors",
-                                moveType === 'MERMA' ? "bg-red-50 border-red-200 text-red-600 focus:border-red-500" : "bg-green-50 border-green-200 text-green-600 focus:border-green-500"
+                                isOut ? "bg-red-50 border-red-200 text-red-600 focus:border-red-500" : "bg-green-50 border-green-200 text-green-600 focus:border-green-500"
                             )}
                             placeholder="0"
                             value={qty}
@@ -265,10 +286,10 @@ const StockEntryModal = ({ isOpen, onClose, product, onConfirm }) => {
                     <Button
                         onClick={handleConfirm}
                         className={cn("w-full py-4 text-base font-black shadow-lg transition-all",
-                            moveType === 'MERMA' ? "bg-red-600 hover:bg-red-700 shadow-red-200" : "bg-green-600 hover:bg-green-700 shadow-green-200"
+                            isOut ? "bg-red-600 hover:bg-red-700 shadow-red-200" : "bg-green-600 hover:bg-green-700 shadow-green-200"
                         )}
                     >
-                        {moveType === 'MERMA' ? 'RESTAR STOCK' : 'SUMAR STOCK'}
+                        {moveType === 'PERDIDA' ? 'REGISTRAR PÉRDIDA' : isOut ? 'RESTAR STOCK' : 'SUMAR STOCK'}
                     </Button>
                 </div>
             </div>
@@ -1586,6 +1607,7 @@ export const InventoryPage = () => {
                                                         <span className="text-[10px] font-black text-sys-400 uppercase tracking-tighter opacity-60">{p.brand}</span>
                                                         {p.isWeighable && <span className="text-[9px] font-black text-orange-600 bg-orange-100 px-1 rounded flex items-center gap-1"><Scale size={10} /> BALANZA</span>}
                                         {p.isCase === true && <span className="text-[9px] font-black text-amber-700 bg-amber-100 px-1 rounded flex items-center gap-1"><Package size={10} /> CAJA ×{p.unitsPerCase}</span>}
+                                        {p.isCombo === true && <span title={(p.components || []).map(c => `${c.qty} × ${c.name}`).join('\n')} className="text-[9px] font-black text-purple-700 bg-purple-100 px-1 rounded flex items-center gap-1"><ShoppingBag size={10} /> COMBO ({(p.components || []).length})</span>}
                                                     </div>
                                                 </div>
                                             </td>
