@@ -2,7 +2,7 @@ import { getDB } from '../../../database/db';
 import { db } from '../../../database/firebase';
 import { 
     doc, updateDoc, getDoc, setDoc, deleteDoc, collection, 
-    query, where, getDocs, limit, orderBy, increment, serverTimestamp 
+    query, where, getDocs, limit, orderBy, serverTimestamp
 } from 'firebase/firestore';
 import { useAuthStore } from '../../auth/store/useAuthStore';
 import { pushSupplierLedgerWithBalanceIncrement } from '../services/supplierLedgerService';
@@ -344,8 +344,14 @@ export const purchaseRepository = {
                 newProductsToCreate.push({ ...product, syncStatus: 'pending' });
             }
 
+            // 🔥 FIX: el stock base es el de la SUCURSAL (inventory), no product.stock
+            // (ese campo no lo mantienen las ventas ni se sube a la nube → casi siempre viejo).
+            const currentBranchInv = inventoryByProductId.get(productId);
+            const currentStock = parseFloat(currentBranchInv?.stock) || 0;
+            // Acumular delta pendiente (mismo patrón que salesRepository)
+            const pendingDelta = currentBranchInv?.syncStatus === 'pending' ? (parseFloat(currentBranchInv.stockDelta) || 0) : 0;
+
             // PPP (Precio Promedio Ponderado)
-            const currentStock = parseFloat(product.stock || 0);
             const currentCost = parseFloat(product.cost || 0);
             const newQty = parseFloat(item.qty);
 
@@ -392,14 +398,17 @@ export const purchaseRepository = {
 
             productsToUpdate.push(productUpdate);
 
-            const currentBranchInv = inventoryByProductId.get(productId);
+            // 🔥 FIX: stockDelta + 'pending' → syncPendingProducts aplica increment() atómico
+            // y reconcilia. Antes 'pending_stock' sin delta caía en el fallback que subía el
+            // stock ABSOLUTO (mal calculado) y pisaba el increment correcto de la nube.
             inventoryToUpdate.push({
                 productId: productId,
                 branchId: branchId,
                 stock: currentStock + newQty,
+                stockDelta: pendingDelta + newQty,
                 promo: currentBranchInv?.promo || null,
                 updatedAt: timestamp,
-                syncStatus: 'pending_stock'
+                syncStatus: 'pending'
             });
 
             movementsToCreate.push({
@@ -521,19 +530,8 @@ export const purchaseRepository = {
         // 🔧 FIX: disparar N escrituras a Firestore en paralelo sin await (una por item + una por triggerOptimisticSync)
         // satura la cola de mutaciones offline del SDK y produce "INTERNAL ASSERTION FAILED: Unexpected state".
         // Se serializa (await uno por uno) sin bloquear el guardado local, que ya devolvió arriba.
+        // 🔥 Stock: lo sube syncPendingProducts vía stockDelta (no incrementar acá → doble suma).
         (async () => {
-            if (navigator.onLine && user?.companyId) {
-                for (const item of items) {
-                    const stockRef = doc(db, `companies/${user.companyId}/branches/${branchId}/inventory`, String(item.id || item.productId));
-                    try {
-                        await setDoc(stockRef, {
-                            stock: increment(parseFloat(item.qty)),
-                            updatedAt: serverTimestamp()
-                        }, { merge: true });
-                    } catch (err) { console.error("Error atomic stock increment:", err); }
-                }
-            }
-
             await triggerOptimisticSync('purchases', purchase);
             for (const p of productsToUpdate) await triggerOptimisticSync('products', p);
             for (const p of newProductsToCreate) await triggerOptimisticSync('products', p);
@@ -682,7 +680,7 @@ export const purchaseRepository = {
         if (!branchId) throw new Error("Error Crítico: No se pudo determinar la sucursal activa para anular la compra.");
 
         await dbLocal.transaction('rw', [
-            dbLocal.purchases, dbLocal.products, 
+            dbLocal.purchases, dbLocal.products, dbLocal.inventory,
             dbLocal.suppliers, dbLocal.cash_movements, dbLocal.supplier_ledger
         ], async () => {
 
@@ -691,10 +689,25 @@ export const purchaseRepository = {
                 for (const item of purchase.items) {
                     const product = await dbLocal.products.get(item.id || item.productId);
                     if (product) {
-                        const newStock = Math.max(0, (parseFloat(product.stock) || 0) - (parseFloat(item.qty || item.quantity) || 0));
+                        const qty = parseFloat(item.qty || item.quantity) || 0;
+                        const newStock = Math.max(0, (parseFloat(product.stock) || 0) - qty);
                         const prodUpdate = { ...product, stock: newStock, syncStatus: 'pending' };
                         await dbLocal.products.update(product.id, prodUpdate);
                         productsToUpdate.push(prodUpdate);
+
+                        // 🔥 FIX: descontar del inventario de la SUCURSAL con stockDelta (antes solo
+                        // se decrementaba en la nube y offline se perdía). Mismo patrón que salesRepository.
+                        const currentInv = await dbLocal.inventory.get([branchId, product.id]);
+                        const pendingDelta = currentInv?.syncStatus === 'pending' ? (parseFloat(currentInv.stockDelta) || 0) : 0;
+                        await dbLocal.inventory.put({
+                            branchId,
+                            productId: product.id,
+                            stock: (parseFloat(currentInv?.stock) || 0) - qty,
+                            stockDelta: pendingDelta - qty,
+                            promo: currentInv?.promo || null,
+                            updatedAt: new Date().toISOString(),
+                            syncStatus: 'pending'
+                        });
                     }
                 }
             }
@@ -739,20 +752,8 @@ export const purchaseRepository = {
             await dbLocal.purchases.update(purchaseId, purchase);
         });
 
-        // 🔥 RESTAURAR STOCK EN LA NUBE + SYNC OPTIMISTA (SECUENCIAL, ver fix en registerPurchase)
+        // 🔥 SYNC OPTIMISTA — stock lo sube syncPendingProducts vía stockDelta (no decrementar acá → doble resta)
         (async () => {
-            if (navigator.onLine && user?.companyId && purchase.items && Array.isArray(purchase.items)) {
-                for (const item of purchase.items) {
-                    const stockRef = doc(db, `companies/${user.companyId}/branches/${branchId}/inventory`, String(item.id || item.productId));
-                    try {
-                        await setDoc(stockRef, {
-                            stock: increment(-parseFloat(item.qty || item.quantity || 0)),
-                            updatedAt: serverTimestamp()
-                        }, { merge: true });
-                    } catch (err) { console.error("Error atomic stock decrement:", err); }
-                }
-            }
-
             await triggerOptimisticSync('purchases', purchase);
             for (const p of productsToUpdate) await triggerOptimisticSync('products', p);
             // 🔥 CONTADOR ATÓMICO: ver nota en registerPurchase — no subir updatedSupplier plano.
@@ -809,11 +810,15 @@ export const purchaseRepository = {
 
                 productsToUpdate.push({ ...product, stock: newStock, syncStatus: 'pending' });
 
+                // 🔥 FIX: base = stock de la SUCURSAL + stockDelta 'pending' (ver registerPurchase)
                 const currentBranchInv = await dbLocal.inventory.get([branchId, itemId]);
+                const pendingDelta = currentBranchInv?.syncStatus === 'pending' ? (parseFloat(currentBranchInv.stockDelta) || 0) : 0;
                 inventoryToUpdate.push({
-                    productId: String(itemId), branchId, stock: newStock,
+                    productId: String(itemId), branchId,
+                    stock: (parseFloat(currentBranchInv?.stock) || 0) - qtyToReturn,
+                    stockDelta: pendingDelta - qtyToReturn,
                     promo: currentBranchInv?.promo || null,
-                    updatedAt: timestamp, syncStatus: 'pending_stock'
+                    updatedAt: timestamp, syncStatus: 'pending'
                 });
 
                 movementsToCreate.push({
@@ -921,22 +926,8 @@ export const purchaseRepository = {
             if (newCashMovement) await dbLocal.cash_movements.put(newCashMovement);
         });
 
-        // 6 y 7. 🔥 RESTAR STOCK EN LA NUBE + SYNC OPTIMISTA (SECUENCIAL, ver fix en registerPurchase)
+        // 6 y 7. 🔥 SYNC OPTIMISTA — stock lo sube syncPendingProducts vía stockDelta (no decrementar acá)
         (async () => {
-            if (navigator.onLine && user?.companyId) {
-                for (const itemId of Object.keys(returnMap)) {
-                    const qty = returnMap[itemId];
-                    if (qty <= 0) continue;
-                    const stockRef = doc(db, `companies/${user.companyId}/branches/${branchId}/inventory`, String(itemId));
-                    try {
-                        await setDoc(stockRef, {
-                            stock: increment(-parseFloat(qty)),
-                            updatedAt: serverTimestamp()
-                        }, { merge: true });
-                    } catch (e) { console.error("Atomic decrement error", e); }
-                }
-            }
-
             await triggerOptimisticSync('purchases', updatedPurchase);
             for (const p of productsToUpdate) await triggerOptimisticSync('products', p);
             for (const m of movementsToCreate) await triggerOptimisticSync('movements', m);

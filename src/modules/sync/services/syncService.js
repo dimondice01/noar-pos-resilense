@@ -29,6 +29,7 @@ export const syncService = {
   _isSyncingData: false,
   _isSyncingProducts: false,
   _isSyncingInventory: false,
+  _isUploadingProducts: false,
   _listenerSessionId: 0, // 🔥 Guardián de concurrencia para evitar "Failed to obtain primary lease"
   _startListenersTimer: null, // 🔥 Debounce timer para absorber llamadas rápidas de StrictMode/SubscriptionGuard
 
@@ -1277,6 +1278,7 @@ export const syncService = {
       this._isSyncingData = false;
       this._isSyncingProducts = false;
       this._isSyncingInventory = false;
+      this._isUploadingProducts = false;
       this._lastSyncContext = null;
   },
 
@@ -1334,8 +1336,22 @@ export const syncService = {
       return true;
   },
 
-  // 🔥 TÁCTICA DE ASPIRADORA: Usamos filter(x !== 'synced') en lugar de equals('pending')
+  // 🔒 FIX: lock de reentrada. Sin esto, si una subida tarda más que el intervalo de
+  // useAutoSync (15s, ej: compra de 100 productos) arranca otra ejecución que lee las
+  // mismas filas aún 'pending' y aplica increment(stockDelta) DOS veces en la nube.
+  // Si ya hay una corriendo se saltea: las filas siguen 'pending' y entran en el próximo ciclo.
   async syncPendingProducts(companyId, branchId) {
+    if (this._isUploadingProducts) return { synced: 0, skipped: true };
+    this._isUploadingProducts = true;
+    try {
+        return await this._syncPendingProductsRun(companyId, branchId);
+    } finally {
+        this._isUploadingProducts = false;
+    }
+  },
+
+  // 🔥 TÁCTICA DE ASPIRADORA: Usamos filter(x !== 'synced') en lugar de equals('pending')
+  async _syncPendingProductsRun(companyId, branchId) {
     const localDb = await getDB();
     const pendingProducts = await localDb.products
         .filter(p => p.syncStatus !== 'synced')

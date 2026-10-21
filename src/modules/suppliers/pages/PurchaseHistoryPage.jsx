@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { useNavigate, useLocation, useParams } from 'react-router-dom'; 
 import { 
     Truck, Plus, FileText, Search, 
@@ -21,10 +21,31 @@ import toast from 'react-hot-toast';
 // 🖨️ MODAL: TICKET DE COMPRA IMPRIMIBLE (NUEVO)
 // =================================================================
 const PurchaseTicketModal = ({ isOpen, onClose, purchase }) => {
+    const ticketRef = useRef(null);
+
     if (!isOpen || !purchase) return null;
 
+    // 🔥 FIX: window.print() imprimía el modal fixed con max-h-[90vh] + overflow,
+    // así que en tickets largos la vista previa cortaba el contenido. Se imprime
+    // solo el ticket en un iframe oculto (mismos estilos) para que pagine completo.
     const handlePrint = () => {
-        window.print();
+        if (!ticketRef.current) return;
+        const iframe = document.createElement('iframe');
+        iframe.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;';
+        document.body.appendChild(iframe);
+
+        const styles = [...document.querySelectorAll('style, link[rel="stylesheet"]')].map(n => n.outerHTML).join('');
+        const doc = iframe.contentDocument;
+        doc.open();
+        doc.write(`<!doctype html><html><head>${styles}<style>@page{margin:0}html,body{margin:0;background:#fff}</style></head><body>${ticketRef.current.outerHTML}</body></html>`);
+        doc.close();
+
+        // Esperar a que carguen las hojas de estilo antes de imprimir
+        setTimeout(() => {
+            iframe.contentWindow.focus();
+            iframe.contentWindow.print();
+            setTimeout(() => iframe.remove(), 1000);
+        }, 300);
     };
 
     const isAnulado = purchase.status === 'VOIDED' || purchase.afip?.status === 'VOIDED';
@@ -42,7 +63,7 @@ const PurchaseTicketModal = ({ isOpen, onClose, purchase }) => {
 
                 {/* Contenido Imprimible (Formato Ticket Térmico) */}
                 <div className="flex-1 overflow-y-auto p-6 print:p-0 custom-scrollbar bg-sys-100 print:bg-white flex justify-center">
-                    <div className="bg-white w-full max-w-[80mm] min-h-[100mm] p-4 text-black shadow-sm print:shadow-none font-mono text-[11px] leading-tight mx-auto border print:border-none relative">
+                    <div ref={ticketRef} className="bg-white w-full max-w-[80mm] min-h-[100mm] p-4 text-black shadow-sm print:shadow-none font-mono text-[11px] leading-tight mx-auto border print:border-none relative">
                         
                         {(isAnulado || isRefunded) && (
                             <div className="absolute inset-0 flex items-center justify-center opacity-20 pointer-events-none z-0 rotate-[-30deg]">

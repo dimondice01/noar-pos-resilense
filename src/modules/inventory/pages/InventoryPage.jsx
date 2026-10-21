@@ -627,11 +627,13 @@ export const InventoryPage = () => {
     const [products, setProducts] = useState([]);
     const [loading, setLoading] = useState(true);
     const [loadingMessage, setLoadingMessage] = useState('Iniciando...');
+    const [loadingProgress, setLoadingProgress] = useState(0);
 
     // Progreso de descarga de stock: confirma al usuario que el sync está avanzando (útil en hardware lento)
     useEffect(() => {
         const onSyncProgress = (e) => {
             setLoadingMessage(`Descargando Stock... (${e.detail.total} productos)`);
+            setLoadingProgress(p => Math.min(p + 3, 85));
         };
         window.addEventListener('noar:inventory-sync-progress', onSyncProgress);
         return () => window.removeEventListener('noar:inventory-sync-progress', onSyncProgress);
@@ -796,7 +798,10 @@ export const InventoryPage = () => {
     }, [canViewAllBranches, activeBranchId, user]);
 
     const loadData = async (forceCloud = false, isSilent = false) => {
-        if (!isSilent) setLoading(true);
+        if (!isSilent) {
+            setLoadingProgress(5);
+            setLoading(true);
+        }
         try {
             const dbLocal = await getDB();
 
@@ -815,6 +820,7 @@ export const InventoryPage = () => {
                 setBranches(branchesData);
             }
 
+            if (!isSilent) setLoadingProgress(15);
             const prodCount = await dbLocal.products.count();
             const isFirstTime = prodCount === 0 || forceCloud;
 
@@ -832,16 +838,27 @@ export const InventoryPage = () => {
                     new Promise(resolve => setTimeout(resolve, ms))
                 ]);
 
-                if (!isSilent) setLoadingMessage('Descargando Catálogo...');
+                if (!isSilent) {
+                    setLoadingMessage('Descargando Catálogo...');
+                    setLoadingProgress(25);
+                }
                 await withTimeout(syncService.syncProducts(user.companyId).catch(console.error), 12000);
 
-                if (!isSilent) setLoadingMessage('Sincronizando Stock...');
+                if (!isSilent) {
+                    setLoadingMessage('Sincronizando Stock...');
+                    setLoadingProgress(55);
+                }
                 const inventorySyncTask = canViewAllBranches
                     ? syncService.syncAllInventoryForOwner(user.companyId, branchesData)
                     : syncService.syncInitialInventory(user.companyId, activeBranchId);
                 await withTimeout(inventorySyncTask.catch(console.error), 12000);
 
+                if (!isSilent) {
+                    setLoadingMessage('Cargando Inventario...');
+                    setLoadingProgress(90);
+                }
                 await loadFromLocal();
+                if (!isSilent) setLoadingProgress(100);
 
                 // ── CAMINO B: datos en Dexie → mostrar ya, sync en background ──
             } else {
@@ -1527,8 +1544,14 @@ export const InventoryPage = () => {
                             <div className="flex flex-col items-center gap-4 text-brand bg-white p-8 rounded-3xl shadow-2xl">
                                 <Loader2 className="animate-spin" size={48} />
                                 <span className="text-sm font-black uppercase tracking-widest text-sys-800">{loadingMessage}</span>
-                                <div className="w-48 h-1.5 bg-sys-100 rounded-full overflow-hidden">
-                                    <div className="h-full bg-brand rounded-full animate-pulse" style={{ width: '66%' }} />
+                                <div className="w-56 flex flex-col items-center gap-1.5">
+                                    <div className="w-full h-2 bg-sys-100 rounded-full overflow-hidden">
+                                        <div
+                                            className="h-full bg-brand rounded-full transition-all duration-500 ease-out"
+                                            style={{ width: `${loadingProgress}%` }}
+                                        />
+                                    </div>
+                                    <span className="text-[10px] font-bold text-sys-500 tabular-nums">{loadingProgress}%</span>
                                 </div>
                             </div>
                         </div>

@@ -42,6 +42,13 @@ export const CashClosingModal = ({ isOpen, onClose, onConfirm, systemTotals, use
     // click podía disparar el cierre dos veces.
     const [isSubmitting, setIsSubmitting] = useState(false);
 
+    // 🔥 Imprimir = Cerrar: el ticket solo se imprime como parte del cierre
+    // (con confirmación previa). Antes se podía imprimir sin cerrar y el cajero
+    // se iba con el turno abierto.
+    const [confirmingClose, setConfirmingClose] = useState(false);
+    const closeAfterPrintRef = useRef(false);
+    const closeShiftRef = useRef(null);
+
     const ticketRef = useRef(null);
 
     // Reset al abrir
@@ -52,13 +59,25 @@ export const CashClosingModal = ({ isOpen, onClose, onConfirm, systemTotals, use
             setLeftInCash('');
             setOverrideConfirmed(false);
             setIsSubmitting(false);
+            setConfirmingClose(false);
+            closeAfterPrintRef.current = false;
         }
     }, [isOpen]);
 
-    // HOOK DE IMPRESIÓN (TICKET 58mm)
+    // HOOK DE IMPRESIÓN (TICKET 58mm) — al terminar la impresión se cierra el turno
     const handlePrintTicket = useReactToPrint({
         contentRef: ticketRef,
         documentTitle: `Declaracion-Caja-${shiftId?.slice(0,6) || 'C'}`,
+        onAfterPrint: () => {
+            if (!closeAfterPrintRef.current) return;
+            closeAfterPrintRef.current = false;
+            closeShiftRef.current?.();
+        },
+        onPrintError: () => {
+            closeAfterPrintRef.current = false;
+            setIsSubmitting(false);
+            toast.error("No se pudo imprimir el ticket. Reintentá — el turno sigue abierto.");
+        },
     });
 
     if (!isOpen) return null;
@@ -78,17 +97,25 @@ export const CashClosingModal = ({ isOpen, onClose, onConfirm, systemTotals, use
     const requiresOverride = Math.abs(difference) > BIG_DIFF_THRESHOLD;
     const canConfirmClose = !requiresOverride || overrideConfirmed;
 
-    const handleSubmit = async () => {
-        // 🔥 Antes esto era un botón silenciosamente deshabilitado: el cajero
-        // imprimía el ticket (botón aparte, siempre activo) y se iba pensando
-        // que había cerrado, sin notar el check pendiente. Ahora el botón
-        // siempre responde y avisa explícitamente qué falta.
+    // Paso A: pedir confirmación (el botón siempre responde y avisa qué falta)
+    const handleRequestClose = () => {
         if (!canConfirmClose) {
             toast.error("⚠️ Diferencia grande sin verificar: marcá el check antes de confirmar el cierre.");
             return;
         }
         if (isSubmitting) return;
+        setConfirmingClose(true);
+    };
+
+    // Paso B: confirmado → imprime y, al terminar la impresión, cierra el turno
+    const handleConfirmPrintAndClose = () => {
+        if (isSubmitting) return;
         setIsSubmitting(true);
+        closeAfterPrintRef.current = true;
+        handlePrintTicket();
+    };
+
+    const closeShift = async () => {
         try {
             await onConfirm({
                 declaredCash: valDeclared,
@@ -101,8 +128,10 @@ export const CashClosingModal = ({ isOpen, onClose, onConfirm, systemTotals, use
             });
         } finally {
             setIsSubmitting(false);
+            setConfirmingClose(false);
         }
     };
+    closeShiftRef.current = closeShift;
 
     return (
         <div className="fixed inset-0 z-[90] flex items-center justify-center bg-sys-900/80 backdrop-blur-sm p-4 animate-in fade-in zoom-in-95 print:p-0 print:bg-white print:static">
@@ -352,27 +381,46 @@ export const CashClosingModal = ({ isOpen, onClose, onConfirm, systemTotals, use
                                 </div>
                             )}
 
-                            <div className="grid grid-cols-2 gap-3 mt-auto">
-                               <Button variant="secondary" onClick={handlePrintTicket} className="h-12 font-bold text-sys-600 border border-sys-200">
-                                   <Printer size={18} className="mr-2"/> Imprimir
-                               </Button>
-                               <Button
-                                   variant="danger"
-                                   onClick={handleSubmit}
-                                   disabled={isSubmitting}
-                                   className={cn(
-                                       "h-12 shadow-xl font-black tracking-wider text-xs uppercase",
-                                       isSubmitting
-                                           ? "shadow-none bg-sys-300 text-sys-500 cursor-not-allowed"
-                                           : canConfirmClose
-                                               ? "shadow-red-500/20 bg-red-600 hover:bg-red-700 text-white"
-                                               : "shadow-none bg-sys-200 hover:bg-sys-300 text-sys-500"
-                                   )}
-                               >
-                                   {isSubmitting ? 'Cerrando...' : 'Confirmar Cierre'}
-                               </Button>
-                            </div>
-                            <button onClick={() => setStep(2)} className="mt-2 text-xs text-sys-400 underline text-center hover:text-sys-600">Volver a editar montos</button>
+                            {confirmingClose ? (
+                                <div className="mt-auto bg-red-50 border-2 border-red-200 p-4 rounded-xl space-y-3">
+                                    <p className="text-sm font-black text-red-800">¿Imprimir y cerrar el turno?</p>
+                                    <p className="text-xs text-red-700">Al imprimir se cierra el turno definitivamente. No podrá reabrirse.</p>
+                                    <div className="grid grid-cols-2 gap-3">
+                                        <Button variant="ghost" onClick={() => setConfirmingClose(false)} disabled={isSubmitting} className="h-12 font-bold text-sys-500">
+                                            Cancelar
+                                        </Button>
+                                        <Button
+                                            variant="danger"
+                                            onClick={handleConfirmPrintAndClose}
+                                            disabled={isSubmitting}
+                                            className={cn(
+                                                "h-12 shadow-xl font-black tracking-wider text-xs uppercase",
+                                                isSubmitting
+                                                    ? "shadow-none bg-sys-300 text-sys-500 cursor-not-allowed"
+                                                    : "shadow-red-500/20 bg-red-600 hover:bg-red-700 text-white"
+                                            )}
+                                        >
+                                            {isSubmitting ? 'Cerrando...' : 'Sí, cerrar'}
+                                        </Button>
+                                    </div>
+                                </div>
+                            ) : (
+                                <Button
+                                    variant="danger"
+                                    onClick={handleRequestClose}
+                                    className={cn(
+                                        "mt-auto h-12 shadow-xl font-black tracking-wider text-xs uppercase",
+                                        canConfirmClose
+                                            ? "shadow-red-500/20 bg-red-600 hover:bg-red-700 text-white"
+                                            : "shadow-none bg-sys-200 hover:bg-sys-300 text-sys-500"
+                                    )}
+                                >
+                                    <Printer size={18} className="mr-2"/> Imprimir y Cerrar Turno
+                                </Button>
+                            )}
+                            {!confirmingClose && (
+                                <button onClick={() => setStep(2)} className="mt-2 text-xs text-sys-400 underline text-center hover:text-sys-600">Volver a editar montos</button>
+                            )}
                         </div>
                       </div>
                     )}
