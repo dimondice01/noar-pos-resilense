@@ -68,6 +68,29 @@ export const purchaseRepository = {
     // ==========================================
     // 🧠 LÓGICA DE COSTOS 
     // ==========================================
+    // Opción de empresa "costo promedio ponderado" (default: false → último costo).
+    // Se lee de Dexie; si no hay caché y hay red, se trae del doc de la empresa.
+    async _getUseWeightedCost(dbLocal, companyId) {
+        try {
+            const cfg = await dbLocal.config.get('company_settings');
+            const fetchCloud = async () => {
+                const snap = await getDoc(doc(db, 'companies', companyId));
+                const val = snap.exists() && snap.data().useWeightedCost === true;
+                await dbLocal.config.put({ key: 'company_settings', value: { ...(cfg?.value || {}), useWeightedCost: val } });
+                return val;
+            };
+            if (typeof cfg?.value?.useWeightedCost === 'boolean') {
+                // Refresco en segundo plano para la próxima compra (otra PC pudo cambiarlo)
+                if (navigator.onLine) fetchCloud().catch(() => {});
+                return cfg.value.useWeightedCost;
+            }
+            if (navigator.onLine) return await fetchCloud();
+        } catch (e) {
+            console.warn('⚠️ No se pudo leer useWeightedCost, se usa último costo.', e);
+        }
+        return false;
+    },
+
     _calculateLineItem(inputCost, inputPrice, taxRate, isTaxIncluded) {
         let netCost = 0;
         let finalCostWithTax = 0;
@@ -320,6 +343,8 @@ export const purchaseRepository = {
         const inventoryResults = inventoryKeys.length ? await dbLocal.inventory.bulkGet(inventoryKeys) : [];
         const inventoryByProductId = new Map(resolvedItems.map(({ productId }, i) => [productId, inventoryResults[i]]));
 
+        const useWeightedCost = await this._getUseWeightedCost(dbLocal, user.companyId);
+
         // PASADA 2: mismo cómputo de siempre (PPP, batches, totales) — ahora 100% en memoria.
         for (const { item, productId, product: existingProduct, isNew } of resolvedItems) {
             const financials = this._calculateLineItem(item.cost, item.price, item.tax, item.isTaxIncluded);
@@ -357,7 +382,7 @@ export const purchaseRepository = {
 
             let newWeightedCost = financials.finalCost;
 
-            if (currentStock > 0) {
+            if (useWeightedCost && currentStock > 0) {
                 const totalValueOld = currentCost * currentStock;
                 const totalValueNew = financials.finalCost * newQty;
                 newWeightedCost = (totalValueOld + totalValueNew) / (currentStock + newQty);

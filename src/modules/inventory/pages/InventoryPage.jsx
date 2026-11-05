@@ -8,7 +8,7 @@ import {
     Tag, Percent, Megaphone, MoreHorizontal, LayoutGrid, DollarSign,
     CalendarClock, Info, Scale, Save, Pencil, Loader2, ArrowDown, ArrowUp, Minus, ShieldAlert, FileSpreadsheet, ShoppingBag, Link
 } from 'lucide-react';
-import { exportInventoryToExcel, ALL_EXPORT_COLUMNS } from '../../../core/utils/exportInventoryToExcel';
+import { exportInventoryToExcel, exportInventoryToCSV, ALL_EXPORT_COLUMNS } from '../../../core/utils/exportInventoryToExcel';
 import toast from 'react-hot-toast';
 
 import { productRepository } from '../repositories/productRepository';
@@ -678,19 +678,20 @@ export const InventoryPage = () => {
         );
     };
 
-    const handleExportExcel = async () => {
+    const handleExportExcel = async (format = 'xlsx') => {
         if (filteredProducts.length === 0) return toast.error("No hay productos para exportar.");
         setShowExportModal(false);
         setExporting(true);
         try {
-            await exportInventoryToExcel(
+            const exporter = format === 'csv' ? exportInventoryToCSV : exportInventoryToExcel;
+            await exporter(
                 filteredProducts,
                 { category: filters.category, brand: filters.brand, search: searchTerm },
                 selectedExportCols
             );
             toast.success(`${filteredProducts.length} productos exportados.`);
         } catch (e) {
-            toast.error("Error al generar el Excel.");
+            toast.error(format === 'csv' ? "Error al generar el CSV." : "Error al generar el Excel.");
         } finally {
             setExporting(false);
         }
@@ -1903,11 +1904,19 @@ export const InventoryPage = () => {
                                 className="flex-1 h-11 rounded-xl border border-sys-200 text-sys-600 font-bold text-sm hover:bg-sys-50 transition-colors"
                             >Cancelar</button>
                             <button
-                                onClick={handleExportExcel}
+                                onClick={() => handleExportExcel('csv')}
+                                disabled={selectedExportCols.length === 0}
+                                title="CSV plano, listo para importar en otra empresa"
+                                className="flex-1 h-11 rounded-xl border border-emerald-600 text-emerald-700 font-bold text-sm hover:bg-emerald-50 transition-colors disabled:opacity-50"
+                            >
+                                CSV
+                            </button>
+                            <button
+                                onClick={() => handleExportExcel('xlsx')}
                                 disabled={selectedExportCols.length === 0}
                                 className="flex-1 h-11 rounded-xl bg-emerald-600 text-white font-bold text-sm hover:bg-emerald-700 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
                             >
-                                <FileSpreadsheet size={16} /> Exportar
+                                <FileSpreadsheet size={16} /> Excel
                             </button>
                         </div>
                     </div>

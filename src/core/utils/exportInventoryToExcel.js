@@ -126,3 +126,28 @@ export const exportInventoryToExcel = async (products, activeFilters = {}, selec
     a.click();
     URL.revokeObjectURL(url);
 };
+
+// CSV plano para re-importar: números sin "$" ni separador de miles, decimal con punto
+export const exportInventoryToCSV = (products, activeFilters = {}, selectedKeys = null) => {
+    const cols = selectedKeys
+        ? ALL_EXPORT_COLUMNS.filter(c => selectedKeys.includes(c.key))
+        : ALL_EXPORT_COLUMNS;
+
+    const escape = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const lines = [cols.map(c => escape(c.label)).join(',')];
+    products.forEach(p => {
+        lines.push(cols.map(c => escape(getValue(p, c.key))).join(','));
+    });
+
+    // BOM para que Excel abra bien los acentos
+    const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+    const suffix = (activeFilters.category || activeFilters.brand || 'todos')
+        .replace(/[^a-zA-Z0-9áéíóúÁÉÍÓÚñÑ_-]/g, '_');
+    const date = new Date().toISOString().slice(0, 10);
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = `inventario_${suffix}_${date}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+};

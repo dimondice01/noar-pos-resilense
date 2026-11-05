@@ -8,6 +8,7 @@ import { useAuthStore } from '../modules/auth/store/useAuthStore';
 import { useUiStore } from '../core/store/useUiStore';
 import { cn } from '../core/utils/cn';
 import { useShiftStore } from '../modules/cash/store/useShiftStore';
+import { usePendingSyncGuard } from '../core/hooks/usePendingSyncGuard';
 
 // 🔥 SERVICIOS (Motor de Sincronización)
 import { syncService } from '../modules/sync/services/syncService';
@@ -19,7 +20,8 @@ import { db } from '../database/firebase';
 export const MainLayout = () => {
   const { user, isLoading, activeBranchId } = useAuthStore();
   const { sidebarCollapsed } = useUiStore();
-  const { activeShift, setActiveShift } = useShiftStore(); 
+  const { activeShift, setActiveShift } = useShiftStore();
+  const pendingSyncCount = usePendingSyncGuard(!!user?.companyId);
   
   // Ref para guardar la función de desuscripción de manera persistente y mutable
   const unsubscribeInventoryRef = useRef(null);
@@ -179,6 +181,14 @@ export const MainLayout = () => {
             <Outlet />
         </div>
       </main>
+      {pendingSyncCount > 0 && (
+        <div
+          className="fixed bottom-3 right-3 z-50 px-3 py-1.5 rounded-full bg-amber-100 border border-amber-300 text-amber-800 text-xs font-bold shadow-sm pointer-events-none"
+          title="No cierres la PC hasta que esto desaparezca"
+        >
+          ⏳ {pendingSyncCount} cambio{pendingSyncCount > 1 ? 's' : ''} por subir — no cierres el sistema
+        </div>
+      )}
     </div>
   );
 };

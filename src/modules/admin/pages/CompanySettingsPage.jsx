@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Camera, Save, Store, FileText, MapPin, Hash, Calendar, AlertTriangle, Info, Banknote } from 'lucide-react';
+import { Camera, Save, Store, FileText, MapPin, Hash, Calendar, AlertTriangle, Info, Banknote, Calculator } from 'lucide-react';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { db } from '../../../database/firebase'; 
 import { getDB } from '../../../database/db'; // 🔥 IMPORTAMOS DEXIE
@@ -33,6 +33,8 @@ export const CompanySettingsPage = () => {
         transferAlias: '',  // 🏦 Alias para transferencias
         transferAccountName: '' // 🏦 Titular de cuenta
     });
+    // Opción de EMPRESA (no de sucursal): costo promedio ponderado en compras
+    const [useWeightedCost, setUseWeightedCost] = useState(false);
     
     const [loading, setLoading] = useState(false);
     const [loadingData, setLoadingData] = useState(true);
@@ -92,6 +94,9 @@ export const CompanySettingsPage = () => {
                 const cacheKey = `SALVADOR_BRANCH_CONFIG_${currentBranchId}`;
                 const cachedData = localStorage.getItem(cacheKey);
                 if (cachedData) setBranchData(prev => ({ ...prev, ...JSON.parse(cachedData) }));
+                // Valor local primero: si Firebase falla, no guardar un false que pise la opción
+                const settings = await dbLocal.config.get('company_settings');
+                if (typeof settings?.value?.useWeightedCost === 'boolean') setUseWeightedCost(settings.value.useWeightedCost);
 
                 // Leemos Firebase
                 const companyRef = doc(db, 'companies', user.companyId);
@@ -121,7 +126,11 @@ export const CompanySettingsPage = () => {
                 };
 
                 setBranchData(prev => ({ ...prev, ...payload }));
-                localStorage.setItem(cacheKey, JSON.stringify(payload)); 
+                localStorage.setItem(cacheKey, JSON.stringify(payload));
+
+                const weighted = companyData.useWeightedCost === true;
+                setUseWeightedCost(weighted);
+                await dbLocal.config.put({ key: 'company_settings', value: { ...(settings?.value || {}), useWeightedCost: weighted } });
                 
             } catch (error) {
                 console.error("Error cargando configuración:", error);
@@ -188,8 +197,12 @@ export const CompanySettingsPage = () => {
                 iibb: payload.iibb,
                 inicioAct: payload.inicioAct,
                 logoUrl: payload.logoBase64 || null, // El logo de empresa por defecto es el de la sucursal 1
+                useWeightedCost,
                 updatedAt: timestamp
             }, { merge: true });
+
+            const settings = await localDb.config.get('company_settings');
+            await localDb.config.put({ key: 'company_settings', value: { ...(settings?.value || {}), useWeightedCost } });
 
             // C. Guardar en Dexie (Sucursal)
             await localDb.branches.put({
@@ -515,6 +528,29 @@ export const CompanySettingsPage = () => {
                             <p className="text-[10px] text-sys-500 mt-2">Acompaña al alias para dar seguridad al cliente.</p>
                         </div>
                     </div>
+                </Card>
+
+                {/* 4. COSTOS (opción de EMPRESA, aplica a todas las sucursales) */}
+                <Card className="bg-white border-border-default p-6 shadow-sm">
+                    <h3 className="text-sys-700 font-bold mb-6 flex items-center gap-2 border-b border-border-subtle pb-2">
+                        <Calculator size={18} className="text-emerald-600"/> Costos de Compra
+                    </h3>
+                    <label className="flex items-start gap-3 cursor-pointer">
+                        <input
+                            type="checkbox"
+                            className="w-5 h-5 mt-0.5 accent-emerald-600"
+                            checked={useWeightedCost}
+                            onChange={(e) => setUseWeightedCost(e.target.checked)}
+                        />
+                        <div>
+                            <span className="text-sm font-bold text-sys-900">Usar costo promedio ponderado</span>
+                            <p className="text-xs text-sys-500 mt-1">
+                                Activado: al cargar una compra, el costo se promedia con el del stock existente.
+                                Desactivado: el costo del producto pasa a ser el último costo de compra.
+                                Aplica a todas las sucursales de la empresa.
+                            </p>
+                        </div>
+                    </label>
                 </Card>
 
                 <Button type="submit" disabled={loading} className="w-full bg-blue-600 hover:bg-blue-500 text-white py-4 font-bold text-lg rounded-xl shadow-lg shadow-blue-900/30 transition-all active:scale-[0.98] flex items-center justify-center gap-3">

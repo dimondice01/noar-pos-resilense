@@ -46,10 +46,19 @@ export const useSmartImport = () => {
     const normalizeMoney = (val) => {
         if (!val) return 0;
         let clean = String(val).replace(/[^0-9.,-]/g, '');
-        if (clean.includes(',') && clean.includes('.')) {
-            clean = clean.replace(/\./g, '').replace(',', '.');
-        } else if (clean.includes(',')) {
-            clean = clean.replace(',', '.');
+        const lastComma = clean.lastIndexOf(',');
+        const lastDot = clean.lastIndexOf('.');
+        if (lastComma !== -1 && lastDot !== -1) {
+            // El separador que aparece último es el decimal (AR "4.000,50" / US "4,000.50")
+            clean = lastComma > lastDot
+                ? clean.replace(/\./g, '').replace(',', '.')
+                : clean.replace(/,/g, '');
+        } else if (lastComma !== -1) {
+            // Varias comas = miles ("1,234,567"); una sola = decimal AR
+            clean = (clean.match(/,/g).length > 1) ? clean.replace(/,/g, '') : clean.replace(',', '.');
+        } else if ((clean.match(/\./g) || []).length > 1) {
+            // Varios puntos = miles ("1.234.567")
+            clean = clean.replace(/\./g, '');
         }
         const num = parseFloat(clean);
         return isNaN(num) ? 0 : num;
