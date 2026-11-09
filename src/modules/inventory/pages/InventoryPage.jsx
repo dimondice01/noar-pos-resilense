@@ -1221,6 +1221,24 @@ export const InventoryPage = () => {
         if (failed.length > 0) toast.error(`${failed.length} producto(s) no se pudieron registrar`);
     };
 
+    // 🔥 OWNER: pasar todos los negativos de la sucursal a 0 (queda en Kardex)
+    const handleResetNegatives = async () => {
+        if (!activeBranchId || activeBranchId === 'ALL') return toast.error("Seleccioná una sucursal específica.");
+        const localNeg = products.filter(p => (parseFloat(p.stock) || 0) < 0).length;
+        const branchLabel = activeBranchName || activeBranchId;
+        if (!window.confirm(`⚠️ ¿Pasar a 0 todos los stocks negativos de la sucursal "${branchLabel}"?\n\nSolo se ajusta ESTA sucursal (las demás no se tocan).\nSe detectan ${localNeg} producto(s) en negativo. Queda registrado en el Kardex.`)) return;
+
+        const toastId = toast.loading("Ajustando stocks negativos...");
+        try {
+            const { count } = await productRepository.resetNegativeStock(activeBranchId, user?.name || user?.email || 'Sistema');
+            toast.success(count ? `${branchLabel}: ${count} producto(s) pasados a 0` : `${branchLabel}: no hay stocks negativos en la nube`, { id: toastId });
+            if (count) loadFromLocal();
+        } catch (e) {
+            console.error(e);
+            toast.error(e.message || "Error ajustando negativos", { id: toastId });
+        }
+    };
+
     const executeBulkUpdate = async (targetProducts, draftValues, activationDate = null) => {
         if (targetProducts.length === 0) return alert("No hay productos seleccionados.");
         const todayStr = getLocalDate();
@@ -1352,6 +1370,17 @@ export const InventoryPage = () => {
                                     <Upload size={18} className="mr-2" /> Importar
                                 </Button>
                             </>
+                        )}
+
+                        {user?.role === 'OWNER' && (
+                            <Button
+                                variant="secondary"
+                                className="border-amber-200 text-amber-700 bg-amber-50 hover:bg-amber-100"
+                                onClick={handleResetNegatives}
+                                title="Pasa a 0 todos los stocks negativos de la sucursal activa"
+                            >
+                                <AlertTriangle size={18} className="mr-2" /> Negativos a 0
+                            </Button>
                         )}
 
                         {selectedIds.size > 0 && (

@@ -776,6 +776,65 @@ export const productRepository = {
         return finalInv ? parseFloat(finalInv.stock) : 0;
     },
 
+    // 🔥 OWNER: pasa a 0 todos los stocks negativos de UNA sucursal.
+    // Costo Firestore: lecturas = solo los docs negativos (where stock < 0, índice automático);
+    // escrituras = 3 por producto (inventory + movimiento Kardex + touch product para delta sync).
+    // Usa increment(-stockNube) en vez de set 0: si otra PC vende en el medio, no se pisa.
+    async resetNegativeStock(branchId, userName = 'Sistema') {
+        const { user } = useAuthStore.getState();
+        if (!user?.companyId) throw new Error("Sesión no válida.");
+        if (!branchId || branchId === 'ALL') throw new Error("Seleccioná una sucursal específica.");
+        if (!navigator.onLine) throw new Error("Se requiere conexión para esta operación.");
+
+        const invCol = collection(db, `companies/${user.companyId}/branches/${branchId}/inventory`);
+        const snap = await getDocs(query(invCol, where('stock', '<', 0)));
+        const targets = snap.docs
+            .map(d => ({ productId: d.id, stock: parseFloat(d.data().stock) || 0 }))
+            .filter(t => t.stock < 0);
+        if (targets.length === 0) return { count: 0 };
+
+        const dbLocal = await getDB();
+        const timestamp = new Date().toISOString();
+        const description = 'Ajuste: stock negativo a 0';
+        const CHUNK = 150; // 3 ops por producto → 450 < límite de 500 por batch
+        let count = 0;
+
+        for (let i = 0; i < targets.length; i += CHUNK) {
+            const chunk = targets.slice(i, i + CHUNK);
+            const batch = writeBatch(db);
+            const localMovs = [];
+
+            chunk.forEach((t, j) => {
+                const delta = -t.stock;
+                const movId = `mov_${Date.now()}_${i + j}_${crypto.randomUUID().slice(0, 5)}`;
+                const mov = { productId: t.productId, amount: delta, branchId, type: 'STOCK_IN', description, user: userName, date: timestamp, refId: null };
+
+                batch.set(doc(invCol, t.productId), { stock: increment(delta), updatedAt: serverTimestamp() }, { merge: true });
+                batch.set(doc(db, `companies/${user.companyId}/movements`, movId), { ...mov, updatedAt: serverTimestamp() });
+                batch.set(doc(db, `companies/${user.companyId}/products`, t.productId), { updatedAt: serverTimestamp() }, { merge: true });
+                localMovs.push({ id: movId, ...mov, syncStatus: 'synced' });
+            });
+
+            await batch.commit();
+
+            // Local: el listener de inventario puede haber escrito YA el valor de nube (0) antes
+            // de llegar acá → sumar el delta de nuevo daba +N. Filas synced: valor de nube (0).
+            // Filas pending (el listener no las toca): aplicamos el delta. No tocamos syncStatus.
+            await dbLocal.transaction('rw', [dbLocal.inventory, dbLocal.movements], async () => {
+                for (const t of chunk) {
+                    const inv = await dbLocal.inventory.where({ branchId, productId: t.productId }).first();
+                    if (!inv) continue;
+                    const newStock = inv.syncStatus === 'pending' ? (parseFloat(inv.stock) || 0) - t.stock : 0;
+                    await dbLocal.inventory.put({ ...inv, stock: newStock, updatedAt: timestamp });
+                }
+                await dbLocal.movements.bulkPut(localMovs);
+            });
+            count += chunk.length;
+        }
+
+        return { count };
+    },
+
     // ==========================================
     // 🏷️ MOTOR DE PROMOCIONES (LOCALIZADO POR BRANCH)
     // ==========================================
