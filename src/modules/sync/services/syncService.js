@@ -31,6 +31,68 @@ export const syncService = {
   _isSyncingInventory: false,
   _isUploadingProducts: false,
   _listenerSessionId: 0, // 🔥 Guardián de concurrencia para evitar "Failed to obtain primary lease"
+  _syncAllPromise: null,   // 🔥 Guard de reentrancia de syncAll (ver syncAll)
+  _syncAllTrailing: null,
+  _lastFullSweep: {},      // { [tableName]: ms } último barrido completo de pendientes
+  _FULL_SWEEP_MS: 30 * 60_000,
+
+  // 🚀 PERF (clientes con meses de datos): antes cada ciclo de sync (~90s) hacía
+  // Table.filter(x => x.syncStatus !== 'synced') sobre TODAS las tablas — recorrido
+  // fila por fila de la tabla entera (anti-patrón Dexie, ver incidente 22s productos).
+  // Ahora: consulta por índice syncStatus (barata) y, cada 30 min por tabla, un barrido
+  // completo que conserva la "TÁCTICA DE ASPIRADORA" (atrapa syncStatus undefined/null,
+  // que no entran en el índice). Mismo resultado, costo O(pendientes) en vez de O(tabla).
+  async _getUnsynced(table) {
+      const now = Date.now();
+      const last = this._lastFullSweep[table.name] || 0;
+      if (now - last >= this._FULL_SWEEP_MS) {
+          const all = await table.toArray(); // lectura masiva (rápida) + filtro JS nativo
+          this._lastFullSweep[table.name] = now;
+          return all.filter(x => x.syncStatus !== 'synced');
+      }
+      return table.where('syncStatus').notEqual('synced').toArray();
+  },
+
+  // 🛡️ Protección "no pisar pendientes locales" para listeners/delta sync: misma regla que
+  // antes (local existe && syncStatus !== 'synced') pero consultando SOLO los ids entrantes
+  // con bulkGet, en vez de recorrer la tabla completa en cada snapshot.
+  async _localPendingIdSet(table, ids) {
+      if (!ids || ids.length === 0) return new Set();
+      const locals = await table.bulkGet(ids);
+      return new Set(ids.filter((id, i) => locals[i] && locals[i].syncStatus !== 'synced'));
+  },
+
+  _dateToMs(d) {
+      if (d === null || d === undefined || d === '') return NaN;
+      if (typeof d === 'string' || typeof d === 'number' || d instanceof Date) return new Date(d).getTime();
+      if (typeof d.toDate === 'function') return d.toDate().getTime();
+      const s = d.seconds ?? d._seconds; // Timestamp de Firestore guardado como objeto plano
+      return typeof s === 'number' ? s * 1000 : NaN;
+  },
+
+  // Recorre la tabla por lotes de clave primaria (getAll por rango: rápido y sin cargar
+  // todo en memoria) y borra los que cumplan isOld. Cede el hilo entre lotes.
+  async _purgeOld(table, isOld, chunk = 2000) {
+      const pk = table.schema.primKey.keyPath;
+      let lastKey = null;
+      let purged = 0;
+      const purgedKeys = [];
+      while (true) {
+          const coll = lastKey === null ? table.orderBy(':id') : table.where(':id').above(lastKey);
+          const rows = await coll.limit(chunk).toArray();
+          if (rows.length === 0) break;
+          lastKey = rows[rows.length - 1][pk];
+          const ids = rows.filter(isOld).map(r => r[pk]);
+          if (ids.length > 0) {
+              await table.bulkDelete(ids);
+              purged += ids.length;
+              purgedKeys.push(...ids);
+          }
+          if (rows.length < chunk) break;
+          await new Promise(r => setTimeout(r, 0));
+      }
+      return { purged, purgedKeys };
+  },
   _startListenersTimer: null, // 🔥 Debounce timer para absorber llamadas rápidas de StrictMode/SubscriptionGuard
 
   // 🔥 HELPER SALVAVIDAS: Generador de IDs para evitar colisiones en Firebase
@@ -1096,8 +1158,7 @@ export const syncService = {
         if (salesQuery) {
             this._unsubscribes.push(this._safeOnSnapshot(salesQuery, async (snapshot) => {
                 const localDb = await getDB();
-                const pendingIds = await localDb.sales.filter(s => s.syncStatus !== 'synced').primaryKeys();
-                const pendingSet = new Set(pendingIds);
+                const pendingSet = await this._localPendingIdSet(localDb.sales, snapshot.docChanges().map(c => c.doc.id));
                 const salesToPut = [];
 
                 snapshot.docChanges().forEach(change => {
@@ -1143,8 +1204,7 @@ export const syncService = {
         if (purchQuery) {
             this._unsubscribes.push(this._safeOnSnapshot(purchQuery, async (snapshot) => {
                 const localDb = await getDB();
-                const pendingIds = await localDb.purchases.filter(p => p.syncStatus !== 'synced').primaryKeys();
-                const pendingSet = new Set(pendingIds);
+                const pendingSet = await this._localPendingIdSet(localDb.purchases, snapshot.docChanges().map(c => c.doc.id));
                 const itemsToPut = [];
                 
                 snapshot.docChanges().forEach(change => {
@@ -1204,8 +1264,7 @@ export const syncService = {
         if (shiftsQ) {
             this._unsubscribes.push(this._safeOnSnapshot(shiftsQ, async (snapshot) => {
                 const localDb = await getDB();
-                const pendingIds = await localDb.shifts.filter(s => s.syncStatus !== 'synced').primaryKeys();
-                const pendingSet = new Set(pendingIds);
+                const pendingSet = await this._localPendingIdSet(localDb.shifts, snapshot.docChanges().map(c => c.doc.id));
                 const toPut = [];
                 snapshot.docChanges().forEach(change => {
                     if ((change.type === 'added' || change.type === 'modified') && !pendingSet.has(change.doc.id)) {
@@ -1231,8 +1290,7 @@ export const syncService = {
             );
             this._unsubscribes.push(this._safeOnSnapshot(movsQ, async (snapshot) => {
                 const localDb = await getDB();
-                const pendingIds = await localDb.cash_movements.filter(m => m.syncStatus !== 'synced').primaryKeys();
-                const pendingSet = new Set(pendingIds);
+                const pendingSet = await this._localPendingIdSet(localDb.cash_movements, snapshot.docChanges().map(c => c.doc.id));
                 const toPut = [];
                 snapshot.docChanges().forEach(change => {
                     if ((change.type === 'added' || change.type === 'modified') && !pendingSet.has(change.doc.id)) {
@@ -1282,15 +1340,33 @@ export const syncService = {
       this._lastSyncContext = null;
   },
 
-  async syncAll() {
+  // 🔒 Guard de reentrancia: syncAll se dispara desde el interval de 90s, useAutoSync,
+  // evento online y close-request de caja. En PC lenta una corrida puede durar más que
+  // el intervalo y se apilaban corridas en paralelo. Si ya hay una en curso, se encola
+  // UNA sola corrida extra (no se pierde el pedido, p.ej. el de cierre de caja).
+  syncAll() {
+    if (this._syncAllPromise) {
+        if (!this._syncAllTrailing) {
+            this._syncAllTrailing = this._syncAllPromise.catch(() => {}).then(() => {
+                this._syncAllTrailing = null;
+                return this.syncAll();
+            });
+        }
+        return this._syncAllTrailing;
+    }
+    this._syncAllPromise = this._syncAllRun().finally(() => { this._syncAllPromise = null; });
+    return this._syncAllPromise;
+  },
+
+  async _syncAllRun() {
     if (!navigator.onLine) return { uploaded: 0, errors: 0 };
     const companyId = this._getCompanyId();
     const branchId = this._getActiveBranchId();
     if (!companyId) return { uploaded: 0, errors: 0 };
 
     try {
-        // 🔥 HOUSEKEEPING: Rotar datos locales antiguos (>45 días) una vez al día
-        this.rotateOldData(45).catch(e => {});
+        // 🔥 HOUSEKEEPING: Rotar datos locales antiguos (>30 días) una vez al día
+        this.rotateOldData(30).catch(e => {});
 
         const [
             salesRes, prodRes, mastersRes, shiftsRes, movsRes, 
@@ -1353,13 +1429,9 @@ export const syncService = {
   // 🔥 TÁCTICA DE ASPIRADORA: Usamos filter(x !== 'synced') en lugar de equals('pending')
   async _syncPendingProductsRun(companyId, branchId) {
     const localDb = await getDB();
-    const pendingProducts = await localDb.products
-        .filter(p => p.syncStatus !== 'synced')
-        .toArray();
+    const pendingProducts = await this._getUnsynced(localDb.products);
 
-    const pendingInventory = await localDb.inventory
-        .filter(i => i.syncStatus !== 'synced')
-        .toArray();
+    const pendingInventory = await this._getUnsynced(localDb.inventory);
 
     if (pendingProducts.length === 0 && pendingInventory.length === 0) return { synced: 0 };
 
@@ -1455,7 +1527,7 @@ export const syncService = {
 
       for (const collectionName of masterCollections) {
           try {
-              const pendingItems = await localDb.table(collectionName).filter(i => i.syncStatus !== 'synced').toArray();
+              const pendingItems = await this._getUnsynced(localDb.table(collectionName));
               if (pendingItems.length === 0) continue;
 
               for (const item of pendingItems) {
@@ -1499,9 +1571,8 @@ export const syncService = {
     const localDb = await getDB();
     // 🛡️ Nunca se excluye por cantidad de reintentos — solo se espacian (ver
     // _shouldAttemptSync). Abandonar un dato en silencio es peor que reintentar de más.
-    const pendingSales = await localDb.sales
-        .filter(s => s.syncStatus !== 'synced' && this._shouldAttemptSync(s))
-        .toArray();
+    const pendingSales = (await this._getUnsynced(localDb.sales))
+        .filter(s => this._shouldAttemptSync(s));
 
     console.log(`[SyncPendingSales] ${pendingSales.length} ventas pendientes`);
     if (pendingSales.length === 0) return { synced: 0 };
@@ -1559,8 +1630,7 @@ export const syncService = {
 
           const snapshot = await getDocs(q);
           if (!snapshot.empty) {
-              const pendingIds = await localDb.shifts.filter(s => s.syncStatus !== 'synced').primaryKeys();
-              const pendingSet = new Set(pendingIds);
+              const pendingSet = await this._localPendingIdSet(localDb.shifts, snapshot.docs.map(d => d.id));
               const toPut = snapshot.docs
                   .filter(d => !pendingSet.has(d.id))
                   .map(d => this._sanitizeCloudShift(d.data(), d.id));
@@ -1594,8 +1664,7 @@ export const syncService = {
 
           const snapshot = await getDocs(q);
           if (!snapshot.empty) {
-              const pendingIds = await localDb.cash_movements.filter(m => m.syncStatus !== 'synced').primaryKeys();
-              const pendingSet = new Set(pendingIds);
+              const pendingSet = await this._localPendingIdSet(localDb.cash_movements, snapshot.docs.map(d => d.id));
               const toPut = snapshot.docs
                   .filter(d => !pendingSet.has(d.id))
                   .map(d => this._sanitizeCloudCashMovement(d.data(), d.id));
@@ -1608,9 +1677,8 @@ export const syncService = {
 
   async syncPendingShifts(companyId) {
       const localDb = await getDB();
-      const pendingShifts = await localDb.shifts
-          .filter(s => s.syncStatus !== 'synced' && this._shouldAttemptSync(s))
-          .toArray();
+      const pendingShifts = (await this._getUnsynced(localDb.shifts))
+          .filter(s => this._shouldAttemptSync(s));
 
       if (pendingShifts.length === 0) return { synced: 0 };
 
@@ -1667,9 +1735,8 @@ export const syncService = {
 
   async syncPendingCashMovements(companyId) {
       const localDb = await getDB();
-      const pendingMovs = await localDb.cash_movements
-          .filter(c => c.syncStatus !== 'synced' && this._shouldAttemptSync(c))
-          .toArray();
+      const pendingMovs = (await this._getUnsynced(localDb.cash_movements))
+          .filter(c => this._shouldAttemptSync(c));
 
       if (pendingMovs.length === 0) return { synced: 0 };
 
@@ -1703,7 +1770,7 @@ export const syncService = {
 
   async syncPendingPurchases(companyId) {
       const localDb = await getDB();
-      const pendingPurchases = await localDb.purchases.filter(p => p.syncStatus !== 'synced').toArray();
+      const pendingPurchases = await this._getUnsynced(localDb.purchases);
       
       if (pendingPurchases.length === 0) return { synced: 0 };
 
@@ -1740,9 +1807,8 @@ export const syncService = {
 
   async syncPendingSupplierLedger(companyId) {
       const localDb = await getDB();
-      const pendingLedger = await localDb.supplier_ledger
-          .filter(s => s.syncStatus !== 'synced' && this._shouldAttemptSync(s))
-          .toArray();
+      const pendingLedger = (await this._getUnsynced(localDb.supplier_ledger))
+          .filter(s => this._shouldAttemptSync(s));
       
       if (pendingLedger.length === 0) return { synced: 0 };
 
@@ -1778,7 +1844,7 @@ export const syncService = {
 
   async syncPendingMovements(companyId) {
       const localDb = await getDB();
-      const pendingMovs = await localDb.movements.filter(m => m.syncStatus !== 'synced').toArray();
+      const pendingMovs = await this._getUnsynced(localDb.movements);
       
       if (pendingMovs.length === 0) return { synced: 0 };
 
@@ -1815,7 +1881,7 @@ export const syncService = {
 
   async syncPendingCustomerLedger(companyId) {
       const localDb = await getDB();
-      const pendingLedger = await localDb.customer_ledger.filter(c => c.syncStatus !== 'synced').toArray();
+      const pendingLedger = await this._getUnsynced(localDb.customer_ledger);
 
       if (pendingLedger.length === 0) return { synced: 0 };
 
@@ -1931,7 +1997,7 @@ export const syncService = {
   },
 
   // 🔥 PILAR DE HIGIENE: Rotar datos antiguos para mantener Dexie ligero
-  async rotateOldData(days = 45) {
+  async rotateOldData(days = 30) {
       if (!navigator.onLine) return; // Solo rotamos si estamos seguros de que podemos validar sync
 
       const lastCleanup = localStorage.getItem('NOAR_LAST_CLEANUP_DATE');
@@ -1942,38 +2008,30 @@ export const syncService = {
       const localDb = await getDB();
       const thresholdDate = new Date();
       thresholdDate.setDate(thresholdDate.getDate() - days);
-      const thresholdIso = thresholdDate.toISOString();
 
       console.log(`🧹 [Nexus Housekeeping] Analizando rotación de datos (> ${days} días)...`);
 
       try {
+          // 🛡️ Solo registros 'synced' (ya están en Firestore). Fecha normalizada a ms:
+          // antes se comparaba `date < iso` como string y los registros con date guardado
+          // como Timestamp/objeto (bajados del cloud) nunca se purgaban. Fecha inválida → se conserva.
+          const thresholdMs = thresholdDate.getTime();
+          const isOld = (r) => r.syncStatus === 'synced' && this._dateToMs(r.date) < thresholdMs;
+
           // 1. Rotar Ventas (Sales + Items)
-          const oldSalesIds = await localDb.sales
-              .filter(s => s.date < thresholdIso && s.syncStatus === 'synced')
-              .primaryKeys();
-          
-          if (oldSalesIds.length > 0) {
-              await localDb.sales.bulkDelete(oldSalesIds);
+          const { purged: salesPurged, purgedKeys: oldSalesIds } = await this._purgeOld(localDb.sales, isOld);
+          if (salesPurged > 0) {
               // Borrar items asociados (si son auto-incrementales por saleId o similar)
               await localDb.sale_items.where('saleId').anyOf(oldSalesIds).delete();
-              console.log(`✅ ${oldSalesIds.length} ventas antiguas rotadas de la base local.`);
+              console.log(`✅ ${salesPurged} ventas antiguas rotadas de la base local.`);
           }
 
           // 2. Rotar Movimientos de Caja
-          const oldCashMovIds = await localDb.cash_movements
-              .filter(m => m.date < thresholdIso && m.syncStatus === 'synced')
-              .primaryKeys();
-          if (oldCashMovIds.length > 0) {
-              await localDb.cash_movements.bulkDelete(oldCashMovIds);
-          }
+          const { purged: cashPurged } = await this._purgeOld(localDb.cash_movements, isOld);
 
-          // 3. Rotar Kardex de Inventario (Movements)
-          const oldKardexIds = await localDb.movements
-               .filter(m => m.date < thresholdIso && m.syncStatus === 'synced')
-               .primaryKeys();
-          if (oldKardexIds.length > 0) {
-               await localDb.movements.bulkDelete(oldKardexIds);
-          }
+          // 3. Rotar Kardex de Inventario (Movements) — el stock vive en inventory, no se recalcula desde acá
+          const { purged: kardexPurged } = await this._purgeOld(localDb.movements, isOld);
+          if (cashPurged || kardexPurged) console.log(`✅ Rotados: ${cashPurged} mov. de caja, ${kardexPurged} mov. de kardex.`);
 
           // 4. Rotar Turnos Cerrados antiguos (> 90 días para preservar auditoría reciente)
           const thresholdShifts = new Date();
