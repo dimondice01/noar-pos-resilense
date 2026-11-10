@@ -12,6 +12,7 @@ import defaultLogo from '../../../assets/logo.png';
 
 // 🔥 Importamos la nueva Factura A4
 import { InvoiceA4 } from './InvoiceA4';
+import { BudgetA4 } from './BudgetA4';
 
 // =========================================================
 // 1. HELPERS DE FORMATO
@@ -406,8 +407,12 @@ const TicketContent = forwardRef(({
 // =========================================================
 // 3. MODAL PRINCIPAL
 // =========================================================
-export const TicketModal = ({ isOpen, onClose, sale, receipt }) => {
+export const TicketModal = ({ isOpen, onClose, sale, receipt, askBudgetFormat = false }) => {
     const data = sale || receipt;
+    const isBudgetDoc = !!data && (data.type === 'BUDGET' || data.status === 'BUDGET');
+    // 🔥 Presupuesto (desde Ventas): preguntar Ticket o A4 antes de imprimir
+    const needsFormatChoice = askBudgetFormat && isBudgetDoc;
+    const [formatChosen, setFormatChosen] = useState(false);
     const { user, activeBranchId } = useAuthStore(); 
     
     const componentRef = useRef(null);
@@ -432,9 +437,14 @@ export const TicketModal = ({ isOpen, onClose, sale, receipt }) => {
 
     const handlePrintA4 = useReactToPrint({
         contentRef: invoiceA4Ref,
-        documentTitle: `Factura-${data?.number || 'venta'}`,
+        documentTitle: `${isBudgetDoc ? 'Presupuesto' : 'Factura'}-${data?.number || 'venta'}`,
         onAfterPrint: onClose 
     });
+
+    const chooseFormat = useCallback((mode) => {
+        setViewMode(mode);
+        setFormatChosen(true);
+    }, []);
 
     const handlePrint = useCallback(() => {
         if (viewMode === 'a4') {
@@ -445,20 +455,26 @@ export const TicketModal = ({ isOpen, onClose, sale, receipt }) => {
     }, [viewMode, handlePrintA4, handlePrintTicket]);
 
     useEffect(() => {
-        if (isOpen && data) {
+        if (isOpen && data && (!needsFormatChoice || formatChosen)) {
             // 🔥 REDUCCIÓN DE LATENCIA: Como el logo es Base64 (Local), no necesitamos esperar a la red
             const timer = setTimeout(() => {
                 handlePrint();
             }, 100); 
             return () => clearTimeout(timer);
         }
-    }, [isOpen, data, handlePrint]);
+    }, [isOpen, data, handlePrint, needsFormatChoice, formatChosen]);
 
     useEffect(() => {
         if (!isOpen) return;
         setTimeout(() => modalRef.current?.focus(), 50);
 
         const handleKeyDown = (e) => {
+            if (needsFormatChoice && !formatChosen) {
+                if (e.key === 'Escape') { e.preventDefault(); onClose(); }
+                else if (e.key === '1' || e.key.toLowerCase() === 't') { e.preventDefault(); chooseFormat('ticket'); }
+                else if (e.key === '2' || e.key.toLowerCase() === 'a') { e.preventDefault(); chooseFormat('a4'); }
+                return;
+            }
             if (e.key === 'Enter') {
                 e.preventDefault();
                 handlePrint();
@@ -470,7 +486,7 @@ export const TicketModal = ({ isOpen, onClose, sale, receipt }) => {
 
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [isOpen, handlePrint, onClose]);
+    }, [isOpen, handlePrint, onClose, needsFormatChoice, formatChosen, chooseFormat]);
 
     useEffect(() => {
         if (!isOpen || !user?.companyId || !activeBranchId) return;
@@ -516,7 +532,7 @@ export const TicketModal = ({ isOpen, onClose, sale, receipt }) => {
     }, [isOpen, user?.companyId, activeBranchId]);
 
     useEffect(() => {
-        if (isOpen) setViewMode('ticket');
+        if (isOpen) { setViewMode('ticket'); setFormatChosen(false); }
     }, [isOpen]);
 
     if (!isOpen || !data) return null;
@@ -534,13 +550,42 @@ export const TicketModal = ({ isOpen, onClose, sale, receipt }) => {
         // 🔥 AHORA LEE DIRECTAMENTE EL BASE64 EN CACHÉ ANTES DE MIRAR LA URL VIEJA
         logoUrl: branchConfig?.logoBase64 || branchConfig?.logoUrl || null,
         iibb: branchConfig?.iibb || "",
+        telefono: branchConfig?.phone || "",
+        email: branchConfig?.email || "",
         inicioAct: branchConfig?.inicioAct || "",
     };
 
     const logoSrc = EMPRESA.logoUrl || defaultLogo;
 
+    if (needsFormatChoice && !formatChosen) {
+        return (
+            <div className="fixed inset-0 z-[200] bg-black/50 flex items-center justify-center p-4" onClick={onClose}>
+                <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md p-6 animate-in fade-in zoom-in duration-200" onClick={(e) => e.stopPropagation()}>
+                    <div className="flex justify-between items-center mb-1">
+                        <h3 className="font-black text-sys-900 uppercase text-lg">Imprimir presupuesto</h3>
+                        <button onClick={onClose} className="p-2 hover:bg-gray-100 rounded-full"><X size={20}/></button>
+                    </div>
+                    <p className="text-sm text-sys-500 mb-5">{data.number ? `${data.number} · ` : ''}¿En qué formato?</p>
+                    <div className="grid grid-cols-2 gap-3">
+                        <button onClick={() => chooseFormat('ticket')} className="flex flex-col items-center gap-2 p-5 rounded-2xl border-2 border-sys-200 hover:border-brand hover:bg-brand/5 transition-all">
+                            <Ticket size={32} className="text-brand" />
+                            <span className="font-black uppercase text-sm text-sys-900">Ticket</span>
+                            <span className="text-[11px] text-sys-500">Térmica 58mm · [1]</span>
+                        </button>
+                        <button onClick={() => chooseFormat('a4')} className="flex flex-col items-center gap-2 p-5 rounded-2xl border-2 border-sys-200 hover:border-brand hover:bg-brand/5 transition-all">
+                            <FileText size={32} className="text-brand" />
+                            <span className="font-black uppercase text-sm text-sys-900">Hoja A4</span>
+                            <span className="text-[11px] text-sys-500">Presupuesto formal · [2]</span>
+                        </button>
+                    </div>
+                    <button onClick={onClose} className="w-full mt-4 py-2 text-sys-500 font-bold uppercase text-xs hover:bg-sys-100 rounded-xl">Cancelar (ESC)</button>
+                </div>
+            </div>
+        );
+    }
+
     return (
-        <div 
+        <div
             className="fixed inset-0 z-[-100] opacity-0 pointer-events-none flex items-center justify-center p-4 outline-none print:opacity-100 print:z-auto print:bg-white print:p-0"
             tabIndex={-1} 
             ref={modalRef} 
@@ -574,7 +619,9 @@ export const TicketModal = ({ isOpen, onClose, sale, receipt }) => {
                     ) : (
                         <div className="shadow-2xl border border-gray-200 scale-90 sm:scale-100 origin-top">
                             <div ref={invoiceA4Ref}>
-                                <InvoiceA4 sale={data} companyConfig={EMPRESA} />
+                                {isBudgetDoc
+                                    ? <BudgetA4 sale={data} companyConfig={EMPRESA} />
+                                    : <InvoiceA4 sale={data} companyConfig={EMPRESA} />}
                             </div>
                         </div>
                     )}

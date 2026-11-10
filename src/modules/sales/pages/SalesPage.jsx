@@ -1491,6 +1491,7 @@ export const SalesPage = () => {
           sale={selectedOpForTicket?.type !== 'RECEIPT' ? selectedOpForTicket : null}
           receipt={selectedOpForTicket?.type === 'RECEIPT' ? selectedOpForTicket : null}
           onClose={() => setSelectedOpForTicket(null)}
+          askBudgetFormat
       />
 
       {refundData && (
