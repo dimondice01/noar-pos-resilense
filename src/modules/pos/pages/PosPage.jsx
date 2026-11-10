@@ -453,9 +453,12 @@ export const PosPage = () => {
       }
       setIsOpening(true);
       try {
-          await cashRepository.openShift(openingAmount, user?.name);
+          const opened = await cashRepository.openShift(openingAmount, user?.name);
           setHasOpenShift(true);
           setOpeningAmount('');
+          if (opened?.isStale) {
+              alert(`⚠️ Tenías un turno SIN CERRAR desde el ${new Date(opened.openedAt).toLocaleString('es-AR')}.\nSe retomó ese turno (no se abrió uno nuevo). Cerralo con "Cerrar caja" y abrí uno nuevo antes de vender.`);
+          }
       } catch (err) { alert(err.message); }
       finally { setIsOpening(false); }
   };

@@ -84,25 +84,19 @@ const CloseShiftModalWrapper = ({ isOpen, onClose, onShiftClosed }) => {
         if (isOpen) {
             const fetchShiftData = async () => {
                 setLoading(true);
+                const t0 = performance.now();
                 try {
-                    // 🔥 Refrescar shift + cash_movements desde la nube ANTES de calcular el balance.
-                    // Evita que el cierre se calcule con datos locales desactualizados (ej: initialAmount
-                    // corregido por un admin, o movimientos manuales cargados desde otro dispositivo).
-                    if (navigator.onLine && user?.companyId) {
-                        try {
-                            const dbLocal = await getDB();
-                            // Timeout corto: en redes lentas/inestables no debe bloquear el cierre.
-                            // Si no llega a tiempo, seguimos con lo que ya haya en Dexie (igual que offline).
-                            await Promise.race([
-                                Promise.all([
-                                    cashRepository._fetchHistoryFromCloud(dbLocal, user),
-                                    syncService.syncInitialCashMovements(user.companyId, activeBranchId)
-                                ]),
-                                new Promise((resolve) => setTimeout(resolve, 6000))
-                            ]);
-                        } catch (syncErr) {
-                            console.warn("No se pudo refrescar caja desde la nube antes de cerrar:", syncErr);
-                        }
+                    // 🔥 Refrescar ESTE turno + sus cash_movements desde la nube ANTES de calcular
+                    // el balance (ej: initialAmount corregido por un admin, o movimientos cargados
+                    // desde otro dispositivo). Antes bajaba 50 turnos + delta completo → ~20s.
+                    // Timeout corto: si la red no responde, seguimos con Dexie (igual que offline).
+                    const localShift = await cashRepository.getCurrentShift();
+                    if (localShift && navigator.onLine && user?.companyId) {
+                        await Promise.race([
+                            cashRepository.refreshShiftFromCloud(localShift.id)
+                                .catch(syncErr => console.warn("No se pudo refrescar caja desde la nube antes de cerrar:", syncErr)),
+                            new Promise((resolve) => setTimeout(resolve, 4000))
+                        ]);
                     }
 
                     const currentShift = await cashRepository.getCurrentShift();
@@ -110,6 +104,7 @@ const CloseShiftModalWrapper = ({ isOpen, onClose, onShiftClosed }) => {
                         setShift(currentShift);
                         const currentBalance = await cashRepository.getShiftBalance(currentShift.id);
                         setBalance(currentBalance);
+                        console.log(`⏱️ [CierreCaja] datos listos en ${Math.round(performance.now() - t0)} ms`);
                     } else {
                         alert("⚠️ No hay un turno abierto para cerrar.");
                         onClose();
@@ -143,14 +138,16 @@ const CloseShiftModalWrapper = ({ isOpen, onClose, onShiftClosed }) => {
         if (!shift || processing) return;
         setProcessing(true); 
         try {
-            await cashRepository.closeShift(shift.id, data);
+            const closed = await cashRepository.closeShift(shift.id, data);
             // 🔥 FIX: closeShift solo actualiza Dexie — el activeShift cacheado en
             // useShiftStore (RAM/localStorage, el que lee usePosController._verifyShift
             // en el POS) seguía con status:'OPEN' hasta el próximo F5. El cajero cerraba
             // caja acá pero el POS lo dejaba seguir vendiendo como si nada (la única rama
             // que sí limpiaba esto era el conflicto de cierre por otro dispositivo).
             useShiftStore.getState().clearShift();
-            alert("✅ Turno Cerrado Correctamente.");
+            alert(closed?.cloudConfirmed
+                ? "✅ Turno Cerrado Correctamente."
+                : "✅ Turno cerrado en esta PC.\n⚠️ La nube todavía no lo confirmó (conexión lenta). Se sube solo en cuanto responda.\nNo cierres el sistema hasta que desaparezca el aviso ⏳ abajo a la derecha.");
             onClose();
             if (onShiftClosed) onShiftClosed();
         } catch (e) {
@@ -290,8 +287,10 @@ export const Sidebar = () => {
         if (isNaN(amount) || amount < 0) return alert("Monto inválido");
         
         try {
-            await cashRepository.openShift(amount, user?.name); 
-            alert("✅ Caja abierta correctamente.");
+            const opened = await cashRepository.openShift(amount, user?.name);
+            alert(opened?.isStale
+                ? `⚠️ Tenías un turno SIN CERRAR desde el ${new Date(opened.openedAt).toLocaleString('es-AR')}.\nSe retomó ese turno (no se abrió uno nuevo). Cerralo con "Cerrar caja" y abrí uno nuevo antes de vender.`
+                : "✅ Caja abierta correctamente.");
             await checkShiftStatus();
         } catch (e) { 
             console.error("Error abriendo caja:", e);

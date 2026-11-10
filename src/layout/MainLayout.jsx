@@ -13,9 +13,8 @@ import { usePendingSyncGuard } from '../core/hooks/usePendingSyncGuard';
 // 🔥 SERVICIOS (Motor de Sincronización)
 import { syncService } from '../modules/sync/services/syncService';
 
-// 🔥 Firebase (Para rehidratación de turno)
-import { collection, query, where, getDocs, limit } from 'firebase/firestore';
-import { db } from '../database/firebase';
+// 🔥 Rehidratación de turno (vía repositorio, ver findRecoverableOpenShift)
+import { cashRepository } from '../modules/cash/repositories/cashRepository';
 
 export const MainLayout = () => {
   const { user, isLoading, activeBranchId } = useAuthStore();
@@ -94,27 +93,15 @@ export const MainLayout = () => {
       }
 
       try {
-        // Consultamos Firebase: "¿Hay turnos ABIERTOS para este usuario?"
-        const q = query(
-          collection(db, 'companies', user.companyId, 'shifts'),
-          where('userId', '==', user.uid),
-          where('status', '==', 'OPEN'), // Asegúrate que en DB guardes 'OPEN' o 'open'
-          limit(1)
-        );
-
-        const snapshot = await getDocs(q);
-
-        if (!snapshot.empty) {
-          const docData = snapshot.docs[0].data();
-          const shiftId = snapshot.docs[0].id;
-
-          console.log(`✅ [MainLayout] Turno Recuperado: ${shiftId}`);
-          
-          // Restauramos el estado global
-          setActiveShift({
-            id: shiftId,
-            ...docData
-          });
+        // 🔥 FIX: antes consultaba Firestore directo (cualquier sucursal, limit 1) y
+        // resucitaba el turno recién cerrado: al cerrar, clearShift dispara este
+        // efecto ANTES de que el cierre llegue a la nube (o si falló la subida) →
+        // el turno volvía a figurar abierto tras imprimir el Z. El repositorio
+        // filtra por sucursal activa y descarta los turnos cerrados localmente.
+        const found = await cashRepository.findRecoverableOpenShift();
+        if (found) {
+          console.log(`✅ [MainLayout] Turno Recuperado: ${found.id}`);
+          setActiveShift(found);
         }
       } catch (error) {
         console.error("❌ Error recuperando turno:", error);

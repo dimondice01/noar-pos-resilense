@@ -1,6 +1,26 @@
 import { doc, runTransaction, setDoc, serverTimestamp, increment } from 'firebase/firestore';
 import { db } from '../../../database/firebase';
 
+// 🔥 runTransaction NO tiene timeout propio: con red inestable (QUIC/DNS caídos)
+// puede quedar colgada indefinidamente. Como syncAll espera a todos sus pasos
+// (Promise.all + guard de reentrancia), una sola transacción colgada congelaba
+// TODA la subida (ventas incluidas) hasta recargar. Con timeout, el ítem queda
+// 'pending' y se reintenta. Ambas transacciones son idempotentes
+// (_countedInShift / closeAttemptId), así que si la colgada termina igual
+// commiteando más tarde, el reintento no duplica nada.
+const TX_TIMEOUT_MS = 20_000;
+function withTimeout(promise, ms, label) {
+    let timer;
+    const timeout = new Promise((_, reject) => {
+        timer = setTimeout(() => {
+            const err = new Error(`${label}: sin respuesta de Firestore en ${ms / 1000}s`);
+            err.code = 'deadline-exceeded';
+            reject(err);
+        }, ms);
+    });
+    return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
 // =================================================================
 // 🔥 SHIFT LEDGER — Contador atómico de caja (runningTotals)
 // =================================================================
@@ -67,7 +87,23 @@ function resolveCounting(movement) {
  * Idempotente: un mismo movimiento re-subido (reintento, doble dispositivo)
  * nunca incrementa dos veces, vía el marcador _countedInShift.
  */
-export async function pushCashMovementWithShiftCounter(companyId, movement) {
+// 🔥 Dedupe en vuelo: la venta dispara el push optimista y, si Firestore tarda,
+// syncPendingCashMovements (cada 15s) lanzaba OTRA transacción para el mismo
+// movimiento → dos transacciones peleando por el mismo doc de turno (contención →
+// reintentos con backoff de Firestore → todas las de caja se encolaban). Ahora el
+// segundo llamado se cuelga de la misma promesa.
+const _inFlightMovs = new Map();
+
+export function pushCashMovementWithShiftCounter(companyId, movement) {
+    const key = movement?.id ? String(movement.id) : null;
+    if (key && _inFlightMovs.has(key)) return _inFlightMovs.get(key);
+    const p = _pushCashMovementWithShiftCounter(companyId, movement)
+        .finally(() => { if (key) _inFlightMovs.delete(key); });
+    if (key) _inFlightMovs.set(key, p);
+    return p;
+}
+
+async function _pushCashMovementWithShiftCounter(companyId, movement) {
     if (!companyId || !movement?.id) {
         throw new Error('pushCashMovementWithShiftCounter: faltan companyId o movement.id');
     }
@@ -92,7 +128,7 @@ export async function pushCashMovementWithShiftCounter(companyId, movement) {
 
     const shiftRef = doc(db, `companies/${companyId}/shifts`, String(movement.shiftId));
 
-    const counted = await runTransaction(db, async (tx) => {
+    const counted = await withTimeout(runTransaction(db, async (tx) => {
         // Todas las lecturas primero (regla de Firestore transactions).
         const movSnap = await tx.get(movRef);
         const shiftSnap = await tx.get(shiftRef);
@@ -134,7 +170,7 @@ export async function pushCashMovementWithShiftCounter(companyId, movement) {
         }
 
         return true;
-    });
+    }), TX_TIMEOUT_MS, 'cash_movement');
 
     return { counted };
 }
@@ -147,7 +183,21 @@ export async function pushCashMovementWithShiftCounter(companyId, movement) {
  * `closedShiftPayload.closeAttemptId` distingue "ya cerrado por otro" de
  * "reintento de mi propio cierre" (mismo dispositivo, offline -> online).
  */
-export async function closeShiftAtomic(companyId, shiftId, closedShiftPayload) {
+// 🔥 Dedupe en vuelo: closeShift sube el cierre y, si tarda, syncPendingShifts
+// (cada 15s) lanzaba otra transacción del mismo cierre → choque en la nube
+// (400 failed-precondition + reintento). Mismo patrón que _inFlightMovs.
+const _inFlightCloses = new Map();
+
+export function closeShiftAtomic(companyId, shiftId, closedShiftPayload) {
+    const key = shiftId ? String(shiftId) : null;
+    if (key && _inFlightCloses.has(key)) return _inFlightCloses.get(key);
+    const p = _closeShiftAtomic(companyId, shiftId, closedShiftPayload)
+        .finally(() => { if (key) _inFlightCloses.delete(key); });
+    if (key) _inFlightCloses.set(key, p);
+    return p;
+}
+
+async function _closeShiftAtomic(companyId, shiftId, closedShiftPayload) {
     if (!companyId || !shiftId) {
         throw new Error('closeShiftAtomic: faltan companyId o shiftId');
     }
@@ -157,7 +207,7 @@ export async function closeShiftAtomic(companyId, shiftId, closedShiftPayload) {
     const { syncStatus, syncRetries, localId, id, runningTotals, ...cleanShift } = closedShiftPayload;
     const nowIso = new Date().toISOString();
 
-    return await runTransaction(db, async (tx) => {
+    return await withTimeout(runTransaction(db, async (tx) => {
         // Única lectura antes de cualquier escritura (regla de Firestore transactions).
         const snap = await tx.get(shiftRef);
 
@@ -178,5 +228,5 @@ export async function closeShiftAtomic(companyId, shiftId, closedShiftPayload) {
         }, { merge: true });
 
         return { won: true };
-    });
+    }), TX_TIMEOUT_MS, 'closeShift');
 }

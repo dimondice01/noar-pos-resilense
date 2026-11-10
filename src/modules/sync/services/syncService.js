@@ -18,6 +18,7 @@ import { db } from '../../../database/firebase';
 import { getDB } from '../../../database/db';
 import { useAuthStore } from '../../auth/store/useAuthStore';
 import { pushCashMovementWithShiftCounter, closeShiftAtomic } from '../../cash/services/shiftLedgerService';
+import { inFlightSales } from './inFlight';
 import { pushLedgerMovementWithBalanceIncrement } from '../../clients/services/customerLedgerService';
 import { pushSupplierLedgerWithBalanceIncrement } from '../../suppliers/services/supplierLedgerService';
 
@@ -34,12 +35,12 @@ export const syncService = {
   _syncAllPromise: null,   // 🔥 Guard de reentrancia de syncAll (ver syncAll)
   _syncAllTrailing: null,
   _lastFullSweep: {},      // { [tableName]: ms } último barrido completo de pendientes
-  _FULL_SWEEP_MS: 30 * 60_000,
+  _FULL_SWEEP_MS: 2 * 60 * 60_000, // 1° barrido al iniciar sesión, luego c/2h (en PCs con ~100k filas c/30min congelaba)
 
   // 🚀 PERF (clientes con meses de datos): antes cada ciclo de sync (~90s) hacía
   // Table.filter(x => x.syncStatus !== 'synced') sobre TODAS las tablas — recorrido
   // fila por fila de la tabla entera (anti-patrón Dexie, ver incidente 22s productos).
-  // Ahora: consulta por índice syncStatus (barata) y, cada 30 min por tabla, un barrido
+  // Ahora: consulta por índice syncStatus (barata) y, al iniciar sesión y luego cada 2 h por tabla, un barrido
   // completo que conserva la "TÁCTICA DE ASPIRADORA" (atrapa syncStatus undefined/null,
   // que no entran en el índice). Mismo resultado, costo O(pendientes) en vez de O(tabla).
   async _getUnsynced(table) {
@@ -100,6 +101,15 @@ export const syncService = {
       if (item.firestoreId && item.firestoreId !== 'undefined') return String(item.firestoreId);
       if (typeof item.id === 'string' && item.id.length > 8) return item.id;
       return `${prefix}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+  },
+
+  // Corre fn sobre items con N en paralelo. Los setDoc independientes viajan por el
+  // mismo stream de Firestore: esperar la confirmación de a UNO (for + await) costaba
+  // un ida-y-vuelta de red por ítem — con 40 pendientes y red lenta, minutos.
+  async _runPool(items, limit, fn) {
+      let i = 0;
+      const worker = async () => { while (i < items.length) { const item = items[i++]; await fn(item); } };
+      await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
   },
 
   // 🔥 BACKOFF SIN ABANDONO: antes, syncPendingSales/Shifts/CashMovements cortaban
@@ -1359,7 +1369,19 @@ export const syncService = {
         }
         return this._syncAllTrailing;
     }
-    this._syncAllPromise = this._syncAllRun().finally(() => { this._syncAllPromise = null; });
+    // 🔥 Watchdog: si algún paso queda colgado (red inestable), el guard se libera
+    // igual a los 90s — antes una sola promesa colgada congelaba toda la subida
+    // hasta recargar la página. La corrida colgada sigue en segundo plano; los
+    // uploads son idempotentes (mismo id / closeAttemptId / _countedInShift).
+    let watchdog;
+    const run = Promise.race([
+        this._syncAllRun(),
+        new Promise(resolve => { watchdog = setTimeout(() => {
+            console.warn('⏱️ [SyncAll] corrida sin terminar a los 90s — libero el guard (red lenta/colgada).');
+            resolve({ uploaded: 0, errors: 1 });
+        }, 90_000); })
+    ]);
+    this._syncAllPromise = run.finally(() => { clearTimeout(watchdog); this._syncAllPromise = null; });
     return this._syncAllPromise;
   },
 
@@ -1370,8 +1392,8 @@ export const syncService = {
     if (!companyId) return { uploaded: 0, errors: 0 };
 
     try {
-        // 🔥 HOUSEKEEPING: Rotar datos locales antiguos (>30 días) una vez al día
-        this.rotateOldData(30).catch(e => {});
+        // 🔥 HOUSEKEEPING: Rotar datos locales antiguos (>45 días; volver a 30 purgaría ~40k filas de golpe en PCs grandes) una vez al día
+        this.rotateOldData(45).catch(e => {});
 
         const [
             salesRes, prodRes, mastersRes, shiftsRes, movsRes, 
@@ -1577,7 +1599,7 @@ export const syncService = {
     // 🛡️ Nunca se excluye por cantidad de reintentos — solo se espacian (ver
     // _shouldAttemptSync). Abandonar un dato en silencio es peor que reintentar de más.
     const pendingSales = (await this._getUnsynced(localDb.sales))
-        .filter(s => this._shouldAttemptSync(s));
+        .filter(s => this._shouldAttemptSync(s) && !inFlightSales.has(s.id));
 
     console.log(`[SyncPendingSales] ${pendingSales.length} ventas pendientes`);
     if (pendingSales.length === 0) return { synced: 0 };
@@ -1585,9 +1607,9 @@ export const syncService = {
     let totalSynced = 0;
     const salesCollection = collection(db, 'companies', companyId, 'sales');
 
-    for (const sale of pendingSales) {
+    await this._runPool(pendingSales, 8, async (sale) => {
         try {
-            if (!sale.id) continue;
+            if (!sale.id) return;
             const safeId = this._ensureValidCloudId(sale, 'sale');
             const docRef = doc(salesCollection, safeId);
             const { localId, syncStatus, syncRetries, id, ...cleanSale } = sale;
@@ -1614,7 +1636,7 @@ export const syncService = {
             console.warn(`❌ Sync venta ${sale.id} — intento ${retries} (nunca se abandona):`, err.code || err.message);
             try { await localDb.sales.update(sale.id, { syncRetries: retries, lastSyncAttemptAt: new Date().toISOString() }); } catch (_) {}
         }
-    }
+    });
     return { synced: totalSynced };
   },
 
@@ -1856,9 +1878,9 @@ export const syncService = {
       let totalSynced = 0;
       const colRef = collection(db, 'companies', companyId, 'movements');
 
-      for (const mov of pendingMovs) {
+      await this._runPool(pendingMovs, 8, async (mov) => {
           try {
-              if (!mov.id) continue;
+              if (!mov.id) return;
               const safeId = this._ensureValidCloudId(mov, 'mov');
               const docRef = doc(colRef, safeId); 
               const { syncStatus, localId, id, ...cleanMov } = mov;
@@ -1880,7 +1902,7 @@ export const syncService = {
           } catch (err) {
               console.warn(`❌ Error sinc. kardex ${mov.id}:`, err);
           }
-      }
+      });
       return { synced: totalSynced };
   },
 
@@ -2002,14 +2024,25 @@ export const syncService = {
   },
 
   // 🔥 PILAR DE HIGIENE: Rotar datos antiguos para mantener Dexie ligero
-  async rotateOldData(days = 30) {
+  async rotateOldData(days = 45) {
       if (!navigator.onLine) return; // Solo rotamos si estamos seguros de que podemos validar sync
 
       const lastCleanup = localStorage.getItem('NOAR_LAST_CLEANUP_DATE');
       const today = new Date().toLocaleDateString('sv-SE'); // YYYY-MM-DD
       
-      if (lastCleanup === today) return; 
+      if (lastCleanup === today) return;
 
+      // 🐛 PERF: syncAll lanza esto sin await cada 15s/90s y la marca del día se guardaba
+      // recién al terminar → en bases grandes se apilaban varias purgas en paralelo sobre
+      // las mismas tablas (arranques de minutos), y si fallaba se repetía cada ciclo.
+      // Ahora: una sola a la vez y la marca se pone al empezar (si falla, reintenta mañana).
+      if (this._isRotating) return;
+      this._isRotating = true;
+      localStorage.setItem('NOAR_LAST_CLEANUP_DATE', today);
+      try { await this._rotateOldDataRun(days); } finally { this._isRotating = false; }
+  },
+
+  async _rotateOldDataRun(days) {
       const localDb = await getDB();
       const thresholdDate = new Date();
       thresholdDate.setDate(thresholdDate.getDate() - days);
@@ -2051,8 +2084,6 @@ export const syncService = {
               await localDb.shifts.bulkDelete(oldShiftsIds);
               console.log(`✅ ${oldShiftsIds.length} turnos antiguos rotados.`);
           }
-
-          localStorage.setItem('NOAR_LAST_CLEANUP_DATE', today);
       } catch (error) {
           console.warn("⚠️ Fallo en Housekeeping:", error);
       }

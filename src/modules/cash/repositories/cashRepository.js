@@ -15,8 +15,77 @@ const generateGlobalId = (prefix) => {
     return `${prefix}_${branchClean}_${ts}_${rand}`;
 };
 
+// 🔥 Turno "viejo": abierto hace más de esto = casi seguro un turno olvidado sin
+// cerrar (fantasma), no una caja en uso. Nunca se adopta/fusiona en silencio.
+const STALE_SHIFT_MS = 24 * 3600_000;
+// Un turno "hermano" real nace de la carrera al abrir en 2 PCs (minutos de
+// diferencia). Más separación que esto = otro turno, NO se fusiona.
+const SIBLING_MAX_GAP_MS = 12 * 3600_000;
+const _openedMs = (s) => { const t = new Date(s?.openedAt || 0).getTime(); return isNaN(t) ? 0 : t; };
+
 export const cashRepository = {
-    
+    // ¿Este dispositivo ya cerró este turno? (cierre local, quizás pendiente de
+    // subir). Si el cierre quedó pending, lo re-empuja. Evita "resucitar" desde la
+    // nube un turno que el cajero ya cerró e imprimió.
+    async _isClosedLocally(dbLocal, shiftId) {
+        const local = await dbLocal.shifts.get(String(shiftId));
+        if (!local || local.status === 'OPEN') return false;
+        if (local.status === 'CLOSED' && local.syncStatus !== 'synced') this._syncShiftCloseToCloud(local);
+        return true;
+    },
+
+    _flagStale(shift) {
+        if (!shift) return shift;
+        const opened = _openedMs(shift);
+        return (opened && Date.now() - opened > STALE_SHIFT_MS) ? { ...shift, isStale: true } : shift;
+    },
+
+    // 🔥 Refresco PUNTUAL previo al cierre: solo este turno + sus movimientos de caja.
+    // Antes el modal bajaba 50 turnos completos + un delta de cash_movements que
+    // ordenaba toda la tabla local y (bug Timestamp/string) nunca traía nada → ~20s.
+    // Respeta pendientes locales (nunca pisa algo sin subir).
+    async refreshShiftFromCloud(shiftId) {
+        const { user } = useAuthStore.getState();
+        if (!navigator.onLine || !user?.companyId || !shiftId) return;
+        const id = String(shiftId);
+        const [shiftSnap, movsSnap] = await Promise.all([
+            getDoc(doc(db, 'companies', user.companyId, 'shifts', id)),
+            getDocs(query(collection(db, 'companies', user.companyId, 'cash_movements'), where('shiftId', '==', id)))
+        ]);
+        const dbLocal = await getDB();
+        const local = await dbLocal.shifts.get(id);
+        if (shiftSnap.exists() && local && local.syncStatus === 'synced') {
+            await dbLocal.shifts.put({ ...local, ...syncService._sanitizeCloudShift(shiftSnap.data(), id), id: local.id, syncStatus: 'synced' });
+        }
+        if (!movsSnap.empty) {
+            const ids = movsSnap.docs.map(d => d.id);
+            const locals = await dbLocal.cash_movements.bulkGet(ids);
+            const toPut = movsSnap.docs
+                .filter((d, i) => !locals[i] || locals[i].syncStatus === 'synced')
+                .map(d => syncService._sanitizeCloudCashMovement(d.data(), d.id));
+            if (toPut.length > 0) await dbLocal.cash_movements.bulkPut(toPut);
+        }
+    },
+
+    // Turno OPEN de la nube que se puede restaurar en RAM (MainLayout, F5).
+    // Filtra por sucursal activa y descarta los que este dispositivo ya cerró.
+    async findRecoverableOpenShift() {
+        const { user, activeBranchId } = useAuthStore.getState();
+        if (!user?.companyId || !user?.uid || !navigator.onLine) return null;
+        const filters = [where('userId', '==', user.uid), where('status', '==', 'OPEN')];
+        if (activeBranchId && activeBranchId !== 'ALL') filters.push(where('branchId', '==', activeBranchId));
+        const snap = await getDocs(query(collection(db, 'companies', user.companyId, 'shifts'), ...filters, limit(5)));
+        if (snap.empty) return null;
+        const dbLocal = await getDB();
+        const candidates = snap.docs
+            .map(d => ({ ...d.data(), id: d.id }))
+            .sort((a, b) => _openedMs(b) - _openedMs(a));
+        for (const s of candidates) {
+            if (!(await this._isClosedLocally(dbLocal, s.id))) return s;
+        }
+        return null;
+    },
+
     // =========================================
     // 🛠️ HELPER DE CONTEXTO
     // =========================================
@@ -71,7 +140,7 @@ export const cashRepository = {
                     } else {
                         console.log("⚠️ Turno ya abierto recuperado localmente (confirmado contra la nube):", activeInBranch.id);
                         this.watchForCloseRequests(activeInBranch);
-                        return activeInBranch;
+                        return this._flagStale(activeInBranch);
                     }
                 } catch (e) {
                     console.warn("No se pudo verificar el turno contra la nube, confío en local:", e);
@@ -97,16 +166,27 @@ export const cashRepository = {
                     where('userId', '==', user.uid),
                     where('branchId', '==', branchId),
                     where('status', '==', 'OPEN'),
-                    limit(1)
+                    limit(5)
                 );
                 const remoteSnap = await getDocs(remoteQ);
-                if (!remoteSnap.empty) {
-                    const remoteDoc = remoteSnap.docs[0];
-                    const remoteShift = { ...remoteDoc.data(), id: remoteDoc.id, syncStatus: 'synced' };
+                // 🔥 FIX: antes adoptaba docs[0] a ciegas. Si este dispositivo ya lo
+                // había cerrado (cierre local aún sin subir), el put de abajo PISABA el
+                // cierre (CLOSED pending → OPEN synced) y el turno "revivía" tras
+                // imprimir el Z. Ahora se descartan los cerrados localmente.
+                const candidates = remoteSnap.docs
+                    .map(d => ({ ...d.data(), id: d.id, syncStatus: 'synced' }))
+                    .sort((a, b) => _openedMs(b) - _openedMs(a));
+                let remoteShift = null;
+                for (const c of candidates) {
+                    if (!(await this._isClosedLocally(dbLocal, c.id))) { remoteShift = c; break; }
+                }
+                if (remoteShift) {
                     await dbLocal.shifts.put(remoteShift);
                     console.warn('⚠️ Turno ya abierto en otro dispositivo, adoptado localmente:', remoteShift.id);
                     this.watchForCloseRequests(remoteShift);
-                    return remoteShift;
+                    // Si es viejo (olvidado sin cerrar) se adopta igual para poder
+                    // cerrarlo, pero la UI avisa (isStale) en vez de vender sobre él.
+                    return this._flagStale(remoteShift);
                 }
             } catch (e) {
                 console.warn('No se pudo verificar turno remoto antes de abrir, se continúa con creación local:', e);
@@ -356,11 +436,18 @@ export const cashRepository = {
             }
         })();
 
-        // Sync Background del turno cerrado (atómico, vía transacción — ver _syncShiftCloseToCloud)
-        this._syncShiftCloseToCloud(closedShift);
+        // Sync del turno cerrado (atómico, vía transacción — ver _syncShiftCloseToCloud).
+        // 🔥 Esperamos la confirmación de la nube hasta 8s SOLO para informar al cajero
+        // la verdad (cerrado en nube vs pendiente). El cierre local ya está guardado:
+        // si no confirma, queda 'pending' y syncPendingShifts lo reintenta sin abandono.
+        const cloudClosePromise = this._syncShiftCloseToCloud(closedShift);
         if (withdrawalMovement) {
             this._pushCashMovement(withdrawalMovement);
         }
+        const cloudConfirmed = await Promise.race([
+            cloudClosePromise,
+            new Promise(r => setTimeout(() => r(false), 8000))
+        ]);
 
         // 🔥 FUSIÓN MULTI-PC: si getShiftAuditData detectó un turno hermano OPEN
         // (misma caja abierta por error en 2 dispositivos), lo cerramos también acá.
@@ -371,7 +458,7 @@ export const cashRepository = {
             this._closeSiblingShift(currentAudit.siblingShift, shift.id, closedShift.closedAt);
         }
 
-        return closedShift;
+        return { ...closedShift, cloudConfirmed };
     },
 
     // Cierra en segundo plano el turno "hermano" fusionado al cerrar el principal.
@@ -452,10 +539,11 @@ export const cashRepository = {
     // =========================================
     // No usa _syncToCloud genérico (setDoc plano): un cierre necesita
     // transacción para no pisar el cierre de otro dispositivo (last-write-wins).
+    // Devuelve true si la nube quedó con el turno CERRADO (ganamos o convergimos).
     async _syncShiftCloseToCloud(closedShift) {
-        if (!navigator.onLine) return; // offline: queda 'pending', lo retoma syncPendingShifts
+        if (!navigator.onLine) return false; // offline: queda 'pending', lo retoma syncPendingShifts
         const { user } = useAuthStore.getState();
-        if (!user?.companyId) return;
+        if (!user?.companyId) return false;
         try {
             const result = await closeShiftAtomic(user.companyId, closedShift.id, closedShift);
             const dbLocal = await getDB();
@@ -469,8 +557,10 @@ export const cashRepository = {
                 console.warn('⚠️ Cierre en carrera: otro dispositivo cerró primero.', closedShift.id);
                 window.dispatchEvent(new CustomEvent('noar:shift-close-conflict', { detail: { shiftId: closedShift.id, winner } }));
             }
+            return true;
         } catch (e) {
             console.warn('Sync start error (closeShift):', e); // queda 'pending' local, lo retoma syncPendingShifts
+            return false;
         }
     },
 
@@ -755,10 +845,25 @@ export const cashRepository = {
                 where('status', '==', 'OPEN'),
                 limit(5)
             );
-            const snap = await getDocs(siblingQ);
-            const siblingDoc = snap.docs.find(d => d.id !== String(shift.id));
-            if (!siblingDoc) return null;
-            return { ...siblingDoc.data(), id: siblingDoc.id };
+            // Timeout: con red lenta esta consulta colgaba la apertura del modal de cierre.
+            // Sin respuesta = sin hermano (mismo resultado que si fallara la consulta).
+            const snap = await Promise.race([
+                getDocs(siblingQ),
+                new Promise((_, rej) => setTimeout(() => rej(new Error('timeout buscando turno hermano (5s)')), 5000))
+            ]);
+            // 🔥 FIX: antes fusionaba CUALQUIER otro turno OPEN del cajero+sucursal —
+            // incluso fantasmas de meses atrás (sumaba sus ventas/fondo al arqueo y
+            // lo cerraba en $0). Un hermano real se abrió casi a la vez que este.
+            const dbLocal = await getDB();
+            const myOpened = _openedMs(shift);
+            for (const d of snap.docs) {
+                if (d.id === String(shift.id)) continue;
+                const cand = { ...d.data(), id: d.id };
+                if (!myOpened || !_openedMs(cand) || Math.abs(_openedMs(cand) - myOpened) > SIBLING_MAX_GAP_MS) continue;
+                if (await this._isClosedLocally(dbLocal, cand.id)) continue;
+                return cand;
+            }
+            return null;
         } catch (e) {
             console.warn('No se pudo verificar turno hermano (fusión multi-PC):', e);
             return null;
@@ -818,6 +923,17 @@ export const cashRepository = {
 
         const siblingShift = opts.siblingShift !== undefined ? opts.siblingShift : await this._findOpenSiblingShift(shift);
         if (!siblingShift) return { siblingShift: null, siblingSales: null, siblingMovements: null };
+
+        // Cacheamos localmente para trazabilidad — ACÁ (fuera de transacción); antes
+        // se hacía dentro de la tx 'r' de _calculateShiftState → ReadOnlyError.
+        try {
+            const dbLocal = await getDB();
+            if (!(await this._isClosedLocally(dbLocal, siblingShift.id))) {
+                await dbLocal.shifts.put({ ...siblingShift, syncStatus: 'synced' });
+            }
+        } catch (e) {
+            console.warn('No se pudo cachear turno hermano localmente:', e);
+        }
 
         // Ventas: solo se releen de la nube en el cierre real (post-handshake) —
         // en la vista previa, `null` le indica a quien consuma esto que use Dexie.
@@ -893,6 +1009,18 @@ export const cashRepository = {
                         console.log('🔔 Este turno se cerró (fusionado o desde otro dispositivo) — actualizando UI.');
                         useShiftStore.getState().clearShift();
                     }
+                    // 🔥 FIX: antes solo limpiaba RAM; Dexie local seguía OPEN y
+                    // getCurrentShift (POS/Sidebar) lo seguía dando por abierto → se
+                    // vendía sobre un turno cerrado. Bajamos el cierre a Dexie (sin pisar
+                    // un cierre local propio) y avisamos a la UI para re-verificar.
+                    try {
+                        const dbl = await getDB();
+                        const local = await dbl.shifts.get(String(shift.id));
+                        if (local && local.status === 'OPEN') {
+                            await dbl.shifts.put({ ...local, ...data, id: local.id, syncStatus: 'synced' });
+                            window.dispatchEvent(new CustomEvent('noar:shifts-synced'));
+                        }
+                    } catch (e) { console.warn('No se pudo bajar el cierre remoto a Dexie:', e); }
                     try { this._closeRequestUnsub(); } catch (e) { console.warn('Error liberando watcher tras detectar cierre:', e); }
                     this._closeRequestUnsub = null;
                     this._watchedShiftId = null;
@@ -937,12 +1065,7 @@ export const cashRepository = {
             initialAmount = (siblingInitial === initialAmount)
                 ? initialAmount
                 : initialAmount + siblingInitial;
-            // Cacheamos localmente para trazabilidad (debugShift, historial, etc.)
-            try {
-                await dbLocal.shifts.put({ ...siblingShift, syncStatus: 'synced' });
-            } catch (e) {
-                console.warn('No se pudo cachear turno hermano localmente:', e);
-            }
+            // (El cacheo local del hermano se hace en _resolveSiblingContext, fuera de la tx.)
         }
 
         const saleIsValid = s => s.status === 'COMPLETED' && s.type !== 'INTERNAL' && s.type !== 'BUDGET';

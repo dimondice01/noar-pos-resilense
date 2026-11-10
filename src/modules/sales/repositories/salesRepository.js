@@ -19,6 +19,7 @@ import { useAuthStore } from '../../auth/store/useAuthStore';
 import { productRepository } from '../../inventory/repositories/productRepository';
 import { cashRepository } from '../../cash/repositories/cashRepository';
 import { pushCashMovementWithShiftCounter } from '../../cash/services/shiftLedgerService';
+import { inFlightSales } from '../../sync/services/inFlight';
 
 // ==========================================
 // ☁️ HELPER: SYNC OPTIMISTA NEXUS CORE
@@ -46,6 +47,14 @@ const triggerOptimisticSync = async (collectionName, data, companyId) => {
         
         // Operación no bloqueante (sin await en el flujo principal)
         const nowIso = new Date().toISOString();
+        // 🔥 Mientras esta subida esté en vuelo, syncPendingSales no la duplica.
+        const trackSale = collectionName === 'sales';
+        if (trackSale) {
+            inFlightSales.add(docId);
+            // Tope: si el ack nunca llega (red muy mala), a los 60s vuelve a quedar
+            // disponible para el reintento de fondo.
+            setTimeout(() => inFlightSales.delete(docId), 60_000);
+        }
         setDoc(doc(db, `companies/${companyId}/${collectionName}`, docId), {
             ...cleanData,
             firestoreId: docId,
@@ -63,7 +72,8 @@ const triggerOptimisticSync = async (collectionName, data, companyId) => {
                      await dbLocal.cash_movements.update(docId, { syncStatus: 'synced' });
                  }
              } catch (e) { console.warn("Error update local sync status", e); }
-        }).catch(err => console.warn(`☁️ Sync optimista falló (${collectionName}), background sync lo tomará.`));
+        }).catch(err => console.warn(`☁️ Sync optimista falló (${collectionName}), background sync lo tomará.`))
+          .finally(() => { if (trackSale) inFlightSales.delete(docId); });
     } catch (err) {
         console.warn(`Error trigger sync`, err);
     }
