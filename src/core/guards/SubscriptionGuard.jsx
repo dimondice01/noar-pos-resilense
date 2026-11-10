@@ -34,7 +34,11 @@ export const SubscriptionGuard = ({ children }) => {
 
             // 🔄 ACTUALIZACIÓN SILENCIOSA DEL STORE (Solo si cambió)
             // Esto permite que el MainLayout vea el cambio sin reiniciar el monitor
-            if (data.subscriptionStatus && data.subscriptionStatus !== user.subscriptionStatus) {
+            // 🐛 PERF: comparar contra el store ACTUAL, no contra el `user` capturado al montar.
+            // Con el closure viejo, si el estado cambió (ej TRIAL→ACTIVE) cada snapshot
+            // (includeMetadataChanges = cada micro-corte de red) llamaba updateUser → objeto
+            // user nuevo → MainLayout reiniciaba TODO el sync (productos + inventario completo).
+            if (data.subscriptionStatus && data.subscriptionStatus !== useAuthStore.getState().user?.subscriptionStatus) {
                 updateUser({ subscriptionStatus: data.subscriptionStatus });
             }
 

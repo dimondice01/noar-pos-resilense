@@ -1077,11 +1077,16 @@ export const syncService = {
     if (activeBranchId && activeBranchId !== 'ALL') {
         try {
             const invUnsub = await this.startInventoryListener(companyId, activeBranchId);
+            // 🐛 PERF: si hubo stop/restart mientras bajaba el inventario, esta sesión quedó
+            // vieja — sin este corte se registraban listeners + interval de 90s duplicados
+            // que se iban acumulando con cada reinicio.
+            if (sessionId !== this._listenerSessionId) { if (invUnsub) invUnsub(); return; }
             if (invUnsub) this._unsubscribes.push(invUnsub);
         } catch (e) {
             console.error('startInventoryListener falló:', e);
         }
     }
+    if (sessionId !== this._listenerSessionId) return;
 
     // 🔥 LISTENER DE CONFIGURACIÓN
     const configQuery = query(collection(db, 'companies', companyId, 'config'));

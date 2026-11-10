@@ -45,30 +45,12 @@ export const MainLayout = () => {
             // B2. Listeners de tiempo real (config, productos, ventas)
             // Se llama aquí en lugar de App.jsx para evitar la race condition
             // de StrictMode + SubscriptionGuard que disparaban 4 llamadas simultáneas.
+            if (!isMounted) return; // sucursal/usuario cambió mientras bajaban productos
             syncService.startRealTimeListeners(user.companyId);
 
-            // B. Sincronización "Real-Time" (Inventario de Sucursal)
-            // Esto mantiene el stock vivo para el cajero.
-            if (activeBranchId && activeBranchId !== 'ALL') {
-                console.log(`📡 Conectando inventario para branch: ${activeBranchId}`);
-                
-                // Limpiamos listener previo si existiera (por si acaso)
-                if (typeof unsubscribeInventoryRef.current === 'function') {
-                    unsubscribeInventoryRef.current();
-                    unsubscribeInventoryRef.current = null;
-                }
-
-                // Iniciamos nuevo listener (que devuelve una Promesa)
-                const unsub = await syncService.startInventoryListener(user.companyId, activeBranchId);
-                
-                // Solo asignamos si el componente sigue montado
-                if (isMounted && typeof unsub === 'function') {
-                    unsubscribeInventoryRef.current = unsub;
-                } else if (typeof unsub === 'function') {
-                    // Si se desmontó mientras esperábamos, limpiamos inmediatamente
-                    unsub();
-                }
-            }
+            // B. (ELIMINADO) startInventoryListener propio de MainLayout.
+            // 🐛 PERF: duplicaba el que ya arranca startRealTimeListeners para la sucursal
+            // activa → syncInitialInventory + listener de inventario COMPLETO x2.
         }
     };
 
@@ -87,7 +69,9 @@ export const MainLayout = () => {
         // Limpiamos también los listeners de startRealTimeListeners (config, productos, ventas)
         syncService.stopListeners();
     };
-  }, [user, isLoading, activeBranchId]); // Se reinicia si cambia el usuario o la sucursal
+  // 🐛 PERF: antes dependía de `user` (objeto) → cualquier updateUser (ej SubscriptionGuard)
+  // reiniciaba todo el sync. Ahora solo si cambia el usuario, la empresa o la sucursal.
+  }, [user?.uid, user?.companyId, isLoading, activeBranchId]); // eslint-disable-line react-hooks/exhaustive-deps
 
 
   // =================================================================

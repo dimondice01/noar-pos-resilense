@@ -29,60 +29,12 @@ export const useAutoSync = (intervalMs = 30000) => {
         };
     }, [companyId]);
 
-    // =================================================================
-    // 2. 👂 LISTENER DE INVENTARIO LOCAL (Específico para UI)
-    // =================================================================
-    // Mantenemos este listener manual aquí porque actualiza el campo 'stock'
-    // denormalizado en la tabla de productos para velocidad de UI.
-    const unsubscribeInventory = useRef(null);
-
-    useEffect(() => {
-        if (!companyId || !currentBranchId) return;
-
-        const startInventoryListener = async () => {
-            const dbLocal = await getDB();
-            
-            const inventoryQuery = query(collection(firestoreDB, `companies/${companyId}/branches/${currentBranchId}/inventory`));
-            
-            unsubscribeInventory.current = onSnapshot(inventoryQuery, async (snapshot) => {
-                if (snapshot.docChanges().length === 0) return;
-
-                await dbLocal.transaction('rw', [dbLocal.products, dbLocal.inventory], async () => {
-                    // Nunca sobreescribir registros con cambios locales pendientes de subir (ej: promo recién aplicada)
-                    const pendingSet = new Set(
-                        (await dbLocal.inventory.where('syncStatus').equals('pending').toArray())
-                            .map(i => `${i.branchId}_${i.productId}`)
-                    );
-
-                    for (const change of snapshot.docChanges()) {
-                        const inv = change.doc.data();
-                        const prodId = inv.productId || change.doc.id;
-
-                        if (change.type !== 'removed' && !pendingSet.has(`${currentBranchId}_${prodId}`)) {
-                            // 1. Guardar en tabla Inventory (Realidad Física)
-                            await dbLocal.inventory.put({
-                                branchId: currentBranchId,
-                                productId: prodId,
-                                stock: inv.stock,
-                                promo: inv.promo || null,
-                                updatedAt: inv.updatedAt,
-                                syncStatus: 'synced'
-                            });
-
-                            // 2. Actualizar campo 'stock' visual en Productos
-                            await dbLocal.products.update(prodId, { stock: inv.stock });
-                        }
-                    }
-                });
-            });
-        };
-
-        startInventoryListener();
-
-        return () => {
-            if (unsubscribeInventory.current) unsubscribeInventory.current();
-        };
-    }, [companyId, currentBranchId]);
+    // 2. (ELIMINADO) Listener de inventario duplicado.
+    // 🐛 PERF: escuchaba la colección COMPLETA de inventario (3er listener en paralelo
+    // con MainLayout y syncService), escribía fila por fila en una transacción rw sobre
+    // products+inventory (bloqueaba las ventas del POS) y guardaba updatedAt como
+    // Timestamp crudo (rompía el delta de syncInitialInventory). El stock vivo lo
+    // mantiene syncService.startInventoryListener; el POS lee stock desde `inventory`.
 
 
     // =================================================================
